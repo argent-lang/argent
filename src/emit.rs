@@ -3311,11 +3311,6 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
 
     fn lower_expr(&self, expr: &str, expected_ty: Option<&str>, indent: usize) -> Result<String> {
         let expr = expr.trim();
-        if let Some(domain) = parse_unique_self_outpoint(expr) {
-            return Ok(format!(
-                "blake2b(bytes(\"{domain}\") + OpOutpointTxId(this.activeInputIndex) + byte[4](OpOutpointIndex(this.activeInputIndex)))"
-            ));
-        }
         if expr == "self.state" {
             let ty = expected_ty.ok_or_else(|| ArgentError::new("`self.state` requires a target state type during lowering"))?;
             return self.lower_self_state_expr(ty, indent);
@@ -3874,17 +3869,6 @@ fn push_generated_statement_with_comment(out: &mut String, indent: usize, statem
 fn generated_state_name(route: &RouteCall, state_ty: &str) -> String {
     let base = route.output.as_deref().unwrap_or(route.actor.as_str());
     format!("{RESERVED_GENERATED_PREFIX}state_{}_{}", to_snake(base), to_snake(state_ty))
-}
-
-fn parse_unique_self_outpoint(expr: &str) -> Option<String> {
-    let expr = expr.trim();
-    let rest = expr.strip_prefix("unique(")?.strip_suffix(')')?;
-    let (domain, outpoint) = rest.split_once(',')?;
-    if outpoint.trim() != "self.outpoint" {
-        return None;
-    }
-    let domain = domain.trim();
-    Some(domain.strip_prefix('"')?.strip_suffix('"')?.to_string())
 }
 
 fn split_state_constructor(expr: &str) -> Option<(&str, &str)> {

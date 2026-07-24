@@ -12,6 +12,7 @@
 
 mod context;
 mod resolve;
+pub mod stdlib;
 
 use std::{collections::BTreeMap, error::Error, fmt};
 

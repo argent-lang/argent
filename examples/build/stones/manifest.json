@@ -5,6 +5,7 @@
     "examples/stones/app.ag",
     "examples/stones/types.ag",
     "examples/stones/league.ag",
+    "std::core",
     "examples/stones/player.ag",
     "examples/stones/game.ag",
     "examples/stones/settle.ag"

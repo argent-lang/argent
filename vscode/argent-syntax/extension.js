@@ -1,7 +1,18 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
 const vscode = require('vscode');
-const { BUILTINS, KEYWORDS, PRIMITIVE_DOCUMENTATION, PRIMITIVE_TYPES, scanDocument } = require('./language-service');
+const {
+  BUILTINS,
+  KEYWORDS,
+  PRIMITIVE_DOCUMENTATION,
+  PRIMITIVE_TYPES,
+  scanDocument,
+  standardModuleRelativePath,
+} = require('./language-service');
+
+const EXTENSION_DIRECTORY = fs.realpathSync(__dirname);
 
 const semanticLegend = new vscode.SemanticTokensLegend(
   ['type', 'class', 'enum', 'function', 'variable', 'namespace', 'property', 'parameter'],
@@ -65,6 +76,13 @@ class ArgentIndex {
   }
 
   resolveImport(from, importPath) {
+    const standardPath = standardModuleRelativePath(importPath);
+    if (standardPath) {
+      return vscode.Uri.file(path.resolve(EXTENSION_DIRECTORY, standardPath));
+    }
+    if (importPath.startsWith('std::')) {
+      return undefined;
+    }
     if (from.scheme !== 'file') {
       return undefined;
     }

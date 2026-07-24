@@ -341,6 +341,60 @@ mod tests {
     }
 
     #[test]
+    fn context_executes_and_pins_invocation_uid() {
+        let artifact = inline_artifact(
+            "context-invocation-uid",
+            r#"
+            import "std::core";
+
+            state IssuerState {
+                byte[32] last_uid;
+            }
+
+            actor Issuer owns IssuerState {
+                entry issue(byte[] domain, byte[32] expected) emits one Issuer {
+                    byte[32] uid = invocation_uid(domain);
+                    require(uid == expected);
+
+                    IssuerState next = {
+                        last_uid: uid,
+                    };
+                    become Issuer(next);
+                }
+            }
+
+            app IssuerApp {
+                actor Issuer;
+            }
+            "#,
+        );
+        let builder = TxBuilder::new(&artifact).expect("builder accepts std::core artifact");
+        let covenant_id = Hash::from_bytes([0x62; 32]);
+        let outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0x61; 32]), 0x0102_0304);
+        let expected_uid = decode_hex("80943ad8a6ca143ccafa47978a1e8f4f5d324c582b61934652f811b436a2712b").expect("UID vector decodes");
+        let runtime_uid =
+            argent_runtime::stdlib::core::invocation_uid(&outpoint, b"LeaguePlayerId").expect("pinned invocation UID domain is valid");
+        assert_eq!(runtime_uid.as_bytes().as_slice(), expected_uid.as_slice());
+        let initial = state! { last_uid: vec![0; 32] };
+        let next = state! { last_uid: expected_uid.clone() };
+        let input_value = 1_000;
+        let input_utxo =
+            builder.covenant_utxo("Issuer", initial.clone(), input_value, 0, false, Some(covenant_id)).expect("Issuer UTXO builds");
+        let context = TxContext::new()
+            .actor_input(
+                "Issuer",
+                initial,
+                EntryCall::new("issue").args(args![b"LeaguePlayerId".to_vec(), expected_uid]),
+                outpoint,
+                input_utxo,
+                0,
+            )
+            .actor_output("Issuer", next, CovenantBinding::new(0, covenant_id), input_value);
+
+        builder.build(&context).expect("invocation_uid matches the pinned digest");
+    }
+
+    #[test]
     fn context_executes_single_actor_self_consume_without_template_witnesses() {
         let artifact = example_artifact("tests/fixtures/emit/single_actor_self_consume/app.ag", "single-actor-self-consume");
         let builder = TxBuilder::new(&artifact).expect("builder accepts single-actor artifact");
@@ -2724,11 +2778,10 @@ mod tests {
     }
 
     fn stones_player_id(outpoint: &TransactionOutpoint) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"StonesPlayer");
-        bytes.extend_from_slice(&outpoint.transaction_id.as_bytes());
-        bytes.extend_from_slice(&outpoint.index.to_le_bytes());
-        blake2b32(&bytes)
+        argent_runtime::stdlib::core::invocation_uid(outpoint, b"StonesPlayer")
+            .expect("Stones player domain is valid")
+            .as_bytes()
+            .to_vec()
     }
 
     fn p2sh_redeem_script(signature_script: &[u8]) -> Vec<u8> {

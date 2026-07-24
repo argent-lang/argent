@@ -1,8 +1,30 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
-const { BUILTINS, PRIMITIVE_DOCUMENTATION, scanDocument, tokenize } = require('./language-service');
+const {
+  BUILTINS,
+  PRIMITIVE_DOCUMENTATION,
+  scanDocument,
+  standardModuleRelativePath,
+  tokenize,
+} = require('./language-service');
+
+test('resolves compiler-standard modules for import navigation and symbol indexing', () => {
+  const relativePath = standardModuleRelativePath('std::core');
+  assert.equal(relativePath, '../../std/core.ag');
+  assert.equal(standardModuleRelativePath('std::missing'), undefined);
+  assert.equal(standardModuleRelativePath('toString'), undefined);
+
+  const scan = scanDocument(fs.readFileSync(path.join(__dirname, relativePath), 'utf8'));
+  const invocationUid = scan.declarations.find((declaration) => declaration.name === 'invocation_uid');
+  assert.ok(invocationUid);
+  assert.equal(invocationUid.kind, 'function');
+  assert.equal(invocationUid.signature, 'fn invocation_uid(byte[] domain) -> byte[32]');
+  assert.match(invocationUid.documentation, /current actor invocation/);
+});
 
 test('scans imports and top-level Argent declarations from incomplete bodies', () => {
   const source = `
@@ -90,6 +112,7 @@ test('offers the Silverscript hash builtins exposed to Argent bodies', () => {
   const templateHash = BUILTINS.find((builtin) => builtin.name === 'templateHash');
   assert.deepEqual(templateHash.params, ['templatePrefix', 'templateSuffix']);
   assert.match(templateHash.signature, /byte\[32\]/);
+  assert.equal(names.has('unique'), false, 'legacy unique helper must not be offered');
 });
 
 test('offers the Silverscript query builtins except automated state-template helpers', () => {

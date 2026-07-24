@@ -12,6 +12,7 @@ pub mod loader;
 pub mod parser;
 pub mod routes;
 pub mod routing;
+mod stdlib;
 
 pub use error::{ArgentError, Result};
 
@@ -66,8 +67,7 @@ pub fn build_file_app(input: impl AsRef<Path>, app_name: &str, out_dir: impl AsR
 }
 
 fn inline_program(source_label: PathBuf, source: String) -> Result<ast::Program> {
-    let module = parser::parse_module(source_label.clone(), source)?;
-    Ok(ast::Program { root: source_label, modules: vec![module] })
+    loader::load_inline_program(source_label, source)
 }
 
 fn read_artifact(out_dir: &Path) -> Result<artifact::Artifact> {
@@ -97,6 +97,30 @@ actor Counter owns CounterState {
 
 app CounterApp {
     actor Counter;
+}
+"#;
+
+    const INVOCATION_UID_APP: &str = r#"
+import "std::core";
+
+state IssuerState {
+    byte[32] last_uid;
+}
+
+actor Issuer owns IssuerState {
+    entry issue(byte[] domain) emits one Issuer {
+        byte[32] uid = invocation_uid(domain);
+        require(uid == invocation_uid(domain));
+
+        IssuerState next = {
+            last_uid: uid,
+        };
+        become Issuer(next);
+    }
+}
+
+app IssuerApp {
+    actor Issuer;
 }
 "#;
 
@@ -173,6 +197,34 @@ app RightApp {
     }
 
     #[test]
+    fn build_inline_loads_explicit_standard_module() {
+        let out_dir = std::env::temp_dir().join(format!("argent-build-inline-std-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out_dir);
+
+        let artifact = build_inline("issuer.ag", INVOCATION_UID_APP, &out_dir).expect("inline app imports std::core");
+        let sil = std::fs::read_to_string(out_dir.join("sil/Issuer.sil")).expect("generated Issuer Sil exists");
+
+        assert!(artifact.modules.iter().any(|module| module == "std::core"));
+        assert!(sil.contains("function invocation_uid(byte[] domain) : byte[32]"), "{sil}");
+        assert!(sil.contains("return blake2bWithKey(outpoint, domain);"), "{sil}");
+        assert!(sil.contains("byte[32] uid = invocation_uid(domain);"), "{sil}");
+
+        let _ = std::fs::remove_dir_all(out_dir);
+    }
+
+    #[test]
+    fn build_inline_does_not_load_standard_module_without_import() {
+        let out_dir = std::env::temp_dir().join(format!("argent-build-inline-no-std-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out_dir);
+        let source = INVOCATION_UID_APP.replace("import \"std::core\";", "");
+
+        let error = build_inline("issuer.ag", source, &out_dir).expect_err("standard function requires an explicit import");
+        assert!(error.to_string().contains("failed to compile"), "unexpected error: {error}");
+
+        let _ = std::fs::remove_dir_all(out_dir);
+    }
+
+    #[test]
     fn build_file_writes_outputs_and_returns_artifact() {
         let temp = std::env::temp_dir().join(format!("argent-build-file-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
@@ -187,6 +239,23 @@ app RightApp {
         assert_eq!(artifact.app, "CounterApp");
         assert!(out_dir.join("artifact.json").exists());
         assert!(out_dir.join("sil").join("Counter.sil").exists());
+
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn build_file_loads_explicit_standard_module() {
+        let temp = std::env::temp_dir().join(format!("argent-build-file-std-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("temp dir created");
+
+        let input = temp.join("issuer.ag");
+        let out_dir = temp.join("build");
+        std::fs::write(&input, INVOCATION_UID_APP).expect("source written");
+
+        let artifact = build_file(&input, &out_dir).expect("file app imports std::core");
+        assert!(artifact.modules.iter().any(|module| module == "std::core"));
+        assert!(out_dir.join("sil/Issuer.sil").exists());
 
         let _ = std::fs::remove_dir_all(temp);
     }

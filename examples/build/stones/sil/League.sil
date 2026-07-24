@@ -82,6 +82,15 @@ contract League(
         }
         return result;
     }
+    function invocation_uid(byte[] domain) : byte[32] {
+        require(domain.length > 0);
+
+        byte[36] outpoint =
+            OpOutpointTxId(this.activeInputIndex)
+                + byte[4](OpOutpointIndex(this.activeInputIndex));
+
+        return blake2bWithKey(outpoint, domain);
+    }
 
     // :: route templates
     byte[32] gen__player_template = gen__init_player_template;
@@ -110,7 +119,7 @@ contract League(
 
         require(checkSig(owner_sig, owner_pk));
         byte[32] owner = blake2b(owner_pk);
-        byte[32] player_id = blake2b(bytes("StonesPlayer") + OpOutpointTxId(this.activeInputIndex) + byte[4](OpOutpointIndex(this.activeInputIndex)));
+        byte[32] player_id = invocation_uid(bytes("StonesPlayer"));
         PlayerState next_player = {
             // :: generated fields
             gen__player_template: gen__player_template,
