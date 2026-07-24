@@ -30,6 +30,8 @@ Features:
   the field declaration.
 - Entry and delegate bodies also offer owned-state fields in ordinary
   completion.
+- Completion inside entry and delegate bodies includes variables introduced by
+  `consumes`, `emits`, `observes`, and `spawns` clauses.
 - The editor indexer is tolerant of unfinished function and actor bodies.
 - `std::core` is indexed as an imported Argent module. Import paths and
   imported functions navigate to the compiler's standard-library source.

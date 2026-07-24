@@ -441,9 +441,90 @@ function callableBody(source, tokens, start, segmentEnd) {
     }
   }
   return {
+    openIndex: lastOpen,
     bodyStart: lastOpen >= 0 ? tokens[lastOpen].end : tokens[start].end,
     bodyEnd: lastClose >= 0 ? tokens[lastClose].start : source.length,
   };
+}
+
+function callableClauseVariables(tokens, start, end) {
+  const variables = [];
+  const seen = new Set();
+  const add = (clause, nameToken) => {
+    if (!ident(nameToken) || seen.has(nameToken.value)) {
+      return;
+    }
+    seen.add(nameToken.value);
+    variables.push({
+      kind: 'clauseVariable',
+      clause,
+      name: nameToken.value,
+      signature: `${clause} ${nameToken.value}`,
+      start: nameToken.start,
+      end: nameToken.end,
+    });
+  };
+  const addNamedBlock = (clause, openIndex, closeIndex) => {
+    const blockEnd = closeIndex >= 0 && closeIndex < end ? closeIndex : end;
+    let depth = 1;
+    for (let index = openIndex + 1; index < blockEnd; index += 1) {
+      if (depth === 1 && ident(tokens[index]) && symbol(tokens[index + 1], ':')) {
+        add(clause, tokens[index]);
+      }
+      if (symbol(tokens[index], '{')) {
+        depth += 1;
+      } else if (symbol(tokens[index], '}')) {
+        depth -= 1;
+      }
+    }
+  };
+
+  let index = start;
+  while (index < end) {
+    if (ident(tokens[index], 'consumes')) {
+      const openIndex = findSymbolIndex(tokens, index + 1, '{');
+      if (openIndex >= 0 && openIndex < end) {
+        const closeIndex = matchingBraceIndex(tokens, openIndex);
+        addNamedBlock('consume', openIndex, closeIndex);
+        index = closeIndex >= 0 ? closeIndex + 1 : end;
+        continue;
+      }
+    } else if (ident(tokens[index], 'emits')) {
+      if (ident(tokens[index + 1], 'one')) {
+        add('emit', { kind: 'ident', value: 'next', start: tokens[index + 1].start, end: tokens[index + 1].end });
+      } else if (symbol(tokens[index + 1], '{')) {
+        const openIndex = index + 1;
+        const closeIndex = matchingBraceIndex(tokens, openIndex);
+        addNamedBlock('emit', openIndex, closeIndex);
+        index = closeIndex >= 0 ? closeIndex + 1 : end;
+        continue;
+      }
+    } else if (ident(tokens[index], 'observes') && ident(tokens[index + 1])) {
+      add('observe', tokens[index + 1]);
+      const openIndex = findSymbolIndex(tokens, index + 2, '{');
+      if (openIndex >= 0 && openIndex < end) {
+        const closeIndex = matchingBraceIndex(tokens, openIndex);
+        const blockEnd = closeIndex >= 0 && closeIndex < end ? closeIndex : end;
+        for (let bindingIndex = openIndex + 1; bindingIndex < blockEnd; bindingIndex += 1) {
+          if (ident(tokens[bindingIndex], 'as')) {
+            add('observed actor', tokens[bindingIndex + 1]);
+          }
+        }
+        index = closeIndex >= 0 ? closeIndex + 1 : end;
+        continue;
+      }
+    } else if (ident(tokens[index], 'spawns') && ident(tokens[index + 1])) {
+      add('spawn', tokens[index + 1]);
+      const openIndex = findSymbolIndex(tokens, index + 2, '{');
+      if (openIndex >= 0 && openIndex < end) {
+        const closeIndex = matchingBraceIndex(tokens, openIndex);
+        index = closeIndex >= 0 ? closeIndex + 1 : end;
+        continue;
+      }
+    }
+    index += 1;
+  }
+  return variables;
 }
 
 function actorMembers(source, tokens, openIndex, closeIndex) {
@@ -473,6 +554,12 @@ function actorMembers(source, tokens, openIndex, closeIndex) {
     const paramsOpen = start + 2;
     const paramsClose = matchingSymbolIndex(tokens, paramsOpen, '(', ')');
     const signatureEnd = paramsClose >= 0 ? tokens[paramsClose].end : nameToken.end;
+    const { openIndex: bodyOpenIndex, ...bodyRange } = callableBody(
+      source,
+      tokens,
+      paramsClose >= 0 ? paramsClose + 1 : start + 2,
+      segmentEnd,
+    );
     return declaration(
       keyword,
       nameToken,
@@ -481,7 +568,12 @@ function actorMembers(source, tokens, openIndex, closeIndex) {
       parameters.map((parameter) => parameter.name),
       {
         parameters,
-        ...callableBody(source, tokens, paramsClose >= 0 ? paramsClose + 1 : start + 2, segmentEnd),
+        clauseVariables: callableClauseVariables(
+          tokens,
+          paramsClose >= 0 ? paramsClose + 1 : start + 2,
+          bodyOpenIndex >= 0 ? bodyOpenIndex : segmentEnd,
+        ),
+        ...bodyRange,
       },
     );
   });
