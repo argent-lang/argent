@@ -67,7 +67,8 @@ impl Lexer<'_> {
                     self.push(TokenKind::Symbol(b as char), start, self.pos);
                 }
                 _ => {
-                    return Err(ArgentError::new(format!("unexpected byte {:?} at offset {}", b as char, self.pos)));
+                    let unexpected = self.source[self.pos..].chars().next().expect("lexer position is within source");
+                    return Err(self.error_at(self.pos, format!("unexpected character `{unexpected}`")));
                 }
             }
         }
@@ -98,7 +99,7 @@ impl Lexer<'_> {
                 }
                 b'\\' => {
                     self.pos += 1;
-                    let escaped = *self.bytes.get(self.pos).ok_or_else(|| ArgentError::new("unterminated string escape"))?;
+                    let escaped = *self.bytes.get(self.pos).ok_or_else(|| self.error_at(self.pos, "unterminated string escape"))?;
                     out.push(escaped as char);
                     self.pos += 1;
                 }
@@ -108,7 +109,7 @@ impl Lexer<'_> {
                 }
             }
         }
-        Err(ArgentError::new(format!("unterminated string at offset {start}")))
+        Err(self.error_at(start, "unterminated string"))
     }
 
     fn lex_number(&mut self) {
@@ -126,21 +127,19 @@ impl Lexer<'_> {
         }
         let ident = self.source[start..self.pos].to_string();
         if ident == word::LEGACY_COVENANT_ID {
-            return Err(ArgentError::new(format!(
-                "`{}` was renamed to `{}` at offset {start}",
-                word::LEGACY_COVENANT_ID,
-                word::COVENANT_ID
-            )));
+            return Err(self.error_at(start, format!("`{}` was renamed to `{}`", word::LEGACY_COVENANT_ID, word::COVENANT_ID)));
         }
         let generated_prefix =
             [RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX].into_iter().find(|prefix| ident.starts_with(prefix));
         if let Some(generated_prefix) = generated_prefix {
-            return Err(ArgentError::new(format!(
-                "identifier `{ident}` uses reserved generated namespace `{generated_prefix}` at offset {start}"
-            )));
+            return Err(self.error_at(start, format!("identifier `{ident}` uses reserved generated namespace `{generated_prefix}`")));
         }
         self.push(TokenKind::Ident(ident), start, self.pos);
         Ok(())
+    }
+
+    fn error_at(&self, byte_offset: usize, message: impl Into<String>) -> ArgentError {
+        ArgentError::in_source(self.source, byte_offset, message)
     }
 
     fn push(&mut self, kind: TokenKind, start: usize, end: usize) {
