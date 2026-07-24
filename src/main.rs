@@ -2,6 +2,7 @@ use std::env;
 use std::path::PathBuf;
 
 use argent::emit::{emit_build, emit_build_app};
+use argent::inspect::{inspect_path, render_report};
 use argent::loader::load_program;
 use argent::{ArgentError, Result};
 
@@ -22,6 +23,7 @@ fn run() -> Result<()> {
     let command = args.remove(0);
     match command.as_str() {
         "build" => build(args),
+        "inspect" => inspect(args),
         _ => Err(ArgentError::new(format!("unknown command `{command}`"))),
     }
 }
@@ -60,6 +62,17 @@ fn build(args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+fn inspect(args: Vec<String>) -> Result<()> {
+    let [input] = args.as_slice() else {
+        return Err(ArgentError::new("usage: argentc inspect <build-dir|artifact.json>"));
+    };
+    let report = inspect_path(input)?;
+    print!("{}", render_report(&report));
+    Ok(())
+}
+
 fn print_usage() {
-    eprintln!("usage: argentc build <app.ag> [--app <name>] [--out <dir>]");
+    eprintln!("usage:");
+    eprintln!("  argentc build <app.ag> [--app <name>] [--out <dir>]");
+    eprintln!("  argentc inspect <build-dir|artifact.json>");
 }

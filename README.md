@@ -75,6 +75,16 @@ Generated outputs include:
 - `manifest.json`: build metadata
 - `sil/*.sil`: generated Silverscript contracts
 
+Inspect the compiled artifact without rebuilding it:
+
+```sh
+cargo run --bin argentc -- inspect examples/build/tickets
+```
+
+The report summarizes actor script, state, and template sizes, static opcode
+counts, entry arguments and generated witnesses, route metadata, and
+signature-script size estimates.
+
 Generated `.sil` files compile as ordinary Silverscript. Argent does not use
 Silverscript covenant macros.
 

@@ -6,6 +6,7 @@ pub mod builder;
 pub mod codec;
 pub mod emit;
 pub mod error;
+pub mod inspect;
 mod language;
 pub mod lexer;
 pub mod loader;
