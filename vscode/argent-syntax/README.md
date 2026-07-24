@@ -29,6 +29,8 @@ Features:
   inherited expanded-state fields); hover and go-to-definition resolve back to
   the field declaration.
 - The editor indexer is tolerant of unfinished function and actor bodies.
+- `std::core` is indexed as an imported Argent module. Import paths and
+  imported functions navigate to the compiler's standard-library source.
 
 Install locally by symlinking the unpacked extension from the repo root, then reload VS Code:
 

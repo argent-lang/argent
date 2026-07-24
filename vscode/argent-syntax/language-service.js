@@ -54,6 +54,16 @@ const PRIMITIVE_DOCUMENTATION = Object.freeze({
     'A first-class handle to a runtime-selected actor implementation compatible with `State`; it identifies the implementation/template, not an actor instance.',
 });
 
+const STANDARD_MODULE_PATHS = Object.freeze({
+  'std::core': '../../std/core.ag',
+});
+
+function standardModuleRelativePath(moduleName) {
+  return Object.prototype.hasOwnProperty.call(STANDARD_MODULE_PATHS, moduleName)
+    ? STANDARD_MODULE_PATHS[moduleName]
+    : undefined;
+}
+
 const BUILTINS = Object.freeze([
   { name: 'blake2b', signature: 'blake2b(data: byte[]) -> byte[32]', params: ['data'] },
   {
@@ -689,5 +699,6 @@ module.exports = {
   PRIMITIVE_DOCUMENTATION,
   PRIMITIVE_TYPES,
   scanDocument,
+  standardModuleRelativePath,
   tokenize,
 };
