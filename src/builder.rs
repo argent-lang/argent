@@ -2778,11 +2778,10 @@ mod tests {
     }
 
     fn stones_player_id(outpoint: &TransactionOutpoint) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"StonesPlayer");
-        bytes.extend_from_slice(&outpoint.transaction_id.as_bytes());
-        bytes.extend_from_slice(&outpoint.index.to_le_bytes());
-        blake2b32(&bytes)
+        argent_runtime::stdlib::core::invocation_uid(outpoint, b"StonesPlayer")
+            .expect("Stones player domain is valid")
+            .as_bytes()
+            .to_vec()
     }
 
     fn p2sh_redeem_script(signature_script: &[u8]) -> Vec<u8> {

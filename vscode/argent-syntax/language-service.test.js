@@ -90,6 +90,7 @@ test('offers the Silverscript hash builtins exposed to Argent bodies', () => {
   const templateHash = BUILTINS.find((builtin) => builtin.name === 'templateHash');
   assert.deepEqual(templateHash.params, ['templatePrefix', 'templateSuffix']);
   assert.match(templateHash.signature, /byte\[32\]/);
+  assert.equal(names.has('unique'), false, 'legacy unique helper must not be offered');
 });
 
 test('offers the Silverscript query builtins except automated state-template helpers', () => {

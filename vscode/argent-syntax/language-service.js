@@ -95,7 +95,6 @@ const BUILTINS = Object.freeze([
     signature: 'templateHash(templatePrefix: byte[], templateSuffix: byte[]) -> byte[32]',
     params: ['templatePrefix', 'templateSuffix'],
   },
-  { name: 'unique', signature: 'unique(domain: string, value) -> byte[32]', params: ['domain', 'value'] },
   { name: 'OpSha256', signature: 'OpSha256(data)', params: ['data'] },
   { name: 'OpTxSubnetId', signature: 'OpTxSubnetId()', params: [] },
   { name: 'OpTxGas', signature: 'OpTxGas()', params: [] },

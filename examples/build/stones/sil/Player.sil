@@ -82,6 +82,15 @@ contract Player(
         }
         return result;
     }
+    function invocation_uid(byte[] domain) : byte[32] {
+        require(domain.length > 0);
+
+        byte[36] outpoint =
+            OpOutpointTxId(this.activeInputIndex)
+                + byte[4](OpOutpointIndex(this.activeInputIndex));
+
+        return blake2bWithKey(outpoint, domain);
+    }
 
     // :: route templates
     byte[32] gen__player_template = gen__init_player_template;

@@ -1,3 +1,4 @@
+import "std::core";
 import "./types.ag";
 
 // Actor imports are template capabilities for cross-actor `become` outputs.
@@ -10,7 +11,7 @@ actor League owns LeagueState {
     } {
         require(checkSig(owner_sig, owner_pk));
         byte[32] owner = blake2b(owner_pk);
-        byte[32] player_id = unique("StonesPlayer", self.outpoint);
+        byte[32] player_id = invocation_uid(bytes("StonesPlayer"));
 
         PlayerState next_player = {
             owner: owner,
