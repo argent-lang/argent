@@ -7,6 +7,9 @@ use argent::loader::load_program;
 use argent::{ArgentError, Result};
 
 fn main() {
+    #[cfg(windows)]
+    let _ = colored::control::set_virtual_terminal(true);
+
     if let Err(err) = run() {
         eprintln!("argentc: {err}");
         std::process::exit(1);

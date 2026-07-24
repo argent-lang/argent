@@ -3,6 +3,7 @@ use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use colored::Colorize;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
 use kaspa_consensus_core::tx::PopulatedTransaction;
 use kaspa_txscript::parse_script;
@@ -137,53 +138,55 @@ pub fn inspect_artifact(artifact: &Artifact) -> Result<InspectionReport> {
 
 pub fn render_report(report: &InspectionReport) -> String {
     let mut out = String::new();
-    writeln!(out, "App {}", report.app).unwrap();
-    writeln!(out, "Artifact {}", report.artifact_id).unwrap();
+    writeln!(out, "{} {}", "App".bold(), report.app.bright_cyan().bold()).unwrap();
+    writeln!(out, "{} {}", "Artifact".bold(), report.artifact_id.dimmed()).unwrap();
     out.push('\n');
-    out.push_str("Actors\n");
+    writeln!(out, "{}", "Actors".bold().underline()).unwrap();
 
     let actor_width = report.actors.iter().map(|actor| actor.name.len()).max().unwrap_or(5).max(5);
-    writeln!(
-        out,
+    let heading = format!(
         "  {:<actor_width$}  {:>10}  {:>10}  {:>10}  {:>9}  {:>7}",
         "Actor", "Script", "State", "Template", "Opcodes", "Entries"
-    )
-    .unwrap();
+    );
+    writeln!(out, "{}", heading.dimmed()).unwrap();
     for actor in &report.actors {
-        writeln!(
-            out,
-            "  {:<actor_width$}  {:>8} B  {:>8} B  {:>8} B  {:>9}  {:>7}",
-            actor.name,
-            actor.script_bytes,
-            actor.state_bytes,
-            actor.template_bytes,
-            actor.opcode_count,
-            actor.entries.len()
-        )
-        .unwrap();
+        let name = format!("{:<actor_width$}", actor.name).bright_cyan().bold();
+        let script = format!("{:>8} B", actor.script_bytes).yellow();
+        let state = format!("{:>8} B", actor.state_bytes).yellow();
+        let template = format!("{:>8} B", actor.template_bytes).yellow();
+        let opcodes = format!("{:>9}", actor.opcode_count).yellow();
+        let entries = format!("{:>7}", actor.entries.len()).yellow();
+        writeln!(out, "  {name}  {script}  {state}  {template}  {opcodes}  {entries}").unwrap();
     }
 
     let entries = report.actors.iter().flat_map(|actor| &actor.entries).collect::<Vec<_>>();
     if !entries.is_empty() {
         out.push('\n');
-        out.push_str("Entries\n");
+        writeln!(out, "{}", "Entries".bold().underline()).unwrap();
         for entry in entries {
-            writeln!(out, "  {}::{} [{}]", entry.actor, entry.name, entry_kind_label(entry.kind)).unwrap();
-            writeln!(out, "    arguments: {}", list_or_none(&entry.arguments)).unwrap();
-            writeln!(out, "    generated arguments: {}", list_or_none(&entry.generated_arguments)).unwrap();
-            writeln!(out, "    inputs: {}", list_or_none(&entry.inputs)).unwrap();
-            writeln!(out, "    outputs: {}", list_or_none(&entry.outputs)).unwrap();
-            writeln!(out, "    routes: {}", list_or_none(&entry.routes)).unwrap();
-            writeln!(out, "    signature script: {}", size_estimate_label(entry.signature_script_bytes)).unwrap();
+            writeln!(
+                out,
+                "  {}::{} [{}]",
+                entry.actor.bright_cyan().bold(),
+                entry.name.bright_green().bold(),
+                entry_kind_label(entry.kind).dimmed()
+            )
+            .unwrap();
+            writeln!(out, "    {} {}", "arguments:".bold(), list_or_none(&entry.arguments)).unwrap();
+            writeln!(out, "    {} {}", "generated arguments:".bold(), list_or_none(&entry.generated_arguments).dimmed()).unwrap();
+            writeln!(out, "    {} {}", "inputs:".bold(), list_or_none(&entry.inputs)).unwrap();
+            writeln!(out, "    {} {}", "outputs:".bold(), list_or_none(&entry.outputs)).unwrap();
+            writeln!(out, "    {} {}", "routes:".bold(), list_or_none(&entry.routes)).unwrap();
+            writeln!(out, "    {} {}", "signature script:".bold(), styled_size_estimate(entry.signature_script_bytes)).unwrap();
         }
     }
 
     out.push('\n');
-    out.push_str("Route metadata\n");
-    writeln!(out, "  families: {}", report.route_families).unwrap();
-    writeln!(out, "  tables: {}", report.route_tables).unwrap();
-    writeln!(out, "  proofs: {}", report.route_proofs).unwrap();
-    writeln!(out, "  witness recipes: {}", report.witness_recipes).unwrap();
+    writeln!(out, "{}", "Route metadata".bold().underline()).unwrap();
+    writeln!(out, "  {} {}", "families:".bold(), report.route_families.to_string().yellow()).unwrap();
+    writeln!(out, "  {} {}", "tables:".bold(), report.route_tables.to_string().yellow()).unwrap();
+    writeln!(out, "  {} {}", "proofs:".bold(), report.route_proofs.to_string().yellow()).unwrap();
+    writeln!(out, "  {} {}", "witness recipes:".bold(), report.witness_recipes.to_string().yellow()).unwrap();
     out
 }
 
@@ -550,11 +553,11 @@ fn list_or_none(values: &[String]) -> String {
     if values.is_empty() { "none".to_string() } else { values.join(", ") }
 }
 
-fn size_estimate_label(estimate: SizeEstimate) -> String {
+fn styled_size_estimate(estimate: SizeEstimate) -> colored::ColoredString {
     match estimate.max {
-        Some(max) if max == estimate.min => format!("{} B", estimate.min),
-        Some(max) => format!("{}-{} B", estimate.min, max),
-        None => format!(">= {} B (variable)", estimate.min),
+        Some(max) if max == estimate.min => format!("{} B", estimate.min).bright_green(),
+        Some(max) => format!("{}-{} B", estimate.min, max).yellow(),
+        None => format!(">= {} B (variable)", estimate.min).yellow(),
     }
 }
 
