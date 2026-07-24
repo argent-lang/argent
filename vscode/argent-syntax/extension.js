@@ -450,7 +450,9 @@ function activate(context) {
           }
         }
         const callable = enclosingCallable(catalog, document.uri, document.offsetAt(position));
-        return [...parameterCompletionItems(callable?.parameters ?? []), ...completionItems(catalog)];
+        const actor = callable?.actor ? enclosingActor(catalog, document.uri, document.offsetAt(position)) : undefined;
+        const fields = actor ? fieldCompletionItems(fieldsForState(catalog, actor.ownedState)) : [];
+        return [...parameterCompletionItems(callable?.parameters ?? []), ...fields, ...completionItems(catalog)];
       },
     }, '.'),
     vscode.languages.registerDefinitionProvider(selector, {
