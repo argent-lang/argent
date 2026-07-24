@@ -47,6 +47,7 @@ impl Lexer<'_> {
             match b {
                 b' ' | b'\t' | b'\r' | b'\n' => self.pos += 1,
                 b'/' if self.peek_byte(1) == Some(b'/') => self.skip_line_comment(),
+                b'/' if self.peek_byte(1) == Some(b'*') => self.skip_block_comment()?,
                 b'"' => self.lex_string()?,
                 b'0'..=b'9' => self.lex_number(),
                 b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.lex_ident()?,
@@ -84,6 +85,31 @@ impl Lexer<'_> {
         while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\n' {
             self.pos += 1;
         }
+    }
+
+    fn skip_block_comment(&mut self) -> Result<()> {
+        let start = self.pos;
+        self.pos += 2;
+        let mut depth = 1;
+
+        while self.pos < self.bytes.len() {
+            match (self.peek_byte(0), self.peek_byte(1)) {
+                (Some(b'/'), Some(b'*')) => {
+                    depth += 1;
+                    self.pos += 2;
+                }
+                (Some(b'*'), Some(b'/')) => {
+                    depth -= 1;
+                    self.pos += 2;
+                    if depth == 0 {
+                        return Ok(());
+                    }
+                }
+                _ => self.pos += 1,
+            }
+        }
+
+        Err(self.error_at(start, "unterminated block comment"))
     }
 
     fn lex_string(&mut self) -> Result<()> {
@@ -150,6 +176,27 @@ impl Lexer<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skips_nested_block_comments() {
+        let tokens = lex("before /* outer /* inner */ outer */ after").expect("nested block comments must lex");
+        let identifiers = tokens
+            .iter()
+            .filter_map(|token| match &token.kind {
+                TokenKind::Ident(value) => Some(value.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(identifiers, ["before", "after"]);
+    }
+
+    #[test]
+    fn reports_unterminated_block_comment_location() {
+        let err = lex("before\n  /* never closed").expect_err("unterminated block comment must be rejected");
+
+        assert_eq!(err.to_string(), "2:3: unterminated block comment");
+    }
 
     #[test]
     fn rejects_reserved_generated_namespace_identifier() {

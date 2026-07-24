@@ -668,8 +668,8 @@ mod tests {
 
     #[test]
     fn reports_path_line_and_column_for_parse_errors() {
-        let err = parse_module(PathBuf::from("event.ag"), "state Event {\n    int remaining;\n}\n\n/* old draft */\n".to_string())
-            .expect_err("block comments are not supported");
+        let err = parse_module(PathBuf::from("event.ag"), "state Event {\n    int remaining;\n}\n\n/\n".to_string())
+            .expect_err("stray slash must not parse");
 
         assert_eq!(err.to_string(), "event.ag:5:1: expected top-level declaration, found `/`");
         assert_eq!(err.location.expect("source location").byte_offset, 36);
