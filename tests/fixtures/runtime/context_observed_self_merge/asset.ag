@@ -1,0 +1,63 @@
+state AssetState {
+    byte[32] owner;
+    int amount;
+}
+
+actor Asset owns AssetState {
+    entry transfer(byte[32] new_owner, sig s, pubkey p) emits {
+        next: Asset,
+    } {
+        require(checkSig(s, p));
+
+        AssetState next_state = {
+            owner: new_owner,
+            amount: amount,
+        };
+
+        become next <- Asset(next_state);
+    }
+
+    entry split(int amount_a, byte[32] owner_a, sig s, pubkey p) emits {
+        part_a: Asset,
+        part_b: Asset,
+    } {
+        require(checkSig(s, p));
+        require(amount_a > 0);
+        require(amount_a < amount);
+
+        AssetState first = {
+            owner: owner_a,
+            amount: amount_a,
+        };
+        AssetState second = {
+            owner: owner,
+            amount: amount - amount_a,
+        };
+
+        become {
+            part_a <- Asset(first),
+            part_b <- Asset(second),
+        };
+    }
+
+    entry join(sig s, pubkey p)
+    consumes {
+        other: Asset,
+    }
+    emits {
+        merged: Asset,
+    } {
+        require(checkSig(s, p));
+
+        AssetState next_state = {
+            owner: owner,
+            amount: amount + other.amount,
+        };
+
+        become merged <- Asset(next_state);
+    }
+}
+
+app AssetApp {
+    actor Asset;
+}

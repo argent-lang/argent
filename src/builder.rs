@@ -2181,6 +2181,23 @@ mod tests {
     }
 
     #[test]
+    fn observed_self_merge_actor_composes_with_its_defining_app() {
+        let fixture = "tests/fixtures/runtime/context_observed_self_merge";
+        let asset_artifact = selected_app_artifact(&format!("{fixture}/asset.ag"), "AssetApp", "observed-self-merge-asset");
+        let controller_artifact =
+            selected_app_artifact(&format!("{fixture}/controller.ag"), "CtrlApp", "observed-self-merge-controller");
+        let bundle = ArtifactBundle::new(&controller_artifact)
+            .expect("bundle accepts the controller artifact")
+            .with_app("asset_app", &asset_artifact)
+            .expect("bundle accepts the asset artifact");
+        let builder = TxBuilder::from_bundle(&bundle).expect("builder accepts the artifact bundle");
+        let context =
+            TxContext::new().actor_output("Ctrl", state! { n: 0 }, CovenantBinding::new(0, Hash::from_bytes([0x31; 32])), 1_000);
+
+        builder.build(&context).expect("an observed self-merge actor has the same imported and exported interface");
+    }
+
+    #[test]
     fn open_icc_baseline_spends_core_and_agent_covenants() {
         let core_artifact = open_icc_core_artifact();
         let agent_artifact = open_icc_agent_artifact();
