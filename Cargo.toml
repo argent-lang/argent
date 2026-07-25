@@ -14,6 +14,7 @@ resolver = "3"
 argent-artifact = { path = "crates/argent-artifact" }
 argent-runtime = { path = "crates/argent-runtime" }
 blake2b_simd = "1.0.2"
+colored = "2.2.0"
 faster-hex = "0.10"
 kaspa-consensus-core = { git = "https://github.com/kaspanet/rusty-kaspa", tag = "v2.0.1" }
 kaspa-txscript = { git = "https://github.com/kaspanet/rusty-kaspa", tag = "v2.0.1" }
@@ -37,13 +38,14 @@ path = "src/main.rs"
 argent-artifact = { workspace = true }
 argent-runtime = { workspace = true }
 blake2b_simd = { workspace = true }
+colored = { workspace = true }
+kaspa-consensus-core = { workspace = true }
+kaspa-txscript = { workspace = true }
 serde_json = { workspace = true }
 silverscript-abi = { workspace = true }
 silverscript-lang = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-kaspa-consensus-core = { workspace = true }
-kaspa-txscript = { workspace = true }
 kaspa-txscript-errors = { workspace = true }
 secp256k1 = { workspace = true }

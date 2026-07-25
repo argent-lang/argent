@@ -295,6 +295,69 @@ actor Pair owns PairState {
   assert.ok(authorize.bodyEnd > source.indexOf('checkSig(owner_sig'));
 });
 
+test('indexes variables introduced by all callable clause forms', () => {
+  const source = `
+actor Event owns EventState {
+  entry publish()
+  observes flow by asset_id {
+    inputs {
+      payment: actor_type<AssetState> as asset_impl,
+    }
+    outputs {
+      reserve: asset_impl,
+    }
+  }
+  spawns batch by batch_id {
+    outputs {
+      child: Child,
+    }
+  }
+  consumes {
+    peer: Peer,
+  }
+  emits {
+    event: Event,
+    ticket: Ticket,
+  } {
+    require(event.value > 0);
+  }
+
+  entry keep() emits one Event {
+    require(next.value > 0);
+  }
+
+  delegate audit() consumes {
+    leader: Event,
+  } {
+    require(leader.value > 0);
+  }
+}
+`;
+
+  const actor = scanDocument(source).declarations.find((item) => item.name === 'Event');
+  const publish = actor.members.find((item) => item.name === 'publish');
+  const keep = actor.members.find((item) => item.name === 'keep');
+  const audit = actor.members.find((item) => item.name === 'audit');
+
+  assert.deepEqual(
+    publish.clauseVariables.map(({ clause, name }) => ({ clause, name })),
+    [
+      { clause: 'observe', name: 'flow' },
+      { clause: 'observed actor', name: 'asset_impl' },
+      { clause: 'spawn', name: 'batch' },
+      { clause: 'consume', name: 'peer' },
+      { clause: 'emit', name: 'event' },
+      { clause: 'emit', name: 'ticket' },
+    ],
+  );
+  assert.deepEqual(keep.clauseVariables.map(({ clause, name }) => ({ clause, name })), [
+    { clause: 'emit', name: 'next' },
+  ]);
+  assert.deepEqual(audit.clauseVariables.map(({ clause, name }) => ({ clause, name })), [
+    { clause: 'consume', name: 'leader' },
+  ]);
+});
+
 test('documents Argent-specific identity and actor-handle types', () => {
   assert.match(PRIMITIVE_DOCUMENTATION.cov_id, /^A 32-byte handle identifying a covenant instance/);
   assert.match(PRIMITIVE_DOCUMENTATION.cov_id, /target of an `observes` clause/);

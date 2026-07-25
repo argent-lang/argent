@@ -7,7 +7,7 @@ use crate::lexer::{Token, TokenKind, lex};
 use crate::routes::analyze_routes;
 
 pub fn parse_module(path: PathBuf, source: String) -> Result<Module> {
-    let tokens = lex(&source).map_err(|err| ArgentError { path: Some(path.clone()), message: err.message })?;
+    let tokens = lex(&source).map_err(|err| err.with_path(path.clone()))?;
     Parser { path, source, tokens, pos: 0 }.parse_module()
 }
 
@@ -609,7 +609,7 @@ impl Parser {
     }
 
     fn error(&self, message: impl Into<String>) -> ArgentError {
-        ArgentError::at(&self.path, format!("{} at byte {}", message.into(), self.current().span.start))
+        ArgentError::at_source(&self.path, &self.source, self.current().span.start, message)
     }
 }
 
@@ -664,6 +664,23 @@ mod tests {
             .expect_err("name-first parameters must not parse");
 
         assert!(err.to_string().contains("expected identifier, found `:`"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn reports_path_line_and_column_for_parse_errors() {
+        let err = parse_module(PathBuf::from("event.ag"), "state Event {\n    int remaining;\n}\n\n/\n".to_string())
+            .expect_err("stray slash must not parse");
+
+        assert_eq!(err.to_string(), "event.ag:5:1: expected top-level declaration, found `/`");
+        assert_eq!(err.location.expect("source location").byte_offset, 36);
+    }
+
+    #[test]
+    fn reports_path_line_and_column_for_lexer_errors() {
+        let err = parse_module(PathBuf::from("event.ag"), "state Event {}\n@\n".to_string())
+            .expect_err("unsupported character must not lex");
+
+        assert_eq!(err.to_string(), "event.ag:2:1: unexpected character `@`");
     }
 
     #[test]

@@ -955,7 +955,7 @@ impl<'a> Model<'a> {
         }
         if entry.terminal_route_sets.is_empty() {
             return Err(ArgentError::new(format!(
-                "entry `{}::{}` declares {} outputs but has no terminal `become` route",
+                "entry `{}::{}` declares {} emit outputs but has no terminal `become` route",
                 actor.name,
                 entry.name,
                 outputs.len()

@@ -47,6 +47,7 @@ impl Lexer<'_> {
             match b {
                 b' ' | b'\t' | b'\r' | b'\n' => self.pos += 1,
                 b'/' if self.peek_byte(1) == Some(b'/') => self.skip_line_comment(),
+                b'/' if self.peek_byte(1) == Some(b'*') => self.skip_block_comment()?,
                 b'"' => self.lex_string()?,
                 b'0'..=b'9' => self.lex_number(),
                 b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.lex_ident()?,
@@ -67,7 +68,8 @@ impl Lexer<'_> {
                     self.push(TokenKind::Symbol(b as char), start, self.pos);
                 }
                 _ => {
-                    return Err(ArgentError::new(format!("unexpected byte {:?} at offset {}", b as char, self.pos)));
+                    let unexpected = self.source[self.pos..].chars().next().expect("lexer position is within source");
+                    return Err(self.error_at(self.pos, format!("unexpected character `{unexpected}`")));
                 }
             }
         }
@@ -85,6 +87,31 @@ impl Lexer<'_> {
         }
     }
 
+    fn skip_block_comment(&mut self) -> Result<()> {
+        let start = self.pos;
+        self.pos += 2;
+        let mut depth = 1;
+
+        while self.pos < self.bytes.len() {
+            match (self.peek_byte(0), self.peek_byte(1)) {
+                (Some(b'/'), Some(b'*')) => {
+                    depth += 1;
+                    self.pos += 2;
+                }
+                (Some(b'*'), Some(b'/')) => {
+                    depth -= 1;
+                    self.pos += 2;
+                    if depth == 0 {
+                        return Ok(());
+                    }
+                }
+                _ => self.pos += 1,
+            }
+        }
+
+        Err(self.error_at(start, "unterminated block comment"))
+    }
+
     fn lex_string(&mut self) -> Result<()> {
         let start = self.pos;
         self.pos += 1;
@@ -98,7 +125,7 @@ impl Lexer<'_> {
                 }
                 b'\\' => {
                     self.pos += 1;
-                    let escaped = *self.bytes.get(self.pos).ok_or_else(|| ArgentError::new("unterminated string escape"))?;
+                    let escaped = *self.bytes.get(self.pos).ok_or_else(|| self.error_at(self.pos, "unterminated string escape"))?;
                     out.push(escaped as char);
                     self.pos += 1;
                 }
@@ -108,7 +135,7 @@ impl Lexer<'_> {
                 }
             }
         }
-        Err(ArgentError::new(format!("unterminated string at offset {start}")))
+        Err(self.error_at(start, "unterminated string"))
     }
 
     fn lex_number(&mut self) {
@@ -126,21 +153,19 @@ impl Lexer<'_> {
         }
         let ident = self.source[start..self.pos].to_string();
         if ident == word::LEGACY_COVENANT_ID {
-            return Err(ArgentError::new(format!(
-                "`{}` was renamed to `{}` at offset {start}",
-                word::LEGACY_COVENANT_ID,
-                word::COVENANT_ID
-            )));
+            return Err(self.error_at(start, format!("`{}` was renamed to `{}`", word::LEGACY_COVENANT_ID, word::COVENANT_ID)));
         }
         let generated_prefix =
             [RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX].into_iter().find(|prefix| ident.starts_with(prefix));
         if let Some(generated_prefix) = generated_prefix {
-            return Err(ArgentError::new(format!(
-                "identifier `{ident}` uses reserved generated namespace `{generated_prefix}` at offset {start}"
-            )));
+            return Err(self.error_at(start, format!("identifier `{ident}` uses reserved generated namespace `{generated_prefix}`")));
         }
         self.push(TokenKind::Ident(ident), start, self.pos);
         Ok(())
+    }
+
+    fn error_at(&self, byte_offset: usize, message: impl Into<String>) -> ArgentError {
+        ArgentError::in_source(self.source, byte_offset, message)
     }
 
     fn push(&mut self, kind: TokenKind, start: usize, end: usize) {
@@ -151,6 +176,27 @@ impl Lexer<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skips_nested_block_comments() {
+        let tokens = lex("before /* outer /* inner */ outer */ after").expect("nested block comments must lex");
+        let identifiers = tokens
+            .iter()
+            .filter_map(|token| match &token.kind {
+                TokenKind::Ident(value) => Some(value.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(identifiers, ["before", "after"]);
+    }
+
+    #[test]
+    fn reports_unterminated_block_comment_location() {
+        let err = lex("before\n  /* never closed").expect_err("unterminated block comment must be rejected");
+
+        assert_eq!(err.to_string(), "2:3: unterminated block comment");
+    }
 
     #[test]
     fn rejects_reserved_generated_namespace_identifier() {

@@ -361,6 +361,15 @@ function parameterCompletionItems(parameters) {
   });
 }
 
+function clauseVariableCompletionItems(variables, callable) {
+  return variables.map((variable) => {
+    const item = new vscode.CompletionItem(variable.name, vscode.CompletionItemKind.Variable);
+    item.detail = `${variable.signature} — clause variable of ${callable}`;
+    item.sortText = `0-${variable.name}`;
+    return item;
+  });
+}
+
 function wordAt(document, position) {
   const range = document.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
   return range ? { range, value: document.getText(range) } : undefined;
@@ -450,7 +459,14 @@ function activate(context) {
           }
         }
         const callable = enclosingCallable(catalog, document.uri, document.offsetAt(position));
-        return [...parameterCompletionItems(callable?.parameters ?? []), ...completionItems(catalog)];
+        const actor = callable?.actor ? enclosingActor(catalog, document.uri, document.offsetAt(position)) : undefined;
+        const fields = actor ? fieldCompletionItems(fieldsForState(catalog, actor.ownedState)) : [];
+        return [
+          ...parameterCompletionItems(callable?.parameters ?? []),
+          ...clauseVariableCompletionItems(callable?.clauseVariables ?? [], callable?.name),
+          ...fields,
+          ...completionItems(catalog),
+        ];
       },
     }, '.'),
     vscode.languages.registerDefinitionProvider(selector, {
