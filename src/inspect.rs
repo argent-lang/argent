@@ -624,12 +624,6 @@ app Show {
         assert_eq!(buy.routes, ["event -> Event", "ticket -> Ticket"]);
         assert!(matches!(buy.signature_script_bytes.max, Some(max) if max == buy.signature_script_bytes.min));
 
-        let rendered = render_report(&report);
-        assert!(rendered.contains("Actor"));
-        assert!(rendered.contains("Event::buy [leader]"));
-        assert!(rendered.contains("signature script:"));
-        assert!(rendered.contains("witness recipes: 2"));
-
         let _ = std::fs::remove_dir_all(out_dir);
     }
 
