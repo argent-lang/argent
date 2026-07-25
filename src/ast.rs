@@ -23,7 +23,8 @@ pub struct Module {
 #[derive(Debug, Clone)]
 pub enum Import {
     Module { path: String },
-    Actor { name: String, path: String },
+    Actor { app: Option<String>, actor: String, path: String },
+    App { app: String, path: String },
 }
 
 #[derive(Debug, Clone)]

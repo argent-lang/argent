@@ -65,7 +65,7 @@ impl Loader {
     fn load_import(&mut self, base: &Path, import: Import) -> Result<()> {
         match import {
             Import::Module { path } if is_standard_module(&path) => self.load_standard_module(&path),
-            Import::Module { path } | Import::Actor { path, .. } => self.load_module(&base.join(path)),
+            Import::Module { path } | Import::Actor { path, .. } | Import::App { path, .. } => self.load_module(&base.join(path)),
         }
     }
 
@@ -79,7 +79,7 @@ impl Loader {
         for import in imports {
             match import {
                 Import::Module { path } if is_standard_module(&path) => self.load_standard_module(&path)?,
-                Import::Module { path } | Import::Actor { path, .. } => {
+                Import::Module { path } | Import::Actor { path, .. } | Import::App { path, .. } => {
                     return Err(ArgentError::new(format!("Argent standard module `{path}` cannot import a filesystem module")));
                 }
             }
