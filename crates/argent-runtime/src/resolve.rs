@@ -519,7 +519,7 @@ impl<'artifact> TxBuilder<'artifact> {
             let actor_name = &actor.contract.contract.name;
             let target_matches = if input.artifact.argent.actors.iter().any(|actor| actor.name == output.actor) {
                 let expected = self.contract_in_artifact(input.artifact, &output.actor)?;
-                actor.contract.contract.compiled.template.hash_hex == expected.compiled.template.hash_hex
+                actor.contract.contract.compiled.template_hash_hex == expected.compiled.template_hash_hex
             } else {
                 let expected = dynamic_spawn_actor_type_handle(input, &output.actor)?;
                 let found = match self.actor_type_handle_in_artifact(actor.contract.artifact, actor_name, &output.state) {
@@ -890,10 +890,10 @@ mod tests {
     use std::{cell::Cell, collections::BTreeMap};
 
     use argent_artifact::{
-        ARTIFACT_SCHEMA_VERSION, ActorAbiRefArtifact, ActorArtifact, ArgentArtifact, CompiledContractArtifact,
-        CompiledTemplateArtifact, EmitArtifact, EntryAbiRefArtifact, EntryArtifact, EntryKindArtifact, EntryRoutePlanArtifact,
-        GeneratorArtifact, InterfaceSetArtifact, RuntimeFieldArtifact, RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact,
-        SilContractArtifact, SilEntryArtifact, StateSpanArtifact, TemplatePlanArtifact, TemplateSelectorArtifact, TypeArtifact,
+        ARTIFACT_SCHEMA_VERSION, ActorAbiRefArtifact, ActorArtifact, ArgentArtifact, CompiledContractArtifact, EmitArtifact,
+        EntryAbiRefArtifact, EntryArtifact, EntryKindArtifact, EntryRoutePlanArtifact, GeneratorArtifact, InterfaceSetArtifact,
+        RuntimeFieldArtifact, RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, SilContractArtifact, SilEntryArtifact,
+        StateSpanArtifact, TemplatePlanArtifact, TemplateSelectorArtifact, TypeArtifact,
     };
     use kaspa_consensus_core::{
         Hash,
@@ -916,6 +916,15 @@ mod tests {
         template_selectors: Vec<TemplateSelectorArtifact>,
     ) -> Artifact {
         let state = format!("{actor}State");
+        let runtime_state = RuntimeStateArtifact {
+            source: state.clone(),
+            fields: vec![RuntimeFieldArtifact { name: "count".to_string(), ty: TypeArtifact::Int }],
+        };
+        let state_script = silverscript_abi::encode_runtime_state_script(
+            &runtime_state,
+            &BTreeMap::from([("count".to_string(), ArtifactValue::Int(0))]),
+        )
+        .expect("test runtime state encodes");
         let mut artifact = Artifact {
             schema_version: ARTIFACT_SCHEMA_VERSION,
             id: String::new(),
@@ -957,19 +966,12 @@ mod tests {
                 contracts: vec![SilContractArtifact {
                     name: actor.to_string(),
                     source_path: format!("sil/{actor}.sil"),
-                    runtime_state: RuntimeStateArtifact {
-                        source: state,
-                        fields: vec![RuntimeFieldArtifact { name: "count".to_string(), ty: TypeArtifact::Int }],
-                    },
+                    runtime_state,
                     entries: vec![SilEntryArtifact { name: entry.to_string(), selector: None, params }],
                     compiled: CompiledContractArtifact {
-                        script_hex: String::new(),
-                        template: CompiledTemplateArtifact {
-                            prefix_hex: String::new(),
-                            suffix_hex: String::new(),
-                            hash_hex: silverscript_abi::encode_hex(&silverscript_abi::template_hash(&[], &[])),
-                        },
-                        state_span: StateSpanArtifact { offset: 0, len: 0 },
+                        script_hex: silverscript_abi::encode_hex(&state_script),
+                        template_hash_hex: silverscript_abi::encode_hex(&silverscript_abi::template_hash(&[], &[])),
+                        state_span: StateSpanArtifact { offset: 0, len: state_script.len() },
                     },
                 }],
             },

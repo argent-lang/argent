@@ -495,6 +495,64 @@ struct ContractRef<'a> {
 }
 
 #[derive(Clone, Copy)]
+enum TemplateRef<'a> {
+    Sil(&'a SilContractArtifact),
+    ActorType(&'a CompiledTemplateArtifact),
+}
+
+impl TemplateRef<'_> {
+    fn prefix_bytes(self) -> BuilderResult<Vec<u8>> {
+        match self {
+            Self::Sil(contract) => {
+                let script = decode_hex(&contract.compiled.script_hex)?;
+                let (prefix, _, _) =
+                    contract.compiled.script_parts(&script).expect("Sil ABI state span was verified when the artifact was attached");
+                Ok(prefix.to_vec())
+            }
+            Self::ActorType(template) => Ok(decode_hex(&template.prefix_hex)?),
+        }
+    }
+
+    fn suffix_bytes(self) -> BuilderResult<Vec<u8>> {
+        match self {
+            Self::Sil(contract) => {
+                let script = decode_hex(&contract.compiled.script_hex)?;
+                let (_, _, suffix) =
+                    contract.compiled.script_parts(&script).expect("Sil ABI state span was verified when the artifact was attached");
+                Ok(suffix.to_vec())
+            }
+            Self::ActorType(template) => Ok(decode_hex(&template.suffix_hex)?),
+        }
+    }
+
+    fn hash_bytes(self) -> BuilderResult<Vec<u8>> {
+        match self {
+            Self::Sil(contract) => Ok(decode_hex(&contract.compiled.template_hash_hex)?),
+            Self::ActorType(template) => Ok(decode_hex(&template.hash_hex)?),
+        }
+    }
+
+    fn prefix_len(self) -> BuilderResult<usize> {
+        match self {
+            Self::Sil(contract) => Ok(contract.compiled.state_span.offset),
+            Self::ActorType(template) => Ok(decode_hex(&template.prefix_hex)?.len()),
+        }
+    }
+
+    fn suffix_len(self) -> BuilderResult<usize> {
+        match self {
+            Self::Sil(contract) => {
+                let script = decode_hex(&contract.compiled.script_hex)?;
+                let (_, _, suffix) =
+                    contract.compiled.script_parts(&script).expect("Sil ABI state span was verified when the artifact was attached");
+                Ok(suffix.len())
+            }
+            Self::ActorType(template) => Ok(decode_hex(&template.suffix_hex)?.len()),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 struct ActorRef<'a> {
     artifact: &'a Artifact,
     actor: &'a ActorArtifact,
@@ -613,9 +671,13 @@ impl<'a> TxBuilder<'a> {
     ) -> BuilderResult<Vec<u8>> {
         let state = self.runtime_state_values(contract_ref.artifact, contract_ref.contract, source_state)?;
         let state_script = encode_runtime_state_script(&contract_ref.contract.runtime_state, &state)?;
-        let mut script = decode_hex(&contract_ref.contract.compiled.template.prefix_hex)?;
+        let compiled = &contract_ref.contract.compiled;
+        let compiled_script = decode_hex(&compiled.script_hex)?;
+        let (prefix, _, suffix) =
+            compiled.script_parts(&compiled_script).expect("Sil ABI state span was verified when the artifact was attached");
+        let mut script = prefix.to_vec();
         script.extend_from_slice(&state_script);
-        script.extend_from_slice(&decode_hex(&contract_ref.contract.compiled.template.suffix_hex)?);
+        script.extend_from_slice(suffix);
         Ok(script)
     }
 
@@ -698,28 +760,28 @@ impl<'a> TxBuilder<'a> {
                 }
                 HiddenParamPurposeArtifact::TemplatePrefixBytes => {
                     let template = self.hidden_template(artifact, hidden, artifact_entry, template_selectors, contexts)?;
-                    ArtifactValue::Bytes(decode_hex(&template.prefix_hex)?)
+                    ArtifactValue::Bytes(template.prefix_bytes()?)
                 }
                 HiddenParamPurposeArtifact::TemplateSuffixBytes => {
                     let template = self.hidden_template(artifact, hidden, artifact_entry, template_selectors, contexts)?;
-                    ArtifactValue::Bytes(decode_hex(&template.suffix_hex)?)
+                    ArtifactValue::Bytes(template.suffix_bytes()?)
                 }
                 HiddenParamPurposeArtifact::TemplatePrefixLen => {
                     let template = self.hidden_template(artifact, hidden, artifact_entry, template_selectors, contexts)?;
-                    ArtifactValue::Int(decode_hex(&template.prefix_hex)?.len() as i64)
+                    ArtifactValue::Int(template.prefix_len()? as i64)
                 }
                 HiddenParamPurposeArtifact::TemplateSuffixLen => {
                     let template = self.hidden_template(artifact, hidden, artifact_entry, template_selectors, contexts)?;
-                    ArtifactValue::Int(decode_hex(&template.suffix_hex)?.len() as i64)
+                    ArtifactValue::Int(template.suffix_len()? as i64)
                 }
                 HiddenParamPurposeArtifact::TemplateHash => {
                     let template = self.hidden_template(artifact, hidden, artifact_entry, template_selectors, contexts)?;
-                    ArtifactValue::Bytes(decode_hex(&template.hash_hex)?)
+                    ArtifactValue::Bytes(template.hash_bytes()?)
                 }
                 HiddenParamPurposeArtifact::RouteTemplateLeaf => {
                     let actor = hidden_actor_subject(hidden)?;
                     ArtifactValue::Bytes(decode_hex(
-                        &self.contract_ref_in_artifact(artifact, actor)?.contract.compiled.template.hash_hex,
+                        &self.contract_ref_in_artifact(artifact, actor)?.contract.compiled.template_hash_hex,
                     )?)
                 }
                 HiddenParamPurposeArtifact::RouteTemplateProof => {
@@ -1028,7 +1090,7 @@ impl<'a> TxBuilder<'a> {
         entry: &'a EntryArtifact,
         template_selectors: &BTreeMap<String, String>,
         contexts: HiddenArgContexts<'_>,
-    ) -> BuilderResult<&'a CompiledTemplateArtifact> {
+    ) -> BuilderResult<TemplateRef<'a>> {
         let contract_ref = self.hidden_template_contract_ref(primary_artifact, hidden, entry, template_selectors, contexts)?;
         let static_observe = match &hidden.subject {
             HiddenParamSubjectArtifact::ObservedActor { observe, side, handle, .. } => {
@@ -1041,7 +1103,7 @@ impl<'a> TxBuilder<'a> {
         };
         if let Some(observed_app) = static_observe {
             if observed_app == primary_artifact.app {
-                return Ok(&contract_ref.contract.compiled.template);
+                return Ok(TemplateRef::Sil(contract_ref.contract));
             }
             let template = contract_ref
                 .artifact
@@ -1054,7 +1116,7 @@ impl<'a> TxBuilder<'a> {
                     actor: contract_ref.contract.name.clone(),
                     state: contract_ref.contract.runtime_state.source.clone(),
                 })?;
-            return Ok(&template.actor_type_handle.template);
+            return Ok(TemplateRef::ActorType(&template.actor_type_handle.template));
         }
         let open_state = match &hidden.subject {
             HiddenParamSubjectArtifact::ObservedActor { observe, side, handle, .. } => {
@@ -1072,7 +1134,7 @@ impl<'a> TxBuilder<'a> {
             _ => None,
         };
         let Some(open_state) = open_state else {
-            return Ok(&contract_ref.contract.compiled.template);
+            return Ok(TemplateRef::Sil(contract_ref.contract));
         };
         let expanded_base = contract_ref
             .artifact
@@ -1082,7 +1144,7 @@ impl<'a> TxBuilder<'a> {
             .find(|expansion| expansion.state == contract_ref.contract.runtime_state.source)
             .map(|expansion| expansion.base.as_str());
         if expanded_base.is_none() && contract_ref.contract.runtime_state.source == open_state {
-            return Ok(&contract_ref.contract.compiled.template);
+            return Ok(TemplateRef::Sil(contract_ref.contract));
         }
         let template = contract_ref
             .artifact
@@ -1097,7 +1159,7 @@ impl<'a> TxBuilder<'a> {
                 actor: contract_ref.contract.name.clone(),
                 state: open_state.to_string(),
             })?;
-        Ok(&template.template)
+        Ok(TemplateRef::ActorType(&template.template))
     }
 
     fn hidden_template_contract_ref(
@@ -1642,7 +1704,7 @@ impl<'a> TxBuilder<'a> {
         for entry in &route_table.entries {
             match &entry.leaf {
                 RouteTemplateLeafArtifact::Template { actor, .. } => {
-                    table.extend_from_slice(&decode_hex(&self.contract_in_artifact(artifact, actor)?.compiled.template.hash_hex)?);
+                    table.extend_from_slice(&decode_hex(&self.contract_in_artifact(artifact, actor)?.compiled.template_hash_hex)?);
                 }
                 RouteTemplateLeafArtifact::RouteFamily { family_id, .. } => {
                     return Err(BuilderError::NestedRouteFamilyTableLeaf {

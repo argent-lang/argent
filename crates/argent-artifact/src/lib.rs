@@ -796,14 +796,13 @@ impl TemplatePlanArtifact {
             }
             // Validate the encoded Sil ABI material before the template plan
             // references it. The template hash is produced by Silverscript;
-            // this layer does not recompute it from the prefix and suffix.
-            decode_hex_for_template(&template.id, &contract.compiled.template.prefix_hex)?;
-            decode_hex_for_template(&template.id, &contract.compiled.template.suffix_hex)?;
-            decode_hash_hex(&template.id, &contract.compiled.template.hash_hex)?;
+            // this layer does not recompute it from the contract script.
+            decode_hex_for_template(&template.id, &contract.compiled.script_hex)?;
+            decode_hash_hex(&template.id, &contract.compiled.template_hash_hex)?;
 
             // The plan carries a denormalized copy for route-proof leaves. Keep
             // that receipt consistent with the authoritative Sil ABI value.
-            let expected_hash = &contract.compiled.template.hash_hex;
+            let expected_hash = &contract.compiled.template_hash_hex;
             if template.sil_template_hash.as_str() != expected_hash.as_str() {
                 return Err(TemplatePlanError::TemplateHashMismatch {
                     id: template.id.clone(),
@@ -1345,13 +1344,31 @@ fn verify_actor_type_handle(
     {
         return Err(mismatch("context fields are not the leading physical runtime fields".to_string()));
     }
+    let handle_state = artifact
+        .sil_abi
+        .states
+        .iter()
+        .find(|state| state.name == handle.state)
+        .ok_or_else(|| mismatch(format!("missing Sil state layout `{}`", handle.state)))?;
+    let open_runtime_fields = &contract.runtime_state.fields[handle.context_fields.len()..];
+    if open_runtime_fields.len() != handle_state.fields.len()
+        || open_runtime_fields
+            .iter()
+            .zip(&handle_state.fields)
+            .any(|(runtime, source)| runtime.name != source.name || runtime.ty != source.ty)
+    {
+        return Err(mismatch(format!("runtime fields after the fixed context do not match Sil state layout `{}`", handle.state)));
+    }
 
-    let sil_prefix = decode_hex_for_template(&template.id, &contract.compiled.template.prefix_hex)?;
-    let sil_suffix = decode_hex_for_template(&template.id, &contract.compiled.template.suffix_hex)?;
+    let sil_script = decode_hex_for_template(&template.id, &contract.compiled.script_hex)?;
+    let (sil_prefix, _, sil_suffix) = contract
+        .compiled
+        .script_parts(&sil_script)
+        .ok_or_else(|| mismatch("Sil state span is outside the compiled contract script".to_string()))?;
     let handle_prefix = decode_hex_for_template(&template.id, &handle.template.prefix_hex)?;
     let handle_suffix = decode_hex_for_template(&template.id, &handle.template.suffix_hex)?;
     let handle_hash = decode_hash_hex(&template.id, &handle.template.hash_hex)?;
-    if !handle_prefix.starts_with(&sil_prefix) {
+    if !handle_prefix.starts_with(sil_prefix) {
         return Err(mismatch("prefix does not extend the Sil template prefix".to_string()));
     }
     if handle_suffix != sil_suffix {
@@ -1368,8 +1385,14 @@ fn verify_actor_type_handle(
 
     let context_state =
         RuntimeStateArtifact { source: handle.state.clone(), fields: leading_runtime_fields.into_iter().cloned().collect() };
-    let decoded_context = silverscript_abi::decode_runtime_state_script(&context_state, &handle_prefix[sil_prefix.len()..])
+    let context_script = &handle_prefix[sil_prefix.len()..];
+    let decoded_context = silverscript_abi::decode_runtime_state_script(&context_state, context_script)
         .map_err(|err| mismatch(format!("prefix context does not decode according to its runtime fields: {err}")))?;
+    let canonical_context = silverscript_abi::encode_runtime_state_script(&context_state, &decoded_context)
+        .map_err(|err| mismatch(format!("prefix context cannot be canonically encoded: {err}")))?;
+    if canonical_context != context_script {
+        return Err(mismatch("prefix context is not canonically encoded".to_string()));
+    }
     if let Some(runtime_plan) = runtime_plan {
         for field in &runtime_plan.field_roles {
             let expected = fixed_runtime_context_value(plan, runtime_plan, field)?;
@@ -1816,7 +1839,7 @@ mod tests {
                 "entries": [],
                 "compiled": {
                   "script_hex": "",
-                  "template": { "prefix_hex": "", "suffix_hex": "", "hash_hex": "" },
+                  "template_hash_hex": "",
                   "state_span": { "offset": 0, "len": 0 }
                 }
               }
@@ -1927,11 +1950,7 @@ mod tests {
                     entries: Vec::new(),
                     compiled: CompiledContractArtifact {
                         script_hex: String::new(),
-                        template: CompiledTemplateArtifact {
-                            prefix_hex: String::new(),
-                            suffix_hex: String::new(),
-                            hash_hex: String::new(),
-                        },
+                        template_hash_hex: String::new(),
                         state_span: StateSpanArtifact { offset: 0, len: 0 },
                     },
                 }],
@@ -2230,11 +2249,7 @@ mod tests {
             entries: Vec::new(),
             compiled: CompiledContractArtifact {
                 script_hex: String::new(),
-                template: CompiledTemplateArtifact {
-                    prefix_hex: String::new(),
-                    suffix_hex: String::new(),
-                    hash_hex: template_hash.to_string(),
-                },
+                template_hash_hex: template_hash.to_string(),
                 state_span: StateSpanArtifact { offset: 0, len: 0 },
             },
         }
