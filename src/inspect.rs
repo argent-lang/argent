@@ -10,8 +10,8 @@ use kaspa_txscript::parse_script;
 use kaspa_txscript::script_builder::ScriptBuilder;
 
 use crate::artifact::{
-    Artifact, CompiledTemplateArtifact, EntryArtifact, EntryKindArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact,
-    HiddenParamSubjectArtifact, ParamArtifact, SilContractArtifact, SilEntryArtifact, TypeArtifact,
+    Artifact, EntryArtifact, EntryKindArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact,
+    ParamArtifact, SilContractArtifact, SilEntryArtifact, TypeArtifact,
 };
 use crate::codec::decode_hex;
 use crate::{ArgentError, Result};
@@ -98,10 +98,6 @@ pub fn inspect_artifact(artifact: &Artifact) -> Result<InspectionReport> {
         })?;
         let script = decode_hex(&contract.compiled.script_hex)
             .map_err(|err| ArgentError::new(format!("actor `{}` has invalid compiled script hex: {err}", actor.name)))?;
-        let template_prefix = decode_hex(&contract.compiled.template.prefix_hex)
-            .map_err(|err| ArgentError::new(format!("actor `{}` has invalid template prefix hex: {err}", actor.name)))?;
-        let template_suffix = decode_hex(&contract.compiled.template.suffix_hex)
-            .map_err(|err| ArgentError::new(format!("actor `{}` has invalid template suffix hex: {err}", actor.name)))?;
         let opcode_count = opcode_count(&actor.name, &script)?;
 
         let mut entries = Vec::with_capacity(actor.entries.len());
@@ -119,7 +115,7 @@ pub fn inspect_artifact(artifact: &Artifact) -> Result<InspectionReport> {
             name: actor.name.clone(),
             script_bytes: script.len(),
             state_bytes: contract.compiled.state_span.len,
-            template_bytes: template_prefix.len() + template_suffix.len(),
+            template_bytes: script.len() - contract.compiled.state_span.len,
             opcode_count,
             entries,
         });
@@ -266,18 +262,10 @@ fn inspect_entry(
 
 fn hidden_param_size(artifact: &Artifact, entry: &EntryArtifact, hidden: &HiddenParamArtifact) -> Result<Option<SizeEstimate>> {
     match hidden.purpose {
-        HiddenParamPurposeArtifact::TemplatePrefixBytes => {
-            estimate_template_parts(artifact, entry, hidden, |template| &template.prefix_hex)
-        }
-        HiddenParamPurposeArtifact::TemplateSuffixBytes => {
-            estimate_template_parts(artifact, entry, hidden, |template| &template.suffix_hex)
-        }
-        HiddenParamPurposeArtifact::TemplatePrefixLen => {
-            estimate_template_lengths(artifact, entry, hidden, |template| &template.prefix_hex)
-        }
-        HiddenParamPurposeArtifact::TemplateSuffixLen => {
-            estimate_template_lengths(artifact, entry, hidden, |template| &template.suffix_hex)
-        }
+        HiddenParamPurposeArtifact::TemplatePrefixBytes => estimate_template_parts(artifact, entry, hidden, TemplatePart::Prefix),
+        HiddenParamPurposeArtifact::TemplateSuffixBytes => estimate_template_parts(artifact, entry, hidden, TemplatePart::Suffix),
+        HiddenParamPurposeArtifact::TemplatePrefixLen => estimate_template_lengths(artifact, entry, hidden, TemplatePart::Prefix),
+        HiddenParamPurposeArtifact::TemplateSuffixLen => estimate_template_lengths(artifact, entry, hidden, TemplatePart::Suffix),
         HiddenParamPurposeArtifact::TemplateHash | HiddenParamPurposeArtifact::RouteTemplateLeaf => {
             Ok(Some(SizeEstimate::exact(ScriptBuilder::canonical_data_size(&[0; 32]))))
         }
@@ -350,20 +338,25 @@ fn hidden_param_size(artifact: &Artifact, entry: &EntryArtifact, hidden: &Hidden
     }
 }
 
+#[derive(Clone, Copy)]
+enum TemplatePart {
+    Prefix,
+    Suffix,
+}
+
 fn estimate_template_parts(
     artifact: &Artifact,
     entry: &EntryArtifact,
     hidden: &HiddenParamArtifact,
-    select: impl Fn(&CompiledTemplateArtifact) -> &String,
+    part: TemplatePart,
 ) -> Result<Option<SizeEstimate>> {
-    let templates = hidden_templates(artifact, entry, &hidden.subject);
+    let templates = hidden_template_contracts(artifact, entry, &hidden.subject);
     if templates.is_empty() {
         return Ok(None);
     }
     let mut estimates = Vec::with_capacity(templates.len());
-    for template in templates {
-        let bytes = decode_hex(select(template))
-            .map_err(|err| ArgentError::new(format!("generated argument `{}` references invalid template hex: {err}", hidden.name)))?;
+    for contract in templates {
+        let bytes = template_part(contract, part)?;
         estimates.push(SizeEstimate::exact(ScriptBuilder::canonical_data_size(&bytes)));
     }
     Ok(merge_estimates(&estimates))
@@ -373,26 +366,38 @@ fn estimate_template_lengths(
     artifact: &Artifact,
     entry: &EntryArtifact,
     hidden: &HiddenParamArtifact,
-    select: impl Fn(&CompiledTemplateArtifact) -> &String,
+    part: TemplatePart,
 ) -> Result<Option<SizeEstimate>> {
-    let templates = hidden_templates(artifact, entry, &hidden.subject);
+    let templates = hidden_template_contracts(artifact, entry, &hidden.subject);
     if templates.is_empty() {
         return Ok(None);
     }
     let mut estimates = Vec::with_capacity(templates.len());
-    for template in templates {
-        let bytes = decode_hex(select(template))
-            .map_err(|err| ArgentError::new(format!("generated argument `{}` references invalid template hex: {err}", hidden.name)))?;
+    for contract in templates {
+        let bytes = template_part(contract, part)?;
         estimates.push(SizeEstimate::exact(integer_size(bytes.len() as i64)?));
     }
     Ok(merge_estimates(&estimates))
 }
 
-fn hidden_templates<'a>(
+fn template_part(contract: &SilContractArtifact, part: TemplatePart) -> Result<Vec<u8>> {
+    let script = decode_hex(&contract.compiled.script_hex)
+        .map_err(|err| ArgentError::new(format!("contract `{}` has invalid compiled script hex: {err}", contract.name)))?;
+    let (prefix, _, suffix) = contract
+        .compiled
+        .script_parts(&script)
+        .ok_or_else(|| ArgentError::new(format!("contract `{}` has an invalid state span", contract.name)))?;
+    Ok(match part {
+        TemplatePart::Prefix => prefix.to_vec(),
+        TemplatePart::Suffix => suffix.to_vec(),
+    })
+}
+
+fn hidden_template_contracts<'a>(
     artifact: &'a Artifact,
     entry: &EntryArtifact,
     subject: &HiddenParamSubjectArtifact,
-) -> Vec<&'a CompiledTemplateArtifact> {
+) -> Vec<&'a SilContractArtifact> {
     let actors = match subject {
         HiddenParamSubjectArtifact::Actor { actor }
         | HiddenParamSubjectArtifact::ObservedActor { actor, .. }
@@ -410,7 +415,7 @@ fn hidden_templates<'a>(
             .unwrap_or_default(),
         _ => Vec::new(),
     };
-    actors.into_iter().filter_map(|actor| artifact.sil_abi.contract(actor).map(|contract| &contract.compiled.template)).collect()
+    actors.into_iter().filter_map(|actor| artifact.sil_abi.contract(actor)).collect()
 }
 
 fn concrete_subject_actor(subject: &HiddenParamSubjectArtifact) -> Option<&str> {

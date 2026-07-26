@@ -519,7 +519,7 @@ impl<'artifact> TxBuilder<'artifact> {
             let actor_name = &actor.contract.contract.name;
             let target_matches = if input.artifact.argent.actors.iter().any(|actor| actor.name == output.actor) {
                 let expected = self.contract_in_artifact(input.artifact, &output.actor)?;
-                actor.contract.contract.compiled.template.hash_hex == expected.compiled.template.hash_hex
+                actor.contract.contract.compiled.template_hash_hex == expected.compiled.template_hash_hex
             } else {
                 let expected = dynamic_spawn_actor_type_handle(input, &output.actor)?;
                 let found = match self.actor_type_handle_in_artifact(actor.contract.artifact, actor_name, &output.state) {
@@ -890,10 +890,10 @@ mod tests {
     use std::{cell::Cell, collections::BTreeMap};
 
     use argent_artifact::{
-        ARTIFACT_SCHEMA_VERSION, ActorAbiRefArtifact, ActorArtifact, ArgentArtifact, CompiledContractArtifact,
-        CompiledTemplateArtifact, EmitArtifact, EntryAbiRefArtifact, EntryArtifact, EntryKindArtifact, EntryRoutePlanArtifact,
-        GeneratorArtifact, InterfaceSetArtifact, RuntimeFieldArtifact, RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact,
-        SilContractArtifact, SilEntryArtifact, StateSpanArtifact, TemplatePlanArtifact, TemplateSelectorArtifact, TypeArtifact,
+        ARTIFACT_SCHEMA_VERSION, ActorAbiRefArtifact, ActorArtifact, ArgentArtifact, CompiledContractArtifact, EmitArtifact,
+        EntryAbiRefArtifact, EntryArtifact, EntryKindArtifact, EntryRoutePlanArtifact, GeneratorArtifact, InterfaceSetArtifact,
+        RuntimeFieldArtifact, RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, SilContractArtifact, SilEntryArtifact,
+        StateSpanArtifact, TemplatePlanArtifact, TemplateSelectorArtifact, TypeArtifact,
     };
     use kaspa_consensus_core::{
         Hash,
@@ -964,11 +964,7 @@ mod tests {
                     entries: vec![SilEntryArtifact { name: entry.to_string(), selector: None, params }],
                     compiled: CompiledContractArtifact {
                         script_hex: String::new(),
-                        template: CompiledTemplateArtifact {
-                            prefix_hex: String::new(),
-                            suffix_hex: String::new(),
-                            hash_hex: silverscript_abi::encode_hex(&silverscript_abi::template_hash(&[], &[])),
-                        },
+                        template_hash_hex: silverscript_abi::encode_hex(&silverscript_abi::template_hash(&[], &[])),
                         state_span: StateSpanArtifact { offset: 0, len: 0 },
                     },
                 }],

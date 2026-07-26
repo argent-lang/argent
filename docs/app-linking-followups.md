@@ -36,17 +36,15 @@ type, invalid exported fingerprint, missing dependency, and wrong dependency.
 
 **Area:** `silverscript-abi`, artifact verification, and `argent-rt`.
 
-**Context:** The Sil ABI verifier checks the compiled script, template prefix,
-template suffix, state span bounds, and template hash. It does not check that
-the state span has the encoded length of the runtime state.
+**Context:** The Sil ABI verifier checks the compiled script, state span bounds,
+and the template hash derived from the bytes outside the span. It does not check
+that the span contains the encoded runtime state.
 
 A wrong state span can pass if it is inside the script and all related hashes
 are calculated again. The runtime can then insert state at the wrong position
 in the script.
 
-**Follow-up:** Check the state span against the runtime-state layout. If the Sil
-ABI permits a variable state length, define and check the valid rule for that
-case.
+**Follow-up:** Check the state span against the fixed runtime-state layout.
 
 Add tests with an incorrect state offset and state length that are inside the
 script bounds.

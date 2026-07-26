@@ -796,14 +796,13 @@ impl TemplatePlanArtifact {
             }
             // Validate the encoded Sil ABI material before the template plan
             // references it. The template hash is produced by Silverscript;
-            // this layer does not recompute it from the prefix and suffix.
-            decode_hex_for_template(&template.id, &contract.compiled.template.prefix_hex)?;
-            decode_hex_for_template(&template.id, &contract.compiled.template.suffix_hex)?;
-            decode_hash_hex(&template.id, &contract.compiled.template.hash_hex)?;
+            // this layer does not recompute it from the contract script.
+            decode_hex_for_template(&template.id, &contract.compiled.script_hex)?;
+            decode_hash_hex(&template.id, &contract.compiled.template_hash_hex)?;
 
             // The plan carries a denormalized copy for route-proof leaves. Keep
             // that receipt consistent with the authoritative Sil ABI value.
-            let expected_hash = &contract.compiled.template.hash_hex;
+            let expected_hash = &contract.compiled.template_hash_hex;
             if template.sil_template_hash.as_str() != expected_hash.as_str() {
                 return Err(TemplatePlanError::TemplateHashMismatch {
                     id: template.id.clone(),
@@ -1346,12 +1345,15 @@ fn verify_actor_type_handle(
         return Err(mismatch("context fields are not the leading physical runtime fields".to_string()));
     }
 
-    let sil_prefix = decode_hex_for_template(&template.id, &contract.compiled.template.prefix_hex)?;
-    let sil_suffix = decode_hex_for_template(&template.id, &contract.compiled.template.suffix_hex)?;
+    let sil_script = decode_hex_for_template(&template.id, &contract.compiled.script_hex)?;
+    let (sil_prefix, _, sil_suffix) = contract
+        .compiled
+        .script_parts(&sil_script)
+        .ok_or_else(|| mismatch("Sil state span is outside the compiled contract script".to_string()))?;
     let handle_prefix = decode_hex_for_template(&template.id, &handle.template.prefix_hex)?;
     let handle_suffix = decode_hex_for_template(&template.id, &handle.template.suffix_hex)?;
     let handle_hash = decode_hash_hex(&template.id, &handle.template.hash_hex)?;
-    if !handle_prefix.starts_with(&sil_prefix) {
+    if !handle_prefix.starts_with(sil_prefix) {
         return Err(mismatch("prefix does not extend the Sil template prefix".to_string()));
     }
     if handle_suffix != sil_suffix {
@@ -1816,7 +1818,7 @@ mod tests {
                 "entries": [],
                 "compiled": {
                   "script_hex": "",
-                  "template": { "prefix_hex": "", "suffix_hex": "", "hash_hex": "" },
+                  "template_hash_hex": "",
                   "state_span": { "offset": 0, "len": 0 }
                 }
               }
@@ -1927,11 +1929,7 @@ mod tests {
                     entries: Vec::new(),
                     compiled: CompiledContractArtifact {
                         script_hex: String::new(),
-                        template: CompiledTemplateArtifact {
-                            prefix_hex: String::new(),
-                            suffix_hex: String::new(),
-                            hash_hex: String::new(),
-                        },
+                        template_hash_hex: String::new(),
                         state_span: StateSpanArtifact { offset: 0, len: 0 },
                     },
                 }],
@@ -2230,11 +2228,7 @@ mod tests {
             entries: Vec::new(),
             compiled: CompiledContractArtifact {
                 script_hex: String::new(),
-                template: CompiledTemplateArtifact {
-                    prefix_hex: String::new(),
-                    suffix_hex: String::new(),
-                    hash_hex: template_hash.to_string(),
-                },
+                template_hash_hex: template_hash.to_string(),
                 state_span: StateSpanArtifact { offset: 0, len: 0 },
             },
         }

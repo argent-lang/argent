@@ -2,7 +2,7 @@
 //!
 //! This crate owns only bytecode-facing facts: contract scripts, entrypoint
 //! selectors and parameters, runtime state field order, structural field types,
-//! template prefix/suffix/hash data, and the codec for encoding those values.
+//! template state spans and hashes, and the codec for encoding those values.
 //!
 //! It must not know why a field exists. Argent coordination semantics such as
 //! hidden template fields, route-family tables, route roots, observed actors,
@@ -200,8 +200,17 @@ pub struct SilEntryArtifact {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompiledContractArtifact {
     pub script_hex: String,
-    pub template: CompiledTemplateArtifact,
+    pub template_hash_hex: String,
     pub state_span: StateSpanArtifact,
+}
+
+impl CompiledContractArtifact {
+    /// Split decoded script bytes into the template prefix, runtime state, and
+    /// template suffix declared by this artifact.
+    pub fn script_parts<'a>(&self, script: &'a [u8]) -> Option<(&'a [u8], &'a [u8], &'a [u8])> {
+        let state_end = self.state_span.offset.checked_add(self.state_span.len)?;
+        Some((script.get(..self.state_span.offset)?, script.get(self.state_span.offset..state_end)?, script.get(state_end..)?))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,10 +234,6 @@ pub enum SilAbiVerificationError {
     InvalidCompiledHex { contract: String, field: &'static str, message: String },
     #[error("contract `{contract}` has state span offset {offset} length {len}, but its compiled script has {script_len} bytes")]
     InvalidStateSpan { contract: String, offset: usize, len: usize, script_len: usize },
-    #[error("contract `{contract}` template prefix does not match the compiled script before its state span")]
-    TemplatePrefixMismatch { contract: String },
-    #[error("contract `{contract}` template suffix does not match the compiled script after its state span")]
-    TemplateSuffixMismatch { contract: String },
     #[error("contract `{contract}` template hash must contain 32 bytes, found {len}")]
     InvalidTemplateHashLength { contract: String, len: usize },
     #[error("contract `{contract}` template hash mismatch: expected `{expected}`, found `{found}`")]
@@ -398,12 +403,10 @@ fn verify_compiled_template(contract: &SilContractArtifact) -> std::result::Resu
         })
     };
     let script = decode("script", &contract.compiled.script_hex)?;
-    let prefix = decode("template prefix", &contract.compiled.template.prefix_hex)?;
-    let suffix = decode("template suffix", &contract.compiled.template.suffix_hex)?;
-    let found_hash = decode("template hash", &contract.compiled.template.hash_hex)?;
+    let found_hash = decode("template hash", &contract.compiled.template_hash_hex)?;
 
     let span = &contract.compiled.state_span;
-    let Some(state_end) = span.offset.checked_add(span.len).filter(|end| *end <= script.len()) else {
+    let Some((prefix, _, suffix)) = contract.compiled.script_parts(&script) else {
         return Err(SilAbiVerificationError::InvalidStateSpan {
             contract: contract.name.clone(),
             offset: span.offset,
@@ -411,22 +414,16 @@ fn verify_compiled_template(contract: &SilContractArtifact) -> std::result::Resu
             script_len: script.len(),
         });
     };
-    if prefix != script[..span.offset] {
-        return Err(SilAbiVerificationError::TemplatePrefixMismatch { contract: contract.name.clone() });
-    }
-    if suffix != script[state_end..] {
-        return Err(SilAbiVerificationError::TemplateSuffixMismatch { contract: contract.name.clone() });
-    }
     if found_hash.len() != 32 {
         return Err(SilAbiVerificationError::InvalidTemplateHashLength { contract: contract.name.clone(), len: found_hash.len() });
     }
 
-    let expected_hash = template_hash(&prefix, &suffix);
+    let expected_hash = template_hash(prefix, suffix);
     if found_hash != expected_hash {
         return Err(SilAbiVerificationError::TemplateHashMismatch {
             contract: contract.name.clone(),
             expected: encode_hex(&expected_hash),
-            found: contract.compiled.template.hash_hex.clone(),
+            found: contract.compiled.template_hash_hex.clone(),
         });
     }
     Ok(())
@@ -890,24 +887,23 @@ mod tests {
         let state = [0x01, 0x02];
         let suffix = [0xbb, 0xcc];
         contract.compiled.script_hex = encode_hex(&[prefix.as_slice(), state.as_slice(), suffix.as_slice()].concat());
-        contract.compiled.template = CompiledTemplateArtifact {
-            prefix_hex: encode_hex(&prefix),
-            suffix_hex: encode_hex(&suffix),
-            hash_hex: encode_hex(&template_hash(&prefix, &suffix)),
-        };
+        contract.compiled.template_hash_hex = encode_hex(&template_hash(&prefix, &suffix));
         contract.compiled.state_span = StateSpanArtifact { offset: prefix.len(), len: state.len() };
 
         abi.verify().expect("compiled template matches its contract script");
 
-        abi.contracts[0].compiled.template.hash_hex = "00".repeat(32);
+        abi.contracts[0].compiled.template_hash_hex = "00".repeat(32);
         assert!(matches!(
             abi.verify(),
             Err(SilAbiVerificationError::TemplateHashMismatch { ref contract, .. }) if contract == "Foo"
         ));
 
-        abi.contracts[0].compiled.template.hash_hex = encode_hex(&template_hash(&prefix, &suffix));
+        abi.contracts[0].compiled.template_hash_hex = encode_hex(&template_hash(&prefix, &suffix));
         abi.contracts[0].compiled.script_hex = encode_hex(&[&[0xff], state.as_slice(), suffix.as_slice()].concat());
-        assert_eq!(abi.verify(), Err(SilAbiVerificationError::TemplatePrefixMismatch { contract: "Foo".to_string() }));
+        assert!(matches!(
+            abi.verify(),
+            Err(SilAbiVerificationError::TemplateHashMismatch { ref contract, .. }) if contract == "Foo"
+        ));
     }
 
     #[test]
@@ -980,7 +976,7 @@ mod tests {
               ],
               "compiled": {
                 "script_hex": "00",
-                "template": { "prefix_hex": "", "suffix_hex": "", "hash_hex": "00" },
+                "template_hash_hex": "00",
                 "state_span": { "offset": 0, "len": 1 }
               }
             }
@@ -1065,11 +1061,7 @@ mod tests {
                 ],
                 compiled: CompiledContractArtifact {
                     script_hex: String::new(),
-                    template: CompiledTemplateArtifact {
-                        prefix_hex: String::new(),
-                        suffix_hex: String::new(),
-                        hash_hex: String::new(),
-                    },
+                    template_hash_hex: String::new(),
                     state_span: StateSpanArtifact { offset: 0, len: 0 },
                 },
             }],

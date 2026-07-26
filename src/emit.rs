@@ -5203,8 +5203,8 @@ fn template_plan_artifact(
                 actor: template.actor.clone(),
                 contract: contract.name.clone(),
                 symbol: template.symbol.clone(),
-                sil_template_hash: contract.compiled.template.hash_hex.clone(),
-                compiled_template: contract.compiled.template.clone(),
+                sil_template_hash: contract.compiled.template_hash_hex.clone(),
+                compiled_template: extract_sil_template(&contract.compiled)?,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -5599,18 +5599,24 @@ fn compiled_contract_artifact(compiled: &CompiledContract<'_>) -> Result<Compile
         )));
     }
 
-    let prefix = &compiled.script[..layout.start];
-    let suffix = &compiled.script[suffix_start..];
     let template_hash = compiled.template_hash();
 
     Ok(CompiledContractArtifact {
         script_hex: encode_hex(&compiled.script),
-        template: CompiledTemplateArtifact {
-            prefix_hex: encode_hex(prefix),
-            suffix_hex: encode_hex(suffix),
-            hash_hex: encode_hex(&template_hash),
-        },
+        template_hash_hex: encode_hex(&template_hash),
         state_span: StateSpanArtifact { offset: layout.start, len: layout.len },
+    })
+}
+
+fn extract_sil_template(compiled: &CompiledContractArtifact) -> Result<CompiledTemplateArtifact> {
+    let script = crate::codec::decode_hex(&compiled.script_hex)
+        .map_err(|err| ArgentError::new(format!("invalid compiled script hex: {err}")))?;
+    let (prefix, _, suffix) =
+        compiled.script_parts(&script).ok_or_else(|| ArgentError::new("compiled state span is outside its script"))?;
+    Ok(CompiledTemplateArtifact {
+        prefix_hex: encode_hex(prefix),
+        suffix_hex: encode_hex(suffix),
+        hash_hex: compiled.template_hash_hex.clone(),
     })
 }
 
@@ -7933,14 +7939,14 @@ mod tests {
         assert_eq!(artifact.argent.template_plan.templates[0].id, "template/foo");
         assert_eq!(
             artifact.argent.template_plan.templates[0].sil_template_hash,
-            artifact.sil_abi.contract("Foo").unwrap().compiled.template.hash_hex
+            artifact.sil_abi.contract("Foo").unwrap().compiled.template_hash_hex
         );
         let template = &artifact.argent.template_plan.templates[0];
         assert_eq!(template.actor_type_handle.state, "FooState");
         assert!(template.actor_type_handle.context_fields.is_empty());
         assert_eq!(
             template.actor_type_handle.template,
-            artifact.sil_abi.contract("Foo").unwrap().compiled.template,
+            extract_sil_template(&artifact.sil_abi.contract("Foo").unwrap().compiled).expect("Sil template extracts"),
             "a plain actor still exports its Sil template as its source-state handle"
         );
         artifact.verify_template_plan().expect("template plan receipt verifies");
@@ -8125,17 +8131,18 @@ mod tests {
             .iter()
             .find(|template| template.actor == "ReserveAsset")
             .expect("ReserveAsset template receipt exists");
-        assert_eq!(receipt.sil_template_hash, contract.compiled.template.hash_hex);
+        assert_eq!(receipt.sil_template_hash, contract.compiled.template_hash_hex);
         let handle = &receipt.actor_type_handle;
         assert_eq!(handle.state, "AssetCapsule");
         assert_eq!(handle.context_fields, runtime_plan.field_roles.iter().map(|field| field.name.clone()).collect::<Vec<_>>());
         assert_ne!(handle.template.hash_hex, receipt.sil_template_hash);
 
-        let sil_prefix = crate::codec::decode_hex(&contract.compiled.template.prefix_hex).expect("Sil prefix decodes");
+        let sil_template = extract_sil_template(&contract.compiled).expect("Sil template extracts");
+        let sil_prefix = crate::codec::decode_hex(&sil_template.prefix_hex).expect("Sil prefix decodes");
         let capsule_prefix = crate::codec::decode_hex(&handle.template.prefix_hex).expect("capsule prefix decodes");
         assert!(capsule_prefix.starts_with(&sil_prefix));
         assert!(capsule_prefix.len() > sil_prefix.len());
-        assert_eq!(handle.template.suffix_hex, contract.compiled.template.suffix_hex);
+        assert_eq!(handle.template.suffix_hex, sil_template.suffix_hex);
         artifact.verify_template_plan().expect("capsule template receipt verifies");
 
         let mut corrupted = artifact.clone();
@@ -11880,7 +11887,7 @@ mod tests {
             assert_compiled_projection(sil_contract.name.as_str(), &sil_contract.compiled);
             assert_runtime_state_round_trip(sil_contract, &sil_contract.compiled);
             if let Some(expected_hash) = expected_hashes.get(sil_contract.name.as_str()) {
-                assert_eq!(&sil_contract.compiled.template.hash_hex, expected_hash, "actor `{}` template hash changed", actor.name);
+                assert_eq!(&sil_contract.compiled.template_hash_hex, expected_hash, "actor `{}` template hash changed", actor.name);
             }
         }
 
@@ -11889,9 +11896,7 @@ mod tests {
 
     fn assert_runtime_state_round_trip(actor: &SilContractArtifact, compiled: &CompiledContractArtifact) {
         let script = crate::codec::decode_hex(&compiled.script_hex).expect("script hex decodes");
-        let state_start = compiled.state_span.offset;
-        let state_end = state_start + compiled.state_span.len;
-        let state_script = &script[state_start..state_end];
+        let (_, state_script, _) = compiled.script_parts(&script).expect("state span fits the compiled script");
         let state_values =
             crate::codec::decode_runtime_state_script(&actor.runtime_state, state_script).expect("runtime state decodes");
         let reencoded =
@@ -11902,35 +11907,14 @@ mod tests {
     fn assert_compiled_projection(actor: &str, compiled: &CompiledContractArtifact) {
         assert!(!compiled.script_hex.is_empty(), "actor `{actor}` should have script bytes");
         assert!(compiled.state_span.len > 0, "actor `{actor}` should have a non-empty state span");
-        assert_eq!(compiled.template.hash_hex.len(), 64, "actor `{actor}` should have a 32-byte template hash");
+        assert_eq!(compiled.template_hash_hex.len(), 64, "actor `{actor}` should have a 32-byte template hash");
 
-        let state_start = compiled.state_span.offset * 2;
-        let state_end = state_start + compiled.state_span.len * 2;
-        assert!(state_end <= compiled.script_hex.len(), "actor `{actor}` state span should fit inside script hex");
-        assert_eq!(
-            &compiled.script_hex[..state_start],
-            compiled.template.prefix_hex,
-            "actor `{actor}` prefix must be the bytes before the state span"
-        );
-        assert_eq!(
-            &compiled.script_hex[state_end..],
-            compiled.template.suffix_hex,
-            "actor `{actor}` suffix must be the bytes after the state span"
-        );
-
-        let state_hex = &compiled.script_hex[state_start..state_end];
-        assert_eq!(
-            format!("{}{}{}", compiled.template.prefix_hex, state_hex, compiled.template.suffix_hex),
-            compiled.script_hex,
-            "actor `{actor}` script must reconstruct from prefix, initial state, and suffix"
-        );
-
-        let prefix = crate::codec::decode_hex(&compiled.template.prefix_hex).expect("prefix hex decodes");
-        let suffix = crate::codec::decode_hex(&compiled.template.suffix_hex).expect("suffix hex decodes");
-        let template_hash = silverscript_lang::template::template_hash(&prefix, &suffix);
+        let script = crate::codec::decode_hex(&compiled.script_hex).expect("script hex decodes");
+        let (prefix, _, suffix) = compiled.script_parts(&script).expect("state span fits the compiled script");
+        let template_hash = silverscript_lang::template::template_hash(prefix, suffix);
         assert_eq!(
             encode_hex(&template_hash),
-            compiled.template.hash_hex,
+            compiled.template_hash_hex,
             "actor `{actor}` template hash must use the Sil template hash"
         );
     }

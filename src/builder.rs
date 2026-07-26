@@ -5,9 +5,9 @@ mod tests {
     use super::*;
     use crate::{
         artifact::{
-            HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, ObservedTargetArtifact, RuntimeFieldRoleArtifact,
-            SilAbiVerificationError, TemplatePlanError, TypeArtifact, route_template_proof_receipt_id,
-            route_template_table_receipt_id,
+            CompiledTemplateArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, ObservedTargetArtifact,
+            RuntimeFieldRoleArtifact, SilAbiVerificationError, SilContractArtifact, TemplatePlanError, TypeArtifact,
+            route_template_proof_receipt_id, route_template_table_receipt_id,
         },
         codec::{CodecError, decode_hex, encode_entry_sig_script},
         emit::emit_build_app,
@@ -60,6 +60,17 @@ mod tests {
             .unwrap_or_else(|| panic!("missing artifact entry `{actor}::{entry}`"))
     }
 
+    fn sil_template(contract: &SilContractArtifact) -> CompiledTemplateArtifact {
+        let compiled = &contract.compiled;
+        let script = decode_hex(&compiled.script_hex).expect("compiled script decodes");
+        let (prefix, _, suffix) = compiled.script_parts(&script).expect("compiled state span is valid");
+        CompiledTemplateArtifact {
+            prefix_hex: crate::codec::encode_hex(prefix),
+            suffix_hex: crate::codec::encode_hex(suffix),
+            hash_hex: compiled.template_hash_hex.clone(),
+        }
+    }
+
     fn route_family_table_bytes(artifact: &Artifact, family_id: &str) -> Vec<u8> {
         let family = artifact
             .argent
@@ -81,7 +92,7 @@ mod tests {
                 panic!("test route table `{}` unexpectedly contains a nested family", table.id);
             };
             let contract = artifact.sil_abi.contract(actor).unwrap_or_else(|| panic!("missing contract `{actor}`"));
-            bytes.extend_from_slice(&decode_hex(&contract.compiled.template.hash_hex).expect("template hash decodes"));
+            bytes.extend_from_slice(&decode_hex(&contract.compiled.template_hash_hex).expect("template hash decodes"));
         }
         bytes
     }
@@ -186,7 +197,7 @@ mod tests {
         assert_eq!(
             decoded.get("gen__ticket_template"),
             Some(&ArtifactValue::Bytes(
-                decode_hex(&artifact.sil_abi.contract("Ticket").expect("ticket contract exists").compiled.template.hash_hex).unwrap()
+                decode_hex(&artifact.sil_abi.contract("Ticket").expect("ticket contract exists").compiled.template_hash_hex).unwrap()
             ))
         );
         assert!(!decoded.contains_key("gen__issuer_template"), "Issuer state should not carry its own template");
@@ -1122,7 +1133,7 @@ mod tests {
         // without failing template or state validation first.
         let controller_contract = controller_artifact.sil_abi.contract("Controller").expect("Controller contract exists");
         let launch_entry = controller_contract.entry("launch").expect("launch entry exists");
-        let pair_template = &pair_artifact.sil_abi.contract("Pair").expect("Pair contract exists").compiled.template;
+        let pair_template = sil_template(pair_artifact.sil_abi.contract("Pair").expect("Pair contract exists"));
         let pair_prefix = decode_hex(&pair_template.prefix_hex).expect("Pair prefix decodes");
         let pair_suffix = decode_hex(&pair_template.suffix_hex).expect("Pair suffix decodes");
         let redeem_script = p2sh_redeem_script(&transaction.inputs[0].signature_script);
@@ -1481,7 +1492,7 @@ mod tests {
         let tx = builder.build(&context).expect("leader and delegate inputs pass");
 
         let player_contract = artifact.sil_abi.contract("Player").expect("Player contract exists");
-        let player_template = &player_contract.compiled.template;
+        let player_template = sil_template(player_contract);
         let wrong_delegate_sigscript = {
             let populated = MutableTransaction::with_entries(tx.clone(), entries.clone());
             let delegate_sig = sign_mutable_input(&populated, 1, &owner_b);
@@ -1588,7 +1599,7 @@ mod tests {
 
         let player_contract = artifact.sil_abi.contract("Player").expect("Player contract exists");
         let enter_mux = player_contract.entry("enter_mux").expect("enter_mux ABI exists");
-        let mux_template = &artifact.sil_abi.contract("Mux").expect("Mux contract exists").compiled.template;
+        let mux_template = sil_template(artifact.sil_abi.contract("Mux").expect("Mux contract exists"));
         let mut wrong_routes = route_family_table_bytes(&artifact, "route_family/BoardState/mux");
         wrong_routes[0] ^= 1;
         let bad_route_table_sigscript = encode_entry_sig_script(
@@ -1775,7 +1786,7 @@ mod tests {
 
         let mux_contract = artifact.sil_abi.contract("Mux").expect("Mux contract exists");
         let choose = mux_contract.entry("choose").expect("choose entry exists");
-        let mux_template = &mux_contract.compiled.template;
+        let mux_template = sil_template(mux_contract);
         let malicious_entry_sigscript = encode_entry_sig_script(
             &artifact.sil_abi,
             mux_contract,
@@ -1829,7 +1840,7 @@ mod tests {
         artifact.verify_sil_abi().expect("fixture Sil ABI verifies before mutation");
         let issuer_contract =
             artifact.sil_abi.contracts.iter_mut().find(|contract| contract.name == "Issuer").expect("Issuer Sil contract exists");
-        issuer_contract.compiled.template.hash_hex = "00".repeat(32);
+        issuer_contract.compiled.template_hash_hex = "00".repeat(32);
         let issuer_receipt = artifact
             .argent
             .template_plan
@@ -1837,7 +1848,7 @@ mod tests {
             .iter_mut()
             .find(|template| template.actor == "Issuer")
             .expect("Issuer template receipt exists");
-        issuer_receipt.sil_template_hash = issuer_contract.compiled.template.hash_hex.clone();
+        issuer_receipt.sil_template_hash = issuer_contract.compiled.template_hash_hex.clone();
 
         let err = match TxBuilder::new(&artifact) {
             Ok(_) => panic!("builder must reject a Sil template hash that does not match its contract code"),
@@ -2008,7 +2019,7 @@ mod tests {
             .actor_output("Player", player_next.clone(), CovenantBinding::new(0, covenant_id), player_value);
         let tx = builder.build(&context).expect("exact continuation register_player passes");
 
-        let player_template = &artifact.sil_abi.contract("Player").expect("Player contract exists").compiled.template;
+        let player_template = sil_template(artifact.sil_abi.contract("Player").expect("Player contract exists"));
         let league_contract = artifact.sil_abi.contract("League").expect("League contract exists");
         let register_entry = league_contract.entry("register_player").expect("register_player exists");
         let mut bad_prefix = decode_hex(&player_template.prefix_hex).expect("player prefix decodes");
@@ -2138,7 +2149,7 @@ mod tests {
 
         let minter_contract = controller_artifact.sil_abi.contract("Minter").expect("Minter contract exists");
         let minter_entry = minter_contract.entry("mint").expect("mint entry exists");
-        let proxy_template = &asset_artifact.sil_abi.contract("MinterProxy").expect("MinterProxy contract exists").compiled.template;
+        let proxy_template = sil_template(asset_artifact.sil_abi.contract("MinterProxy").expect("MinterProxy contract exists"));
         let proxy_prefix_len = decode_hex(&proxy_template.prefix_hex).expect("proxy prefix decodes").len() as i64;
         let bad_proxy_suffix_len = decode_hex(&proxy_template.suffix_hex).expect("proxy suffix decodes").len() as i64 + 1;
         let corrupt_hidden_sigscript = encode_entry_sig_script(
@@ -2152,11 +2163,11 @@ mod tests {
                 ArtifactValue::Int(proxy_prefix_len),
                 ArtifactValue::Int(bad_proxy_suffix_len),
                 ArtifactValue::Bytes(
-                    decode_hex(&asset_artifact.sil_abi.contract("KCC20").expect("KCC20 contract exists").compiled.template.prefix_hex)
+                    decode_hex(&sil_template(asset_artifact.sil_abi.contract("KCC20").expect("KCC20 contract exists")).prefix_hex)
                         .expect("KCC20 prefix decodes"),
                 ),
                 ArtifactValue::Bytes(
-                    decode_hex(&asset_artifact.sil_abi.contract("KCC20").expect("KCC20 contract exists").compiled.template.suffix_hex)
+                    decode_hex(&sil_template(asset_artifact.sil_abi.contract("KCC20").expect("KCC20 contract exists")).suffix_hex)
                         .expect("KCC20 suffix decodes"),
                 ),
             ],
@@ -2505,7 +2516,7 @@ mod tests {
         let cell_value = 4_000;
         let agent_value = 2_000;
         let caps_digest = vec![0x77; 32];
-        let agent_type = decode_hex(&agent_artifact.sil_abi.contract("Agent").expect("Agent ABI exists").compiled.template.hash_hex)
+        let agent_type = decode_hex(&agent_artifact.sil_abi.contract("Agent").expect("Agent ABI exists").compiled.template_hash_hex)
             .expect("agent template hash decodes");
 
         let cell_initial = open_cell_state(agent_covenant_id, agent_type.clone(), 7);
@@ -2718,7 +2729,7 @@ mod tests {
             .expect("bundle accepts anonymous observed app");
         let builder = TxBuilder::from_bundle(&bundle).expect("builder accepts anonymous open bundle");
 
-        let agent_template = agent_artifact.sil_abi.contract("Agent").expect("Agent contract exists").compiled.template.clone();
+        let agent_template = sil_template(agent_artifact.sil_abi.contract("Agent").expect("Agent contract exists"));
         let agent_template_hash = decode_hex(&agent_template.hash_hex).expect("Agent template hash decodes");
         let controller_covenant_id = Hash::from_bytes([0x33; 32]);
         let agent_covenant_id = Hash::from_bytes([0x44; 32]);
