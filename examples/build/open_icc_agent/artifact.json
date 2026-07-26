@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "21ef4e4936988262f58c751faaf7a5fdb82521ad7c2789cba0a81a54859c8a2a",
+  "id": "dc7ed343f36f3b6ee3c19196c43e8d7624406b6ba9a0a20c9b1af0d1ccd2106d",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -117,6 +117,9 @@
             "type": {
               "kind": "fixed_bytes",
               "len": 32
+            },
+            "source_type": {
+              "name": "cov_id"
             }
           },
           {
@@ -131,7 +134,8 @@
             "type": {
               "kind": "fixed_bytes",
               "len": 32
-            }
+            },
+            "virtual": true
           },
           {
             "name": "x",
@@ -192,6 +196,9 @@
             "type": {
               "kind": "fixed_bytes",
               "len": 32
+            },
+            "source_type": {
+              "name": "cov_id"
             }
           },
           {
@@ -199,6 +206,10 @@
             "type": {
               "kind": "fixed_bytes",
               "len": 32
+            },
+            "source_type": {
+              "name": "actor_type",
+              "actor_state": "AgentCapsule"
             }
           },
           {
@@ -239,6 +250,9 @@
             "type": {
               "kind": "fixed_bytes",
               "len": 32
+            },
+            "source_type": {
+              "name": "cov_id"
             }
           },
           {
@@ -253,7 +267,8 @@
             "type": {
               "kind": "fixed_bytes",
               "len": 32
-            }
+            },
+            "virtual": true
           },
           {
             "name": "x",

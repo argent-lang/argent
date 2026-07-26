@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "fd4a004e292534b892861e295b263081504652408d1ed191abb91c376443ea14",
+  "id": "9bca399cb25b1ab1880c504ce5d3ca9bb42d07b88b6bdc881a9774aadfa633b4",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -176,6 +176,9 @@
             "type": {
               "kind": "fixed_bytes",
               "len": 32
+            },
+            "source_type": {
+              "name": "cov_id"
             }
           }
         ]
@@ -194,6 +197,9 @@
             "type": {
               "kind": "fixed_bytes",
               "len": 32
+            },
+            "source_type": {
+              "name": "cov_id"
             }
           },
           {

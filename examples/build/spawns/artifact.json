@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "940372fe130d999edc57b08debbe617a0692ad900fc247704db4292e7764fbaa",
+  "id": "691ad5f17832839899a11533a05ebad2cdeca8da69352951476189f32ecd8b4b",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -125,6 +125,10 @@
             "type": {
               "kind": "fixed_bytes",
               "len": 32
+            },
+            "source_type": {
+              "name": "actor_type",
+              "actor_state": "PairState"
             }
           },
           {

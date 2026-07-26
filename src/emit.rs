@@ -4883,20 +4883,32 @@ fn emit_artifact_json(program: &Program, model: &Model<'_>, actor_sil: &BTreeMap
 fn emit_artifact(program: &Program, model: &Model<'_>, actor_sil: &BTreeMap<String, String>) -> Result<Artifact> {
     let templates = model.app_actors.iter().map(|actor| template_ref_artifact(actor)).collect::<Vec<_>>();
 
-    let states: Vec<StateArtifact> = model
+    let argent_states = model
         .states
         .values()
-        .map(|state| StateArtifact {
+        .map(|state| ArgentStateArtifact {
             name: state.name.clone(),
             fields: model
                 .storage_state(&state.name)
                 .expect("state expansions are valid after model validation")
                 .fields
                 .iter()
-                .map(|field| FieldArtifact { name: field.name.clone(), ty: type_artifact(&field.ty, model) })
+                .map(|field| ArgentFieldArtifact {
+                    name: field.name.clone(),
+                    ty: type_artifact(&field.ty, model),
+                    source_type: source_type_annotation(&field.ty, model),
+                    virtual_slot: field.virtual_slot,
+                })
                 .collect(),
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let states = argent_states
+        .iter()
+        .map(|state| StateArtifact {
+            name: state.name.clone(),
+            fields: state.fields.iter().map(|field| FieldArtifact { name: field.name.clone(), ty: field.ty.clone() }).collect(),
+        })
+        .collect::<Vec<_>>();
     let state_expansions = model
         .states
         .values()
@@ -4938,7 +4950,7 @@ fn emit_artifact(program: &Program, model: &Model<'_>, actor_sil: &BTreeMap<Stri
             templates,
             template_plan,
             interfaces,
-            states: states.clone(),
+            states: argent_states,
             state_expansions,
             actor_enums,
             actors: argent_actors,
@@ -4948,6 +4960,21 @@ fn emit_artifact(program: &Program, model: &Model<'_>, actor_sil: &BTreeMap<Stri
     artifact.verify_template_plan().map_err(|err| ArgentError::new(format!("invalid template plan receipt: {err}")))?;
     artifact.id = artifact.computed_id_hex().map_err(|err| ArgentError::new(format!("failed to compute artifact id: {err}")))?;
     Ok(artifact)
+}
+
+fn source_type_artifact(ty: &TypeRef) -> SourceTypeArtifact {
+    SourceTypeArtifact {
+        name: ty.name.clone(),
+        array: ty.array.map(|array| match array {
+            ArrayDim::Dynamic => SourceArrayArtifact::Dynamic,
+            ArrayDim::Fixed(len) => SourceArrayArtifact::Fixed(len),
+        }),
+        actor_state: ty.actor_state.clone(),
+    }
+}
+
+fn source_type_annotation(ty: &TypeRef, model: &Model<'_>) -> Option<SourceTypeArtifact> {
+    (ty.name == word::COVENANT_ID || ty.is_actor_type() || model.is_actor_enum_type(ty)).then(|| source_type_artifact(ty))
 }
 
 fn interface_set_artifact(model: &Model<'_>) -> Result<InterfaceSetArtifact> {
@@ -5072,13 +5099,24 @@ fn actor_type_handle_artifact(
     actor_sil: &BTreeMap<String, String>,
 ) -> Result<Option<ActorTypeHandleArtifact>> {
     let actor = model.actor(&template.actor)?;
-    let Some(expansion) = &model.state(&actor.state)?.expansion else {
-        return Ok(None);
-    };
+    let expansion = model.state(&actor.state)?.expansion.as_ref();
+    let source_state = expansion.map_or(actor.state.as_str(), |expansion| expansion.base.as_str());
     let runtime_plan = plan.runtime_states.iter().find(|runtime_state| runtime_state.contract == actor.name);
     let context_fields = runtime_plan
         .map(|runtime_state| runtime_state.field_roles.iter().map(|field| field.name.clone()).collect::<Vec<_>>())
         .unwrap_or_default();
+    if expansion.is_none() && context_fields.is_empty() {
+        return Ok(None);
+    }
+    if expansion.is_none()
+        && runtime_plan.is_some_and(|runtime_state| {
+            runtime_state.field_roles.iter().any(|field| matches!(field.role, RuntimeFieldRoleArtifact::ObservedTemplate { .. }))
+        })
+    {
+        // Legacy same-program observation can still leave a concrete foreign
+        // template open at runtime. App-linked compilation removes that case.
+        return Ok(None);
+    }
     let context_values = runtime_plan
         .map(|runtime_state| {
             runtime_state
@@ -5086,7 +5124,7 @@ fn actor_type_handle_artifact(
                 .iter()
                 .map(|field| {
                     fixed_runtime_context_value(plan, runtime_state, field)
-                        .map_err(|err| ArgentError::new(format!("cannot derive fixed capsule context: {err}")))
+                        .map_err(|err| ArgentError::new(format!("cannot derive fixed source-state context: {err}")))
                 })
                 .collect::<Result<Vec<_>>>()
         })
@@ -5094,20 +5132,20 @@ fn actor_type_handle_artifact(
         .unwrap_or_default();
     let runtime_fields = runtime_state_fields_for_actor(actor, model)?;
     let context_state = RuntimeStateArtifact {
-        source: expansion.base.clone(),
+        source: source_state.to_string(),
         fields: runtime_fields.iter().take(context_fields.len()).cloned().collect(),
     };
     let context_state_values =
         context_fields.iter().cloned().zip(context_values.iter().cloned().map(ArtifactValue::Bytes)).collect::<BTreeMap<_, _>>();
     let context_script = crate::codec::encode_runtime_state_script(&context_state, &context_state_values)
-        .map_err(|err| ArgentError::new(format!("cannot encode actor_type<{}> context: {err}", expansion.base)))?;
+        .map_err(|err| ArgentError::new(format!("cannot encode actor_type<{source_state}> context: {err}")))?;
 
     let mut args = context_values.into_iter().map(SilExpr::from).collect::<Vec<_>>();
     for field in &model.storage_state(&actor.state)?.fields {
         args.push(placeholder_expr_for_type(&field.ty).map_err(|err| {
             ArgentError::new(format!(
                 "cannot build actor_type<{}> placeholder for actor `{}` field `{}`: {err}",
-                expansion.base, actor.name, field.name
+                source_state, actor.name, field.name
             ))
         })?);
     }
@@ -5116,7 +5154,7 @@ fn actor_type_handle_artifact(
         .get(&actor.name)
         .ok_or_else(|| ArgentError::new(format!("missing generated Silverscript for actor `{}`", actor.name)))?;
     let compiled = compile_contract(sil, &args, CompileOptions::default()).map_err(|err| {
-        ArgentError::new(format!("generated Silverscript for actor `{}` failed to compile its capsule cut: {err}", actor.name))
+        ArgentError::new(format!("generated Silverscript for actor `{}` failed to compile its source-state cut: {err}", actor.name))
     })?;
     if encode_hex(&compiled.template_hash()) != template.canonical_template_hash {
         return Err(ArgentError::new(format!(
@@ -5142,7 +5180,7 @@ fn actor_type_handle_artifact(
     let suffix = &compiled.script[state_end..];
     let hash = silverscript_lang::template::template_hash(prefix, suffix);
     Ok(Some(ActorTypeHandleArtifact {
-        state: expansion.base.clone(),
+        state: source_state.to_string(),
         context_fields,
         template: CompiledTemplateArtifact {
             prefix_hex: encode_hex(prefix),
@@ -7645,6 +7683,17 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![("gen__terminal_template", RuntimeFieldRoleArtifact::Template { contract: "Terminal".to_string() })]
         );
+        let source_template = artifact
+            .argent
+            .template_plan
+            .templates
+            .iter()
+            .find(|template| template.actor == "Source")
+            .expect("Source template exists");
+        let source_handle = source_template.actor_type_handle.as_ref().expect("Source exports its source-state cut");
+        assert_eq!(source_handle.state, "SourceState");
+        assert_eq!(source_handle.context_fields, ["gen__terminal_template"]);
+        assert_ne!(source_handle.template.hash_hex, source_template.canonical_template_hash);
     }
 
     #[test]
@@ -7693,8 +7742,23 @@ mod tests {
         );
         artifact.verify_template_plan().expect("template plan receipt verifies");
         assert_eq!(
-            artifact.argent.states, artifact.sil_abi.states,
-            "source and ABI structural state descriptors should be derived from the same model"
+            artifact
+                .argent
+                .states
+                .iter()
+                .map(|state| {
+                    (state.name.as_str(), state.fields.iter().map(|field| (field.name.as_str(), &field.ty)).collect::<Vec<_>>())
+                })
+                .collect::<Vec<_>>(),
+            artifact
+                .sil_abi
+                .states
+                .iter()
+                .map(|state| {
+                    (state.name.as_str(), state.fields.iter().map(|field| (field.name.as_str(), &field.ty)).collect::<Vec<_>>())
+                })
+                .collect::<Vec<_>>(),
+            "Argent state fields retain the lowered Sil ABI layout"
         );
 
         let state = artifact.argent.states.iter().find(|state| state.name == "FooState").expect("source state is present");
@@ -7758,6 +7822,52 @@ mod tests {
     }
 
     #[test]
+    fn argent_states_preserve_lossy_source_types() {
+        let artifact = inline_artifact(
+            "source-state-types",
+            r#"
+            state PayloadState {
+                int value;
+            }
+
+            state HolderState {
+                cov_id controller;
+                actor_type<PayloadState> payload_type;
+                byte[32] raw;
+            }
+
+            actor Holder owns HolderState {
+                entry hold() emits one Holder {
+                    become Holder(self.state);
+                }
+            }
+
+            app Test {
+                actor Holder;
+            }
+            "#,
+        );
+
+        let state = artifact.argent.states.iter().find(|state| state.name == "HolderState").expect("HolderState exists");
+        assert_eq!(state.fields[0].ty, TypeArtifact::FixedBytes { len: 32 });
+        assert_eq!(
+            state.fields[0].source_type,
+            Some(SourceTypeArtifact { name: word::COVENANT_ID.to_string(), array: None, actor_state: None })
+        );
+        assert_eq!(state.fields[1].ty, TypeArtifact::FixedBytes { len: 32 });
+        assert_eq!(
+            state.fields[1].source_type,
+            Some(SourceTypeArtifact {
+                name: word::ACTOR_TYPE.to_string(),
+                array: None,
+                actor_state: Some("PayloadState".to_string()),
+            })
+        );
+        assert_eq!(state.fields[2].ty, TypeArtifact::FixedBytes { len: 32 });
+        assert_eq!(state.fields[2].source_type, None);
+    }
+
+    #[test]
     fn state_expansion_uses_base_storage_layout() {
         let (sil, artifact) = emit_fixture("state_expansion", "Forager");
 
@@ -7772,6 +7882,8 @@ mod tests {
 
         let forager_state = artifact.argent.states.iter().find(|state| state.name == "ForagerState").expect("ForagerState exists");
         assert_eq!(forager_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["strategy", "energy"]);
+        assert!(forager_state.fields[0].virtual_slot);
+        assert!(!forager_state.fields[1].virtual_slot);
 
         let contract = artifact.sil_abi.contract("Forager").expect("Forager Sil ABI exists");
         assert_eq!(contract.runtime_state.source, "ForagerState");

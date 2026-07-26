@@ -258,11 +258,10 @@ mod tests {
             decode_hex(&handle.template.hash_hex).expect("capsule hash decodes")
         );
         assert_ne!(handle.template.hash_hex, receipt.canonical_template_hash);
-        assert!(matches!(
-            builder.actor_type_handle("ReserveAsset", "ReserveAssetState"),
-            Err(BuilderError::MissingActorTypeHandle { actor, state })
-                if actor == "ReserveAsset" && state == "ReserveAssetState"
-        ));
+        assert_eq!(
+            builder.actor_type_handle("ReserveAsset", "ReserveAssetState").expect("expanded source view resolves"),
+            decode_hex(&handle.template.hash_hex).expect("expanded source view reuses the capsule hash")
+        );
     }
 
     #[test]
@@ -1685,21 +1684,21 @@ mod tests {
     fn builder_rejects_template_plan_hash_mismatch() {
         let mut artifact = tickets_artifact();
         artifact.verify_template_plan().expect("fixture receipt verifies before mutation");
-        let ticket_receipt = artifact
+        let issuer_receipt = artifact
             .argent
             .template_plan
             .templates
             .iter_mut()
-            .find(|template| template.actor == "Ticket")
-            .expect("Ticket template receipt exists");
-        ticket_receipt.canonical_template_hash = "00".repeat(32);
+            .find(|template| template.actor == "Issuer")
+            .expect("Issuer template receipt exists");
+        issuer_receipt.canonical_template_hash = "00".repeat(32);
 
         let err = match TxBuilder::new(&artifact) {
             Ok(_) => panic!("builder must reject a corrupted template plan receipt"),
             Err(err) => err,
         };
         assert!(
-            matches!(err, BuilderError::TemplatePlan(TemplatePlanError::TemplateHashMismatch { ref id, .. }) if id == "template/ticket"),
+            matches!(err, BuilderError::TemplatePlan(TemplatePlanError::TemplateHashMismatch { ref id, .. }) if id == "template/issuer"),
             "unexpected error: {err}"
         );
     }

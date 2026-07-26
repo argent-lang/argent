@@ -42,12 +42,51 @@ pub struct ArgentArtifact {
     pub template_plan: TemplatePlanArtifact,
     #[serde(default)]
     pub interfaces: InterfaceSetArtifact,
-    pub states: Vec<StateArtifact>,
+    pub states: Vec<ArgentStateArtifact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub state_expansions: Vec<StateExpansionArtifact>,
     #[serde(default)]
     pub actor_enums: Vec<ActorEnumArtifact>,
     pub actors: Vec<ActorArtifact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArgentStateArtifact {
+    pub name: String,
+    pub fields: Vec<ArgentFieldArtifact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArgentFieldArtifact {
+    pub name: String,
+    /// Lowered Sil type used for layout and runtime encoding.
+    #[serde(rename = "type")]
+    pub ty: TypeArtifact,
+    /// Source type when lowering removes Argent meaning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_type: Option<SourceTypeArtifact>,
+    #[serde(rename = "virtual", default, skip_serializing_if = "is_false")]
+    pub virtual_slot: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceTypeArtifact {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub array: Option<SourceArrayArtifact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_state: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "len", rename_all = "snake_case")]
+pub enum SourceArrayArtifact {
+    Dynamic,
+    Fixed(usize),
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 impl Artifact {
@@ -164,6 +203,10 @@ pub struct TemplatePlanTemplateArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActorTypeHandleArtifact {
+    /// Physical state that remains outside the fixed template prefix.
+    ///
+    /// `ActorArtifact::state` and `state_expansions` can expose an authored
+    /// expanded view of these same bytes. Both views use this one template.
     pub state: String,
     pub context_fields: Vec<String>,
     pub template: CompiledTemplateArtifact,
@@ -1174,6 +1217,7 @@ fn verify_actor_type_handle(
         .iter()
         .find(|expansion| expansion.state == actor.state)
         .map(|expansion| expansion.base.as_str());
+    let source_state = expanded_base.unwrap_or(&actor.state);
 
     let Some(handle) = &template.actor_type_handle else {
         if let Some(base) = expanded_base {
@@ -1181,12 +1225,10 @@ fn verify_actor_type_handle(
         }
         return Ok(());
     };
-    if expanded_base != Some(handle.state.as_str()) {
+    if source_state != handle.state {
         return Err(mismatch(format!(
-            "handle state `{}` does not match expanded state `{}` base `{}`",
-            handle.state,
-            actor.state,
-            expanded_base.unwrap_or("none")
+            "handle state `{}` does not match actor `{}` source-state cut `{source_state}`",
+            handle.state, actor.name
         )));
     }
 

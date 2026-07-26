@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "3d89505b30b937d4019f1857d99ef75b9a5f186a51c723d3012e23b3beb6ae3c",
+  "id": "98616a1c3e326bb3ae0fcd1ffd67c1fcc372f8fce47b7837ffeae1ac8b180da9",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -50,28 +50,80 @@
           "actor": "Lobby",
           "contract": "Lobby",
           "symbol": "gen__lobby_template",
-          "canonical_template_hash": "168633cfa79b38765cf38339872a3ebf5a341b2044c703b226e75d8a0835ef1e"
+          "canonical_template_hash": "168633cfa79b38765cf38339872a3ebf5a341b2044c703b226e75d8a0835ef1e",
+          "actor_type_handle": {
+            "state": "LobbyState",
+            "context_fields": [
+              "gen__archive_template",
+              "gen__mux_template",
+              "gen__mux_routes_digest"
+            ],
+            "template": {
+              "prefix_hex": "209823f8491ad639155c52be499b5571f59794d96a2ed50849ecd7922d61c27f5a20a291095161d1815b67519a4c9468202473e40e0fa4391d3a729e05a15ee5a6e920a40256e4d9cb46ba4187bec902582b96a7f77014b4e218c0f4ea74a9d2bfed2d",
+              "suffix_hex": "5479aa52798769b9cb519c695679827c75519658cd57797e5679827c75519658cd57797e7e53797caa8769537901207c7e537901207c7e567901407c7e537958cd01087c7e7e7e7e57797c7e56797eaa02000001aa7e01207e7c7e01877eb900ccc387697575757575757551",
+              "hash_hex": "73c48c19f595e3c3733fb1691de2dad6ee8c2d4690d0eb9077ca4ab8bde56f78"
+            }
+          }
         },
         {
           "id": "template/mux",
           "actor": "Mux",
           "contract": "Mux",
           "symbol": "gen__mux_template",
-          "canonical_template_hash": "a291095161d1815b67519a4c9468202473e40e0fa4391d3a729e05a15ee5a6e9"
+          "canonical_template_hash": "a291095161d1815b67519a4c9468202473e40e0fa4391d3a729e05a15ee5a6e9",
+          "actor_type_handle": {
+            "state": "BoardState",
+            "context_fields": [
+              "gen__archive_template",
+              "gen__mux_template",
+              "gen__mux_routes"
+            ],
+            "template": {
+              "prefix_hex": "6b209823f8491ad639155c52be499b5571f59794d96a2ed50849ecd7922d61c27f5a20a291095161d1815b67519a4c9468202473e40e0fa4391d3a729e05a15ee5a6e940b608475fdfbf1df07bf7f426da6a876892dd0599b4988d0367498263cb9d4915b608475fdfbf1df07bf7f426da6a876892dd0599b4988d0367498263cb9d4915",
+              "suffix_hex": "6c76009c6375b9cb519c6956797600a26976529f695679827c75519658cd57797e5679827c75519658cd57797e7e5379527901209553790120950120937f7caa8769547901207c7e547901207c7e547901407c7e5479519358cd01087c7e7e7e7e57797c7e56797eaa02000001aa7e01207e7c7e01877eb900ccc38769007a7575757575757575516776519c6375b9cb519c695579827c75519658cd56797e5579827c75519658cd56797e7e54797caa8769537901207c7e537901207c7e5379aa01207c7e537958cd01087c7e7e7e7e56797c7e55797eaa02000001aa7e01207e7c7e01877eb900ccc3876975757575757551677500696868",
+              "hash_hex": "ddb07613e3ba374edfb3501f5a16278f654c677a6659eb8b27846a4562e5ffef"
+            }
+          }
         },
         {
           "id": "template/pawn",
           "actor": "Pawn",
           "contract": "Pawn",
           "symbol": "gen__pawn_template",
-          "canonical_template_hash": "b608475fdfbf1df07bf7f426da6a876892dd0599b4988d0367498263cb9d4915"
+          "canonical_template_hash": "b608475fdfbf1df07bf7f426da6a876892dd0599b4988d0367498263cb9d4915",
+          "actor_type_handle": {
+            "state": "BoardState",
+            "context_fields": [
+              "gen__archive_template",
+              "gen__mux_template",
+              "gen__mux_routes"
+            ],
+            "template": {
+              "prefix_hex": "209823f8491ad639155c52be499b5571f59794d96a2ed50849ecd7922d61c27f5a20a291095161d1815b67519a4c9468202473e40e0fa4391d3a729e05a15ee5a6e940b608475fdfbf1df07bf7f426da6a876892dd0599b4988d0367498263cb9d4915b608475fdfbf1df07bf7f426da6a876892dd0599b4988d0367498263cb9d4915",
+              "suffix_hex": "b9cb009c697600a2697575757551",
+              "hash_hex": "a84e4da27f50e2bd726ace27c596ea4c2ea0c2b1b786a6dfccdd95efbc9b7a20"
+            }
+          }
         },
         {
           "id": "template/knight",
           "actor": "Knight",
           "contract": "Knight",
           "symbol": "gen__knight_template",
-          "canonical_template_hash": "b608475fdfbf1df07bf7f426da6a876892dd0599b4988d0367498263cb9d4915"
+          "canonical_template_hash": "b608475fdfbf1df07bf7f426da6a876892dd0599b4988d0367498263cb9d4915",
+          "actor_type_handle": {
+            "state": "BoardState",
+            "context_fields": [
+              "gen__archive_template",
+              "gen__mux_template",
+              "gen__mux_routes"
+            ],
+            "template": {
+              "prefix_hex": "209823f8491ad639155c52be499b5571f59794d96a2ed50849ecd7922d61c27f5a20a291095161d1815b67519a4c9468202473e40e0fa4391d3a729e05a15ee5a6e940b608475fdfbf1df07bf7f426da6a876892dd0599b4988d0367498263cb9d4915b608475fdfbf1df07bf7f426da6a876892dd0599b4988d0367498263cb9d4915",
+              "suffix_hex": "b9cb009c697600a2697575757551",
+              "hash_hex": "a84e4da27f50e2bd726ace27c596ea4c2ea0c2b1b786a6dfccdd95efbc9b7a20"
+            }
+          }
         },
         {
           "id": "template/spectator",
@@ -85,7 +137,20 @@
           "actor": "Archive",
           "contract": "Archive",
           "symbol": "gen__archive_template",
-          "canonical_template_hash": "9823f8491ad639155c52be499b5571f59794d96a2ed50849ecd7922d61c27f5a"
+          "canonical_template_hash": "9823f8491ad639155c52be499b5571f59794d96a2ed50849ecd7922d61c27f5a",
+          "actor_type_handle": {
+            "state": "ArchiveState",
+            "context_fields": [
+              "gen__archive_template",
+              "gen__mux_template",
+              "gen__mux_routes_digest"
+            ],
+            "template": {
+              "prefix_hex": "209823f8491ad639155c52be499b5571f59794d96a2ed50849ecd7922d61c27f5a20a291095161d1815b67519a4c9468202473e40e0fa4391d3a729e05a15ee5a6e920a40256e4d9cb46ba4187bec902582b96a7f77014b4e218c0f4ea74a9d2bfed2d",
+              "suffix_hex": "5479aa52798769b9cb519c695679827c75519658cd57797e5679827c75519658cd57797e7e55790001207f7caa8769537901207c7e537901207c7e567901407c7e5379519358cd01087c7e7e7e7e57797c7e56797eaa02000001aa7e01207e7c7e01877eb900ccc387697575757575757551",
+              "hash_hex": "218a69824064e5848bc23e177809668614131ee07555e7b3f29794d0c702cc57"
+            }
+          }
         }
       ],
       "runtime_states": [

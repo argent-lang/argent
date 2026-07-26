@@ -24,10 +24,10 @@ pub use context::{
 pub use silverscript_abi::ArtifactValue;
 
 use argent_artifact::{
-    ActorArtifact, ActorInterfaceArtifact, ArtifactIdentityError, ArtifactVersionError, CompiledTemplateArtifact, EntryArtifact,
-    HiddenParamArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, ObserveArtifact, ObservedActorArtifact,
-    ObservedActorSideArtifact, RouteTemplateLeafArtifact, RouteTemplateProofArtifact, RuntimeFieldRoleArtifact,
-    RuntimeStatePlanArtifact, SilContractArtifact, SilEntryArtifact, StateArtifact, TemplatePlanError, fixed_runtime_context_value,
+    ActorArtifact, ActorInterfaceArtifact, ArgentStateArtifact, ArtifactIdentityError, ArtifactVersionError, CompiledTemplateArtifact,
+    EntryArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, ObserveArtifact,
+    ObservedActorArtifact, ObservedActorSideArtifact, RouteTemplateLeafArtifact, RouteTemplateProofArtifact, RuntimeFieldRoleArtifact,
+    RuntimeStatePlanArtifact, SilContractArtifact, SilEntryArtifact, TemplatePlanError, fixed_runtime_context_value,
 };
 use kaspa_consensus_core::{
     Hash,
@@ -925,6 +925,9 @@ impl<'a> TxBuilder<'a> {
 
     /// Return the template handle by which an external app observes `actor` as
     /// `actor_type<state>`.
+    ///
+    /// A physical storage state and its authored expanded state are two views
+    /// of the same handle. Expansion changes state decoding, not actor identity.
     pub fn actor_type_handle(&self, actor: impl Into<ActorPath>, state: &str) -> BuilderResult<Vec<u8>> {
         let actor = actor.into();
         let artifact = match &actor.app {
@@ -936,15 +939,20 @@ impl<'a> TxBuilder<'a> {
 
     fn actor_type_handle_in_artifact(&self, artifact: &'a Artifact, actor: &str, state: &str) -> BuilderResult<Vec<u8>> {
         let contract = self.contract_in_artifact(artifact, actor)?;
+        let actor_artifact = artifact
+            .argent
+            .actors
+            .iter()
+            .find(|candidate| candidate.name == actor)
+            .ok_or_else(|| BuilderError::UnknownActor(actor.to_string()))?;
         let expanded_base = artifact
             .argent
             .state_expansions
             .iter()
-            .find(|expansion| expansion.state == contract.runtime_state.source)
+            .find(|expansion| expansion.state == actor_artifact.state)
             .map(|expansion| expansion.base.as_str());
-        if expanded_base.is_none() && contract.runtime_state.source == state {
-            return Ok(decode_hex(&contract.compiled.template.hash_hex)?);
-        }
+        let storage_state = expanded_base.unwrap_or(&actor_artifact.state);
+        let supports_view = state == storage_state || state == actor_artifact.state;
         let handle = artifact
             .argent
             .template_plan
@@ -952,9 +960,14 @@ impl<'a> TxBuilder<'a> {
             .iter()
             .find(|template| template.actor == actor)
             .and_then(|template| template.actor_type_handle.as_ref())
-            .filter(|handle| handle.state == state)
-            .ok_or_else(|| BuilderError::MissingActorTypeHandle { actor: actor.to_string(), state: state.to_string() })?;
-        Ok(decode_hex(&handle.template.hash_hex)?)
+            .filter(|handle| handle.state == storage_state && supports_view);
+        if let Some(handle) = handle {
+            return Ok(decode_hex(&handle.template.hash_hex)?);
+        }
+        if expanded_base.is_none() && actor_artifact.state == state {
+            return Ok(decode_hex(&contract.compiled.template.hash_hex)?);
+        }
+        Err(BuilderError::MissingActorTypeHandle { actor: actor.to_string(), state: state.to_string() })
     }
 
     fn validate_actor_interface(&self, observing_artifact: &Artifact, app: &str, actor: &str) -> BuilderResult<()> {
@@ -1326,7 +1339,7 @@ impl<'a> TxBuilder<'a> {
             }
             let expected_layout = state_artifact(observing_artifact, expected_state)?;
             let found_layout = state_artifact(found.artifact, &found.actor.state)?;
-            if expected_layout.fields != found_layout.fields {
+            if !same_lowered_state_layout(expected_layout, found_layout) {
                 return Err(BuilderError::ObservedStateLayoutMismatch {
                     observe: observe_name.to_string(),
                     side: side.into(),
@@ -1696,13 +1709,18 @@ fn route_leaf_label(leaf: &RouteTemplateLeafArtifact) -> String {
     }
 }
 
-fn state_artifact<'a>(artifact: &'a Artifact, state: &str) -> BuilderResult<&'a StateArtifact> {
+fn state_artifact<'a>(artifact: &'a Artifact, state: &str) -> BuilderResult<&'a ArgentStateArtifact> {
     artifact
         .argent
         .states
         .iter()
         .find(|candidate| candidate.name == state)
         .ok_or_else(|| BuilderError::UnknownState { app: artifact.app.clone(), state: state.to_string() })
+}
+
+fn same_lowered_state_layout(left: &ArgentStateArtifact, right: &ArgentStateArtifact) -> bool {
+    left.fields.len() == right.fields.len()
+        && left.fields.iter().zip(&right.fields).all(|(left, right)| left.name == right.name && left.ty == right.ty)
 }
 
 fn state_satisfies(artifact: &Artifact, found_state: &str, expected_state: &str) -> bool {

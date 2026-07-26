@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "0d888a9bb79d54687d8c96cea974a205b3868f21acca6f2e82c471278bb9a51e",
+  "id": "bb614846c7fd2abc7c73206e9e1b139a18d1528530c138e8e66d6a9c7013416a",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -45,28 +45,77 @@
           "actor": "Lobby",
           "contract": "Lobby",
           "symbol": "gen__lobby_template",
-          "canonical_template_hash": "3a41e2c42e845338ca131d0786b20aa1babd2913f7eacb6a7ec024a67a4806fb"
+          "canonical_template_hash": "3a41e2c42e845338ca131d0786b20aa1babd2913f7eacb6a7ec024a67a4806fb",
+          "actor_type_handle": {
+            "state": "LobbyState",
+            "context_fields": [
+              "gen__mux_template",
+              "gen__spectator_template",
+              "gen__mux_routes_digest"
+            ],
+            "template": {
+              "prefix_hex": "2023dea4153aeb307f3442104472ea2fdf0c84ef8df657ce72c536575a1572878b205b2a4c009d5c13a72a95c0fdc75470122ba59513cf4c743b71fbb5ccf07aa8fb20acc46632616ebb8f0b60e818e058dfc4d6f974a29a1cfe6d96420a2df20557ae",
+              "suffix_hex": "5479aa52798769b9cb519c69b900cc785b79635879827c75519658cd59797e5879827c75519658cd59797e7e55797caa87697658cd01087c7e59797c7e58797eaa02000001aa7e01207e7c7e01877e5279c38769675a79827c75519658cd5b797e5a79827c75519658cd5b797e7e56797caa8769557901207c7e577901407c7e527958cd01087c7e7e7e5b797c7e5a797eaa02000001aa7e01207e7c7e01877e5279c3876968007a75007a757575757575757575757551",
+              "hash_hex": "bb126b9d947080238ed964c816bef0d6dcad7cf0ed70f302e4ff07dbe3f1b8cd"
+            }
+          }
         },
         {
           "id": "template/mux",
           "actor": "Mux",
           "contract": "Mux",
           "symbol": "gen__mux_template",
-          "canonical_template_hash": "23dea4153aeb307f3442104472ea2fdf0c84ef8df657ce72c536575a1572878b"
+          "canonical_template_hash": "23dea4153aeb307f3442104472ea2fdf0c84ef8df657ce72c536575a1572878b",
+          "actor_type_handle": {
+            "state": "BoardState",
+            "context_fields": [
+              "gen__mux_template",
+              "gen__mux_routes"
+            ],
+            "template": {
+              "prefix_hex": "2023dea4153aeb307f3442104472ea2fdf0c84ef8df657ce72c536575a1572878b40e8a9f75729828c6e5f74b7d0057a8ff23f0dc742251b934c2846006a4052337ce8a9f75729828c6e5f74b7d0057a8ff23f0dc742251b934c2846006a4052337c",
+              "suffix_hex": "b9cb519c6955797600a26976529f695579827c75519658cd56797e5579827c75519658cd56797e7e5379527901209553790120950120937f7caa8769537901207c7e537901407c7e5379519358cd01087c7e7e7e56797c7e55797eaa02000001aa7e01207e7c7e01877eb900ccc38769007a7575757575757551",
+              "hash_hex": "3f61993926b79d6f2c202959f7ac58fd732667e93d237814dc51d1f01da1e76f"
+            }
+          }
         },
         {
           "id": "template/pawn",
           "actor": "Pawn",
           "contract": "Pawn",
           "symbol": "gen__pawn_template",
-          "canonical_template_hash": "e8a9f75729828c6e5f74b7d0057a8ff23f0dc742251b934c2846006a4052337c"
+          "canonical_template_hash": "e8a9f75729828c6e5f74b7d0057a8ff23f0dc742251b934c2846006a4052337c",
+          "actor_type_handle": {
+            "state": "BoardState",
+            "context_fields": [
+              "gen__mux_template",
+              "gen__mux_routes"
+            ],
+            "template": {
+              "prefix_hex": "2023dea4153aeb307f3442104472ea2fdf0c84ef8df657ce72c536575a1572878b40e8a9f75729828c6e5f74b7d0057a8ff23f0dc742251b934c2846006a4052337ce8a9f75729828c6e5f74b7d0057a8ff23f0dc742251b934c2846006a4052337c",
+              "suffix_hex": "b9cb009c697600a26975757551",
+              "hash_hex": "6f30ec74ecc0107a9f462d521985827783953731d1814d043aee41179cad62d4"
+            }
+          }
         },
         {
           "id": "template/knight",
           "actor": "Knight",
           "contract": "Knight",
           "symbol": "gen__knight_template",
-          "canonical_template_hash": "e8a9f75729828c6e5f74b7d0057a8ff23f0dc742251b934c2846006a4052337c"
+          "canonical_template_hash": "e8a9f75729828c6e5f74b7d0057a8ff23f0dc742251b934c2846006a4052337c",
+          "actor_type_handle": {
+            "state": "BoardState",
+            "context_fields": [
+              "gen__mux_template",
+              "gen__mux_routes"
+            ],
+            "template": {
+              "prefix_hex": "2023dea4153aeb307f3442104472ea2fdf0c84ef8df657ce72c536575a1572878b40e8a9f75729828c6e5f74b7d0057a8ff23f0dc742251b934c2846006a4052337ce8a9f75729828c6e5f74b7d0057a8ff23f0dc742251b934c2846006a4052337c",
+              "suffix_hex": "b9cb009c697600a26975757551",
+              "hash_hex": "6f30ec74ecc0107a9f462d521985827783953731d1814d043aee41179cad62d4"
+            }
+          }
         },
         {
           "id": "template/spectator",
