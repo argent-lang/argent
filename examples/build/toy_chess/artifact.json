@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "e58f42102d51355b89b067d735fe9da7c9589fb53deb552f669cd20656804efe",
+  "id": "a42b91779cf9ec1a29a458d13e9ed016d008617e6b5f9f8396a8ac1513d722e0",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -45,7 +45,7 @@
           "actor": "League",
           "contract": "League",
           "symbol": "gen__league_template",
-          "canonical_template_hash": "271d2bf6e8af9a72cc453e9769920d23d61fb9d891c423fbf98c53971872e9c0",
+          "sil_template_hash": "271d2bf6e8af9a72cc453e9769920d23d61fb9d891c423fbf98c53971872e9c0",
           "actor_type_handle": {
             "state": "LeagueState",
             "context_fields": [
@@ -65,7 +65,7 @@
           "actor": "Player",
           "contract": "Player",
           "symbol": "gen__player_template",
-          "canonical_template_hash": "b93f58f2fe70cd8f085a4af09c5b25b0c6a4ecc9204b3edbceed13bd9d58822e",
+          "sil_template_hash": "b93f58f2fe70cd8f085a4af09c5b25b0c6a4ecc9204b3edbceed13bd9d58822e",
           "actor_type_handle": {
             "state": "PlayerState",
             "context_fields": [
@@ -84,7 +84,7 @@
           "actor": "Mux",
           "contract": "Mux",
           "symbol": "gen__mux_template",
-          "canonical_template_hash": "0b3a0a7500a490534e915817be702da017a75bc58aaaff84dccb250524ce486b",
+          "sil_template_hash": "0b3a0a7500a490534e915817be702da017a75bc58aaaff84dccb250524ce486b",
           "actor_type_handle": {
             "state": "BoardState",
             "context_fields": [
@@ -103,7 +103,7 @@
           "actor": "Pawn",
           "contract": "Pawn",
           "symbol": "gen__pawn_template",
-          "canonical_template_hash": "4d85870ea4d8316b3a49f1d50bfe78c8802f6ba6282f88e22155e3b4a77358f2",
+          "sil_template_hash": "4d85870ea4d8316b3a49f1d50bfe78c8802f6ba6282f88e22155e3b4a77358f2",
           "actor_type_handle": {
             "state": "BoardState",
             "context_fields": [
@@ -122,7 +122,7 @@
           "actor": "Knight",
           "contract": "Knight",
           "symbol": "gen__knight_template",
-          "canonical_template_hash": "656111361f5a6c03ac834868b05ce9d4e3df766f5a3e6e593fc12e7cf1ceb4ca",
+          "sil_template_hash": "656111361f5a6c03ac834868b05ce9d4e3df766f5a3e6e593fc12e7cf1ceb4ca",
           "actor_type_handle": {
             "state": "BoardState",
             "context_fields": [
@@ -468,30 +468,35 @@
       "exports": [
         {
           "id": "interface/actor/League",
+          "app": "ToyChess",
           "actor": "League",
           "state": "LeagueState",
           "fingerprint_hex": "aab5a60079e97a3309c4c78a6fdae366d7507289cfce013ff5bda6bfd3c52bc7"
         },
         {
           "id": "interface/actor/Player",
+          "app": "ToyChess",
           "actor": "Player",
           "state": "PlayerState",
           "fingerprint_hex": "547e71356e5c926f0ede862eb954355d2a5a995369dafdda5afa197566803cc7"
         },
         {
           "id": "interface/actor/Mux",
+          "app": "ToyChess",
           "actor": "Mux",
           "state": "BoardState",
           "fingerprint_hex": "bdc2dcd8395bb3a464209616ef41506c44e870754ed280aa95cec5f3ab947c06"
         },
         {
           "id": "interface/actor/Pawn",
+          "app": "ToyChess",
           "actor": "Pawn",
           "state": "BoardState",
           "fingerprint_hex": "2358ea2891e8afc80f702fe1b65985958e048292bb16c0d7c51f3a630948d4d7"
         },
         {
           "id": "interface/actor/Knight",
+          "app": "ToyChess",
           "actor": "Knight",
           "state": "BoardState",
           "fingerprint_hex": "2d7a372a64bf008bc34a01751aa4c0d7ddb68f1895ebdf04a644498e0a9e4dc8"

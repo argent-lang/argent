@@ -60,16 +60,19 @@ impl Parser {
         self.expect_ident(word::IMPORT)?;
         if self.consume_ident(word::ACTOR) {
             let first = self.expect_any_ident()?;
-            let (app, actor) = if self.consume_symbol(':') {
+            let qualified_actor = if self.consume_symbol(':') {
                 self.expect_symbol(':')?;
-                (Some(first), self.expect_any_ident()?)
+                Some(self.expect_any_ident()?)
             } else {
-                (None, first)
+                None
             };
             self.expect_ident(word::FROM)?;
             let path = self.expect_string()?;
             self.expect_symbol(';')?;
-            Ok(Import::Actor { app, actor, path })
+            Ok(match qualified_actor {
+                Some(actor) => Import::AppActor { app: first, actor, path },
+                None => Import::Actor { actor: first, path },
+            })
         } else if self.consume_ident(word::APP) {
             let app = self.expect_any_ident()?;
             self.expect_ident(word::FROM)?;
@@ -647,7 +650,7 @@ mod tests {
 
         assert!(matches!(
             &module.imports[0],
-            Import::Actor { app: Some(app), actor, path }
+            Import::AppActor { app, actor, path }
                 if app == "AssetApp" && actor == "Asset" && path == "./asset.ag"
         ));
         assert!(matches!(
@@ -657,7 +660,7 @@ mod tests {
         ));
         assert!(matches!(
             &module.imports[2],
-            Import::Actor { app: None, actor, path }
+            Import::Actor { actor, path }
                 if actor == "Helper" && path == "./helper.ag"
         ));
     }

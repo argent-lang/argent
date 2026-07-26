@@ -1,4 +1,4 @@
-import actor AssetApp::Asset from "./asset.ag";
+import app AssetApp from "./asset.ag";
 
 state CtrlState {
     int n;
@@ -8,10 +8,10 @@ actor Ctrl owns CtrlState {
     entry act(cov_id asset_id, byte[32] new_owner)
     observes asset by asset_id {
         inputs {
-            src: Asset,
+            src: AssetApp::Asset,
         }
         outputs {
-            next: Asset,
+            next: AssetApp::Asset,
         }
     }
     emits {
@@ -23,7 +23,7 @@ actor Ctrl owns CtrlState {
             amount: source.amount,
         };
         require asset.outputs become {
-            next <- Asset(next_asset),
+            next <- AssetApp::Asset(next_asset),
         };
 
         CtrlState next_ctrl = {

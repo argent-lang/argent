@@ -1,10 +1,8 @@
 use std::env;
 use std::path::PathBuf;
 
-use argent::emit::{emit_build, emit_build_app};
 use argent::inspect::{inspect_path, render_report};
-use argent::loader::load_program;
-use argent::{ArgentError, Result};
+use argent::{ArgentError, Result, build_file, build_file_app_bundle};
 
 fn main() {
     #[cfg(windows)]
@@ -55,11 +53,10 @@ fn build(args: Vec<String>) -> Result<()> {
     }
 
     let input = input.ok_or_else(|| ArgentError::new("missing input .ag file"))?;
-    let program = load_program(&input)?;
     if let Some(app_name) = app_name {
-        emit_build_app(&program, &app_name, &out_dir)?;
+        build_file_app_bundle(&input, &app_name, &out_dir)?;
     } else {
-        emit_build(&program, &out_dir)?;
+        build_file(&input, &out_dir)?;
     }
     println!("wrote {}", out_dir.display());
     Ok(())

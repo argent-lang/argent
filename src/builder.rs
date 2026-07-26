@@ -5,11 +5,11 @@ mod tests {
     use super::*;
     use crate::{
         artifact::{
-            HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, TemplatePlanError, TypeArtifact, route_template_proof_receipt_id,
-            route_template_table_receipt_id,
+            HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, ObservedTargetArtifact, RuntimeFieldRoleArtifact,
+            TemplatePlanError, TypeArtifact, route_template_proof_receipt_id, route_template_table_receipt_id,
         },
         codec::{CodecError, decode_hex, encode_entry_sig_script},
-        emit::{emit_build, emit_build_app},
+        emit::emit_build_app,
         loader::load_program,
     };
     use std::{
@@ -247,7 +247,7 @@ mod tests {
             .iter()
             .find(|template| template.actor == "ReserveAsset")
             .expect("ReserveAsset template receipt exists");
-        let handle = receipt.actor_type_handle.as_ref().expect("ReserveAsset capsule handle exists");
+        let handle = &receipt.actor_type_handle;
         let prefix = decode_hex(&handle.template.prefix_hex).expect("capsule prefix decodes");
         let suffix = decode_hex(&handle.template.suffix_hex).expect("capsule suffix decodes");
 
@@ -257,7 +257,7 @@ mod tests {
             builder.actor_type_handle("ReserveAsset", "AssetCapsule").expect("capsule handle resolves"),
             decode_hex(&handle.template.hash_hex).expect("capsule hash decodes")
         );
-        assert_ne!(handle.template.hash_hex, receipt.canonical_template_hash);
+        assert_ne!(handle.template.hash_hex, receipt.sil_template_hash);
         assert_eq!(
             builder.actor_type_handle("ReserveAsset", "ReserveAssetState").expect("expanded source view resolves"),
             decode_hex(&handle.template.hash_hex).expect("expanded source view reuses the capsule hash")
@@ -714,6 +714,125 @@ mod tests {
             ),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn context_executes_static_observation_between_same_app_covenants() {
+        let artifact = inline_artifact(
+            "same-app-static-observe",
+            r#"
+            state ForeignState {
+                int amount;
+            }
+
+            state LocalState {
+                cov_id foreign_id;
+                int steps;
+            }
+
+            state TargetState {
+                int units;
+            }
+
+            actor Foreign owns ForeignState {
+                entry hold() emits one Foreign {
+                    become Foreign(self.state);
+                }
+
+                entry route() emits one Target {
+                    TargetState next = {
+                        units: 0,
+                    };
+                    become Target(next);
+                }
+            }
+
+            actor Local owns LocalState {
+                entry step()
+                observes remote by self.foreign_id {
+                    inputs {
+                        src: Foreign,
+                    }
+                    outputs {
+                        next: Foreign,
+                    }
+                }
+                emits one Local {
+                    ForeignState next_foreign = remote.inputs.src.state;
+                    require remote.outputs become {
+                        next <- Foreign(next_foreign),
+                    };
+
+                    LocalState next_local = {
+                        foreign_id: foreign_id,
+                        steps: steps + 1,
+                    };
+                    become Local(next_local);
+                }
+            }
+
+            actor Target owns TargetState {
+                entry hold() emits none {
+                    require(1 == 1);
+                }
+            }
+
+            app Test {
+                actor Foreign;
+                actor Local;
+                actor Target;
+            }
+            "#,
+        );
+        let foreign_template = artifact
+            .argent
+            .template_plan
+            .templates
+            .iter()
+            .find(|template| template.actor == "Foreign")
+            .expect("Foreign template exists");
+        assert_ne!(
+            foreign_template.actor_type_handle.template.hash_hex, foreign_template.sil_template_hash,
+            "the test must distinguish the in-app template from the source-state handle"
+        );
+        let builder = TxBuilder::new(&artifact).expect("same-app static observation needs no imported interface");
+        let local_covenant_id = Hash::from_bytes([0x74; 32]);
+        let foreign_covenant_id = Hash::from_bytes([0x75; 32]);
+        let local_initial = state! { foreign_id: foreign_covenant_id, steps: 0 };
+        let local_next = state! { foreign_id: foreign_covenant_id, steps: 1 };
+        let foreign_state = state! { amount: 7 };
+        let local_utxo = builder
+            .covenant_utxo("Local", local_initial.clone(), 2_000, 0, false, Some(local_covenant_id))
+            .expect("local UTXO builds");
+        let foreign_utxo = builder
+            .covenant_utxo("Foreign", foreign_state.clone(), 1_000, 0, false, Some(foreign_covenant_id))
+            .expect("foreign UTXO builds");
+        let mut transaction = builder
+            .build(
+                &TxContext::new()
+                    .actor_input(
+                        "Local",
+                        local_initial,
+                        "step",
+                        TransactionOutpoint::new(TransactionId::from_bytes([0x76; 32]), 0),
+                        local_utxo.clone(),
+                        0,
+                    )
+                    .actor_input(
+                        "Foreign",
+                        foreign_state.clone(),
+                        "hold",
+                        TransactionOutpoint::new(TransactionId::from_bytes([0x77; 32]), 0),
+                        foreign_utxo.clone(),
+                        0,
+                    )
+                    .actor_output("Local", local_next, CovenantBinding::new(0, local_covenant_id), 2_000)
+                    .actor_output("Foreign", foreign_state, CovenantBinding::new(1, foreign_covenant_id), 1_000),
+            )
+            .expect("same-app static observation builds");
+
+        execute_transaction_with_covenants(&mut transaction, vec![local_utxo, foreign_utxo])
+            .expect("same-app static observation executes");
     }
 
     #[test]
@@ -1691,7 +1810,7 @@ mod tests {
             .iter_mut()
             .find(|template| template.actor == "Issuer")
             .expect("Issuer template receipt exists");
-        issuer_receipt.canonical_template_hash = "00".repeat(32);
+        issuer_receipt.sil_template_hash = "00".repeat(32);
 
         let err = match TxBuilder::new(&artifact) {
             Ok(_) => panic!("builder must reject a corrupted template plan receipt"),
@@ -1934,7 +2053,8 @@ mod tests {
         let recipient_state = kcc20_state(recipient_owner.clone(), minted_amount);
 
         let mut explicit_observed_template_state = minter_initial.clone();
-        explicit_observed_template_state.insert("gen__asset_kcc20_template".to_string(), ArtifactValue::Bytes(vec![0; 32]));
+        explicit_observed_template_state
+            .insert("gen__asset_kcc20_asset__kcc20_template".to_string(), ArtifactValue::Bytes(vec![0; 32]));
         let explicit_hidden_state = TxContext::new().actor_output(
             "Minter",
             explicit_observed_template_state,
@@ -1944,7 +2064,11 @@ mod tests {
         let hidden_field_err =
             builder.build(&explicit_hidden_state).expect_err("observed template fields must be filled by the runtime");
         assert!(
-            matches!(hidden_field_err, BuilderError::HiddenRuntimeFieldProvided { ref field, .. } if field == "gen__asset_kcc20_template"),
+            matches!(
+                hidden_field_err,
+                BuilderError::HiddenRuntimeFieldProvided { ref field, .. }
+                    if field == "gen__asset_kcc20_asset__kcc20_template"
+            ),
             "unexpected error: {hidden_field_err}"
         );
 
@@ -2115,6 +2239,13 @@ mod tests {
 
         controller_artifact.verify_id().expect("controller artifact id is stable");
         asset_artifact.verify_id().expect("asset artifact id is stable");
+        let Err(missing_dependency_err) = TxBuilder::new(&controller_artifact) else {
+            panic!("a builder must reject a missing app dependency");
+        };
+        assert!(
+            matches!(missing_dependency_err, BuilderError::UnknownAppAlias(ref app) if app == "kcc20_asset"),
+            "unexpected error: {missing_dependency_err}"
+        );
         let bundle = ArtifactBundle::new(&controller_artifact)
             .expect("bundle accepts controller artifact")
             .with_app("kcc20_asset", &asset_artifact)
@@ -2162,17 +2293,10 @@ mod tests {
         let bad_interface_bundle = ArtifactBundle::new(&controller_artifact)
             .expect("controller artifact remains valid")
             .with_app("kcc20_asset", &bad_interface_asset)
-            .expect("interface mismatch is checked when the app is used");
-        let bad_interface_builder = TxBuilder::from_bundle(&bad_interface_bundle).expect("builder accepts bundle shape");
-        let bad_interface_context = TxContext::new().actor_output(
-            "Minter",
-            minter_state(vec![0x22; 32], Hash::from_bytes([0xa5; 32]), 1, true),
-            CovenantBinding::new(0, Hash::from_bytes([0xc0; 32])),
-            1_000,
-        );
-        let mismatch_err = bad_interface_builder
-            .build(&bad_interface_context)
-            .expect_err("interface fingerprint mismatch is rejected when filling observed template fields");
+            .expect("dependency artifact attaches before linked interfaces are checked");
+        let Err(mismatch_err) = TxBuilder::from_bundle(&bad_interface_bundle) else {
+            panic!("interface fingerprint mismatch must reject the builder");
+        };
         assert!(
             matches!(&mismatch_err, BuilderError::InterfaceMismatch { app, actor, .. } if app == "kcc20_asset" && actor == "MinterProxy"),
             "unexpected error: {mismatch_err}"
@@ -2182,18 +2306,85 @@ mod tests {
     #[test]
     fn observed_self_merge_actor_composes_with_its_defining_app() {
         let fixture = "tests/fixtures/runtime/context_observed_self_merge";
-        let asset_artifact = selected_app_artifact(&format!("{fixture}/asset.ag"), "AssetApp", "observed-self-merge-asset");
-        let controller_artifact =
-            selected_app_artifact(&format!("{fixture}/controller.ag"), "CtrlApp", "observed-self-merge-controller");
-        let bundle = ArtifactBundle::new(&controller_artifact)
-            .expect("bundle accepts the controller artifact")
-            .with_app("asset_app", &asset_artifact)
-            .expect("bundle accepts the asset artifact");
-        let builder = TxBuilder::from_bundle(&bundle).expect("builder accepts the artifact bundle");
-        let context =
-            TxContext::new().actor_output("Ctrl", state! { n: 0 }, CovenantBinding::new(0, Hash::from_bytes([0x31; 32])), 1_000);
+        for controller in ["controller.ag", "controller_app.ag"] {
+            let out_dir = std::env::temp_dir().join(format!(
+                "argent-observed-self-merge-bundle-{}-{}",
+                std::process::id(),
+                ARTIFACT_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            let compiled = crate::build_file_app_bundle(format!("{fixture}/{controller}"), "CtrlApp", &out_dir)
+                .expect("controller and asset apps compile as one dependency bundle");
+            let controller_artifact = compiled.primary();
+            let asset_artifact = compiled.app("AssetApp").expect("compiled bundle contains AssetApp");
+            assert!(out_dir.join("apps/AssetApp/artifact.json").is_file(), "dependency artifact is emitted in the bundle");
+            assert!(controller_artifact.sil_abi.contract("Asset").is_none(), "controller must not recompile the imported actor");
+            assert_eq!(
+                controller_artifact.argent.interfaces.imports[0].fingerprint_hex,
+                asset_artifact.argent.interfaces.exports[0].fingerprint_hex
+            );
+            let runtime_state = controller_artifact
+                .argent
+                .template_plan
+                .runtime_states
+                .iter()
+                .find(|state| state.contract == "Ctrl")
+                .expect("controller records its linked template field");
+            assert!(matches!(
+                &runtime_state.field_roles[0].role,
+                RuntimeFieldRoleArtifact::ImportedTemplate { app, contract, state, .. }
+                    if app == "AssetApp" && contract == "Asset" && state == "AssetState"
+            ));
+            let ctrl_template = controller_artifact
+                .argent
+                .template_plan
+                .templates
+                .iter()
+                .find(|template| template.actor == "Ctrl")
+                .expect("controller template exists");
+            assert!(
+                !ctrl_template.actor_type_handle.context_fields.is_empty(),
+                "linked template context is fixed in the controller handle"
+            );
+            let observed = &controller_artifact.argent.actors[0].entries[0].observes[0].inputs[0];
+            assert!(matches!(
+                &observed.target,
+                ObservedTargetArtifact::StaticActor { app, actor } if app == "AssetApp" && actor == "Asset"
+            ));
+            let bundle = compiled.runtime_bundle().expect("compiled artifacts form a runtime bundle");
+            let builder = TxBuilder::from_bundle(&bundle).expect("builder accepts the compiled artifact bundle");
+            builder
+                .covenant_utxo("Ctrl", state! { n: 0 }, 1_000, 0, false, Some(Hash::from_bytes([0x31; 32])))
+                .expect("linked imported template context builds the controller state");
+            fs::remove_dir_all(out_dir).expect("temporary bundle build is removed");
+        }
+    }
 
-        builder.build(&context).expect("an observed self-merge actor has the same imported and exported interface");
+    #[test]
+    fn foreign_source_actors_require_an_app_import() {
+        let fixture = "tests/fixtures/runtime/context_observed_self_merge";
+        let direct = crate::build_file(
+            format!("{fixture}/controller_direct.ag"),
+            std::env::temp_dir().join("argent-invalid-direct-actor-import"),
+        )
+        .expect_err("a direct actor import cannot add a foreign actor to the selected app");
+        assert!(
+            direct
+                .to_string()
+                .contains("direct actor import `Asset` is not part of selected app `CtrlApp`; use `import actor AssetApp::Asset"),
+            "unexpected error: {direct}"
+        );
+
+        let module = crate::build_file(
+            format!("{fixture}/controller_module.ag"),
+            std::env::temp_dir().join("argent-invalid-module-actor-reference"),
+        )
+        .expect_err("a module import cannot bypass foreign app identity");
+        assert!(
+            module.to_string().contains(
+                "references actor `Asset` outside selected app `CtrlApp`; foreign actors must be imported through their app"
+            ),
+            "unexpected error: {module}"
+        );
     }
 
     #[test]
@@ -2640,10 +2831,7 @@ mod tests {
         if out_dir.exists() {
             std::fs::remove_dir_all(&out_dir).expect("old temp dir removed");
         }
-        let program = load_program(&input).expect("example source loads");
-        emit_build(&program, &out_dir).expect("example artifact builds");
-        let json = std::fs::read_to_string(out_dir.join("artifact.json")).expect("artifact json exists");
-        serde_json::from_str(&json).expect("artifact deserializes")
+        crate::build_file(&input, &out_dir).expect("example artifact builds")
     }
 
     fn ticket_state(owner: Vec<u8>, serial: i64, redeemed: i64) -> BTreeMap<String, ArtifactValue> {

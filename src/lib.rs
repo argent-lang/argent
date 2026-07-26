@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 pub mod artifact;
 pub mod ast;
@@ -9,6 +12,7 @@ pub mod error;
 pub mod inspect;
 mod language;
 pub mod lexer;
+mod link;
 pub mod loader;
 pub mod parser;
 pub mod routes;
@@ -16,6 +20,42 @@ pub mod routing;
 mod stdlib;
 
 pub use error::{ArgentError, Result};
+
+/// Artifacts compiled together from one source-app dependency graph.
+#[derive(Debug, Clone)]
+pub struct CompiledAppBundle {
+    primary_app: String,
+    artifacts: BTreeMap<String, artifact::Artifact>,
+}
+
+impl CompiledAppBundle {
+    pub fn primary(&self) -> &artifact::Artifact {
+        self.artifacts.get(&self.primary_app).expect("compiled bundle contains its primary app")
+    }
+
+    pub fn app(&self, app: &str) -> Option<&artifact::Artifact> {
+        self.artifacts.get(app)
+    }
+
+    pub fn apps(&self) -> impl Iterator<Item = (&str, &artifact::Artifact)> {
+        self.artifacts.iter().map(|(app, artifact)| (app.as_str(), artifact))
+    }
+
+    /// Build the runtime bundle with the selected app as its primary artifact.
+    pub fn runtime_bundle(&self) -> builder::BuilderResult<builder::ArtifactBundle<'_>> {
+        let mut bundle = builder::ArtifactBundle::new(self.primary())?;
+        for (app, artifact) in &self.artifacts {
+            if app != &self.primary_app {
+                bundle = bundle.with_artifact(artifact)?;
+            }
+        }
+        Ok(bundle)
+    }
+
+    fn into_primary(mut self) -> artifact::Artifact {
+        self.artifacts.remove(&self.primary_app).expect("compiled bundle contains its primary app")
+    }
+}
 
 /// Compile an inline Argent source string and return its artifact.
 ///
@@ -52,9 +92,16 @@ pub fn build_inline(
 /// This is the library equivalent of `argentc build <app.ag> --out <dir>`.
 /// Imports are resolved relative to the input file.
 pub fn build_file(input: impl AsRef<Path>, out_dir: impl AsRef<Path>) -> Result<artifact::Artifact> {
-    let program = loader::load_program(input.as_ref())?;
-    emit::emit_build(&program, out_dir.as_ref())?;
-    read_artifact(out_dir.as_ref())
+    let input = input.as_ref();
+    let out_dir = out_dir.as_ref();
+    let program = loader::load_program(input)?;
+    let root = program.modules.iter().find(|module| module.path == program.root).expect("loaded program contains its root module");
+    if let [app] = root.apps.as_slice() {
+        let app_name = app.name.clone();
+        return Ok(build_app_graph(loader::plan_app_graph(program, &app_name)?, &app_name, out_dir)?.into_primary());
+    }
+    emit::emit_build(&program, out_dir)?;
+    read_artifact(out_dir)
 }
 
 /// Build one named app from a file that declares multiple apps.
@@ -63,10 +110,51 @@ pub fn build_file(input: impl AsRef<Path>, out_dir: impl AsRef<Path>) -> Result<
 /// ordinary module imports remain supporting compilation context.
 /// App-qualified imports form separate app dependencies.
 pub fn build_file_app(input: impl AsRef<Path>, app_name: &str, out_dir: impl AsRef<Path>) -> Result<artifact::Artifact> {
+    Ok(build_file_app_bundle(input, app_name, out_dir)?.into_primary())
+}
+
+/// Compile one source app and all source-backed app dependencies.
+///
+/// Dependencies are compiled once in dependency order. Their generated files
+/// are written below `out_dir/apps/<AppName>`. The selected app keeps the
+/// existing `out_dir` layout.
+pub fn build_file_app_bundle(input: impl AsRef<Path>, app_name: &str, out_dir: impl AsRef<Path>) -> Result<CompiledAppBundle> {
     let apps = loader::load_app_graph(input.as_ref(), app_name)?;
-    let (_, _, program) = apps.last().expect("an app graph contains its requested root");
-    emit::emit_build_app(program, app_name, out_dir.as_ref())?;
-    read_artifact(out_dir.as_ref())
+    build_app_graph(apps, app_name, out_dir.as_ref())
+}
+
+fn build_app_graph(
+    apps: Vec<(loader::SourceApp, Vec<loader::SourceApp>, ast::Program)>,
+    app_name: &str,
+    out_dir: &Path,
+) -> Result<CompiledAppBundle> {
+    let dependency_dir = out_dir.join("apps");
+    if dependency_dir.exists() {
+        std::fs::remove_dir_all(&dependency_dir)?;
+    }
+
+    let mut artifacts = BTreeMap::<String, artifact::Artifact>::new();
+    for (index, (source_app, dependencies, program)) in apps.iter().enumerate() {
+        let linked = dependencies
+            .iter()
+            .map(|dependency| {
+                artifacts.get(&dependency.app).map(|artifact| (dependency.app.clone(), artifact)).ok_or_else(|| {
+                    ArgentError::new(format!("app `{}` dependency `{}` was not compiled first", source_app.app, dependency.app))
+                })
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let app_out = if index + 1 == apps.len() { out_dir.to_path_buf() } else { dependency_dir.join(&source_app.app) };
+        emit::emit_build_app_linked(program, &source_app.app, &linked, &app_out)?;
+        let artifact = read_artifact(&app_out)?;
+        if artifacts.insert(source_app.app.clone(), artifact).is_some() {
+            return Err(ArgentError::new(format!(
+                "app name `{}` occurs more than once in the compiled dependency graph",
+                source_app.app
+            )));
+        }
+    }
+
+    Ok(CompiledAppBundle { primary_app: app_name.to_string(), artifacts })
 }
 
 fn inline_program(source_label: PathBuf, source: String) -> Result<ast::Program> {
@@ -304,6 +392,146 @@ app RightApp {
         assert!(!out_dir.join("sil/Left.sil").exists());
         assert!(out_dir.join("sil/Right.sil").exists());
         assert!(out_dir.join("sil/RightAlt.sil").exists());
+
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn app_bundle_compiles_transitive_imports_from_dependency_artifacts() {
+        let temp = std::env::temp_dir().join(format!("argent-build-transitive-apps-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("temp dir created");
+
+        std::fs::write(
+            temp.join("leaf.ag"),
+            r#"
+state LeafState {
+    int n;
+}
+
+actor Leaf owns LeafState {
+    entry update() emits one Leaf {
+        LeafState next = {
+            n: n + 1,
+        };
+        become Leaf(next);
+    }
+}
+
+app LeafApp {
+    actor Leaf;
+}
+"#,
+        )
+        .expect("leaf source written");
+        std::fs::write(
+            temp.join("middle.ag"),
+            r#"
+import actor LeafApp::Leaf from "./leaf.ag";
+
+state MiddleState {
+    int n;
+}
+
+actor Middle owns MiddleState {
+    entry update(cov_id leaf_id)
+    observes leaf by leaf_id {
+        inputs {
+            src: Leaf,
+        }
+        outputs {
+            next: Leaf,
+        }
+    }
+    emits one Middle {
+        LeafState next_leaf = leaf.inputs.src.state;
+        require leaf.outputs become {
+            next <- Leaf(next_leaf),
+        };
+        MiddleState next = {
+            n: n + 1,
+        };
+        become Middle(next);
+    }
+}
+
+app MiddleApp {
+    actor Middle;
+}
+"#,
+        )
+        .expect("middle source written");
+        std::fs::write(
+            temp.join("root.ag"),
+            r#"
+import actor MiddleApp::Middle from "./middle.ag";
+
+state RootState {
+    int n;
+}
+
+actor Root owns RootState {
+    entry update(cov_id middle_id)
+    observes middle by middle_id {
+        inputs {
+            src: Middle,
+        }
+        outputs {
+            next: Middle,
+        }
+    }
+    emits one Root {
+        MiddleState next_middle = middle.inputs.src.state;
+        require middle.outputs become {
+            next <- Middle(next_middle),
+        };
+        RootState next = {
+            n: n + 1,
+        };
+        become Root(next);
+    }
+}
+
+app RootApp {
+    actor Root;
+}
+"#,
+        )
+        .expect("root source written");
+
+        let out_dir = temp.join("build");
+        let compiled =
+            build_file_app_bundle(temp.join("root.ag"), "RootApp", &out_dir).expect("transitive app dependency graph compiles");
+
+        assert_eq!(compiled.apps().map(|(app, _)| app).collect::<Vec<_>>(), ["LeafApp", "MiddleApp", "RootApp"]);
+        assert!(out_dir.join("apps/LeafApp/artifact.json").is_file());
+        assert!(out_dir.join("apps/MiddleApp/artifact.json").is_file());
+        let middle_handle = compiled
+            .app("MiddleApp")
+            .expect("bundle contains MiddleApp")
+            .argent
+            .template_plan
+            .templates
+            .iter()
+            .find(|template| template.actor == "Middle")
+            .map(|template| &template.actor_type_handle)
+            .expect("Middle exports a source-state handle that contains its Leaf dependency");
+        let root_import_hash = compiled
+            .primary()
+            .argent
+            .template_plan
+            .runtime_states
+            .iter()
+            .find(|state| state.contract == "Root")
+            .and_then(|state| {
+                state.field_roles.iter().find_map(|field| match &field.role {
+                    artifact::RuntimeFieldRoleArtifact::ImportedTemplate { hash_hex, .. } => Some(hash_hex),
+                    _ => None,
+                })
+            })
+            .expect("Root fixes the exported Middle source-state template");
+        assert_eq!(root_import_hash, &middle_handle.template.hash_hex);
+        compiled.runtime_bundle().expect("all transitive artifacts form one runtime bundle");
 
         let _ = std::fs::remove_dir_all(temp);
     }

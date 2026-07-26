@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "98616a1c3e326bb3ae0fcd1ffd67c1fcc372f8fce47b7837ffeae1ac8b180da9",
+  "id": "4b656b04d3e11ac8ce87b33c4f901fb33ec5f661ec372b0e713bfb02b9168c51",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -50,7 +50,7 @@
           "actor": "Lobby",
           "contract": "Lobby",
           "symbol": "gen__lobby_template",
-          "canonical_template_hash": "168633cfa79b38765cf38339872a3ebf5a341b2044c703b226e75d8a0835ef1e",
+          "sil_template_hash": "168633cfa79b38765cf38339872a3ebf5a341b2044c703b226e75d8a0835ef1e",
           "actor_type_handle": {
             "state": "LobbyState",
             "context_fields": [
@@ -70,7 +70,7 @@
           "actor": "Mux",
           "contract": "Mux",
           "symbol": "gen__mux_template",
-          "canonical_template_hash": "a291095161d1815b67519a4c9468202473e40e0fa4391d3a729e05a15ee5a6e9",
+          "sil_template_hash": "a291095161d1815b67519a4c9468202473e40e0fa4391d3a729e05a15ee5a6e9",
           "actor_type_handle": {
             "state": "BoardState",
             "context_fields": [
@@ -90,7 +90,7 @@
           "actor": "Pawn",
           "contract": "Pawn",
           "symbol": "gen__pawn_template",
-          "canonical_template_hash": "b608475fdfbf1df07bf7f426da6a876892dd0599b4988d0367498263cb9d4915",
+          "sil_template_hash": "b608475fdfbf1df07bf7f426da6a876892dd0599b4988d0367498263cb9d4915",
           "actor_type_handle": {
             "state": "BoardState",
             "context_fields": [
@@ -110,7 +110,7 @@
           "actor": "Knight",
           "contract": "Knight",
           "symbol": "gen__knight_template",
-          "canonical_template_hash": "b608475fdfbf1df07bf7f426da6a876892dd0599b4988d0367498263cb9d4915",
+          "sil_template_hash": "b608475fdfbf1df07bf7f426da6a876892dd0599b4988d0367498263cb9d4915",
           "actor_type_handle": {
             "state": "BoardState",
             "context_fields": [
@@ -130,14 +130,23 @@
           "actor": "Spectator",
           "contract": "Spectator",
           "symbol": "gen__spectator_template",
-          "canonical_template_hash": "5b2a4c009d5c13a72a95c0fdc75470122ba59513cf4c743b71fbb5ccf07aa8fb"
+          "sil_template_hash": "5b2a4c009d5c13a72a95c0fdc75470122ba59513cf4c743b71fbb5ccf07aa8fb",
+          "actor_type_handle": {
+            "state": "BoardState",
+            "context_fields": [],
+            "template": {
+              "prefix_hex": "",
+              "suffix_hex": "b9cb009c697600a2697551",
+              "hash_hex": "5b2a4c009d5c13a72a95c0fdc75470122ba59513cf4c743b71fbb5ccf07aa8fb"
+            }
+          }
         },
         {
           "id": "template/archive",
           "actor": "Archive",
           "contract": "Archive",
           "symbol": "gen__archive_template",
-          "canonical_template_hash": "9823f8491ad639155c52be499b5571f59794d96a2ed50849ecd7922d61c27f5a",
+          "sil_template_hash": "9823f8491ad639155c52be499b5571f59794d96a2ed50849ecd7922d61c27f5a",
           "actor_type_handle": {
             "state": "ArchiveState",
             "context_fields": [
@@ -488,36 +497,42 @@
       "exports": [
         {
           "id": "interface/actor/Lobby",
+          "app": "RouteStateBodies",
           "actor": "Lobby",
           "state": "LobbyState",
           "fingerprint_hex": "8c9b812dcf25fbe4424b498a46c05536689a28f10e2cdc8f88487c5e023042dd"
         },
         {
           "id": "interface/actor/Mux",
+          "app": "RouteStateBodies",
           "actor": "Mux",
           "state": "BoardState",
           "fingerprint_hex": "cd4966f7c4a8179ae5067bf128fb4f89d5f48155fcb110ba4b74500cb0126ef1"
         },
         {
           "id": "interface/actor/Pawn",
+          "app": "RouteStateBodies",
           "actor": "Pawn",
           "state": "BoardState",
           "fingerprint_hex": "04a188d34efda3e6f0f6359b86bcc625356d7258a30e441a87d752b6b3e45f12"
         },
         {
           "id": "interface/actor/Knight",
+          "app": "RouteStateBodies",
           "actor": "Knight",
           "state": "BoardState",
           "fingerprint_hex": "0f79c2c9a04d3e058b3cb9bc4f6cfbd03e1df9e048a7fdc0e21e86fa8e0e4571"
         },
         {
           "id": "interface/actor/Spectator",
+          "app": "RouteStateBodies",
           "actor": "Spectator",
           "state": "BoardState",
           "fingerprint_hex": "86d8969cbfd8fb62cf999b9488e5bcb3f1eef5e24aceda7bae0a7139dc883f65"
         },
         {
           "id": "interface/actor/Archive",
+          "app": "RouteStateBodies",
           "actor": "Archive",
           "state": "ArchiveState",
           "fingerprint_hex": "925f7585f9b03119c4ee8a06d375c0370fd0acda3c6d03fd5604037304c29d03"

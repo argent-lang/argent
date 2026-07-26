@@ -26,8 +26,9 @@ pub use silverscript_abi::ArtifactValue;
 use argent_artifact::{
     ActorArtifact, ActorInterfaceArtifact, ArgentStateArtifact, ArtifactIdentityError, ArtifactVersionError, CompiledTemplateArtifact,
     EntryArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, ObserveArtifact,
-    ObservedActorArtifact, ObservedActorSideArtifact, RouteTemplateLeafArtifact, RouteTemplateProofArtifact, RuntimeFieldRoleArtifact,
-    RuntimeStatePlanArtifact, SilContractArtifact, SilEntryArtifact, TemplatePlanError, fixed_runtime_context_value,
+    ObservedActorArtifact, ObservedActorSideArtifact, ObservedTargetArtifact, RouteTemplateLeafArtifact, RouteTemplateProofArtifact,
+    RuntimeFieldRoleArtifact, RuntimeStatePlanArtifact, SilContractArtifact, SilEntryArtifact, TemplatePlanError,
+    fixed_runtime_context_value,
 };
 use kaspa_consensus_core::{
     Hash,
@@ -284,10 +285,6 @@ pub enum BuilderError {
         "artifact bundle app `{app}` actor `{actor}` interface mismatch: expected {expected_fingerprint}, found {found_fingerprint}"
     )]
     InterfaceMismatch { app: String, actor: String, expected_fingerprint: String, found_fingerprint: String },
-    #[error("no attached app supplies observed `{observe}` contract `{contract}`")]
-    NoAppForObservedContract { observe: String, contract: String },
-    #[error("multiple attached apps supply observed `{observe}` contract `{contract}`: {apps:?}")]
-    AmbiguousAppForObservedContract { observe: String, contract: String, apps: Vec<String> },
     #[error("runtime state plan for contract `{contract}` is invalid: {message}")]
     RuntimeStatePlanMismatch { contract: String, message: String },
     #[error("runtime state field `{field}` for contract `{contract}` is generated and must be filled by the runtime")]
@@ -566,6 +563,12 @@ impl<'a> ArtifactBundle<'a> {
         Ok(self)
     }
 
+    /// Attach an app under the canonical alias derived from its artifact name.
+    pub fn with_artifact(self, artifact: &'a Artifact) -> BuilderResult<Self> {
+        let alias = artifact_app_alias(&artifact.app);
+        self.with_app(alias, artifact)
+    }
+
     fn app(&self, alias: &str) -> BuilderResult<&'a Artifact> {
         self.apps.get(alias).copied().ok_or_else(|| BuilderError::UnknownAppAlias(alias.to_string()))
     }
@@ -581,11 +584,24 @@ impl<'a> ArtifactBundle<'a> {
 
 impl<'a> TxBuilder<'a> {
     pub fn new(artifact: &'a Artifact) -> BuilderResult<Self> {
-        Ok(Self { bundle: ArtifactBundle::new(artifact)? })
+        let bundle = ArtifactBundle::new(artifact)?;
+        Self::from_bundle(&bundle)
     }
 
     pub fn from_bundle(bundle: &ArtifactBundle<'a>) -> BuilderResult<Self> {
-        Ok(Self { bundle: bundle.clone() })
+        let builder = Self { bundle: bundle.clone() };
+        builder.validate_bundle_interfaces()?;
+        Ok(builder)
+    }
+
+    fn validate_bundle_interfaces(&self) -> BuilderResult<()> {
+        for observing_artifact in self.bundle.apps.values() {
+            for interface in &observing_artifact.argent.interfaces.imports {
+                let app = artifact_app_alias(&interface.app);
+                self.validate_actor_interface(observing_artifact, &app, &interface.actor)?;
+            }
+        }
+        Ok(())
     }
 
     fn redeem_script_for_contract(
@@ -938,7 +954,6 @@ impl<'a> TxBuilder<'a> {
     }
 
     fn actor_type_handle_in_artifact(&self, artifact: &'a Artifact, actor: &str, state: &str) -> BuilderResult<Vec<u8>> {
-        let contract = self.contract_in_artifact(artifact, actor)?;
         let actor_artifact = artifact
             .argent
             .actors
@@ -959,27 +974,21 @@ impl<'a> TxBuilder<'a> {
             .templates
             .iter()
             .find(|template| template.actor == actor)
-            .and_then(|template| template.actor_type_handle.as_ref())
-            .filter(|handle| handle.state == storage_state && supports_view);
-        if let Some(handle) = handle {
-            return Ok(decode_hex(&handle.template.hash_hex)?);
+            .ok_or_else(|| BuilderError::MissingActorTypeHandle { actor: actor.to_string(), state: state.to_string() })?;
+        let handle = &handle.actor_type_handle;
+        if handle.state != storage_state || !supports_view {
+            return Err(BuilderError::MissingActorTypeHandle { actor: actor.to_string(), state: state.to_string() });
         }
-        if expanded_base.is_none() && actor_artifact.state == state {
-            return Ok(decode_hex(&contract.compiled.template.hash_hex)?);
-        }
-        Err(BuilderError::MissingActorTypeHandle { actor: actor.to_string(), state: state.to_string() })
+        Ok(decode_hex(&handle.template.hash_hex)?)
     }
 
     fn validate_actor_interface(&self, observing_artifact: &Artifact, app: &str, actor: &str) -> BuilderResult<()> {
         let artifact = self.bundle.app(app)?;
         let observing_app = artifact_app_alias(&observing_artifact.app);
-        let expected = find_interface(&observing_artifact.argent.interfaces.imports, actor)
+        let expected = find_interface(&observing_artifact.argent.interfaces.imports, &artifact.app, actor)
             .ok_or_else(|| BuilderError::MissingInterface { app: observing_app, direction: "import", actor: actor.to_string() })?;
-        let found = find_interface(&artifact.argent.interfaces.exports, actor).ok_or_else(|| BuilderError::MissingInterface {
-            app: app.to_string(),
-            direction: "export",
-            actor: actor.to_string(),
-        })?;
+        let found = find_interface(&artifact.argent.interfaces.exports, &artifact.app, actor)
+            .ok_or_else(|| BuilderError::MissingInterface { app: app.to_string(), direction: "export", actor: actor.to_string() })?;
         if expected.fingerprint_hex != found.fingerprint_hex {
             return Err(BuilderError::InterfaceMismatch {
                 app: app.to_string(),
@@ -991,42 +1000,10 @@ impl<'a> TxBuilder<'a> {
         Ok(())
     }
 
-    fn observed_contract_ref(
-        &self,
-        observing_artifact: &'a Artifact,
-        observe: &str,
-        contract: &str,
-    ) -> BuilderResult<ContractRef<'a>> {
-        let mut contract_apps = Vec::new();
-        let mut valid_apps = Vec::new();
-        let mut first_interface_error = None;
-        for (app, artifact) in &self.bundle.apps {
-            let app = app.as_str();
-            let artifact = *artifact;
-            if std::ptr::eq(artifact, observing_artifact) {
-                continue;
-            }
-            if artifact.sil_abi.contract(contract).is_some() {
-                contract_apps.push(app.to_string());
-                match self.validate_actor_interface(observing_artifact, app, contract) {
-                    Ok(()) => valid_apps.push(app.to_string()),
-                    Err(err) if first_interface_error.is_none() => first_interface_error = Some(err),
-                    Err(_) => {}
-                }
-            }
-        }
-        match valid_apps.as_slice() {
-            [app] => self.contract_ref_in_app(app, contract),
-            [] if contract_apps.is_empty() => {
-                Err(BuilderError::NoAppForObservedContract { observe: observe.to_string(), contract: contract.to_string() })
-            }
-            [] => Err(first_interface_error.expect("at least one app with contract produced an interface result")),
-            _ => Err(BuilderError::AmbiguousAppForObservedContract {
-                observe: observe.to_string(),
-                contract: contract.to_string(),
-                apps: valid_apps,
-            }),
-        }
+    fn observed_contract_ref(&self, observing_artifact: &'a Artifact, app: &str, contract: &str) -> BuilderResult<ContractRef<'a>> {
+        let alias = artifact_app_alias(app);
+        self.validate_actor_interface(observing_artifact, &alias, contract)?;
+        self.contract_ref_in_app(&alias, contract)
     }
 
     fn contract_in_artifact(&self, artifact: &'a Artifact, name: &str) -> BuilderResult<&'a SilContractArtifact> {
@@ -1051,9 +1028,38 @@ impl<'a> TxBuilder<'a> {
         contexts: HiddenArgContexts<'_>,
     ) -> BuilderResult<&'a CompiledTemplateArtifact> {
         let contract_ref = self.hidden_template_contract_ref(primary_artifact, hidden, entry, template_selectors, contexts)?;
+        let static_observe = match &hidden.subject {
+            HiddenParamSubjectArtifact::ObservedActor { observe, side, handle, .. } => {
+                match &self.observed_actor(entry, observe, *side, handle)?.target {
+                    ObservedTargetArtifact::StaticActor { app, .. } => Some(app.as_str()),
+                    ObservedTargetArtifact::DynamicActor { .. } => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some(observed_app) = static_observe {
+            if observed_app == primary_artifact.app {
+                return Ok(&contract_ref.contract.compiled.template);
+            }
+            let template = contract_ref
+                .artifact
+                .argent
+                .template_plan
+                .templates
+                .iter()
+                .find(|template| template.actor == contract_ref.contract.name)
+                .ok_or_else(|| BuilderError::MissingActorTypeHandle {
+                    actor: contract_ref.contract.name.clone(),
+                    state: contract_ref.contract.runtime_state.source.clone(),
+                })?;
+            return Ok(&template.actor_type_handle.template);
+        }
         let open_state = match &hidden.subject {
             HiddenParamSubjectArtifact::ObservedActor { observe, side, handle, .. } => {
-                self.observed_actor(entry, observe, *side, handle)?.open_state.as_deref()
+                match &self.observed_actor(entry, observe, *side, handle)?.target {
+                    ObservedTargetArtifact::DynamicActor { state } => Some(state.as_str()),
+                    ObservedTargetArtifact::StaticActor { .. } => None,
+                }
             }
             HiddenParamSubjectArtifact::SpawnActor { spawn, handle, .. } => entry
                 .spawns
@@ -1083,7 +1089,7 @@ impl<'a> TxBuilder<'a> {
             .templates
             .iter()
             .find(|template| template.actor == contract_ref.contract.name)
-            .and_then(|template| template.actor_type_handle.as_ref())
+            .map(|template| &template.actor_type_handle)
             .filter(|handle| handle.state == open_state)
             .ok_or_else(|| BuilderError::MissingActorTypeHandle {
                 actor: contract_ref.contract.name.clone(),
@@ -1114,10 +1120,18 @@ impl<'a> TxBuilder<'a> {
                     }
                     None => {
                         let observed_actor = self.observed_actor(entry, observe, *side, handle)?;
-                        if observed_actor.open_state.is_some() {
-                            return Err(BuilderError::MissingObservedCovenant { observe: observe.clone() });
+                        match &observed_actor.target {
+                            ObservedTargetArtifact::DynamicActor { .. } => {
+                                Err(BuilderError::MissingObservedCovenant { observe: observe.clone() })
+                            }
+                            ObservedTargetArtifact::StaticActor { app, actor } => {
+                                if app == &primary_artifact.app {
+                                    self.contract_ref_in_artifact(primary_artifact, actor)
+                                } else {
+                                    self.observed_contract_ref(primary_artifact, app, actor)
+                                }
+                            }
                         }
-                        self.observed_contract_ref(primary_artifact, observe, &observed_actor.actor)
                     }
                 }
             }
@@ -1326,41 +1340,57 @@ impl<'a> TxBuilder<'a> {
         expected: &ObservedActorArtifact,
         found_actor: &str,
     ) -> BuilderResult<()> {
-        if let Some(expected_state) = expected.open_state.as_deref() {
-            let found = self.actor_ref_in_artifact(self.bundle.app(app)?, found_actor)?;
-            if !state_satisfies(found.artifact, &found.actor.state, expected_state) {
-                return Err(BuilderError::ObservedStateLayoutMismatch {
-                    observe: observe_name.to_string(),
-                    side: side.into(),
-                    handle: expected.name.clone(),
-                    actor: found_actor.to_string(),
-                    state: expected_state.to_string(),
-                });
+        match &expected.target {
+            ObservedTargetArtifact::DynamicActor { state: expected_state } => {
+                let found = self.actor_ref_in_artifact(self.bundle.app(app)?, found_actor)?;
+                if !state_satisfies(found.artifact, &found.actor.state, expected_state) {
+                    return Err(BuilderError::ObservedStateLayoutMismatch {
+                        observe: observe_name.to_string(),
+                        side: side.into(),
+                        handle: expected.name.clone(),
+                        actor: found_actor.to_string(),
+                        state: expected_state.clone(),
+                    });
+                }
+                let expected_layout = state_artifact(observing_artifact, expected_state)?;
+                let found_layout = state_artifact(found.artifact, &found.actor.state)?;
+                if !same_lowered_state_layout(expected_layout, found_layout) {
+                    return Err(BuilderError::ObservedStateLayoutMismatch {
+                        observe: observe_name.to_string(),
+                        side: side.into(),
+                        handle: expected.name.clone(),
+                        state: expected_state.clone(),
+                        actor: found_actor.to_string(),
+                    });
+                }
+                Ok(())
             }
-            let expected_layout = state_artifact(observing_artifact, expected_state)?;
-            let found_layout = state_artifact(found.artifact, &found.actor.state)?;
-            if !same_lowered_state_layout(expected_layout, found_layout) {
-                return Err(BuilderError::ObservedStateLayoutMismatch {
-                    observe: observe_name.to_string(),
-                    side: side.into(),
-                    handle: expected.name.clone(),
-                    state: expected_state.to_string(),
-                    actor: found_actor.to_string(),
-                });
+            ObservedTargetArtifact::StaticActor { app: expected_app, actor: expected_actor } => {
+                let expected_alias = artifact_app_alias(expected_app);
+                if app != expected_alias {
+                    return Err(BuilderError::ObservedAppMismatch {
+                        observe: observe_name.to_string(),
+                        expected: expected_alias,
+                        found: app.to_string(),
+                    });
+                }
+                if expected_actor != found_actor {
+                    return Err(BuilderError::ObservedActorMismatch {
+                        observe: observe_name.to_string(),
+                        side: side.into(),
+                        handle: expected.name.clone(),
+                        expected: expected_actor.clone(),
+                        found: found_actor.to_string(),
+                    });
+                }
+                if expected_app == &observing_artifact.app {
+                    self.contract_in_artifact(observing_artifact, expected_actor)?;
+                    Ok(())
+                } else {
+                    self.validate_actor_interface(observing_artifact, app, expected_actor)
+                }
             }
-            return Ok(());
         }
-        if expected.actor != found_actor {
-            return Err(BuilderError::ObservedActorMismatch {
-                observe: observe_name.to_string(),
-                side: side.into(),
-                handle: expected.name.clone(),
-                expected: expected.actor.clone(),
-                found: found_actor.to_string(),
-            });
-        }
-        self.validate_actor_interface(observing_artifact, app, &expected.actor)?;
-        Ok(())
     }
 
     fn runtime_state_values(
@@ -1421,11 +1451,16 @@ impl<'a> TxBuilder<'a> {
                         });
                     }
                     match &field_role.role {
-                        RuntimeFieldRoleArtifact::ObservedTemplate { observe, contract, .. } => {
+                        RuntimeFieldRoleArtifact::ImportedTemplate { .. } => {
+                            let runtime_plan = self
+                                .runtime_state_plan(artifact, &contract.name)
+                                .expect("generated field roles come from a runtime state plan");
                             values.insert(
                                 field.name.clone(),
-                                ArtifactValue::Bytes(decode_hex(
-                                    &self.observed_contract_ref(artifact, observe, contract)?.contract.compiled.template.hash_hex,
+                                ArtifactValue::Bytes(fixed_runtime_context_value(
+                                    &artifact.argent.template_plan,
+                                    runtime_plan,
+                                    field_role,
                                 )?),
                             );
                         }
@@ -1626,8 +1661,8 @@ fn validate_artifact(app: &str, artifact: &Artifact) -> BuilderResult<()> {
     Ok(())
 }
 
-fn find_interface<'a>(interfaces: &'a [ActorInterfaceArtifact], actor: &str) -> Option<&'a ActorInterfaceArtifact> {
-    interfaces.iter().find(|interface| interface.actor == actor)
+fn find_interface<'a>(interfaces: &'a [ActorInterfaceArtifact], app: &str, actor: &str) -> Option<&'a ActorInterfaceArtifact> {
+    interfaces.iter().find(|interface| interface.app == app && interface.actor == actor)
 }
 
 fn hidden_actor_subject(hidden: &HiddenParamArtifact) -> BuilderResult<&str> {

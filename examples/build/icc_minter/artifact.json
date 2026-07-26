@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "9bca399cb25b1ab1880c504ce5d3ca9bb42d07b88b6bdc881a9774aadfa633b4",
+  "id": "4fb2464732d080e7c4ad7e6d6400b2183b4f9e5498189e6718a0dd9edd0b5211",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -8,8 +8,7 @@
   "app": "KCC20MintController",
   "root": "examples/icc/minter.ag",
   "modules": [
-    "examples/icc/minter.ag",
-    "examples/icc/kcc20_asset.ag"
+    "examples/icc/minter.ag"
   ],
   "argent": {
     "templates": [
@@ -26,7 +25,19 @@
           "actor": "Minter",
           "contract": "Minter",
           "symbol": "gen__minter_template",
-          "canonical_template_hash": "9e1729847ccbd3a2ca985e047a6cbf934d28993576585f7d8df1829a1691f64f"
+          "sil_template_hash": "b6952df792c3e6a057c47ecdec9c5e1ed39cc9de564f94fc2e59189f8dbc7b16",
+          "actor_type_handle": {
+            "state": "MinterState",
+            "context_fields": [
+              "gen__asset_kcc20_asset__minter_proxy_template",
+              "gen__asset_kcc20_asset__kcc20_template"
+            ],
+            "template": {
+              "prefix_hex": "205dbca68442f1c3b563e1f25d5ced66ed97ac11943faf5c3563df5c67eec1644d2087677e3d3d6e2baa0be342f14398066a3b44a743e68705013dd05fa8b00cd14f",
+              "suffix_hex": "527976d0519c6976d2529c697600d176bf785279c95e790121935e7993945379c95f790121935f7993945f790121935f799393bcaa02000001aa7e01207e7c7e01877e87695b7958cd785279c95e790121935e7993945379c95f790121935f7993945f7993bc7e5b7958cd52795379c95f790121935f7993945f79930121935479c96079012193607993946079930121935f7993bc7e7e58797caa87697678c95d790121935d7993945d795193935279c95e790121935e7993945e79519393012093bcb9cb519c695f795779ac6953796954795e79a26976b9cf87690052795379c95f790121935f7993945479c9607901219360799394607993bc770053795479c96079012193607993946079930121935579c9011179012193011179939401117993012193607993bc7778827c75519658cd52797e78827c75519658cd52797e7e5b797caa8769b9cf01207c7e52797c7e787eaa02000001aa7e01207e7c7e01877e557900d3c387695c79827c75519658cd5d797e5c79827c75519658cd5d797e7e5a797caa8769607901207c7e010001017c7e01117958cd01087c7e7e7e5d797c7e5c797eaa02000001aa7e01207e7c7e01877e557951d3c387695a7901207c7e5a7901207c7e5a7901207c7e5a7901207c7e5a790114799458cd01087c7e5a7951cd01017c7e7e7e7e7e7eb976c97602be0294028f00937cbc7eaa02000001aa7e01207e7c7e01877eb900ccc38769007a75007a75007a75007a75007a757575757575757575757575757551",
+              "hash_hex": "b161965182fdcebef7a2fc4feebd1d4a1b20c31fb8ceabbb13d8a0c0a5a0b451"
+            }
+          }
         }
       ],
       "runtime_states": [
@@ -35,23 +46,23 @@
           "source": "MinterState",
           "field_roles": [
             {
-              "name": "gen__asset_minter_proxy_template",
+              "name": "gen__asset_kcc20_asset__minter_proxy_template",
               "role": {
-                "kind": "observed_template",
-                "observe": "asset",
-                "side": "input",
-                "handle": "proxy",
-                "contract": "MinterProxy"
+                "kind": "imported_template",
+                "app": "KCC20Asset",
+                "contract": "MinterProxy",
+                "state": "MinterProxyState",
+                "hash_hex": "5dbca68442f1c3b563e1f25d5ced66ed97ac11943faf5c3563df5c67eec1644d"
               }
             },
             {
-              "name": "gen__asset_kcc20_template",
+              "name": "gen__asset_kcc20_asset__kcc20_template",
               "role": {
-                "kind": "observed_template",
-                "observe": "asset",
-                "side": "output",
-                "handle": "recipient",
-                "contract": "KCC20"
+                "kind": "imported_template",
+                "app": "KCC20Asset",
+                "contract": "KCC20",
+                "state": "KCC20State",
+                "hash_hex": "87677e3d3d6e2baa0be342f14398066a3b44a743e68705013dd05fa8b00cd14f"
               }
             }
           ]
@@ -62,57 +73,57 @@
       "route_families": [],
       "witness_recipes": [
         {
-          "id": "witness/observed/asset/input/minter_proxy/template_prefix_len",
+          "id": "witness/observed/asset/input/kcc20_asset__minter_proxy/template_prefix_len",
           "subject": {
             "kind": "observed_actor",
             "observe": "asset",
             "side": "input",
             "handle": "proxy",
-            "actor": "MinterProxy"
+            "actor": "KCC20Asset::MinterProxy"
           },
-          "param": "gen__asset_minter_proxy_prefix_len",
+          "param": "gen__asset_kcc20_asset__minter_proxy_prefix_len",
           "purpose": {
             "kind": "template_prefix_len"
           }
         },
         {
-          "id": "witness/observed/asset/input/minter_proxy/template_suffix_len",
+          "id": "witness/observed/asset/input/kcc20_asset__minter_proxy/template_suffix_len",
           "subject": {
             "kind": "observed_actor",
             "observe": "asset",
             "side": "input",
             "handle": "proxy",
-            "actor": "MinterProxy"
+            "actor": "KCC20Asset::MinterProxy"
           },
-          "param": "gen__asset_minter_proxy_suffix_len",
+          "param": "gen__asset_kcc20_asset__minter_proxy_suffix_len",
           "purpose": {
             "kind": "template_suffix_len"
           }
         },
         {
-          "id": "witness/observed/asset/output/kcc20/template_prefix_bytes",
+          "id": "witness/observed/asset/output/kcc20_asset__kcc20/template_prefix_bytes",
           "subject": {
             "kind": "observed_actor",
             "observe": "asset",
             "side": "output",
             "handle": "recipient",
-            "actor": "KCC20"
+            "actor": "KCC20Asset::KCC20"
           },
-          "param": "gen__asset_kcc20_prefix",
+          "param": "gen__asset_kcc20_asset__kcc20_prefix",
           "purpose": {
             "kind": "template_prefix_bytes"
           }
         },
         {
-          "id": "witness/observed/asset/output/kcc20/template_suffix_bytes",
+          "id": "witness/observed/asset/output/kcc20_asset__kcc20/template_suffix_bytes",
           "subject": {
             "kind": "observed_actor",
             "observe": "asset",
             "side": "output",
             "handle": "recipient",
-            "actor": "KCC20"
+            "actor": "KCC20Asset::KCC20"
           },
-          "param": "gen__asset_kcc20_suffix",
+          "param": "gen__asset_kcc20_asset__kcc20_suffix",
           "purpose": {
             "kind": "template_suffix_bytes"
           }
@@ -123,20 +134,23 @@
       "exports": [
         {
           "id": "interface/actor/Minter",
+          "app": "KCC20MintController",
           "actor": "Minter",
           "state": "MinterState",
-          "fingerprint_hex": "5108a0d4506d0fa6a1a3449ceca91a156f27bbe7a1c602d769415490dbab2273"
+          "fingerprint_hex": "7c4c95e414e5c831bb183d3e59e82466575f31377f1f6e91e411412691a1e86e"
         }
       ],
       "imports": [
         {
           "id": "interface/actor/KCC20",
+          "app": "KCC20Asset",
           "actor": "KCC20",
           "state": "KCC20State",
           "fingerprint_hex": "68a09fba1e686fcdcf15c631eba96dce55f36c3f7e6bcab188f1eade3933fee2"
         },
         {
           "id": "interface/actor/MinterProxy",
+          "app": "KCC20Asset",
           "actor": "MinterProxy",
           "state": "MinterProxyState",
           "fingerprint_hex": "6e4a918db5a03bebaeebbb6f4b9fba6a8626d7098a34d61272e6216f02c1d7f1"
@@ -144,6 +158,39 @@
       ]
     },
     "states": [
+      {
+        "name": "MinterState",
+        "fields": [
+          {
+            "name": "owner",
+            "type": {
+              "kind": "pubkey"
+            }
+          },
+          {
+            "name": "kcc20_covid",
+            "type": {
+              "kind": "fixed_bytes",
+              "len": 32
+            },
+            "source_type": {
+              "name": "cov_id"
+            }
+          },
+          {
+            "name": "amount",
+            "type": {
+              "kind": "int"
+            }
+          },
+          {
+            "name": "initialized",
+            "type": {
+              "kind": "bool"
+            }
+          }
+        ]
+      },
       {
         "name": "KCC20State",
         "fields": [
@@ -179,39 +226,6 @@
             },
             "source_type": {
               "name": "cov_id"
-            }
-          }
-        ]
-      },
-      {
-        "name": "MinterState",
-        "fields": [
-          {
-            "name": "owner",
-            "type": {
-              "kind": "pubkey"
-            }
-          },
-          {
-            "name": "kcc20_covid",
-            "type": {
-              "kind": "fixed_bytes",
-              "len": 32
-            },
-            "source_type": {
-              "name": "cov_id"
-            }
-          },
-          {
-            "name": "amount",
-            "type": {
-              "kind": "int"
-            }
-          },
-          {
-            "name": "initialized",
-            "type": {
-              "kind": "bool"
             }
           }
         ]
@@ -255,16 +269,16 @@
                 }
               ],
               "witness_recipe_ids": [
-                "witness/observed/asset/input/minter_proxy/template_prefix_len",
-                "witness/observed/asset/input/minter_proxy/template_suffix_len",
-                "witness/observed/asset/output/kcc20/template_prefix_bytes",
-                "witness/observed/asset/output/kcc20/template_suffix_bytes"
+                "witness/observed/asset/input/kcc20_asset__minter_proxy/template_prefix_len",
+                "witness/observed/asset/input/kcc20_asset__minter_proxy/template_suffix_len",
+                "witness/observed/asset/output/kcc20_asset__kcc20/template_prefix_bytes",
+                "witness/observed/asset/output/kcc20_asset__kcc20/template_suffix_bytes"
               ]
             },
             "hidden_params": [
               {
-                "recipe_id": "witness/observed/asset/input/minter_proxy/template_prefix_len",
-                "name": "gen__asset_minter_proxy_prefix_len",
+                "recipe_id": "witness/observed/asset/input/kcc20_asset__minter_proxy/template_prefix_len",
+                "name": "gen__asset_kcc20_asset__minter_proxy_prefix_len",
                 "type": {
                   "kind": "int"
                 },
@@ -273,15 +287,15 @@
                   "observe": "asset",
                   "side": "input",
                   "handle": "proxy",
-                  "actor": "MinterProxy"
+                  "actor": "KCC20Asset::MinterProxy"
                 },
                 "purpose": {
                   "kind": "template_prefix_len"
                 }
               },
               {
-                "recipe_id": "witness/observed/asset/input/minter_proxy/template_suffix_len",
-                "name": "gen__asset_minter_proxy_suffix_len",
+                "recipe_id": "witness/observed/asset/input/kcc20_asset__minter_proxy/template_suffix_len",
+                "name": "gen__asset_kcc20_asset__minter_proxy_suffix_len",
                 "type": {
                   "kind": "int"
                 },
@@ -290,15 +304,15 @@
                   "observe": "asset",
                   "side": "input",
                   "handle": "proxy",
-                  "actor": "MinterProxy"
+                  "actor": "KCC20Asset::MinterProxy"
                 },
                 "purpose": {
                   "kind": "template_suffix_len"
                 }
               },
               {
-                "recipe_id": "witness/observed/asset/output/kcc20/template_prefix_bytes",
-                "name": "gen__asset_kcc20_prefix",
+                "recipe_id": "witness/observed/asset/output/kcc20_asset__kcc20/template_prefix_bytes",
+                "name": "gen__asset_kcc20_asset__kcc20_prefix",
                 "type": {
                   "kind": "bytes"
                 },
@@ -307,15 +321,15 @@
                   "observe": "asset",
                   "side": "output",
                   "handle": "recipient",
-                  "actor": "KCC20"
+                  "actor": "KCC20Asset::KCC20"
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
                 }
               },
               {
-                "recipe_id": "witness/observed/asset/output/kcc20/template_suffix_bytes",
-                "name": "gen__asset_kcc20_suffix",
+                "recipe_id": "witness/observed/asset/output/kcc20_asset__kcc20/template_suffix_bytes",
+                "name": "gen__asset_kcc20_asset__kcc20_suffix",
                 "type": {
                   "kind": "bytes"
                 },
@@ -324,7 +338,7 @@
                   "observe": "asset",
                   "side": "output",
                   "handle": "recipient",
-                  "actor": "KCC20"
+                  "actor": "KCC20Asset::KCC20"
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
@@ -343,73 +357,85 @@
                 "inputs": [
                   {
                     "name": "proxy",
-                    "actor": "MinterProxy"
+                    "target": {
+                      "kind": "static_actor",
+                      "app": "KCC20Asset",
+                      "actor": "MinterProxy"
+                    }
                   }
                 ],
                 "outputs": [
                   {
                     "name": "proxy",
-                    "actor": "MinterProxy"
+                    "target": {
+                      "kind": "static_actor",
+                      "app": "KCC20Asset",
+                      "actor": "MinterProxy"
+                    }
                   },
                   {
                     "name": "recipient",
-                    "actor": "KCC20"
+                    "target": {
+                      "kind": "static_actor",
+                      "app": "KCC20Asset",
+                      "actor": "KCC20"
+                    }
                   }
                 ]
               }
             ],
             "witnesses": [
               {
-                "recipe_id": "witness/observed/asset/input/minter_proxy/template_prefix_len",
-                "param": "gen__asset_minter_proxy_prefix_len",
+                "recipe_id": "witness/observed/asset/input/kcc20_asset__minter_proxy/template_prefix_len",
+                "param": "gen__asset_kcc20_asset__minter_proxy_prefix_len",
                 "subject": {
                   "kind": "observed_actor",
                   "observe": "asset",
                   "side": "input",
                   "handle": "proxy",
-                  "actor": "MinterProxy"
+                  "actor": "KCC20Asset::MinterProxy"
                 },
                 "purpose": {
                   "kind": "template_prefix_len"
                 }
               },
               {
-                "recipe_id": "witness/observed/asset/input/minter_proxy/template_suffix_len",
-                "param": "gen__asset_minter_proxy_suffix_len",
+                "recipe_id": "witness/observed/asset/input/kcc20_asset__minter_proxy/template_suffix_len",
+                "param": "gen__asset_kcc20_asset__minter_proxy_suffix_len",
                 "subject": {
                   "kind": "observed_actor",
                   "observe": "asset",
                   "side": "input",
                   "handle": "proxy",
-                  "actor": "MinterProxy"
+                  "actor": "KCC20Asset::MinterProxy"
                 },
                 "purpose": {
                   "kind": "template_suffix_len"
                 }
               },
               {
-                "recipe_id": "witness/observed/asset/output/kcc20/template_prefix_bytes",
-                "param": "gen__asset_kcc20_prefix",
+                "recipe_id": "witness/observed/asset/output/kcc20_asset__kcc20/template_prefix_bytes",
+                "param": "gen__asset_kcc20_asset__kcc20_prefix",
                 "subject": {
                   "kind": "observed_actor",
                   "observe": "asset",
                   "side": "output",
                   "handle": "recipient",
-                  "actor": "KCC20"
+                  "actor": "KCC20Asset::KCC20"
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
                 }
               },
               {
-                "recipe_id": "witness/observed/asset/output/kcc20/template_suffix_bytes",
-                "param": "gen__asset_kcc20_suffix",
+                "recipe_id": "witness/observed/asset/output/kcc20_asset__kcc20/template_suffix_bytes",
+                "param": "gen__asset_kcc20_asset__kcc20_suffix",
                 "subject": {
                   "kind": "observed_actor",
                   "observe": "asset",
                   "side": "output",
                   "handle": "recipient",
-                  "actor": "KCC20"
+                  "actor": "KCC20Asset::KCC20"
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
@@ -446,6 +472,36 @@
     "schema_version": 1,
     "states": [
       {
+        "name": "MinterState",
+        "fields": [
+          {
+            "name": "owner",
+            "type": {
+              "kind": "pubkey"
+            }
+          },
+          {
+            "name": "kcc20_covid",
+            "type": {
+              "kind": "fixed_bytes",
+              "len": 32
+            }
+          },
+          {
+            "name": "amount",
+            "type": {
+              "kind": "int"
+            }
+          },
+          {
+            "name": "initialized",
+            "type": {
+              "kind": "bool"
+            }
+          }
+        ]
+      },
+      {
         "name": "KCC20State",
         "fields": [
           {
@@ -480,36 +536,6 @@
             }
           }
         ]
-      },
-      {
-        "name": "MinterState",
-        "fields": [
-          {
-            "name": "owner",
-            "type": {
-              "kind": "pubkey"
-            }
-          },
-          {
-            "name": "kcc20_covid",
-            "type": {
-              "kind": "fixed_bytes",
-              "len": 32
-            }
-          },
-          {
-            "name": "amount",
-            "type": {
-              "kind": "int"
-            }
-          },
-          {
-            "name": "initialized",
-            "type": {
-              "kind": "bool"
-            }
-          }
-        ]
       }
     ],
     "contracts": [
@@ -520,14 +546,14 @@
           "source": "MinterState",
           "fields": [
             {
-              "name": "gen__asset_minter_proxy_template",
+              "name": "gen__asset_kcc20_asset__minter_proxy_template",
               "type": {
                 "kind": "fixed_bytes",
                 "len": 32
               }
             },
             {
-              "name": "gen__asset_kcc20_template",
+              "name": "gen__asset_kcc20_asset__kcc20_template",
               "type": {
                 "kind": "fixed_bytes",
                 "len": 32
@@ -585,25 +611,25 @@
                 }
               },
               {
-                "name": "gen__asset_minter_proxy_prefix_len",
+                "name": "gen__asset_kcc20_asset__minter_proxy_prefix_len",
                 "type": {
                   "kind": "int"
                 }
               },
               {
-                "name": "gen__asset_minter_proxy_suffix_len",
+                "name": "gen__asset_kcc20_asset__minter_proxy_suffix_len",
                 "type": {
                   "kind": "int"
                 }
               },
               {
-                "name": "gen__asset_kcc20_prefix",
+                "name": "gen__asset_kcc20_asset__kcc20_prefix",
                 "type": {
                   "kind": "bytes"
                 }
               },
               {
-                "name": "gen__asset_kcc20_suffix",
+                "name": "gen__asset_kcc20_asset__kcc20_suffix",
                 "type": {
                   "kind": "bytes"
                 }
@@ -612,11 +638,11 @@
           }
         ],
         "compiled": {
-          "script_hex": "2000000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000800000000000000000100527976d0519c6976d2529c697600d176bf785279c95e790142935e7993945379c95f790142935f7993945f790142935f799393bcaa02000001aa7e01207e7c7e01877e87695b7958cd785279c95e790142935e7993945379c95f790142935f7993945f7993bc7e5b7958cd52795379c95f790142935f7993945f79930142935479c96079014293607993946079930142935f7993bc7e7e58797caa87697678c95d790142935d7993945d795193935279c95e790142935e7993945e79519393012093bc785279c95e790142935e7993945e79012293935379c95f790142935f7993945f7901229393012093bcb9cb519c6960795879ac6954796955795f79a26976b9cf87690053795479c96079014293607993945579c9011179014293011179939401117993bc770054795579c90111790142930111799394011179930142935679c901127901429301127993940112799301429301117993bc7778827c75519658cd52797e78827c75519658cd52797e7e5c797caa87695a7901207c7eb9cf01207c7e7e52797c7e787eaa02000001aa7e01207e7c7e01877e567900d3c387695d79827c75519658cd5e797e5d79827c75519658cd5e797e7e5b797caa876901117901207c7e010001017c7e01127958cd01087c7e7e7e5e797c7e5d797eaa02000001aa7e01207e7c7e01877e567951d3c387695b7901207c7e5b7901207c7e5b7901207c7e5b7901207c7e5b790115799458cd01087c7e5b7951cd01017c7e7e7e7e7e7eb976c97602f90294028f00937cbc7eaa02000001aa7e01207e7c7e01877eb900ccc38769007a75007a75007a75007a75007a75007a757575757575757575757575757551",
+          "script_hex": "2000000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000800000000000000000100527976d0519c6976d2529c697600d176bf785279c95e790121935e7993945379c95f790121935f7993945f790121935f799393bcaa02000001aa7e01207e7c7e01877e87695b7958cd785279c95e790121935e7993945379c95f790121935f7993945f7993bc7e5b7958cd52795379c95f790121935f7993945f79930121935479c96079012193607993946079930121935f7993bc7e7e58797caa87697678c95d790121935d7993945d795193935279c95e790121935e7993945e79519393012093bcb9cb519c695f795779ac6953796954795e79a26976b9cf87690052795379c95f790121935f7993945479c9607901219360799394607993bc770053795479c96079012193607993946079930121935579c9011179012193011179939401117993012193607993bc7778827c75519658cd52797e78827c75519658cd52797e7e5b797caa8769b9cf01207c7e52797c7e787eaa02000001aa7e01207e7c7e01877e557900d3c387695c79827c75519658cd5d797e5c79827c75519658cd5d797e7e5a797caa8769607901207c7e010001017c7e01117958cd01087c7e7e7e5d797c7e5c797eaa02000001aa7e01207e7c7e01877e557951d3c387695a7901207c7e5a7901207c7e5a7901207c7e5a7901207c7e5a790114799458cd01087c7e5a7951cd01017c7e7e7e7e7e7eb976c97602be0294028f00937cbc7eaa02000001aa7e01207e7c7e01877eb900ccc38769007a75007a75007a75007a75007a757575757575757575757575757551",
           "template": {
             "prefix_hex": "",
-            "suffix_hex": "527976d0519c6976d2529c697600d176bf785279c95e790142935e7993945379c95f790142935f7993945f790142935f799393bcaa02000001aa7e01207e7c7e01877e87695b7958cd785279c95e790142935e7993945379c95f790142935f7993945f7993bc7e5b7958cd52795379c95f790142935f7993945f79930142935479c96079014293607993946079930142935f7993bc7e7e58797caa87697678c95d790142935d7993945d795193935279c95e790142935e7993945e79519393012093bc785279c95e790142935e7993945e79012293935379c95f790142935f7993945f7901229393012093bcb9cb519c6960795879ac6954796955795f79a26976b9cf87690053795479c96079014293607993945579c9011179014293011179939401117993bc770054795579c90111790142930111799394011179930142935679c901127901429301127993940112799301429301117993bc7778827c75519658cd52797e78827c75519658cd52797e7e5c797caa87695a7901207c7eb9cf01207c7e7e52797c7e787eaa02000001aa7e01207e7c7e01877e567900d3c387695d79827c75519658cd5e797e5d79827c75519658cd5e797e7e5b797caa876901117901207c7e010001017c7e01127958cd01087c7e7e7e5e797c7e5d797eaa02000001aa7e01207e7c7e01877e567951d3c387695b7901207c7e5b7901207c7e5b7901207c7e5b7901207c7e5b790115799458cd01087c7e5b7951cd01017c7e7e7e7e7e7eb976c97602f90294028f00937cbc7eaa02000001aa7e01207e7c7e01877eb900ccc38769007a75007a75007a75007a75007a75007a757575757575757575757575757551",
-            "hash_hex": "9e1729847ccbd3a2ca985e047a6cbf934d28993576585f7d8df1829a1691f64f"
+            "suffix_hex": "527976d0519c6976d2529c697600d176bf785279c95e790121935e7993945379c95f790121935f7993945f790121935f799393bcaa02000001aa7e01207e7c7e01877e87695b7958cd785279c95e790121935e7993945379c95f790121935f7993945f7993bc7e5b7958cd52795379c95f790121935f7993945f79930121935479c96079012193607993946079930121935f7993bc7e7e58797caa87697678c95d790121935d7993945d795193935279c95e790121935e7993945e79519393012093bcb9cb519c695f795779ac6953796954795e79a26976b9cf87690052795379c95f790121935f7993945479c9607901219360799394607993bc770053795479c96079012193607993946079930121935579c9011179012193011179939401117993012193607993bc7778827c75519658cd52797e78827c75519658cd52797e7e5b797caa8769b9cf01207c7e52797c7e787eaa02000001aa7e01207e7c7e01877e557900d3c387695c79827c75519658cd5d797e5c79827c75519658cd5d797e7e5a797caa8769607901207c7e010001017c7e01117958cd01087c7e7e7e5d797c7e5c797eaa02000001aa7e01207e7c7e01877e557951d3c387695a7901207c7e5a7901207c7e5a7901207c7e5a7901207c7e5a790114799458cd01087c7e5a7951cd01017c7e7e7e7e7e7eb976c97602be0294028f00937cbc7eaa02000001aa7e01207e7c7e01877eb900ccc38769007a75007a75007a75007a75007a757575757575757575757575757551",
+            "hash_hex": "b6952df792c3e6a057c47ecdec9c5e1ed39cc9de564f94fc2e59189f8dbc7b16"
           },
           "state_span": {
             "offset": 0,

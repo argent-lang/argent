@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "fa2cecda164881aeefc55c2863c3fe716c2831a8b948ea3db6d9f11af907cfa1",
+  "id": "753839528a548a23a8f601458d197e43a759526456f1b93d07beac9d41674b94",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -30,7 +30,7 @@
           "actor": "Issuer",
           "contract": "Issuer",
           "symbol": "gen__issuer_template",
-          "canonical_template_hash": "edcdc16f35a3a5fb4b128879c4d06bb83c83533135aa06b22975334dc0b785b5",
+          "sil_template_hash": "edcdc16f35a3a5fb4b128879c4d06bb83c83533135aa06b22975334dc0b785b5",
           "actor_type_handle": {
             "state": "IssuerState",
             "context_fields": [
@@ -48,7 +48,16 @@
           "actor": "Ticket",
           "contract": "Ticket",
           "symbol": "gen__ticket_template",
-          "canonical_template_hash": "701a0a1f8be9e25c8af238ae081dd2a654ed76891e854bc711ac2c293d8c4f40"
+          "sil_template_hash": "701a0a1f8be9e25c8af238ae081dd2a654ed76891e854bc711ac2c293d8c4f40",
+          "actor_type_handle": {
+            "state": "TicketState",
+            "context_fields": [],
+            "template": {
+              "prefix_hex": "",
+              "suffix_hex": "b9cb519c69b900cc5479aa5479876955795579ac6978009c6976c2b9be9c69537901207c7e537958cd01087c7e5158cd01087c7e7e7eb976c976029300940133937cbc7eaa02000001aa7e01207e7c7e01877e78c38769007a75757575757551",
+              "hash_hex": "701a0a1f8be9e25c8af238ae081dd2a654ed76891e854bc711ac2c293d8c4f40"
+            }
+          }
         }
       ],
       "runtime_states": [
@@ -100,12 +109,14 @@
       "exports": [
         {
           "id": "interface/actor/Issuer",
+          "app": "Tickets",
           "actor": "Issuer",
           "state": "IssuerState",
           "fingerprint_hex": "05f8522be84d6ca43bb946115abd2a347ae4a21372a41183d395e4e6276d27f9"
         },
         {
           "id": "interface/actor/Ticket",
+          "app": "Tickets",
           "actor": "Ticket",
           "state": "TicketState",
           "fingerprint_hex": "6bb34bb1dc4c51423123a9450c635a77c42aa09f250efc4c72992c34013bae46"

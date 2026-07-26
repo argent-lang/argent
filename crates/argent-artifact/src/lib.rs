@@ -158,6 +158,7 @@ pub struct InterfaceSetArtifact {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActorInterfaceArtifact {
     pub id: String,
+    pub app: String,
     pub actor: String,
     pub state: String,
     pub fingerprint_hex: String,
@@ -196,9 +197,10 @@ pub struct TemplatePlanTemplateArtifact {
     pub actor: String,
     pub contract: String,
     pub symbol: String,
-    pub canonical_template_hash: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub actor_type_handle: Option<ActorTypeHandleArtifact>,
+    /// Hash of the full physical Sil state cut used inside the defining app.
+    pub sil_template_hash: String,
+    /// Required source-state view used by static linking and `actor_type<State>`.
+    pub actor_type_handle: ActorTypeHandleArtifact,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,6 +212,88 @@ pub struct ActorTypeHandleArtifact {
     pub state: String,
     pub context_fields: Vec<String>,
     pub template: CompiledTemplateArtifact,
+}
+
+/// Read-only template hash data used while a template plan is built and
+/// verified.
+#[derive(Debug, Clone, Copy)]
+pub struct TemplateHashRef<'a> {
+    pub id: &'a str,
+    pub actor: &'a str,
+    pub hash_hex: &'a str,
+}
+
+/// Supplies Sil template hashes without requiring a completed artifact.
+pub trait TemplateHashLookup {
+    fn template_hash_by_id(&self, id: &str) -> Option<TemplateHashRef<'_>>;
+    fn template_hash_by_actor(&self, actor: &str) -> Option<TemplateHashRef<'_>>;
+}
+
+/// Supplies the completed route commitments that fix compiler-owned context.
+pub trait TemplatePlanLookup: TemplateHashLookup {
+    fn route_tables(&self) -> &[RouteTemplateTableArtifact];
+    fn route_proofs(&self) -> &[RouteTemplateProofArtifact];
+    fn route_families(&self) -> &[RouteTemplateFamilyArtifact];
+}
+
+impl TemplateHashLookup for [TemplatePlanTemplateArtifact] {
+    fn template_hash_by_id(&self, id: &str) -> Option<TemplateHashRef<'_>> {
+        self.iter().find(|template| template.id == id).map(|template| TemplateHashRef {
+            id: &template.id,
+            actor: &template.actor,
+            hash_hex: &template.sil_template_hash,
+        })
+    }
+
+    fn template_hash_by_actor(&self, actor: &str) -> Option<TemplateHashRef<'_>> {
+        self.iter().find(|template| template.actor == actor).map(|template| TemplateHashRef {
+            id: &template.id,
+            actor: &template.actor,
+            hash_hex: &template.sil_template_hash,
+        })
+    }
+}
+
+impl TemplateHashLookup for std::collections::BTreeMap<&str, &TemplatePlanTemplateArtifact> {
+    fn template_hash_by_id(&self, id: &str) -> Option<TemplateHashRef<'_>> {
+        self.get(id).map(|template| TemplateHashRef {
+            id: &template.id,
+            actor: &template.actor,
+            hash_hex: &template.sil_template_hash,
+        })
+    }
+
+    fn template_hash_by_actor(&self, actor: &str) -> Option<TemplateHashRef<'_>> {
+        self.values().find(|template| template.actor == actor).map(|template| TemplateHashRef {
+            id: &template.id,
+            actor: &template.actor,
+            hash_hex: &template.sil_template_hash,
+        })
+    }
+}
+
+impl TemplateHashLookup for TemplatePlanArtifact {
+    fn template_hash_by_id(&self, id: &str) -> Option<TemplateHashRef<'_>> {
+        self.templates.as_slice().template_hash_by_id(id)
+    }
+
+    fn template_hash_by_actor(&self, actor: &str) -> Option<TemplateHashRef<'_>> {
+        self.templates.as_slice().template_hash_by_actor(actor)
+    }
+}
+
+impl TemplatePlanLookup for TemplatePlanArtifact {
+    fn route_tables(&self) -> &[RouteTemplateTableArtifact] {
+        &self.route_tables
+    }
+
+    fn route_proofs(&self) -> &[RouteTemplateProofArtifact] {
+        &self.route_proofs
+    }
+
+    fn route_families(&self) -> &[RouteTemplateFamilyArtifact] {
+        &self.route_families
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,7 +313,7 @@ pub struct RuntimeFieldRolePlanArtifact {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RuntimeFieldRoleArtifact {
     Template { contract: String },
-    ObservedTemplate { observe: String, side: ObservedActorSideArtifact, handle: String, contract: String },
+    ImportedTemplate { app: String, contract: String, state: String, hash_hex: String },
     TemplateTable { contracts: Vec<String> },
     TemplateDigest { id: String },
     TemplateRoot { leaves: Vec<RuntimeRouteLeafArtifact> },
@@ -418,9 +502,14 @@ pub enum CovenantIdSourceArtifact {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObservedActorArtifact {
     pub name: String,
-    pub actor: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub open_state: Option<String>,
+    pub target: ObservedTargetArtifact,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ObservedTargetArtifact {
+    StaticActor { app: String, actor: String },
+    DynamicActor { state: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -567,7 +656,7 @@ pub enum TemplatePlanError {
     TemplateRefMismatch { id: String, actor: String },
     #[error("template receipt `{id}` is not referenced by an Argent template ref")]
     UnreferencedTemplateReceipt { id: String },
-    #[error("template receipt `{id}` canonical hash mismatch: expected `{expected}`, found `{found}`")]
+    #[error("template receipt `{id}` Sil template hash mismatch: expected `{expected}`, found `{found}`")]
     TemplateHashMismatch { id: String, expected: String, found: String },
     #[error("template receipt `{id}` actor_type handle is invalid: {message}")]
     ActorTypeHandleMismatch { id: String, message: String },
@@ -702,7 +791,7 @@ impl TemplatePlanArtifact {
                 });
             }
             // Validate the encoded Sil ABI material before the template plan
-            // references it. The canonical hash is produced by Silverscript;
+            // references it. The template hash is produced by Silverscript;
             // this layer does not recompute it from the prefix and suffix.
             decode_hex_for_template(&template.id, &contract.compiled.template.prefix_hex)?;
             decode_hex_for_template(&template.id, &contract.compiled.template.suffix_hex)?;
@@ -711,14 +800,13 @@ impl TemplatePlanArtifact {
             // The plan carries a denormalized copy for route-proof leaves. Keep
             // that receipt consistent with the authoritative Sil ABI value.
             let expected_hash = &contract.compiled.template.hash_hex;
-            if template.canonical_template_hash.as_str() != expected_hash.as_str() {
+            if template.sil_template_hash.as_str() != expected_hash.as_str() {
                 return Err(TemplatePlanError::TemplateHashMismatch {
                     id: template.id.clone(),
                     expected: expected_hash.clone(),
-                    found: template.canonical_template_hash.clone(),
+                    found: template.sil_template_hash.clone(),
                 });
             }
-            verify_actor_type_handle(self, artifact, template, contract)?;
             templates_by_id.insert(template.id.as_str(), template);
         }
 
@@ -941,13 +1029,14 @@ impl TemplatePlanArtifact {
                     }
                     RuntimeFieldRoleArtifact::TemplateRoot { leaves } => (leaves.clone(), TypeArtifact::FixedBytes { len: 32 }),
                     RuntimeFieldRoleArtifact::Template { .. } => continue,
-                    RuntimeFieldRoleArtifact::ObservedTemplate { .. } => {
+                    RuntimeFieldRoleArtifact::ImportedTemplate { hash_hex, .. } => {
                         if sil_field.ty != (TypeArtifact::FixedBytes { len: 32 }) {
                             return Err(TemplatePlanError::RuntimeStatePlanMismatch {
                                 contract: runtime_state.contract.clone(),
-                                message: format!("observed template field `{}` must be byte[32]", field.name),
+                                message: format!("imported template field `{}` must be byte[32]", field.name),
                             });
                         }
+                        decode_hash_hex(&field.name, hash_hex)?;
                         continue;
                     }
                 };
@@ -1041,6 +1130,15 @@ impl TemplatePlanArtifact {
                     expected: format!("state {} table actors {:?}", family.state, expected_table_actors),
                 });
             }
+        }
+
+        // Handle verification depends on the complete route plan. Validate it
+        // only after all fixed compiler context has been checked.
+        for template in &self.templates {
+            let contract = sil_contracts_by_name
+                .get(template.contract.as_str())
+                .expect("template contract existence was checked when indexing template receipts");
+            verify_actor_type_handle(self, artifact, template, contract)?;
         }
 
         // TODO: Extract witness recipe registry verification into dedicated helpers.
@@ -1219,12 +1317,7 @@ fn verify_actor_type_handle(
         .map(|expansion| expansion.base.as_str());
     let source_state = expanded_base.unwrap_or(&actor.state);
 
-    let Some(handle) = &template.actor_type_handle else {
-        if let Some(base) = expanded_base {
-            return Err(mismatch(format!("expanded state `{}` requires actor_type<{base}>", actor.state)));
-        }
-        return Ok(());
-    };
+    let handle = &template.actor_type_handle;
     if source_state != handle.state {
         return Err(mismatch(format!(
             "handle state `{}` does not match actor `{}` source-state cut `{source_state}`",
@@ -1249,16 +1342,16 @@ fn verify_actor_type_handle(
         return Err(mismatch("context fields are not the leading physical runtime fields".to_string()));
     }
 
-    let canonical_prefix = decode_hex_for_template(&template.id, &contract.compiled.template.prefix_hex)?;
-    let canonical_suffix = decode_hex_for_template(&template.id, &contract.compiled.template.suffix_hex)?;
+    let sil_prefix = decode_hex_for_template(&template.id, &contract.compiled.template.prefix_hex)?;
+    let sil_suffix = decode_hex_for_template(&template.id, &contract.compiled.template.suffix_hex)?;
     let handle_prefix = decode_hex_for_template(&template.id, &handle.template.prefix_hex)?;
     let handle_suffix = decode_hex_for_template(&template.id, &handle.template.suffix_hex)?;
     let handle_hash = decode_hash_hex(&template.id, &handle.template.hash_hex)?;
-    if !handle_prefix.starts_with(&canonical_prefix) {
-        return Err(mismatch("prefix does not extend the canonical template prefix".to_string()));
+    if !handle_prefix.starts_with(&sil_prefix) {
+        return Err(mismatch("prefix does not extend the Sil template prefix".to_string()));
     }
-    if handle_suffix != canonical_suffix {
-        return Err(mismatch("suffix differs from the canonical template suffix".to_string()));
+    if handle_suffix != sil_suffix {
+        return Err(mismatch("suffix differs from the Sil template suffix".to_string()));
     }
     let expected_handle_hash = silverscript_abi::template_hash(&handle_prefix, &handle_suffix);
     if handle_hash != expected_handle_hash {
@@ -1271,7 +1364,7 @@ fn verify_actor_type_handle(
 
     let context_state =
         RuntimeStateArtifact { source: handle.state.clone(), fields: leading_runtime_fields.into_iter().cloned().collect() };
-    let decoded_context = silverscript_abi::decode_runtime_state_script(&context_state, &handle_prefix[canonical_prefix.len()..])
+    let decoded_context = silverscript_abi::decode_runtime_state_script(&context_state, &handle_prefix[sil_prefix.len()..])
         .map_err(|err| mismatch(format!("prefix context does not decode according to its runtime fields: {err}")))?;
     if let Some(runtime_plan) = runtime_plan {
         for field in &runtime_plan.field_roles {
@@ -1287,7 +1380,7 @@ fn verify_actor_type_handle(
 /// Resolve one compiler-owned runtime field whose value is fixed by the
 /// artifact's canonical route plan.
 pub fn fixed_runtime_context_value(
-    plan: &TemplatePlanArtifact,
+    plan: &(impl TemplatePlanLookup + ?Sized),
     runtime_state: &RuntimeStatePlanArtifact,
     field: &RuntimeFieldRolePlanArtifact,
 ) -> std::result::Result<Vec<u8>, TemplatePlanError> {
@@ -1296,22 +1389,23 @@ pub fn fixed_runtime_context_value(
         message: format!("field `{}` cannot be fixed as template context: {message}", field.name),
     };
     match &field.role {
-        RuntimeFieldRoleArtifact::Template { contract } => canonical_template_hash_bytes(plan, contract),
+        RuntimeFieldRoleArtifact::Template { contract } => sil_template_hash_bytes(plan, contract),
+        RuntimeFieldRoleArtifact::ImportedTemplate { hash_hex, .. } => Ok(decode_hash_hex(&field.name, hash_hex)?.to_vec()),
         RuntimeFieldRoleArtifact::TemplateTable { contracts } => {
             let mut table = Vec::with_capacity(contracts.len() * 32);
             for contract in contracts {
-                table.extend_from_slice(&canonical_template_hash_bytes(plan, contract)?);
+                table.extend_from_slice(&sil_template_hash_bytes(plan, contract)?);
             }
             Ok(table)
         }
         RuntimeFieldRoleArtifact::TemplateDigest { id } => {
             let family = plan
-                .route_families
+                .route_families()
                 .iter()
                 .find(|family| family.id == *id)
                 .ok_or_else(|| invalid(format!("missing route family `{id}`")))?;
             let table = plan
-                .route_tables
+                .route_tables()
                 .iter()
                 .find(|table| table.id == family.table_id)
                 .ok_or_else(|| invalid(format!("missing route table `{}`", family.table_id)))?;
@@ -1321,18 +1415,17 @@ pub fn fixed_runtime_context_value(
         RuntimeFieldRoleArtifact::TemplateRoot { .. } => {
             let proof_id = route_template_proof_receipt_id(&runtime_state.source, &field.name);
             let proof = plan
-                .route_proofs
+                .route_proofs()
                 .iter()
                 .find(|proof| proof.id == proof_id)
                 .ok_or_else(|| invalid(format!("missing route proof `{proof_id}`")))?;
             Ok(decode_hash_hex(&proof_id, &proof.root_hex)?.to_vec())
         }
-        RuntimeFieldRoleArtifact::ObservedTemplate { observe, .. } => Err(invalid(format!("depends on open observe `{observe}`"))),
     }
 }
 
 fn fixed_route_table_bytes(
-    plan: &TemplatePlanArtifact,
+    plan: &(impl TemplatePlanLookup + ?Sized),
     runtime_state: &RuntimeStatePlanArtifact,
     table: &RouteTemplateTableArtifact,
 ) -> std::result::Result<Vec<u8>, TemplatePlanError> {
@@ -1340,7 +1433,7 @@ fn fixed_route_table_bytes(
     for entry in &table.entries {
         match &entry.leaf {
             RouteTemplateLeafArtifact::Template { actor, .. } => {
-                bytes.extend_from_slice(&canonical_template_hash_bytes(plan, actor)?);
+                bytes.extend_from_slice(&sil_template_hash_bytes(plan, actor)?);
             }
             RouteTemplateLeafArtifact::RouteFamily { family_id, .. } => {
                 return Err(TemplatePlanError::RuntimeStatePlanMismatch {
@@ -1353,13 +1446,9 @@ fn fixed_route_table_bytes(
     Ok(bytes)
 }
 
-fn canonical_template_hash_bytes(plan: &TemplatePlanArtifact, actor: &str) -> std::result::Result<Vec<u8>, TemplatePlanError> {
-    let template = plan
-        .templates
-        .iter()
-        .find(|template| template.actor == actor)
-        .ok_or_else(|| TemplatePlanError::UnknownContract(actor.to_string()))?;
-    Ok(decode_hash_hex(&template.id, &template.canonical_template_hash)?.to_vec())
+fn sil_template_hash_bytes(plan: &(impl TemplateHashLookup + ?Sized), actor: &str) -> std::result::Result<Vec<u8>, TemplatePlanError> {
+    let template = plan.template_hash_by_actor(actor).ok_or_else(|| TemplatePlanError::UnknownContract(actor.to_string()))?;
+    Ok(decode_hash_hex(template.id, template.hash_hex)?.to_vec())
 }
 
 pub fn actor_interface_id(actor: &str) -> String {
@@ -1406,27 +1495,27 @@ fn runtime_leaf_for_route_leaf(leaf: &RouteTemplateLeafArtifact) -> RuntimeRoute
 fn route_template_leaf_hash(
     table_id: &str,
     leaf: &RouteTemplateLeafArtifact,
-    templates_by_id: &std::collections::BTreeMap<&str, &TemplatePlanTemplateArtifact>,
+    templates: &(impl TemplateHashLookup + ?Sized),
     digest_roots: &std::collections::BTreeMap<String, String>,
 ) -> std::result::Result<[u8; 32], TemplatePlanError> {
     match leaf {
         RouteTemplateLeafArtifact::Template { actor, template_id } => {
-            let Some(template) = templates_by_id.get(template_id.as_str()) else {
+            let Some(template) = templates.template_hash_by_id(template_id) else {
                 return Err(TemplatePlanError::MissingRouteTableTemplate {
                     id: table_id.to_string(),
                     actor: actor.clone(),
                     template_id: template_id.clone(),
                 });
             };
-            if template.actor != *actor {
+            if template.actor != actor {
                 return Err(TemplatePlanError::RouteTableTemplateMismatch {
                     id: table_id.to_string(),
                     actor: actor.clone(),
                     template_id: template_id.clone(),
-                    template_actor: template.actor.clone(),
+                    template_actor: template.actor.to_string(),
                 });
             }
-            decode_hash_hex(&template.id, &template.canonical_template_hash)
+            decode_hash_hex(template.id, template.hash_hex)
         }
         RouteTemplateLeafArtifact::RouteFamily { family_id, proof_id } => {
             let Some(root_hex) = digest_roots.get(proof_id) else {
@@ -1444,15 +1533,13 @@ fn route_template_leaf_hash(
 
 pub fn route_template_proof_from_table(
     table: &RouteTemplateTableArtifact,
-    templates: &[TemplatePlanTemplateArtifact],
+    templates: &(impl TemplateHashLookup + ?Sized),
     digest_roots: &std::collections::BTreeMap<String, String>,
 ) -> std::result::Result<RouteTemplateProofArtifact, TemplatePlanError> {
-    let templates_by_id =
-        templates.iter().map(|template| (template.id.as_str(), template)).collect::<std::collections::BTreeMap<_, _>>();
     let mut leaf_hashes = Vec::with_capacity(table.entries.len());
     let mut leaves = Vec::with_capacity(table.entries.len());
     for entry in &table.entries {
-        let leaf_hash = route_template_leaf_hash(&table.id, &entry.leaf, &templates_by_id, digest_roots)?;
+        let leaf_hash = route_template_leaf_hash(&table.id, &entry.leaf, templates, digest_roots)?;
         leaf_hashes.push(leaf_hash);
     }
 
@@ -1480,7 +1567,7 @@ pub fn route_template_proof_from_table(
 fn verify_route_template_proof(
     proof: &RouteTemplateProofArtifact,
     table: &RouteTemplateTableArtifact,
-    templates_by_id: &std::collections::BTreeMap<&str, &TemplatePlanTemplateArtifact>,
+    templates: &(impl TemplateHashLookup + ?Sized),
     route_proofs_by_id: &std::collections::BTreeMap<&str, &RouteTemplateProofArtifact>,
 ) -> std::result::Result<(), TemplatePlanError> {
     let expected_id = route_template_proof_receipt_id(&table.state, &table.field);
@@ -1499,7 +1586,7 @@ fn verify_route_template_proof(
         .collect::<std::collections::BTreeMap<_, _>>();
     let mut expected_leaf_hashes = Vec::with_capacity(table.entries.len());
     for entry in &table.entries {
-        expected_leaf_hashes.push(route_template_leaf_hash(&table.id, &entry.leaf, templates_by_id, &digest_roots)?);
+        expected_leaf_hashes.push(route_template_leaf_hash(&table.id, &entry.leaf, templates, &digest_roots)?);
     }
     let expected_layers = route_template_merkle_layers(&expected_leaf_hashes);
     let expected_root_hex = route_template_merkle_root_hex(&expected_layers);
@@ -1922,8 +2009,16 @@ mod tests {
                 actor: actor.to_string(),
                 contract: actor.to_string(),
                 symbol: format!("gen__{}_template", actor.to_ascii_lowercase()),
-                canonical_template_hash: template_hash.clone(),
-                actor_type_handle: None,
+                sil_template_hash: template_hash.clone(),
+                actor_type_handle: ActorTypeHandleArtifact {
+                    state: "BoardState".to_string(),
+                    context_fields: Vec::new(),
+                    template: CompiledTemplateArtifact {
+                        prefix_hex: String::new(),
+                        suffix_hex: String::new(),
+                        hash_hex: template_hash.clone(),
+                    },
+                },
             })
             .collect::<Vec<_>>();
 
@@ -1942,7 +2037,7 @@ mod tests {
                 },
             }],
         };
-        let inner_proof = route_template_proof_from_table(&inner_table, &templates, &std::collections::BTreeMap::new())
+        let inner_proof = route_template_proof_from_table(&inner_table, templates.as_slice(), &std::collections::BTreeMap::new())
             .expect("inner proof is valid");
 
         let outer_table = RouteTemplateTableArtifact {
@@ -1970,7 +2065,8 @@ mod tests {
             ],
         };
         let digest_roots = std::collections::BTreeMap::from([(inner_proof.id.clone(), inner_proof.root_hex.clone())]);
-        let outer_proof = route_template_proof_from_table(&outer_table, &templates, &digest_roots).expect("outer proof is valid");
+        let outer_proof =
+            route_template_proof_from_table(&outer_table, templates.as_slice(), &digest_roots).expect("outer proof is valid");
 
         let artifact = Artifact {
             schema_version: ARTIFACT_SCHEMA_VERSION,

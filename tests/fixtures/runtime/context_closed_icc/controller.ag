@@ -1,4 +1,4 @@
-import "./asset.ag";
+import app BadgeAsset from "./asset.ag";
 
 state ControllerState {
     int minted;
@@ -8,11 +8,11 @@ actor Controller owns ControllerState {
     entry mint(cov_id asset_id, int amount)
     observes asset by asset_id {
         inputs {
-            badge: Badge,
+            badge: BadgeAsset::Badge,
         }
 
         outputs {
-            badge: Badge,
+            badge: BadgeAsset::Badge,
         }
     }
     emits {
@@ -26,7 +26,7 @@ actor Controller owns ControllerState {
         };
 
         require asset.outputs become {
-            badge <- Badge(next_badge),
+            badge <- BadgeAsset::Badge(next_badge),
         };
 
         ControllerState next = {

@@ -3,6 +3,24 @@
 This file contains small follow-up items. Each item gives its area, context,
 and required work.
 
+## Artifact-backed app dependencies
+
+**Area:** Compiler inputs, project configuration, and bundle builds.
+
+**Context:** An app import currently names an Argent source file. The bundle
+builder compiles each source app once. It passes the resulting artifact to each
+dependent app.
+
+A project can depend on a published app without its source code. In that case,
+the compiler must receive an existing artifact for the imported app.
+
+**Follow-up:** Let project configuration map an app import to source code or to
+an artifact. Compile a source dependency. Load an artifact dependency without
+compiling it. In both cases, pass the dependency artifact to the importing app.
+
+Reject an artifact if its app name, schema, identity, exported interfaces, or
+actor-type handles do not match the import.
+
 ## Entry-wide template witness deduplication
 
 **Area:** Compiler lowering, artifact recipes, `argent-rt`, generated Sil, and

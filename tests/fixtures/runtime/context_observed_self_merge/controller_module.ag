@@ -1,4 +1,4 @@
-import actor AssetApp::Asset from "./asset.ag";
+import "./asset.ag";
 
 state CtrlState {
     int n;

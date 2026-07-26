@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "bb614846c7fd2abc7c73206e9e1b139a18d1528530c138e8e66d6a9c7013416a",
+  "id": "bbab0628fe87d9ed832c07e770a089d581f555be5d6441465b38e4269ad133c5",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -45,7 +45,7 @@
           "actor": "Lobby",
           "contract": "Lobby",
           "symbol": "gen__lobby_template",
-          "canonical_template_hash": "3a41e2c42e845338ca131d0786b20aa1babd2913f7eacb6a7ec024a67a4806fb",
+          "sil_template_hash": "3a41e2c42e845338ca131d0786b20aa1babd2913f7eacb6a7ec024a67a4806fb",
           "actor_type_handle": {
             "state": "LobbyState",
             "context_fields": [
@@ -65,7 +65,7 @@
           "actor": "Mux",
           "contract": "Mux",
           "symbol": "gen__mux_template",
-          "canonical_template_hash": "23dea4153aeb307f3442104472ea2fdf0c84ef8df657ce72c536575a1572878b",
+          "sil_template_hash": "23dea4153aeb307f3442104472ea2fdf0c84ef8df657ce72c536575a1572878b",
           "actor_type_handle": {
             "state": "BoardState",
             "context_fields": [
@@ -84,7 +84,7 @@
           "actor": "Pawn",
           "contract": "Pawn",
           "symbol": "gen__pawn_template",
-          "canonical_template_hash": "e8a9f75729828c6e5f74b7d0057a8ff23f0dc742251b934c2846006a4052337c",
+          "sil_template_hash": "e8a9f75729828c6e5f74b7d0057a8ff23f0dc742251b934c2846006a4052337c",
           "actor_type_handle": {
             "state": "BoardState",
             "context_fields": [
@@ -103,7 +103,7 @@
           "actor": "Knight",
           "contract": "Knight",
           "symbol": "gen__knight_template",
-          "canonical_template_hash": "e8a9f75729828c6e5f74b7d0057a8ff23f0dc742251b934c2846006a4052337c",
+          "sil_template_hash": "e8a9f75729828c6e5f74b7d0057a8ff23f0dc742251b934c2846006a4052337c",
           "actor_type_handle": {
             "state": "BoardState",
             "context_fields": [
@@ -122,7 +122,16 @@
           "actor": "Spectator",
           "contract": "Spectator",
           "symbol": "gen__spectator_template",
-          "canonical_template_hash": "5b2a4c009d5c13a72a95c0fdc75470122ba59513cf4c743b71fbb5ccf07aa8fb"
+          "sil_template_hash": "5b2a4c009d5c13a72a95c0fdc75470122ba59513cf4c743b71fbb5ccf07aa8fb",
+          "actor_type_handle": {
+            "state": "BoardState",
+            "context_fields": [],
+            "template": {
+              "prefix_hex": "",
+              "suffix_hex": "b9cb009c697600a2697551",
+              "hash_hex": "5b2a4c009d5c13a72a95c0fdc75470122ba59513cf4c743b71fbb5ccf07aa8fb"
+            }
+          }
         }
       ],
       "runtime_states": [
@@ -388,30 +397,35 @@
       "exports": [
         {
           "id": "interface/actor/Lobby",
+          "app": "RouteStateBodyChoice",
           "actor": "Lobby",
           "state": "LobbyState",
           "fingerprint_hex": "c40d004c05d4607823eaa37fdaf01e2e488e3e4005669be2827bb7e022ef1407"
         },
         {
           "id": "interface/actor/Mux",
+          "app": "RouteStateBodyChoice",
           "actor": "Mux",
           "state": "BoardState",
           "fingerprint_hex": "32f74ecab1a9edebc40f94808f7480e7f4653e63c56a85cdb0433772422322b8"
         },
         {
           "id": "interface/actor/Pawn",
+          "app": "RouteStateBodyChoice",
           "actor": "Pawn",
           "state": "BoardState",
           "fingerprint_hex": "3b5512b6a38acda692bd300762af3bdf16b716cdb2de0d58bccb87218661c806"
         },
         {
           "id": "interface/actor/Knight",
+          "app": "RouteStateBodyChoice",
           "actor": "Knight",
           "state": "BoardState",
           "fingerprint_hex": "b23bed1851bdea5ba42cdc3c559b267c1da1e5def6c66bf2a3fe721700a9e921"
         },
         {
           "id": "interface/actor/Spectator",
+          "app": "RouteStateBodyChoice",
           "actor": "Spectator",
           "state": "BoardState",
           "fingerprint_hex": "86d8969cbfd8fb62cf999b9488e5bcb3f1eef5e24aceda7bae0a7139dc883f65"

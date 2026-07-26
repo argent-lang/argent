@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "dc7ed343f36f3b6ee3c19196c43e8d7624406b6ba9a0a20c9b1af0d1ccd2106d",
+  "id": "fb141ffbba89ed56482dfa1c916bdaa1125978e00fffe3323ce1bf73ba4735c5",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -31,14 +31,23 @@
           "actor": "Agent",
           "contract": "Agent",
           "symbol": "gen__agent_template",
-          "canonical_template_hash": "3e9a48214bd0f125224d922e171ea49c2d5e533cca89115b2454fab554c0310c"
+          "sil_template_hash": "3e9a48214bd0f125224d922e171ea49c2d5e533cca89115b2454fab554c0310c",
+          "actor_type_handle": {
+            "state": "AgentCapsule",
+            "context_fields": [],
+            "template": {
+              "prefix_hex": "",
+              "suffix_hex": "b9cb519c695679d000a0690113795a79876901127959798769011179587987696079577987695f79567987695e79557987695a79789c6901137901207c7e01137901207c7e01137901207c7e01137901207c7e01137901207c7e01137901207c7e01137958cd01087c7e01137958cd01087c7e01137958cd01087c7e01137958cd01087c7e7e7e7e7e7e7e7e7e7eb976c97602b1019402ea00937cbc7eaa02000001aa7e01207e7c7e01877eb900ccc38769757575757575757575757575757575757575757551",
+              "hash_hex": "3e9a48214bd0f125224d922e171ea49c2d5e533cca89115b2454fab554c0310c"
+            }
+          }
         },
         {
           "id": "template/forager",
           "actor": "Forager",
           "contract": "Forager",
           "symbol": "gen__forager_template",
-          "canonical_template_hash": "f1a1d40fa3a3e0127c1f64c3e56c7c170c70699fc5bd37c35a28d6637ff1be6b",
+          "sil_template_hash": "f1a1d40fa3a3e0127c1f64c3e56c7c170c70699fc5bd37c35a28d6637ff1be6b",
           "actor_type_handle": {
             "state": "AgentCapsule",
             "context_fields": [],
@@ -74,12 +83,14 @@
       "exports": [
         {
           "id": "interface/actor/Agent",
+          "app": "OpenAgent",
           "actor": "Agent",
           "state": "AgentCapsule",
           "fingerprint_hex": "171bd9d32d2b6ce336f0aefd0056569cb9c40eb5b40936e8a22de9fbd3fb88b1"
         },
         {
           "id": "interface/actor/Forager",
+          "app": "OpenAgent",
           "actor": "Forager",
           "state": "ForagerState",
           "fingerprint_hex": "d857826de05be461d98a9fa6db9eb65dcda018d104d4fead46f3c5afdd75a7d0"

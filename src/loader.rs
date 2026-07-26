@@ -35,8 +35,14 @@ pub(crate) struct SourceApp {
 /// Each `(canonical source path, app name)` pair appears once. The requested
 /// root app is the last item.
 pub(crate) fn load_app_graph(root: impl AsRef<Path>, app: &str) -> Result<Vec<(SourceApp, Vec<SourceApp>, Program)>> {
-    let root = canonical_source(root.as_ref())?;
+    let program = load_program(root)?;
+    plan_app_graph(program, app)
+}
+
+pub(crate) fn plan_app_graph(program: Program, app: &str) -> Result<Vec<(SourceApp, Vec<SourceApp>, Program)>> {
+    let root = program.root.clone();
     let mut planner = AppGraphPlanner::default();
+    planner.programs.insert(root.clone(), program);
     planner.visit(SourceApp { source: root, app: app.to_string() })?;
     Ok(planner.order)
 }
@@ -82,8 +88,8 @@ impl Loader {
     fn load_import(&mut self, base: &Path, import: Import) -> Result<()> {
         match import {
             Import::Module { path } if is_standard_module(&path) => self.load_standard_module(&path),
-            Import::Module { path } | Import::Actor { app: None, path, .. } => self.load_module(&base.join(path)),
-            Import::Actor { app: Some(_), .. } | Import::App { .. } => Ok(()),
+            Import::Module { path } | Import::Actor { path, .. } => self.load_module(&base.join(path)),
+            Import::AppActor { .. } | Import::App { .. } => Ok(()),
         }
     }
 
@@ -97,10 +103,10 @@ impl Loader {
         for import in imports {
             match import {
                 Import::Module { path } if is_standard_module(&path) => self.load_standard_module(&path)?,
-                Import::Module { path } | Import::Actor { app: None, path, .. } => {
+                Import::Module { path } | Import::Actor { path, .. } => {
                     return Err(ArgentError::new(format!("Argent standard module `{path}` cannot import a filesystem module")));
                 }
-                Import::Actor { app: Some(_), .. } | Import::App { .. } => {
+                Import::AppActor { .. } | Import::App { .. } => {
                     return Err(ArgentError::new("Argent standard modules cannot import apps"));
                 }
             }
@@ -118,6 +124,7 @@ enum Visit {
 #[derive(Default)]
 struct AppGraphPlanner {
     programs: BTreeMap<PathBuf, Program>,
+    app_sources: BTreeMap<String, PathBuf>,
     visits: BTreeMap<SourceApp, Visit>,
     stack: Vec<SourceApp>,
     order: Vec<(SourceApp, Vec<SourceApp>, Program)>,
@@ -125,6 +132,16 @@ struct AppGraphPlanner {
 
 impl AppGraphPlanner {
     fn visit(&mut self, app: SourceApp) -> Result<()> {
+        if let Some(previous) = self.app_sources.insert(app.app.clone(), app.source.clone())
+            && previous != app.source
+        {
+            return Err(ArgentError::new(format!(
+                "app `{}` is imported from both `{}` and `{}`",
+                app.app,
+                previous.display(),
+                app.source.display()
+            )));
+        }
         match self.visits.get(&app).copied() {
             Some(Visit::Complete) => return Ok(()),
             Some(Visit::Active(start)) => {
@@ -172,8 +189,8 @@ fn app_dependencies(program: &Program) -> Result<BTreeSet<SourceApp>> {
         let base = module.path.parent().ok_or_else(|| ArgentError::at(&module.path, "module path has no parent"))?;
         for import in &module.imports {
             let (app, path) = match import {
-                Import::Actor { app: Some(app), path, .. } | Import::App { app, path } => (app, path),
-                Import::Module { .. } | Import::Actor { app: None, .. } => continue,
+                Import::AppActor { app, path, .. } | Import::App { app, path } => (app, path),
+                Import::Module { .. } | Import::Actor { .. } => continue,
             };
             let source = canonical_source(&base.join(path))?;
             if let Some(previous) = app_sources.insert(app.clone(), source.clone())
@@ -264,6 +281,26 @@ mod tests {
 
         let err = load_app_graph(temp.join("controller.ag"), "CtrlApp").expect_err("ambiguous app namespace is rejected");
         assert!(err.to_string().contains("app `AssetApp` is imported from both"), "unexpected error: {err}");
+
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn app_graph_rejects_namespace_conflicts_across_branches() {
+        let temp = temp_dir("transitive-namespace-collision");
+        write_app(&temp.join("first.ag"), "", "SharedApp", "First");
+        write_app(&temp.join("second.ag"), "", "SharedApp", "Second");
+        write_app(&temp.join("left.ag"), "import app SharedApp from \"./first.ag\";", "LeftApp", "Left");
+        write_app(&temp.join("right.ag"), "import app SharedApp from \"./second.ag\";", "RightApp", "Right");
+        write_app(
+            &temp.join("root.ag"),
+            "import app LeftApp from \"./left.ag\";\nimport app RightApp from \"./right.ag\";",
+            "RootApp",
+            "Root",
+        );
+
+        let err = load_app_graph(temp.join("root.ag"), "RootApp").expect_err("one app namespace must have one source");
+        assert!(err.to_string().contains("app `SharedApp` is imported from both"), "unexpected error: {err}");
 
         let _ = fs::remove_dir_all(temp);
     }

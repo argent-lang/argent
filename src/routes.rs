@@ -135,7 +135,11 @@ impl TerminalParser<'_> {
 
     fn parse_route(&mut self) -> Result<RouteCall> {
         let first = self.expect_any_ident()?;
-        let (output, actor) = if self.consume_left_arrow() { (Some(first), self.expect_any_ident()?) } else { (None, first) };
+        let (output, actor) = if self.consume_left_arrow() {
+            (Some(first), self.parse_actor_name()?)
+        } else {
+            (None, self.parse_qualified_tail(first)?)
+        };
 
         self.expect_symbol('(')?;
         let start = self.current().span.start;
@@ -161,6 +165,19 @@ impl TerminalParser<'_> {
         }
 
         Err(self.error("unterminated route state expression"))
+    }
+
+    fn parse_actor_name(&mut self) -> Result<String> {
+        let first = self.expect_any_ident()?;
+        self.parse_qualified_tail(first)
+    }
+
+    fn parse_qualified_tail(&mut self, first: String) -> Result<String> {
+        if !self.consume_symbol(':') {
+            return Ok(first);
+        }
+        self.expect_symbol(':')?;
+        Ok(format!("{first}::{}", self.expect_any_ident()?))
     }
 
     fn consume_left_arrow(&mut self) -> bool {
