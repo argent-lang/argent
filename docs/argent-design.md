@@ -33,6 +33,32 @@ those pieces usable from Argent.
   code. Silverscript remains responsible for final helper/body validity where
   Argent has not lowered the expression itself.
 
+## Application and covenant domains
+
+An Argent app is a compile-time actor domain. A covenant ID identifies one
+runtime covenant instance.
+
+The model uses these rules:
+
+- One covenant ID belongs to one app. Actors that share a covenant ID cannot
+  come from different apps.
+- One app can have many covenant IDs. Each launch subset or spawned actor group
+  can start a separate instance of the app.
+- The same source actor can be a member of several apps. Each `App::Actor` is a
+  separate compile target. It has the route context and actor handle of its
+  app.
+- `consumes` and `emits` stay inside one app. They are part of the selected
+  app's route graph and commitment cuts.
+- `observes` connects the current covenant to an existing covenant. The target
+  can be in the same app or in a different app.
+- `spawns` connects the current covenant to a new covenant. It has the output
+  semantics of `observes` with no inputs. It also requires a genesis check.
+- App dependencies form a directed acyclic graph. A source bundle compiles each
+  app once, after its dependencies.
+
+An importing app does not compile a foreign `App::Actor` in its own context.
+It reads the actor interface and actor handle from the foreign app artifact.
+
 ## Surface syntax conventions
 
 Argent uses different word orders for declarations and bindings. The syntax
