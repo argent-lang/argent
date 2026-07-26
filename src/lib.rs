@@ -60,10 +60,12 @@ pub fn build_file(input: impl AsRef<Path>, out_dir: impl AsRef<Path>) -> Result<
 /// Build one named app from a file that declares multiple apps.
 ///
 /// Only apps declared in the input file are selectable. App declarations in
-/// imported files remain supporting compilation context.
+/// ordinary module imports remain supporting compilation context.
+/// App-qualified imports form separate app dependencies.
 pub fn build_file_app(input: impl AsRef<Path>, app_name: &str, out_dir: impl AsRef<Path>) -> Result<artifact::Artifact> {
-    let program = loader::load_program(input.as_ref())?;
-    emit::emit_build_app(&program, app_name, out_dir.as_ref())?;
+    let apps = loader::load_app_graph(input.as_ref(), app_name)?;
+    let (_, _, program) = apps.last().expect("an app graph contains its requested root");
+    emit::emit_build_app(program, app_name, out_dir.as_ref())?;
     read_artifact(out_dir.as_ref())
 }
 
