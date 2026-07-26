@@ -51,17 +51,6 @@ case.
 Add tests with an incorrect state offset and state length that are inside the
 script bounds.
 
-## Execute the issue 31 regression
-
-**Area:** Compiler and `argent-rt` integration tests.
-
-**Context:** The issue 31 fixture compiles and links the two apps. It checks the
-imported handle and constructs the controller state. It does not execute the
-reported foreign self-merge transaction.
-
-**Follow-up:** Build and execute the complete transaction from the fixture.
-Keep the KCC20 runtime test as broader cross-app coverage.
-
 ## Support cross-app static spawn targets
 
 **Area:** Compiler linking and lowering, artifact metadata, `argent-rt`, and

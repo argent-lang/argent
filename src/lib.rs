@@ -377,6 +377,142 @@ app RightApp {
     }
 
     #[test]
+    fn app_qualified_actor_imports_keep_each_selected_app_compilation() {
+        let temp = std::env::temp_dir().join(format!("argent-app-qualified-actor-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("temp dir created");
+
+        std::fs::write(
+            temp.join("shared.ag"),
+            r#"
+state SharedState {
+    int count;
+}
+
+actor Shared owns SharedState {
+    entry merge()
+    consumes {
+        other: Shared,
+    }
+    emits one Shared {
+        SharedState next = {
+            count: count + other.count,
+        };
+        become Shared(next);
+    }
+}
+
+state GuardState {}
+
+actor Guard owns GuardState {
+    entry hold() emits one Guard {
+        become Guard(self.state);
+    }
+}
+
+app SoloApp {
+    actor Shared;
+}
+
+app CohortApp {
+    actor Shared;
+    actor Guard;
+}
+"#,
+        )
+        .expect("shared actor source written");
+
+        std::fs::write(
+            temp.join("controller.ag"),
+            r#"
+import actor SoloApp::Shared from "./shared.ag";
+import app CohortApp from "./shared.ag";
+
+state CtrlState {}
+
+actor Ctrl owns CtrlState {
+    entry inspect(cov_id solo_id, cov_id cohort_id)
+    observes solo by solo_id {
+        inputs {
+            src: Shared,
+        }
+    }
+    observes cohort by cohort_id {
+        inputs {
+            src: CohortApp::Shared,
+        }
+    }
+    emits none {
+        SharedState solo_state = solo.inputs.src.state;
+        SharedState cohort_state = cohort.inputs.src.state;
+        require(solo_state.count >= 0);
+        require(cohort_state.count >= 0);
+    }
+}
+
+app CtrlApp {
+    actor Ctrl;
+}
+"#,
+        )
+        .expect("controller source written");
+
+        let compiled = build_file_app_bundle(temp.join("controller.ag"), "CtrlApp", temp.join("build"))
+            .expect("both app-qualified identities compile in one bundle");
+        let solo_actor = compiled
+            .app("SoloApp")
+            .expect("solo dependency exists")
+            .argent
+            .template_plan
+            .templates
+            .iter()
+            .find(|template| template.actor == "Shared")
+            .expect("solo Shared template exists");
+        let cohort_actor = compiled
+            .app("CohortApp")
+            .expect("cohort dependency exists")
+            .argent
+            .template_plan
+            .templates
+            .iter()
+            .find(|template| template.actor == "Shared")
+            .expect("cohort Shared template exists");
+        assert_ne!(
+            solo_actor.sil_template_hash, cohort_actor.sil_template_hash,
+            "one source actor must compile in each selected app context"
+        );
+        assert_ne!(
+            solo_actor.actor_type_handle.template.hash_hex, cohort_actor.actor_type_handle.template.hash_hex,
+            "each app-qualified actor must export its own handle"
+        );
+
+        let imported_handles = compiled
+            .primary()
+            .argent
+            .template_plan
+            .runtime_states
+            .iter()
+            .find(|state| state.contract == "Ctrl")
+            .expect("controller runtime state exists")
+            .field_roles
+            .iter()
+            .filter_map(|field| match &field.role {
+                artifact::RuntimeFieldRoleArtifact::ImportedTemplate { app, hash_hex, .. } => Some((app.as_str(), hash_hex.as_str())),
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(imported_handles.get("SoloApp").copied(), Some(solo_actor.actor_type_handle.template.hash_hex.as_str()));
+        assert_eq!(imported_handles.get("CohortApp").copied(), Some(cohort_actor.actor_type_handle.template.hash_hex.as_str()));
+
+        let solo_sil = std::fs::read_to_string(temp.join("build/apps/SoloApp/sil/Shared.sil")).expect("solo Shared Sil exists");
+        let cohort_sil = std::fs::read_to_string(temp.join("build/apps/CohortApp/sil/Shared.sil")).expect("cohort Shared Sil exists");
+        assert!(solo_sil.contains("State other = readInputState("), "{solo_sil}");
+        assert!(cohort_sil.contains("State other = readInputStateWithTemplate("), "{cohort_sil}");
+
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
     fn build_file_app_removes_stale_selected_app_contracts() {
         let temp = std::env::temp_dir().join(format!("argent-build-file-app-clean-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
@@ -533,6 +669,161 @@ app RootApp {
             .expect("Root fixes the exported Middle source-state template");
         assert_eq!(root_import_hash, &middle_handle.template.hash_hex);
         compiled.runtime_bundle().expect("all transitive artifacts form one runtime bundle");
+
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn app_bundle_compiles_a_diamond_dependency_once() {
+        let temp = std::env::temp_dir().join(format!("argent-build-diamond-apps-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("temp dir created");
+
+        std::fs::write(
+            temp.join("shared.ag"),
+            r#"
+state SharedState {
+    int n;
+}
+
+actor Shared owns SharedState {
+    entry hold() emits none {
+        require(n >= 0);
+    }
+}
+
+app SharedApp {
+    actor Shared;
+}
+"#,
+        )
+        .expect("shared source written");
+        std::fs::write(
+            temp.join("left.ag"),
+            r#"
+import app SharedApp from "./shared.ag";
+
+state LeftState {
+    int n;
+}
+
+actor Left owns LeftState {
+    entry inspect(cov_id shared_id)
+    observes shared by shared_id {
+        inputs {
+            src: SharedApp::Shared,
+        }
+    }
+    emits none {
+        SharedState current = shared.inputs.src.state;
+        require(current.n >= 0);
+    }
+}
+
+app LeftApp {
+    actor Left;
+}
+"#,
+        )
+        .expect("left source written");
+        std::fs::write(
+            temp.join("right.ag"),
+            r#"
+import actor SharedApp::Shared from "./shared.ag";
+
+state RightState {
+    byte tag;
+}
+
+actor Right owns RightState {
+    entry inspect(cov_id shared_id)
+    observes shared by shared_id {
+        inputs {
+            src: Shared,
+        }
+    }
+    emits none {
+        SharedState current = shared.inputs.src.state;
+        require(current.n >= 0);
+    }
+}
+
+app RightApp {
+    actor Right;
+}
+"#,
+        )
+        .expect("right source written");
+        std::fs::write(
+            temp.join("root.ag"),
+            r#"
+import app LeftApp from "./left.ag";
+import actor RightApp::Right from "./right.ag";
+
+state RootState {}
+
+actor Root owns RootState {
+    entry inspect(cov_id left_id, cov_id right_id)
+    observes left by left_id {
+        inputs {
+            src: LeftApp::Left,
+        }
+    }
+    observes right by right_id {
+        inputs {
+            src: Right,
+        }
+    }
+    emits none {
+        require(1 == 1);
+    }
+}
+
+app RootApp {
+    actor Root;
+}
+"#,
+        )
+        .expect("root source written");
+
+        let out_dir = temp.join("build");
+        let compiled =
+            build_file_app_bundle(temp.join("root.ag"), "RootApp", &out_dir).expect("diamond app dependency graph compiles");
+        assert_eq!(compiled.apps().count(), 4);
+        for app in ["SharedApp", "LeftApp", "RightApp", "RootApp"] {
+            assert!(compiled.app(app).is_some(), "compiled bundle is missing `{app}`");
+        }
+        assert!(out_dir.join("apps/SharedApp/artifact.json").is_file());
+        assert!(out_dir.join("apps/LeftApp/artifact.json").is_file());
+        assert!(out_dir.join("apps/RightApp/artifact.json").is_file());
+
+        let shared_handle = compiled
+            .app("SharedApp")
+            .expect("shared dependency exists")
+            .argent
+            .template_plan
+            .templates
+            .iter()
+            .find(|template| template.actor == "Shared")
+            .map(|template| template.actor_type_handle.template.hash_hex.as_str())
+            .expect("shared actor handle exists");
+        for app in ["LeftApp", "RightApp"] {
+            let imported_hash = compiled
+                .app(app)
+                .expect("diamond branch artifact exists")
+                .argent
+                .template_plan
+                .runtime_states
+                .iter()
+                .flat_map(|state| &state.field_roles)
+                .find_map(|field| match &field.role {
+                    artifact::RuntimeFieldRoleArtifact::ImportedTemplate { hash_hex, .. } => Some(hash_hex.as_str()),
+                    _ => None,
+                })
+                .expect("diamond branch records the shared actor handle");
+            assert_eq!(imported_hash, shared_handle);
+        }
+        compiled.runtime_bundle().expect("all four diamond artifacts form one runtime bundle");
 
         let _ = std::fs::remove_dir_all(temp);
     }

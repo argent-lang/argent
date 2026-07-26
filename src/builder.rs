@@ -2385,9 +2385,55 @@ mod tests {
             ));
             let bundle = compiled.runtime_bundle().expect("compiled artifacts form a runtime bundle");
             let builder = TxBuilder::from_bundle(&bundle).expect("builder accepts the compiled artifact bundle");
-            builder
-                .covenant_utxo("Ctrl", state! { n: 0 }, 1_000, 0, false, Some(Hash::from_bytes([0x31; 32])))
-                .expect("linked imported template context builds the controller state");
+            let controller_sil = fs::read_to_string(out_dir.join("sil/Ctrl.sil")).expect("generated controller Sil exists");
+            let expected_controller_sil = match controller {
+                "controller.ag" => include_str!("../tests/fixtures/runtime/context_observed_self_merge/CtrlActorImport.sil"),
+                "controller_app.ag" => include_str!("../tests/fixtures/runtime/context_observed_self_merge/CtrlAppImport.sil"),
+                _ => unreachable!("the test lists every controller fixture"),
+            };
+            assert_eq!(controller_sil, expected_controller_sil);
+            let asset_sil = fs::read_to_string(out_dir.join("apps/AssetApp/sil/Asset.sil")).expect("generated dependency Sil exists");
+            assert_eq!(asset_sil, include_str!("../tests/fixtures/runtime/context_observed_self_merge/Asset.sil"));
+
+            let signer = keypair_from_byte(0x41);
+            let signer_pk = signer.x_only_public_key().0.serialize().to_vec();
+            let next_owner = vec![0x42; 32];
+            let controller_covenant_id = Hash::from_bytes([0x31; 32]);
+            let asset_covenant_id = Hash::from_bytes([0x32; 32]);
+            let controller_initial = state! { n: 0 };
+            let controller_next = state! { n: 7 };
+            let asset_initial = state! { owner: signer_pk.clone(), amount: 7 };
+            let asset_next = state! { owner: next_owner.clone(), amount: 7 };
+            let controller_utxo = builder
+                .covenant_utxo("Ctrl", controller_initial.clone(), 2_000, 0, false, Some(controller_covenant_id))
+                .expect("controller UTXO builds with the imported template context");
+            let asset_utxo = builder
+                .covenant_utxo("asset_app::Asset", asset_initial.clone(), 1_000, 0, false, Some(asset_covenant_id))
+                .expect("foreign asset UTXO builds from its defining artifact");
+            let context = TxContext::new()
+                .actor_input(
+                    "Ctrl",
+                    controller_initial,
+                    EntryCall::new("act").args(args![asset_covenant_id, next_owner.clone()]),
+                    TransactionOutpoint::new(TransactionId::from_bytes([0x33; 32]), 0),
+                    controller_utxo,
+                    0,
+                )
+                .actor_input(
+                    "asset_app::Asset",
+                    asset_initial,
+                    EntryCall::new("transfer").args_with(|tx, input_idx| {
+                        args![next_owner.clone(), sign_mutable_input(tx, input_idx, &signer), signer_pk.clone()]
+                    }),
+                    TransactionOutpoint::new(TransactionId::from_bytes([0x34; 32]), 0),
+                    asset_utxo,
+                    0,
+                )
+                .actor_output("Ctrl", controller_next, CovenantBinding::new(0, controller_covenant_id), 2_000)
+                .actor_output("asset_app::Asset", asset_next, CovenantBinding::new(1, asset_covenant_id), 1_000);
+            let transaction = builder.build(&context).expect("the exact cross-app self-transition executes");
+            assert_eq!(transaction.inputs.len(), 2);
+            assert_eq!(transaction.outputs.len(), 2);
             fs::remove_dir_all(out_dir).expect("temporary bundle build is removed");
         }
     }
