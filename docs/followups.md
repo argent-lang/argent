@@ -21,6 +21,46 @@ compiling it. In both cases, pass the dependency artifact to the importing app.
 Reject an artifact if its app name, schema, identity, exported interfaces, or
 actor-type handles do not match the import.
 
+## Cross-app static spawn targets
+
+**Area:** Compiler linking and lowering, artifact metadata, `argent-rt`, and
+runtime tests.
+
+**Context:** A static `spawns` target can name an actor in the selected app. A
+dynamic target uses an authored `actor_type<State>` value. The compiler can now
+link an actor from another source app and read its exported
+`actor_type_handle`, but `spawns` cannot use that linked actor as a static
+target.
+
+The two static cases have different route behavior. A same-app target belongs
+to the selected app's route graph. Its template can depend on the current
+in-app cut. A foreign target does not belong to that graph. Its defining app
+already fixed and exported its source-state template handle.
+
+**Follow-up:** Allow a linked actor such as `ChildApp::Child` as a static
+`spawns` target. Use the target app's exported `actor_type_handle` as the spawn
+template. Do not add the foreign actor to the importing app's route graph,
+route closure, or runtime route fields.
+
+Record whether each spawn target is static or dynamic in the artifact. Record
+the app and actor for a static target. Do not infer this information from a
+source expression at runtime. Add the foreign actor to the importing app's
+interface dependencies.
+
+Require the exact target app artifact in `argent-rt`. Verify its app, actor
+interface, artifact identity, template plan, and actor-type handle. Resolve the
+hidden spawn template from that handle, not from the actor's full Sil template.
+
+Add one end-to-end fixture in which a launcher app spawns
+`ChildApp::Child`. Give `Child` compiler-owned route context so its
+`actor_type_handle` hash differs from its `sil_template_hash`. Pin the generated
+Sil and execute the transaction through a compiled app bundle. Also test a
+missing target artifact, a wrong target artifact, same-app static spawning, and
+dynamic `actor_type<State>` spawning.
+
+This work can use source-backed app dependencies. Artifact-only dependencies
+are a separate follow-up.
+
 ## Entry-wide template witness deduplication
 
 **Area:** Compiler lowering, artifact recipes, `argent-rt`, generated Sil, and
