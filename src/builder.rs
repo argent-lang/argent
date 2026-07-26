@@ -71,6 +71,81 @@ mod tests {
         }
     }
 
+    /// Keep the importing artifact internally valid while changing the foreign
+    /// handle that it claims to have compiled into its fixed route context.
+    fn rewrite_first_imported_template_hash(artifact: &mut Artifact, hash_hex: &str) {
+        let (runtime_state_index, field_index, contract, field_name) = artifact
+            .argent
+            .template_plan
+            .runtime_states
+            .iter()
+            .enumerate()
+            .find_map(|(runtime_state_index, runtime_state)| {
+                runtime_state.field_roles.iter().enumerate().find_map(|(field_index, field)| {
+                    matches!(field.role, RuntimeFieldRoleArtifact::ImportedTemplate { .. })
+                        .then(|| (runtime_state_index, field_index, runtime_state.contract.clone(), field.name.clone()))
+                })
+            })
+            .expect("artifact contains an imported template role");
+        let field_count = artifact.argent.template_plan.runtime_states[runtime_state_index].field_roles.len();
+        let RuntimeFieldRoleArtifact::ImportedTemplate { hash_hex: imported_hash, .. } =
+            &mut artifact.argent.template_plan.runtime_states[runtime_state_index].field_roles[field_index].role
+        else {
+            unreachable!("the selected role is an imported template");
+        };
+        *imported_hash = hash_hex.to_string();
+
+        let sil_contract = artifact.sil_abi.contract(&contract).expect("importing contract exists");
+        let compiled_script = decode_hex(&sil_contract.compiled.script_hex).expect("compiled script decodes");
+        let (sil_prefix, _, _) = sil_contract.compiled.script_parts(&compiled_script).expect("compiled state span is valid");
+        let context_state = crate::artifact::RuntimeStateArtifact {
+            source: sil_contract.runtime_state.source.clone(),
+            fields: sil_contract.runtime_state.fields[..field_count].to_vec(),
+        };
+        let handle = artifact
+            .argent
+            .template_plan
+            .templates
+            .iter_mut()
+            .find(|template| template.actor == contract)
+            .map(|template| &mut template.actor_type_handle.template)
+            .expect("importing actor type handle exists");
+        let handle_prefix = decode_hex(&handle.prefix_hex).expect("handle prefix decodes");
+        let mut context_values = crate::codec::decode_runtime_state_script(&context_state, &handle_prefix[sil_prefix.len()..])
+            .expect("handle context decodes");
+        context_values.insert(field_name, ArtifactValue::Bytes(decode_hex(hash_hex).expect("replacement template hash decodes")));
+        let context_script =
+            crate::codec::encode_runtime_state_script(&context_state, &context_values).expect("updated handle context encodes");
+        let mut updated_prefix = sil_prefix.to_vec();
+        updated_prefix.extend_from_slice(&context_script);
+        let suffix = decode_hex(&handle.suffix_hex).expect("handle suffix decodes");
+        handle.prefix_hex = crate::codec::encode_hex(&updated_prefix);
+        handle.hash_hex = crate::codec::encode_hex(&silverscript_abi::template_hash(&updated_prefix, &suffix));
+    }
+
+    fn first_imported_template_role(artifact: &mut Artifact) -> &mut RuntimeFieldRoleArtifact {
+        artifact
+            .argent
+            .template_plan
+            .runtime_states
+            .iter_mut()
+            .flat_map(|runtime_state| &mut runtime_state.field_roles)
+            .find(|field| matches!(field.role, RuntimeFieldRoleArtifact::ImportedTemplate { .. }))
+            .map(|field| &mut field.role)
+            .expect("artifact contains an imported template role")
+    }
+
+    fn icc_bundle_builder_error(controller: &Artifact, asset: &Artifact) -> BuilderError {
+        let bundle = ArtifactBundle::new(controller)
+            .expect("controller artifact is internally valid")
+            .with_app("kcc20_asset", asset)
+            .expect("asset artifact attaches");
+        let Err(err) = TxBuilder::from_bundle(&bundle) else {
+            panic!("the mutated ICC bundle must be rejected");
+        };
+        err
+    }
+
     fn route_family_table_bytes(artifact: &Artifact, family_id: &str) -> Vec<u8> {
         let family = artifact
             .argent
@@ -2405,6 +2480,66 @@ mod tests {
             matches!(&mismatch_err, BuilderError::InterfaceMismatch { app, actor, .. } if app == "kcc20_asset" && actor == "MinterProxy"),
             "unexpected error: {mismatch_err}"
         );
+    }
+
+    #[test]
+    fn artifact_bundle_verifies_imported_template_roles() {
+        let controller_artifact = icc_controller_artifact();
+        let asset_artifact = icc_asset_artifact();
+
+        let mut wrong_hash = controller_artifact.clone();
+        rewrite_first_imported_template_hash(&mut wrong_hash, &"11".repeat(32));
+        wrong_hash.id = wrong_hash.computed_id_hex().expect("controller with changed imported hash computes");
+        let wrong_hash_err = icc_bundle_builder_error(&wrong_hash, &asset_artifact);
+        assert!(matches!(
+            wrong_hash_err,
+            BuilderError::ImportedTemplateMismatch { app, dependency, actor, message }
+                if app == "KCC20MintController"
+                    && dependency == "KCC20Asset"
+                    && actor == "MinterProxy"
+                    && message.contains("template hash")
+        ));
+
+        let mut wrong_state = controller_artifact.clone();
+        let RuntimeFieldRoleArtifact::ImportedTemplate { state, .. } = first_imported_template_role(&mut wrong_state) else {
+            unreachable!("the selected role is an imported template");
+        };
+        *state = "WrongState".to_string();
+        wrong_state.id = wrong_state.computed_id_hex().expect("controller with changed imported state computes");
+        let wrong_state_err = icc_bundle_builder_error(&wrong_state, &asset_artifact);
+        assert!(matches!(
+            wrong_state_err,
+            BuilderError::ImportedTemplateMismatch { dependency, actor, message, .. }
+                if dependency == "KCC20Asset" && actor == "MinterProxy" && message.contains("state `WrongState`")
+        ));
+
+        let mut wrong_actor = controller_artifact.clone();
+        let RuntimeFieldRoleArtifact::ImportedTemplate { contract, .. } = first_imported_template_role(&mut wrong_actor) else {
+            unreachable!("the selected role is an imported template");
+        };
+        *contract = "MissingActor".to_string();
+        wrong_actor.id = wrong_actor.computed_id_hex().expect("controller with changed imported actor computes");
+        let wrong_actor_err = icc_bundle_builder_error(&wrong_actor, &asset_artifact);
+        assert!(matches!(
+            wrong_actor_err,
+            BuilderError::ImportedTemplateMismatch { dependency, actor, message, .. }
+                if dependency == "KCC20Asset"
+                    && actor == "MissingActor"
+                    && message.contains("does not contain this actor")
+        ));
+
+        let mut undeclared_dependency = controller_artifact;
+        undeclared_dependency.dependencies.clear();
+        undeclared_dependency.id =
+            undeclared_dependency.computed_id_hex().expect("controller without its direct dependency receipt computes");
+        let undeclared_err = icc_bundle_builder_error(&undeclared_dependency, &asset_artifact);
+        assert!(matches!(
+            undeclared_err,
+            BuilderError::ImportedTemplateMismatch { dependency, actor, message, .. }
+                if dependency == "KCC20Asset"
+                    && actor == "MinterProxy"
+                    && message.contains("not a direct dependency")
+        ));
     }
 
     #[test]
