@@ -1,11 +1,12 @@
 {
   "schema_version": 1,
-  "id": "f46b209268aaa95daed15a3efe4dde67e8ac24e8777bb7ea061054545d6afa05",
+  "id": "f0ec0633e2ee86ed22af41fe09d2e6891ed5d109382c2b36545dc3633550b778",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
   },
   "app": "OpenCore",
+  "dependencies": [],
   "root": "examples/open_icc/core.ag",
   "modules": [
     "examples/open_icc/core.ag"

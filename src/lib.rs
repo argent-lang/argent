@@ -643,6 +643,17 @@ app RootApp {
         assert_eq!(compiled.apps().map(|(app, _)| app).collect::<Vec<_>>(), ["LeafApp", "MiddleApp", "RootApp"]);
         assert!(out_dir.join("apps/LeafApp/artifact.json").is_file());
         assert!(out_dir.join("apps/MiddleApp/artifact.json").is_file());
+        let leaf = compiled.app("LeafApp").expect("bundle contains LeafApp");
+        let middle = compiled.app("MiddleApp").expect("bundle contains MiddleApp");
+        assert!(leaf.dependencies.is_empty());
+        assert_eq!(
+            middle.dependencies,
+            [artifact::AppDependencyArtifact { app: "LeafApp".to_string(), artifact_id: leaf.id.clone() }]
+        );
+        assert_eq!(
+            compiled.primary().dependencies,
+            [artifact::AppDependencyArtifact { app: "MiddleApp".to_string(), artifact_id: middle.id.clone() }]
+        );
         let middle_handle = compiled
             .app("MiddleApp")
             .expect("bundle contains MiddleApp")
@@ -668,7 +679,8 @@ app RootApp {
             })
             .expect("Root fixes the exported Middle source-state template");
         assert_eq!(root_import_hash, &middle_handle.template.hash_hex);
-        compiled.runtime_bundle().expect("all transitive artifacts form one runtime bundle");
+        let runtime_bundle = compiled.runtime_bundle().expect("all transitive artifacts form one runtime bundle");
+        builder::TxBuilder::from_bundle(&runtime_bundle).expect("all direct dependency ids match transitively");
 
         let _ = std::fs::remove_dir_all(temp);
     }

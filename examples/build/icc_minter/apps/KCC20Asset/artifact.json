@@ -1,11 +1,12 @@
 {
   "schema_version": 1,
-  "id": "8f2c0fe30c5668b12f004dbf035f87b3f107cebd6765165bb72bd9b8cc4a0129",
+  "id": "df209b266ff21821cefe7badba571ed1a2889be42298dd59914393b94bfb885b",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
   },
   "app": "KCC20Asset",
+  "dependencies": [],
   "root": "examples/icc/kcc20_asset.ag",
   "modules": [
     "examples/icc/kcc20_asset.ag"

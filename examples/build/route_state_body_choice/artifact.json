@@ -1,11 +1,12 @@
 {
   "schema_version": 1,
-  "id": "8014200da5ef0a401a813d99a7c63e4a708635e381348e73db8faabe7a474946",
+  "id": "a095cbb1ea08d7ccc1e64e02e485d1ad003c660a7462ee17f485a8f61d09b17f",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
   },
   "app": "RouteStateBodyChoice",
+  "dependencies": [],
   "root": "examples/route_state_body_choice.ag",
   "modules": [
     "examples/route_state_body_choice.ag"

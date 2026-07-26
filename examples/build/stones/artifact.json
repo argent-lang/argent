@@ -1,11 +1,12 @@
 {
   "schema_version": 1,
-  "id": "022987abbe16c7b3ed6fb0daf3edb3a66b372f80d6f188b079bdad71ed4eff62",
+  "id": "f21108cde9093abac21824d5f87e75f3b66585a059fda7eb7e0cba78ca50544b",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
   },
   "app": "Stones",
+  "dependencies": [],
   "root": "examples/stones/app.ag",
   "modules": [
     "examples/stones/app.ag",

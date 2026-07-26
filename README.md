@@ -253,6 +253,10 @@ hidden witness recipes, artifact ids, and interface fingerprints.
 `argent-runtime` consumes that artifact directly; it does not depend on compiler
 AST types.
 
+Each app artifact also records the exact artifact ID of each direct app
+dependency. Runtime bundles reject missing or different dependency artifacts
+before they build a transaction.
+
 ## Current maturity
 
 Argent is an active language and compiler project. Syntax and JSON schema

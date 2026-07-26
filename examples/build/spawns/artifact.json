@@ -1,11 +1,12 @@
 {
   "schema_version": 1,
-  "id": "2c1db23e9c4b2cd5988a2d3095f3ce9c844b98ac5cc1ba875649d79d223868c1",
+  "id": "e22b079903de40dcd917e7399a09417cb75595193213e4a605bf7b81cd625467",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
   },
   "app": "Spawns",
+  "dependencies": [],
   "root": "examples/spawns.ag",
   "modules": [
     "examples/spawns.ag"

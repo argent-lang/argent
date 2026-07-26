@@ -2277,7 +2277,7 @@ mod tests {
     }
 
     #[test]
-    fn artifact_bundle_rejects_bad_ids_and_interface_mismatches() {
+    fn artifact_bundle_rejects_bad_ids_dependency_ids_and_interface_mismatches() {
         let controller_artifact = icc_controller_artifact();
         let asset_artifact = icc_asset_artifact();
 
@@ -2287,7 +2287,11 @@ mod tests {
             panic!("a builder must reject a missing app dependency");
         };
         assert!(
-            matches!(missing_dependency_err, BuilderError::UnknownAppAlias(ref app) if app == "kcc20_asset"),
+            matches!(
+                missing_dependency_err,
+                BuilderError::MissingDependencyArtifact { ref app, ref dependency, .. }
+                    if app == "KCC20MintController" && dependency == "KCC20Asset"
+            ),
             "unexpected error: {missing_dependency_err}"
         );
         let bundle = ArtifactBundle::new(&controller_artifact)
@@ -2324,6 +2328,53 @@ mod tests {
             .expect_err("bad observed artifact id is rejected");
         assert!(matches!(bad_id_err, BuilderError::ArtifactIdentity { app, .. } if app == "kcc20_asset"));
 
+        let mut different_asset = asset_artifact.clone();
+        different_asset.generator.version.push_str("-different");
+        different_asset.id = different_asset.computed_id_hex().expect("different dependency artifact id computes");
+        let different_bundle = ArtifactBundle::new(&controller_artifact)
+            .expect("controller artifact remains valid")
+            .with_app("kcc20_asset", &different_asset)
+            .expect("individually valid dependency artifact attaches");
+        let Err(different_err) = TxBuilder::from_bundle(&different_bundle) else {
+            panic!("a different dependency artifact must be rejected");
+        };
+        assert!(matches!(
+            different_err,
+            BuilderError::DependencyArtifactMismatch {
+                app,
+                dependency,
+                expected_artifact_id,
+                found_dependency,
+                found_artifact_id,
+            }
+                if app == "KCC20MintController"
+                    && dependency == "KCC20Asset"
+                    && expected_artifact_id == asset_artifact.id
+                    && found_dependency == "KCC20Asset"
+                    && found_artifact_id == different_asset.id
+        ));
+
+        let mut wrong_name_controller = controller_artifact.clone();
+        wrong_name_controller
+            .dependencies
+            .iter_mut()
+            .find(|dependency| dependency.app == "KCC20Asset")
+            .expect("controller records its asset dependency")
+            .app = "KCC20_Asset".to_string();
+        wrong_name_controller.id = wrong_name_controller.computed_id_hex().expect("changed dependency app name computes");
+        let wrong_name_bundle = ArtifactBundle::new(&wrong_name_controller)
+            .expect("modified controller artifact remains valid")
+            .with_app("kcc20_asset", &asset_artifact)
+            .expect("dependency artifact uses the same normalized alias");
+        let Err(wrong_name_err) = TxBuilder::from_bundle(&wrong_name_bundle) else {
+            panic!("a different dependency app name must be rejected");
+        };
+        assert!(matches!(
+            wrong_name_err,
+            BuilderError::DependencyArtifactMismatch { dependency, found_dependency, .. }
+                if dependency == "KCC20_Asset" && found_dependency == "KCC20Asset"
+        ));
+
         let mut bad_interface_asset = asset_artifact.clone();
         let proxy_export = bad_interface_asset
             .argent
@@ -2334,8 +2385,17 @@ mod tests {
             .expect("asset exports MinterProxy");
         proxy_export.fingerprint_hex = "11".repeat(32);
         bad_interface_asset.id = bad_interface_asset.computed_id_hex().expect("mutated artifact id computes");
-        let bad_interface_bundle = ArtifactBundle::new(&controller_artifact)
-            .expect("controller artifact remains valid")
+        let mut bad_interface_controller = controller_artifact.clone();
+        bad_interface_controller
+            .dependencies
+            .iter_mut()
+            .find(|dependency| dependency.app == "KCC20Asset")
+            .expect("controller records its asset dependency")
+            .artifact_id = bad_interface_asset.id.clone();
+        bad_interface_controller.id =
+            bad_interface_controller.computed_id_hex().expect("controller with replaced dependency id computes");
+        let bad_interface_bundle = ArtifactBundle::new(&bad_interface_controller)
+            .expect("modified controller artifact remains valid")
             .with_app("kcc20_asset", &bad_interface_asset)
             .expect("dependency artifact attaches before linked interfaces are checked");
         let Err(mismatch_err) = TxBuilder::from_bundle(&bad_interface_bundle) else {

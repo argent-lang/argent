@@ -29,10 +29,17 @@ pub struct Artifact {
     pub id: String,
     pub generator: GeneratorArtifact,
     pub app: String,
+    pub dependencies: Vec<AppDependencyArtifact>,
     pub root: String,
     pub modules: Vec<String>,
     pub argent: ArgentArtifact,
     pub sil_abi: SilAbiArtifact,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppDependencyArtifact {
+    pub app: String,
+    pub artifact_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1776,6 +1783,7 @@ mod tests {
           "schema_version": 1,
           "generator": { "name": "argentc", "version": "0.1.0" },
           "app": "Tiny",
+          "dependencies": [],
           "root": "examples/tiny.ag",
           "modules": ["examples/tiny.ag"],
           "argent": {
@@ -1871,12 +1879,22 @@ mod tests {
     }
 
     #[test]
+    fn artifact_id_binds_direct_dependency_ids() {
+        let first = artifact_with_route_families(Vec::new());
+        let mut second = first.clone();
+        second.dependencies.push(AppDependencyArtifact { app: "Dependency".to_string(), artifact_id: "11".repeat(32) });
+
+        assert_ne!(first.computed_id_hex().expect("first id computes"), second.computed_id_hex().expect("second id computes"));
+    }
+
+    #[test]
     fn rejects_unknown_argent_schema_version() {
         let artifact = Artifact {
             schema_version: ARTIFACT_SCHEMA_VERSION + 1,
             id: String::new(),
             generator: GeneratorArtifact { name: "argentc".to_string(), version: "0.1.0".to_string() },
             app: "Tiny".to_string(),
+            dependencies: Vec::new(),
             root: "tiny.ag".to_string(),
             modules: Vec::new(),
             argent: ArgentArtifact {
@@ -1903,6 +1921,7 @@ mod tests {
             id: String::new(),
             generator: GeneratorArtifact { name: "argentc".to_string(), version: "0.1.0".to_string() },
             app: "Tiny".to_string(),
+            dependencies: Vec::new(),
             root: "tiny.ag".to_string(),
             modules: Vec::new(),
             argent: ArgentArtifact {
@@ -1929,6 +1948,7 @@ mod tests {
             id: String::new(),
             generator: GeneratorArtifact { name: "argentc".to_string(), version: "0.1.0".to_string() },
             app: "Tiny".to_string(),
+            dependencies: Vec::new(),
             root: "tiny.ag".to_string(),
             modules: Vec::new(),
             argent: ArgentArtifact {
@@ -2096,6 +2116,7 @@ mod tests {
             id: String::new(),
             generator: GeneratorArtifact { name: "argentc".to_string(), version: "0.1.0".to_string() },
             app: "NestedFamily".to_string(),
+            dependencies: Vec::new(),
             root: "nested.ag".to_string(),
             modules: Vec::new(),
             argent: ArgentArtifact {
@@ -2211,6 +2232,7 @@ mod tests {
             id: String::new(),
             generator: GeneratorArtifact { name: "argentc".to_string(), version: "0.1.0".to_string() },
             app: "Tiny".to_string(),
+            dependencies: Vec::new(),
             root: "tiny.ag".to_string(),
             modules: Vec::new(),
             argent: ArgentArtifact {

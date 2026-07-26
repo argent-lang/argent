@@ -1,11 +1,17 @@
 {
   "schema_version": 1,
-  "id": "a65e7e2b7e5e6a984737087c1c213c09f4d418c6d744cbe44edbbdd0da3ea58a",
+  "id": "850d049426f921e43461d015d474e8206c0d9c4faf4740a3e1f4c35cb674a6f1",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
   },
   "app": "KCC20MintController",
+  "dependencies": [
+    {
+      "app": "KCC20Asset",
+      "artifact_id": "df209b266ff21821cefe7badba571ed1a2889be42298dd59914393b94bfb885b"
+    }
+  ],
   "root": "examples/icc/minter.ag",
   "modules": [
     "examples/icc/minter.ag",

@@ -1,11 +1,12 @@
 {
   "schema_version": 1,
-  "id": "e1639fd4f2e6b7e317e14b7362234181a5f829bd74d2d43be6cd700aaffda0ca",
+  "id": "9c289551e4978fd8c81f23285c4d14ca2c4616329a02386bb8854331b4d141ae",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
   },
   "app": "RouteStateBodies",
+  "dependencies": [],
   "root": "examples/route_state_bodies.ag",
   "modules": [
     "examples/route_state_bodies.ag"

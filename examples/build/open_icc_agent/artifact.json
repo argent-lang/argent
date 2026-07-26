@@ -1,11 +1,12 @@
 {
   "schema_version": 1,
-  "id": "3bc44600db81f2d819dbf3dd6b32137746c9585b7c7ce68479447449ca34f001",
+  "id": "8699d046ec004d7114e15d7804e6e9a12807de5c183c0fe773a67b009e3c1245",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
   },
   "app": "OpenAgent",
+  "dependencies": [],
   "root": "examples/open_icc/agent.ag",
   "modules": [
     "examples/open_icc/agent.ag",

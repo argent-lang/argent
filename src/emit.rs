@@ -75,6 +75,8 @@ fn emit_build_selected(
 #[derive(Debug)]
 struct Model<'a> {
     app_name: String,
+    /// Direct artifacts used to link the selected app.
+    app_dependencies: Vec<AppDependencyArtifact>,
     app_actors: Vec<String>,
     route_families: Vec<RouteFamily>,
     consts: Vec<&'a ConstDecl>,
@@ -277,6 +279,10 @@ impl<'a> Model<'a> {
         let state_route_leaves = compute_state_route_leaves(&state_template_deps, &direct_state_template_deps, &route_families);
         let model = Self {
             app_name,
+            app_dependencies: dependencies
+                .iter()
+                .map(|(app, artifact)| AppDependencyArtifact { app: app.clone(), artifact_id: artifact.id.clone() })
+                .collect(),
             app_actors,
             route_families,
             consts,
@@ -5047,6 +5053,7 @@ fn emit_artifact(program: &Program, model: &Model<'_>, actor_sil: &BTreeMap<Stri
         id: String::new(),
         generator: GeneratorArtifact { name: "argentc".to_string(), version: env!("CARGO_PKG_VERSION").to_string() },
         app: model.app_name.clone(),
+        dependencies: model.app_dependencies.clone(),
         root: manifest_path(&program.root),
         modules: program.modules.iter().map(|module| manifest_path(&module.path)).collect(),
         argent: ArgentArtifact {

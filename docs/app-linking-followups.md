@@ -13,12 +13,12 @@ runtime tests.
 new build of the foreign app can keep the same state field shape but produce a
 different handle.
 
-The runtime now compares interface fingerprints. It does not compare the
-imported handle with the handle in the attached app artifact. The fingerprint
-contains only the actor name, state name, and top-level Sil state fields. It
-does not contain nested state layouts, Argent source types, state expansions,
-or the actor handle. Artifact verification also does not calculate exported
-interface fingerprints again.
+The runtime binds the exact dependency artifact and compares interface
+fingerprints. It does not verify the imported handle against the exported
+handle. The fingerprint contains only the actor name, state name, and top-level
+Sil state fields. It does not contain nested state layouts, Argent source
+types, state expansions, or the actor handle. Artifact verification also does
+not calculate exported interface fingerprints again.
 
 **Follow-up:** Define one complete receipt for a linked actor. The receipt must
 identify the app, actor, source-state interface, and exact actor handle. The

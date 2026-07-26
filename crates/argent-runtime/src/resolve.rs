@@ -930,6 +930,7 @@ mod tests {
             id: String::new(),
             generator: GeneratorArtifact { name: "test".to_string(), version: "0".to_string() },
             app: app.to_string(),
+            dependencies: Vec::new(),
             root: "app.ag".to_string(),
             modules: Vec::new(),
             argent: ArgentArtifact {

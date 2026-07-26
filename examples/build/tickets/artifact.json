@@ -1,11 +1,12 @@
 {
   "schema_version": 1,
-  "id": "0fe5882da0d9d36e8400d85e260f58f7a311b7207334a27597153655787cd507",
+  "id": "24680e4aac8a4cf0a8eee9fd175880d08a1d8aa8bc913c2935be8a9b8ea7e8ce",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
   },
   "app": "Tickets",
+  "dependencies": [],
   "root": "examples/tickets.ag",
   "modules": [
     "examples/tickets.ag"

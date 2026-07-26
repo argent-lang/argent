@@ -1,11 +1,12 @@
 {
   "schema_version": 1,
-  "id": "097c2d28b2f2785dab42cd3d36522ab8e4aed0d82ac02494b0564f32abb3f3a4",
+  "id": "96e41dcfd260de491f0cf598a4b562d3e6fd240bafad5430d8f2d5c81a78dbb0",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
   },
   "app": "ToyChess",
+  "dependencies": [],
   "root": "examples/toy_chess/app.ag",
   "modules": [
     "examples/toy_chess/app.ag"

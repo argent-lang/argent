@@ -281,6 +281,21 @@ pub enum BuilderError {
     AppAliasMismatch { app: String, expected: String, found: String },
     #[error("artifact bundle app `{app}` has invalid artifact id: {source}")]
     ArtifactIdentity { app: String, source: ArtifactIdentityError },
+    #[error(
+        "artifact bundle app `{app}` requires dependency `{dependency}` artifact `{expected_artifact_id}`, but it is not attached"
+    )]
+    MissingDependencyArtifact { app: String, dependency: String, expected_artifact_id: String },
+    #[error(
+        "artifact bundle app `{app}` requires dependency `{dependency}` artifact `{expected_artifact_id}`, found app \
+         `{found_dependency}` artifact `{found_artifact_id}`"
+    )]
+    DependencyArtifactMismatch {
+        app: String,
+        dependency: String,
+        expected_artifact_id: String,
+        found_dependency: String,
+        found_artifact_id: String,
+    },
     #[error("artifact bundle app `{app}` is missing {direction} interface for actor `{actor}`")]
     MissingInterface { app: String, direction: &'static str, actor: String },
     #[error(
@@ -650,8 +665,34 @@ impl<'a> TxBuilder<'a> {
 
     pub fn from_bundle(bundle: &ArtifactBundle<'a>) -> BuilderResult<Self> {
         let builder = Self { bundle: bundle.clone() };
+        builder.validate_bundle_dependencies()?;
         builder.validate_bundle_interfaces()?;
         Ok(builder)
+    }
+
+    fn validate_bundle_dependencies(&self) -> BuilderResult<()> {
+        for artifact in self.bundle.apps.values() {
+            for dependency in &artifact.dependencies {
+                let alias = artifact_app_alias(&dependency.app);
+                let Some(found) = self.bundle.apps.get(&alias) else {
+                    return Err(BuilderError::MissingDependencyArtifact {
+                        app: artifact.app.clone(),
+                        dependency: dependency.app.clone(),
+                        expected_artifact_id: dependency.artifact_id.clone(),
+                    });
+                };
+                if found.app != dependency.app || found.id != dependency.artifact_id {
+                    return Err(BuilderError::DependencyArtifactMismatch {
+                        app: artifact.app.clone(),
+                        dependency: dependency.app.clone(),
+                        expected_artifact_id: dependency.artifact_id.clone(),
+                        found_dependency: found.app.clone(),
+                        found_artifact_id: found.id.clone(),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     fn validate_bundle_interfaces(&self) -> BuilderResult<()> {
