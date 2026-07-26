@@ -8,24 +8,43 @@ use crate::codec::encode_hex;
 use crate::error::{ArgentError, Result};
 use crate::language::word;
 use crate::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, Token, TokenKind, lex};
+use crate::link::{LinkedActor, LinkedContext, link_imported_actors};
 use crate::routing::{CommitmentNode, RouteGraph, RoutePlan as PlannerRoutePlan, SelectorRequirement, route_plan};
 use silverscript_lang::ast::Expr as SilExpr;
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract};
 
 pub fn emit_build(program: &Program, out_dir: impl AsRef<Path>) -> Result<()> {
-    emit_build_selected(program, None, out_dir)
+    emit_build_selected(program, None, &BTreeMap::new(), out_dir)
 }
 
 pub fn emit_build_app(program: &Program, app_name: &str, out_dir: impl AsRef<Path>) -> Result<()> {
-    emit_build_selected(program, Some(app_name), out_dir)
+    emit_build_selected(program, Some(app_name), &BTreeMap::new(), out_dir)
 }
 
-fn emit_build_selected(program: &Program, app_name: Option<&str>, out_dir: impl AsRef<Path>) -> Result<()> {
+/// Build one app with its direct app dependencies already compiled.
+///
+/// The map is keyed by the source app name used in explicit app imports or
+/// exposed by an ordinary module import.
+pub(crate) fn emit_build_app_linked(
+    program: &Program,
+    app_name: &str,
+    dependencies: &BTreeMap<String, &Artifact>,
+    out_dir: impl AsRef<Path>,
+) -> Result<()> {
+    emit_build_selected(program, Some(app_name), dependencies, out_dir)
+}
+
+fn emit_build_selected(
+    program: &Program,
+    app_name: Option<&str>,
+    dependencies: &BTreeMap<String, &Artifact>,
+    out_dir: impl AsRef<Path>,
+) -> Result<()> {
     let out_dir = out_dir.as_ref();
     let sil_dir = out_dir.join("sil");
 
     let model = match app_name {
-        Some(app_name) => Model::from_program_app(program, app_name)?,
+        Some(app_name) => Model::from_program_app_linked(program, app_name, dependencies)?,
         None => Model::from_program(program)?,
     };
     let mut actor_sil = BTreeMap::new();
@@ -61,7 +80,10 @@ struct Model<'a> {
     consts: Vec<&'a ConstDecl>,
     functions: Vec<&'a FunctionDecl>,
     states: BTreeMap<String, &'a StateDecl>,
+    linked_states: BTreeMap<String, StateDecl>,
     actors_by_name: BTreeMap<String, &'a ActorDecl>,
+    linked_actor_decls: BTreeMap<String, ActorDecl>,
+    linked_actors: BTreeMap<String, LinkedActor>,
     actor_enums: BTreeMap<String, ActorEnumInfo>,
     actors: Vec<&'a ActorDecl>,
     /// Delegate entries that establish each actor as a leader actor.
@@ -175,25 +197,35 @@ fn compute_leader_for(actors: &[&ActorDecl]) -> BTreeMap<String, Vec<EntryRefArt
 
 impl<'a> Model<'a> {
     fn from_program(program: &'a Program) -> Result<Self> {
-        Self::from_program_selected(program, None)
+        Self::from_program_selected(program, None, &BTreeMap::new())
     }
 
+    #[cfg(test)]
     fn from_program_app(program: &'a Program, app_name: &str) -> Result<Self> {
-        Self::from_program_selected(program, Some(app_name))
+        Self::from_program_selected(program, Some(app_name), &BTreeMap::new())
     }
 
-    fn from_program_selected(program: &'a Program, app_name: Option<&str>) -> Result<Self> {
-        Self::from_program_selected_with_route_planner(program, app_name, &default_route_planner)
+    fn from_program_app_linked(program: &'a Program, app_name: &str, dependencies: &BTreeMap<String, &Artifact>) -> Result<Self> {
+        Self::from_program_selected(program, Some(app_name), dependencies)
+    }
+
+    fn from_program_selected(
+        program: &'a Program,
+        app_name: Option<&str>,
+        dependencies: &BTreeMap<String, &Artifact>,
+    ) -> Result<Self> {
+        Self::from_program_selected_with_route_planner(program, app_name, dependencies, &default_route_planner)
     }
 
     #[cfg(test)]
     fn from_program_with_route_planner(program: &'a Program, route_planner: &CompilerRoutePlanner) -> Result<Self> {
-        Self::from_program_selected_with_route_planner(program, None, route_planner)
+        Self::from_program_selected_with_route_planner(program, None, &BTreeMap::new(), route_planner)
     }
 
     fn from_program_selected_with_route_planner(
         program: &'a Program,
         app_name: Option<&str>,
+        dependencies: &BTreeMap<String, &Artifact>,
         route_planner: &CompilerRoutePlanner,
     ) -> Result<Self> {
         validate_unique_apps(program)?;
@@ -210,6 +242,7 @@ impl<'a> Model<'a> {
         } else {
             ("ArgentApp".to_string(), all_actors.keys().cloned().collect())
         };
+        validate_direct_actor_imports(program, &app_name, &app_actors)?;
 
         let mut actors = Vec::new();
         for name in &app_actors {
@@ -221,19 +254,23 @@ impl<'a> Model<'a> {
             actors.push(actor);
         }
 
-        let actor_enums = build_actor_enums(&actor_enum_decls, &all_actors, &states, &app_actors)?;
-        let context_decls = all_actors.values().copied().collect::<Vec<_>>();
-        // context_actors include all supporting actors for state-layout analysis.
-        let mut context_actors = app_actors.clone();
-        for actor in all_actors.keys() {
-            if !context_actors.contains(actor) {
-                context_actors.push(actor.clone());
+        let LinkedContext {
+            states: linked_states,
+            actor_decls: linked_actor_decls,
+            actors: linked_actors,
+            actor_enums: linked_actor_enums,
+        } = link_imported_actors(program, dependencies, &states, &all_actors)?;
+        let mut actor_enums = build_actor_enums(&actor_enum_decls, &all_actors, &states, &app_actors)?;
+        for (name, linked) in linked_actor_enums {
+            let linked = ActorEnumInfo { name: linked.name, state: linked.state, variants: linked.variants };
+            if let Some(local) = actor_enums.insert(name.clone(), linked.clone())
+                && local != linked
+            {
+                return Err(ArgentError::new(format!("imported actor enum `{name}` conflicts with a local actor enum")));
             }
         }
-        let state_template_deps =
-            compute_state_template_deps(&context_decls, &all_actors, &context_actors, &app_actors, &actor_enums)?;
-        let direct_state_template_deps =
-            compute_direct_state_template_deps(&context_decls, &all_actors, &context_actors, &app_actors, &actor_enums)?;
+        let state_template_deps = compute_state_template_deps(&actors, &all_actors, &app_actors, &actor_enums)?;
+        let direct_state_template_deps = compute_direct_state_template_deps(&actors, &all_actors, &app_actors, &actor_enums)?;
         let CompilerRoutePlan { families: route_families, leaves_by_actor: route_leaves_by_actor, transitions: route_transitions } =
             infer_direct_routes(&actors, &all_actors, &app_actors, &actor_enums, route_planner)?;
         let leader_for = compute_leader_for(&actors);
@@ -245,7 +282,10 @@ impl<'a> Model<'a> {
             consts,
             functions,
             states,
+            linked_states,
             actors_by_name: all_actors,
+            linked_actor_decls,
+            linked_actors,
             actor_enums,
             actors,
             leader_for,
@@ -258,7 +298,11 @@ impl<'a> Model<'a> {
     }
 
     fn state(&self, name: &str) -> Result<&StateDecl> {
-        self.states.get(name).copied().ok_or_else(|| ArgentError::new(format!("unknown state `{name}`")))
+        self.states
+            .get(name)
+            .copied()
+            .or_else(|| self.linked_states.get(name))
+            .ok_or_else(|| ArgentError::new(format!("unknown state `{name}`")))
     }
 
     fn storage_state_name(&self, name: &str) -> Result<String> {
@@ -270,8 +314,28 @@ impl<'a> Model<'a> {
         self.state(&self.storage_state_name(name)?)
     }
 
+    fn has_state(&self, name: &str) -> bool {
+        self.states.contains_key(name) || self.linked_states.contains_key(name)
+    }
+
+    fn all_states(&self) -> impl Iterator<Item = &StateDecl> {
+        self.states.values().copied().chain(self.linked_states.values())
+    }
+
     fn actor(&self, name: &str) -> Result<&ActorDecl> {
-        self.actors_by_name.get(name).copied().ok_or_else(|| ArgentError::new(format!("unknown actor `{name}`")))
+        self.actors_by_name
+            .get(name)
+            .copied()
+            .or_else(|| self.linked_actor_decls.get(name))
+            .ok_or_else(|| ArgentError::new(format!("unknown actor `{name}`")))
+    }
+
+    fn has_actor(&self, name: &str) -> bool {
+        self.actors_by_name.contains_key(name) || self.linked_actors.contains_key(name)
+    }
+
+    fn linked_actor(&self, name: &str) -> Option<&LinkedActor> {
+        self.linked_actors.get(name)
     }
 
     fn static_spawn_actor(&self, expr: &str) -> Option<&ActorDecl> {
@@ -825,6 +889,12 @@ impl<'a> Model<'a> {
                     ))
                 })?;
                 continue;
+            }
+            if self.linked_actor(&observed.actor).is_none() && !self.app_actors.contains(&observed.actor) {
+                return Err(ArgentError::new(format!(
+                    "entry `{}::{}` observe `{}` {section} `{}` references actor `{}` outside selected app `{}`; foreign actors must be imported through their app",
+                    actor.name, entry.name, observe.name, observed.name, observed.actor, self.app_name
+                )));
             }
             self.actor_state(&observed.actor).map_err(|_| {
                 ArgentError::new(format!(
@@ -1461,14 +1531,52 @@ fn select_root_app<'a>(program: &'a Program, app_name: Option<&str>) -> Result<O
     }
 }
 
+fn validate_direct_actor_imports(program: &Program, app_name: &str, app_actors: &[String]) -> Result<()> {
+    let app_actors = app_actors.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    for module in &program.modules {
+        let base = module.path.parent().ok_or_else(|| ArgentError::at(&module.path, "module path has no parent"))?;
+        for import in &module.imports {
+            let Import::Actor { actor, path } = import else {
+                continue;
+            };
+            let source = fs::canonicalize(base.join(path)).map_err(|err| ArgentError::at(&module.path, err.to_string()))?;
+            let imported = program
+                .modules
+                .iter()
+                .find(|candidate| candidate.path == source)
+                .ok_or_else(|| ArgentError::at(&module.path, format!("direct actor import source `{path}` was not loaded")))?;
+            if !imported.actors.iter().any(|candidate| candidate.name == *actor) {
+                return Err(ArgentError::at(
+                    &module.path,
+                    format!("direct actor import `{actor}` does not name an actor declared by `{path}`"),
+                ));
+            }
+            if app_actors.contains(actor.as_str()) {
+                continue;
+            }
+
+            let defining_apps =
+                imported.apps.iter().filter(|app| app.actors.contains(actor)).map(|app| app.name.as_str()).collect::<Vec<_>>();
+            let suggestion = match defining_apps.as_slice() {
+                [defining_app] => format!("; use `import actor {defining_app}::{actor} from \"{path}\";`"),
+                _ => "; add it to the selected app or import it through its defining app".to_string(),
+            };
+            return Err(ArgentError::at(
+                &module.path,
+                format!("direct actor import `{actor}` is not part of selected app `{app_name}`{suggestion}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn compute_state_template_deps<'a>(
     actors: &[&'a ActorDecl],
     actors_by_name: &BTreeMap<String, &'a ActorDecl>,
-    context_actors: &[String],
     app_actors: &[String],
     actor_enums: &BTreeMap<String, ActorEnumInfo>,
 ) -> Result<BTreeMap<String, Vec<String>>> {
-    let context_actor_set = context_actors.iter().cloned().collect::<BTreeSet<_>>();
+    let app_actor_set = app_actors.iter().cloned().collect::<BTreeSet<_>>();
     let mut deps = BTreeMap::<String, BTreeSet<String>>::new();
     let mut routes = BTreeMap::<String, BTreeSet<String>>::new();
 
@@ -1478,7 +1586,7 @@ fn compute_state_template_deps<'a>(
 
         for entry in &actor.entries {
             for consume in &entry.consumes {
-                if context_actor_set.contains(&consume.actor) && !is_single_actor_self_consume(app_actors, actor, consume) {
+                if app_actor_set.contains(&consume.actor) && !is_single_actor_self_consume(app_actors, actor, consume) {
                     deps.entry(actor.state.clone()).or_default().insert(consume.actor.clone());
                 }
             }
@@ -1486,7 +1594,7 @@ fn compute_state_template_deps<'a>(
             for spawn in &entry.spawns {
                 for output in &spawn.outputs {
                     let target = output.actor.trim();
-                    if is_identifier(target) && actors_by_name.contains_key(target) && context_actor_set.contains(target) {
+                    if is_identifier(target) && actors_by_name.contains_key(target) && app_actor_set.contains(target) {
                         deps.entry(actor.state.clone()).or_default().insert(target.to_string());
                         let target_actor = actors_by_name[target];
                         routes.entry(actor.state.clone()).or_default().insert(target_actor.state.clone());
@@ -1504,8 +1612,7 @@ fn compute_state_template_deps<'a>(
                 routes.entry(target.state.clone()).or_default();
                 deps.entry(target.state.clone()).or_default();
 
-                if context_actor_set.contains(&route.actor)
-                    && route_validation_kind(actor, &route) == RouteValidationKind::ForeignTemplate
+                if app_actor_set.contains(&route.actor) && route_validation_kind(actor, &route) == RouteValidationKind::ForeignTemplate
                 {
                     deps.entry(actor.state.clone()).or_default().insert(route.actor.clone());
                 }
@@ -1533,7 +1640,7 @@ fn compute_state_template_deps<'a>(
     Ok(deps
         .into_iter()
         .map(|(state, deps)| {
-            let ordered = context_actors.iter().filter(|actor| deps.contains(*actor)).cloned().collect::<Vec<_>>();
+            let ordered = app_actors.iter().filter(|actor| deps.contains(*actor)).cloned().collect::<Vec<_>>();
             (state, ordered)
         })
         .collect())
@@ -1542,24 +1649,23 @@ fn compute_state_template_deps<'a>(
 fn compute_direct_state_template_deps<'a>(
     actors: &[&'a ActorDecl],
     actors_by_name: &BTreeMap<String, &'a ActorDecl>,
-    context_actors: &[String],
     app_actors: &[String],
     actor_enums: &BTreeMap<String, ActorEnumInfo>,
 ) -> Result<BTreeMap<String, BTreeSet<String>>> {
-    let context_actor_set = context_actors.iter().cloned().collect::<BTreeSet<_>>();
+    let app_actor_set = app_actors.iter().cloned().collect::<BTreeSet<_>>();
     let mut direct = BTreeMap::<String, BTreeSet<String>>::new();
     for actor in actors {
         direct.entry(actor.state.clone()).or_default();
         for entry in &actor.entries {
             for consume in &entry.consumes {
-                if context_actor_set.contains(&consume.actor) && !is_single_actor_self_consume(app_actors, actor, consume) {
+                if app_actor_set.contains(&consume.actor) && !is_single_actor_self_consume(app_actors, actor, consume) {
                     direct.entry(actor.state.clone()).or_default().insert(consume.actor.clone());
                 }
             }
             for spawn in &entry.spawns {
                 for output in &spawn.outputs {
                     let target = output.actor.trim();
-                    if is_identifier(target) && actors_by_name.contains_key(target) && context_actor_set.contains(target) {
+                    if is_identifier(target) && actors_by_name.contains_key(target) && app_actor_set.contains(target) {
                         direct.entry(actor.state.clone()).or_default().insert(target.to_string());
                     }
                 }
@@ -1568,8 +1674,7 @@ fn compute_direct_state_template_deps<'a>(
                 let target = actors_by_name.get(&route.actor).copied().ok_or_else(|| {
                     ArgentError::new(format!("entry `{}::{}` routes to unknown actor `{}`", actor.name, entry.name, route.actor))
                 })?;
-                if context_actor_set.contains(&target.name)
-                    && route_validation_kind(actor, &route) == RouteValidationKind::ForeignTemplate
+                if app_actor_set.contains(&target.name) && route_validation_kind(actor, &route) == RouteValidationKind::ForeignTemplate
                 {
                     direct.entry(actor.state.clone()).or_default().insert(target.name.clone());
                 }
@@ -2618,7 +2723,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                 self.lower_actor_type_statement(out, indent, state, name, expr)?;
                 return Ok(());
             }
-            let ty = if self.model.states.contains_key(source_ty) {
+            let ty = if self.model.has_state(source_ty) {
                 self.types.get(expr.trim()).cloned().unwrap_or_else(|| self.lower_local_type(source_ty))
             } else {
                 self.lower_local_type(source_ty)
@@ -3011,7 +3116,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     ) -> Result<()> {
         let observe = self.entry.observes.iter().find(|observe| observe.name == observe_name).expect("observe checked by caller");
         let state_ty = contract_state_type_for_observed_actor(self.actor, self.entry, observe, observed_output, self.model)?;
-        let concrete_actor = self.model.actors_by_name.contains_key(&observed_output.actor).then_some(observed_output.actor.as_str());
+        let concrete_actor = self.model.has_actor(&observed_output.actor).then_some(observed_output.actor.as_str());
         let state_name = if let Some(actor) = concrete_actor {
             self.model.actor(actor)?.state.clone()
         } else {
@@ -3140,7 +3245,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         let source_state = if expr == "self.state" {
             Some(self.actor.state.as_str())
         } else {
-            self.source_types.get(expr).map(String::as_str).filter(|source_ty| self.model.states.contains_key(*source_ty))
+            self.source_types.get(expr).map(String::as_str).filter(|source_ty| self.model.has_state(source_ty))
         };
         if let Some(source_state) = source_state {
             if self.model.storage_state_name(source_state)? != self.model.storage_state_name(state_name)? {
@@ -3359,7 +3464,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         {
             return self.lower_state_object_for_state(&state_name, body, indent);
         }
-        if self.model.states.contains_key(source_ty) && self.types.get(expr.trim()).is_none_or(|ty| ty != lowered_ty) {
+        if self.model.has_state(source_ty) && self.types.get(expr.trim()).is_none_or(|ty| ty != lowered_ty) {
             let lowered_expr = self.lower_expr(expr, None, indent)?;
             let fields = self
                 .model
@@ -3438,7 +3543,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         };
         if source_ty == self.actor.state || same_storage {
             "State".to_string()
-        } else if self.model.states.contains_key(source_ty) {
+        } else if self.model.has_state(source_ty) {
             state_body_type_name(source_ty, self.model)
         } else {
             source_ty.to_string()
@@ -3448,7 +3553,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     fn source_state_for_local_type(&self, source_ty: &str) -> Option<String> {
         if source_ty == "State" {
             Some(self.actor.state.clone())
-        } else if self.model.states.contains_key(source_ty) {
+        } else if self.model.has_state(source_ty) {
             Some(source_ty.to_string())
         } else {
             None
@@ -4883,23 +4988,33 @@ fn emit_artifact_json(program: &Program, model: &Model<'_>, actor_sil: &BTreeMap
 fn emit_artifact(program: &Program, model: &Model<'_>, actor_sil: &BTreeMap<String, String>) -> Result<Artifact> {
     let templates = model.app_actors.iter().map(|actor| template_ref_artifact(actor)).collect::<Vec<_>>();
 
-    let states: Vec<StateArtifact> = model
-        .states
-        .values()
-        .map(|state| StateArtifact {
+    let argent_states = model
+        .all_states()
+        .map(|state| ArgentStateArtifact {
             name: state.name.clone(),
             fields: model
                 .storage_state(&state.name)
                 .expect("state expansions are valid after model validation")
                 .fields
                 .iter()
-                .map(|field| FieldArtifact { name: field.name.clone(), ty: type_artifact(&field.ty, model) })
+                .map(|field| ArgentFieldArtifact {
+                    name: field.name.clone(),
+                    ty: type_artifact(&field.ty, model),
+                    source_type: source_type_annotation(&field.ty, model),
+                    virtual_slot: field.virtual_slot,
+                })
                 .collect(),
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let states = argent_states
+        .iter()
+        .map(|state| StateArtifact {
+            name: state.name.clone(),
+            fields: state.fields.iter().map(|field| FieldArtifact { name: field.name.clone(), ty: field.ty.clone() }).collect(),
+        })
+        .collect::<Vec<_>>();
     let state_expansions = model
-        .states
-        .values()
+        .all_states()
         .filter_map(|state| {
             state.expansion.as_ref().map(|expansion| StateExpansionArtifact {
                 state: state.name.clone(),
@@ -4938,16 +5053,32 @@ fn emit_artifact(program: &Program, model: &Model<'_>, actor_sil: &BTreeMap<Stri
             templates,
             template_plan,
             interfaces,
-            states: states.clone(),
+            states: argent_states,
             state_expansions,
             actor_enums,
             actors: argent_actors,
         },
         sil_abi: SilAbiArtifact { schema_version: SIL_ABI_SCHEMA_VERSION, states, contracts: sil_contracts },
     };
+    artifact.verify_sil_abi().map_err(|err| ArgentError::new(format!("invalid Sil ABI: {err}")))?;
     artifact.verify_template_plan().map_err(|err| ArgentError::new(format!("invalid template plan receipt: {err}")))?;
     artifact.id = artifact.computed_id_hex().map_err(|err| ArgentError::new(format!("failed to compute artifact id: {err}")))?;
     Ok(artifact)
+}
+
+fn source_type_artifact(ty: &TypeRef) -> SourceTypeArtifact {
+    SourceTypeArtifact {
+        name: ty.name.clone(),
+        array: ty.array.map(|array| match array {
+            ArrayDim::Dynamic => SourceArrayArtifact::Dynamic,
+            ArrayDim::Fixed(len) => SourceArrayArtifact::Fixed(len),
+        }),
+        actor_state: ty.actor_state.clone(),
+    }
+}
+
+fn source_type_annotation(ty: &TypeRef, model: &Model<'_>) -> Option<SourceTypeArtifact> {
+    (ty.name == word::COVENANT_ID || ty.is_actor_type() || model.is_actor_enum_type(ty)).then(|| source_type_artifact(ty))
 }
 
 fn interface_set_artifact(model: &Model<'_>) -> Result<InterfaceSetArtifact> {
@@ -4969,7 +5100,15 @@ fn interface_set_artifact(model: &Model<'_>) -> Result<InterfaceSetArtifact> {
             }
         }
     }
-    let imports = imported_actors.iter().map(|actor| actor_interface_artifact(actor, model)).collect::<Result<Vec<_>>>()?;
+    let imports = imported_actors
+        .iter()
+        .map(|actor| {
+            if let Some(linked) = model.linked_actor(actor) {
+                return Ok(linked.interface.clone());
+            }
+            actor_interface_artifact(actor, model)
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(InterfaceSetArtifact { exports, imports })
 }
@@ -4981,6 +5120,7 @@ fn actor_interface_artifact(actor_name: &str, model: &Model<'_>) -> Result<Actor
         .map_err(|err| ArgentError::new(format!("failed to compute actor interface fingerprint for `{}`: {err}", actor.name)))?;
     Ok(ActorInterfaceArtifact {
         id: actor_interface_id(&actor.name),
+        app: model.app_name.clone(),
         actor: actor.name.clone(),
         state: actor.state.clone(),
         fingerprint_hex,
@@ -4989,6 +5129,59 @@ fn actor_interface_artifact(actor_name: &str, model: &Model<'_>) -> Result<Actor
 
 fn template_ref_artifact(actor: &str) -> TemplateRefArtifact {
     TemplateRefArtifact { id: template_receipt_id(actor), actor: actor.to_string(), symbol: hidden_template_name(actor) }
+}
+
+#[derive(Debug)]
+struct TemplatePlanTemplateDraft {
+    id: String,
+    actor: String,
+    contract: String,
+    symbol: String,
+    sil_template_hash: String,
+    compiled_template: CompiledTemplateArtifact,
+}
+
+#[derive(Debug)]
+struct TemplatePlanDraft {
+    templates: Vec<TemplatePlanTemplateDraft>,
+    templates_by_id: BTreeMap<String, usize>,
+    templates_by_actor: BTreeMap<String, usize>,
+    runtime_states: Vec<RuntimeStatePlanArtifact>,
+    route_tables: Vec<RouteTemplateTableArtifact>,
+    route_proofs: Vec<RouteTemplateProofArtifact>,
+    route_families: Vec<RouteTemplateFamilyArtifact>,
+}
+
+impl TemplateHashLookup for TemplatePlanDraft {
+    fn template_hash_by_id(&self, id: &str) -> Option<TemplateHashRef<'_>> {
+        self.templates_by_id.get(id).map(|index| &self.templates[*index]).map(|template| TemplateHashRef {
+            id: &template.id,
+            actor: &template.actor,
+            hash_hex: &template.sil_template_hash,
+        })
+    }
+
+    fn template_hash_by_actor(&self, actor: &str) -> Option<TemplateHashRef<'_>> {
+        self.templates_by_actor.get(actor).map(|index| &self.templates[*index]).map(|template| TemplateHashRef {
+            id: &template.id,
+            actor: &template.actor,
+            hash_hex: &template.sil_template_hash,
+        })
+    }
+}
+
+impl TemplatePlanLookup for TemplatePlanDraft {
+    fn route_tables(&self) -> &[RouteTemplateTableArtifact] {
+        &self.route_tables
+    }
+
+    fn route_proofs(&self) -> &[RouteTemplateProofArtifact] {
+        &self.route_proofs
+    }
+
+    fn route_families(&self) -> &[RouteTemplateFamilyArtifact] {
+        &self.route_families
+    }
 }
 
 fn template_plan_artifact(
@@ -5005,13 +5198,13 @@ fn template_plan_artifact(
             let contract = sil_by_name
                 .get(template.actor.as_str())
                 .ok_or_else(|| ArgentError::new(format!("missing Sil ABI contract for template actor `{}`", template.actor)))?;
-            Ok(TemplatePlanTemplateArtifact {
+            Ok(TemplatePlanTemplateDraft {
                 id: template.id.clone(),
                 actor: template.actor.clone(),
                 contract: contract.name.clone(),
                 symbol: template.symbol.clone(),
-                canonical_template_hash: contract.compiled.template.hash_hex.clone(),
-                actor_type_handle: None,
+                sil_template_hash: contract.compiled.template.hash_hex.clone(),
+                compiled_template: contract.compiled.template.clone(),
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -5023,8 +5216,19 @@ fn template_plan_artifact(
         }
     }
     let route_tables = route_template_tables_artifact(&runtime_states, sil_contracts)?;
-    let route_proofs = route_template_proofs_artifact(&route_tables, &templates)?;
     let route_families = route_template_families_artifact(model);
+    let templates_by_id = templates.iter().enumerate().map(|(index, template)| (template.id.clone(), index)).collect();
+    let templates_by_actor = templates.iter().enumerate().map(|(index, template)| (template.actor.clone(), index)).collect();
+    let mut draft = TemplatePlanDraft {
+        templates,
+        templates_by_id,
+        templates_by_actor,
+        runtime_states,
+        route_tables,
+        route_proofs: Vec::new(),
+        route_families,
+    };
+    draft.route_proofs = route_template_proofs_artifact(&draft.route_tables, &draft)?;
 
     let mut seen = BTreeSet::new();
     let mut witness_recipes = Vec::new();
@@ -5053,32 +5257,54 @@ fn template_plan_artifact(
         }
     }
 
-    let mut plan = TemplatePlanArtifact { templates, runtime_states, route_tables, route_proofs, route_families, witness_recipes };
-    let handles = plan
+    let handles = draft
         .templates
         .iter()
-        .map(|template| actor_type_handle_artifact(template, &plan, model, actor_sil))
+        .map(|template| actor_type_handle_artifact(template, &draft, model, actor_sil))
         .collect::<Result<Vec<_>>>()?;
-    for (template, handle) in plan.templates.iter_mut().zip(handles) {
-        template.actor_type_handle = handle;
-    }
-    Ok(plan)
+    let templates = draft
+        .templates
+        .into_iter()
+        .zip(handles)
+        .map(|(template, actor_type_handle)| TemplatePlanTemplateArtifact {
+            id: template.id,
+            actor: template.actor,
+            contract: template.contract,
+            symbol: template.symbol,
+            sil_template_hash: template.sil_template_hash,
+            actor_type_handle,
+        })
+        .collect();
+    Ok(TemplatePlanArtifact {
+        templates,
+        runtime_states: draft.runtime_states,
+        route_tables: draft.route_tables,
+        route_proofs: draft.route_proofs,
+        route_families: draft.route_families,
+        witness_recipes,
+    })
 }
 
 fn actor_type_handle_artifact(
-    template: &TemplatePlanTemplateArtifact,
-    plan: &TemplatePlanArtifact,
+    template: &TemplatePlanTemplateDraft,
+    plan: &TemplatePlanDraft,
     model: &Model<'_>,
     actor_sil: &BTreeMap<String, String>,
-) -> Result<Option<ActorTypeHandleArtifact>> {
+) -> Result<ActorTypeHandleArtifact> {
     let actor = model.actor(&template.actor)?;
-    let Some(expansion) = &model.state(&actor.state)?.expansion else {
-        return Ok(None);
-    };
+    let expansion = model.state(&actor.state)?.expansion.as_ref();
+    let source_state = expansion.map_or(actor.state.as_str(), |expansion| expansion.base.as_str());
     let runtime_plan = plan.runtime_states.iter().find(|runtime_state| runtime_state.contract == actor.name);
     let context_fields = runtime_plan
         .map(|runtime_state| runtime_state.field_roles.iter().map(|field| field.name.clone()).collect::<Vec<_>>())
         .unwrap_or_default();
+    if context_fields.is_empty() {
+        return Ok(ActorTypeHandleArtifact {
+            state: source_state.to_string(),
+            context_fields,
+            template: template.compiled_template.clone(),
+        });
+    }
     let context_values = runtime_plan
         .map(|runtime_state| {
             runtime_state
@@ -5086,7 +5312,7 @@ fn actor_type_handle_artifact(
                 .iter()
                 .map(|field| {
                     fixed_runtime_context_value(plan, runtime_state, field)
-                        .map_err(|err| ArgentError::new(format!("cannot derive fixed capsule context: {err}")))
+                        .map_err(|err| ArgentError::new(format!("cannot derive fixed source-state context: {err}")))
                 })
                 .collect::<Result<Vec<_>>>()
         })
@@ -5094,20 +5320,20 @@ fn actor_type_handle_artifact(
         .unwrap_or_default();
     let runtime_fields = runtime_state_fields_for_actor(actor, model)?;
     let context_state = RuntimeStateArtifact {
-        source: expansion.base.clone(),
+        source: source_state.to_string(),
         fields: runtime_fields.iter().take(context_fields.len()).cloned().collect(),
     };
     let context_state_values =
         context_fields.iter().cloned().zip(context_values.iter().cloned().map(ArtifactValue::Bytes)).collect::<BTreeMap<_, _>>();
     let context_script = crate::codec::encode_runtime_state_script(&context_state, &context_state_values)
-        .map_err(|err| ArgentError::new(format!("cannot encode actor_type<{}> context: {err}", expansion.base)))?;
+        .map_err(|err| ArgentError::new(format!("cannot encode actor_type<{source_state}> context: {err}")))?;
 
     let mut args = context_values.into_iter().map(SilExpr::from).collect::<Vec<_>>();
     for field in &model.storage_state(&actor.state)?.fields {
         args.push(placeholder_expr_for_type(&field.ty).map_err(|err| {
             ArgentError::new(format!(
                 "cannot build actor_type<{}> placeholder for actor `{}` field `{}`: {err}",
-                expansion.base, actor.name, field.name
+                source_state, actor.name, field.name
             ))
         })?);
     }
@@ -5116,13 +5342,10 @@ fn actor_type_handle_artifact(
         .get(&actor.name)
         .ok_or_else(|| ArgentError::new(format!("missing generated Silverscript for actor `{}`", actor.name)))?;
     let compiled = compile_contract(sil, &args, CompileOptions::default()).map_err(|err| {
-        ArgentError::new(format!("generated Silverscript for actor `{}` failed to compile its capsule cut: {err}", actor.name))
+        ArgentError::new(format!("generated Silverscript for actor `{}` failed to compile its source-state cut: {err}", actor.name))
     })?;
-    if encode_hex(&compiled.template_hash()) != template.canonical_template_hash {
-        return Err(ArgentError::new(format!(
-            "actor `{}` canonical template changed while resolving its capsule context",
-            actor.name
-        )));
+    if encode_hex(&compiled.template_hash()) != template.sil_template_hash {
+        return Err(ArgentError::new(format!("actor `{}` Sil template changed while resolving its capsule context", actor.name)));
     }
     if compiled.ast.fields.len() != runtime_fields.len() {
         return Err(ArgentError::new(format!("actor `{}` compiled state fields do not match its runtime state layout", actor.name)));
@@ -5141,15 +5364,15 @@ fn actor_type_handle_artifact(
     let prefix = &compiled.script[..context_end];
     let suffix = &compiled.script[state_end..];
     let hash = silverscript_lang::template::template_hash(prefix, suffix);
-    Ok(Some(ActorTypeHandleArtifact {
-        state: expansion.base.clone(),
+    Ok(ActorTypeHandleArtifact {
+        state: source_state.to_string(),
         context_fields,
         template: CompiledTemplateArtifact {
             prefix_hex: encode_hex(prefix),
             suffix_hex: encode_hex(suffix),
             hash_hex: encode_hex(&hash),
         },
-    }))
+    })
 }
 
 fn route_template_families_artifact(model: &Model<'_>) -> Vec<RouteTemplateFamilyArtifact> {
@@ -5195,8 +5418,7 @@ fn route_template_tables_artifact(
                 }
                 RuntimeFieldRoleArtifact::TemplateDigest { .. } => continue,
                 RuntimeFieldRoleArtifact::TemplateRoot { leaves } => (leaves.clone(), TypeArtifact::FixedBytes { len: 32 }),
-                RuntimeFieldRoleArtifact::Template { .. } => continue,
-                RuntimeFieldRoleArtifact::ObservedTemplate { .. } => continue,
+                RuntimeFieldRoleArtifact::Template { .. } | RuntimeFieldRoleArtifact::ImportedTemplate { .. } => continue,
             };
             let id = route_template_table_receipt_id(&runtime_state.source, &field.name);
             let byte_len = leaves.len() * 32;
@@ -5233,7 +5455,7 @@ fn route_template_tables_artifact(
 
 fn route_template_proofs_artifact(
     route_tables: &[RouteTemplateTableArtifact],
-    templates: &[TemplatePlanTemplateArtifact],
+    templates: &(impl TemplateHashLookup + ?Sized),
 ) -> Result<Vec<RouteTemplateProofArtifact>> {
     let mut pending = route_tables.iter().collect::<Vec<_>>();
     let mut digest_roots = BTreeMap::<String, String>::new();
@@ -5448,16 +5670,18 @@ fn runtime_state_field_defs_for_actor(
         }
     }
     for spec in observed_template_specs_for_state(&actor.state, model) {
-        fields.push((
-            hidden_observed_actor_template_name(&spec),
-            TypeArtifact::from_parts("byte", Some(32)),
-            Some(RuntimeFieldRoleArtifact::ObservedTemplate {
-                observe: spec.observe,
-                side: spec.side,
-                handle: spec.handle,
-                contract: spec.actor,
-            }),
-        ));
+        let field_name = hidden_observed_actor_template_name(&spec);
+        let role = if let Some(linked) = model.linked_actor(&spec.actor) {
+            RuntimeFieldRoleArtifact::ImportedTemplate {
+                app: linked.app.clone(),
+                contract: linked.actor.clone(),
+                state: linked.state.clone(),
+                hash_hex: linked.template.hash_hex.clone(),
+            }
+        } else {
+            RuntimeFieldRoleArtifact::Template { contract: spec.actor.clone() }
+        };
+        fields.push((field_name, TypeArtifact::from_parts("byte", Some(32)), Some(role)));
     }
     for field in &state.fields {
         fields.push((field.name.clone(), type_artifact(&field.ty, model), None));
@@ -5854,11 +6078,14 @@ fn observed_actor_artifact(
     observe: &ObserveDecl,
     observed: &ObservedActorDecl,
 ) -> Result<ObservedActorArtifact> {
-    Ok(ObservedActorArtifact {
-        name: observed.name.clone(),
-        actor: observed.actor.clone(),
-        open_state: observed_open_state_for_decl(actor, entry, observe, observed, model)?,
-    })
+    let target = if let Some(state) = observed_open_state_for_decl(actor, entry, observe, observed, model)? {
+        ObservedTargetArtifact::DynamicActor { state }
+    } else if let Some(linked) = model.linked_actor(&observed.actor) {
+        ObservedTargetArtifact::StaticActor { app: linked.app.clone(), actor: linked.actor.clone() }
+    } else {
+        ObservedTargetArtifact::StaticActor { app: model.app_name.clone(), actor: observed.actor.clone() }
+    };
+    Ok(ObservedActorArtifact { name: observed.name.clone(), target })
 }
 
 fn entry_route_plan_artifact(
@@ -5978,7 +6205,7 @@ fn lower_entry_param_type(actor: &ActorDecl, ty: &TypeRef, model: &Model<'_>) ->
             ))
     {
         "State".to_string()
-    } else if ty.array.is_none() && model.states.contains_key(&ty.name) {
+    } else if ty.array.is_none() && model.has_state(&ty.name) {
         state_body_type_name(&ty.name, model)
     } else {
         lower_type_ref(ty, model)
@@ -6396,6 +6623,12 @@ fn route_field_kind_for_state_layout<'a>(state: &'a str, model: &'a Model<'_>) -
 }
 
 fn route_field_kind_for_actor<'a>(actor: &str, model: &'a Model<'_>) -> RouteFieldKind<'a> {
+    if model.linked_actor(actor).is_some() {
+        // A linked actor is used through its exported actor-type cut. Its
+        // defining app's generated context is already part of that template
+        // prefix and is not part of the importing app's state layout.
+        return RouteFieldKind::None;
+    }
     let Some(leaves) = model.route_leaves_by_actor.get(actor) else {
         let state = &model.actors_by_name[actor].state;
         return route_field_kind(state, model);
@@ -7645,6 +7878,17 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![("gen__terminal_template", RuntimeFieldRoleArtifact::Template { contract: "Terminal".to_string() })]
         );
+        let source_template = artifact
+            .argent
+            .template_plan
+            .templates
+            .iter()
+            .find(|template| template.actor == "Source")
+            .expect("Source template exists");
+        let source_handle = &source_template.actor_type_handle;
+        assert_eq!(source_handle.state, "SourceState");
+        assert_eq!(source_handle.context_fields, ["gen__terminal_template"]);
+        assert_ne!(source_handle.template.hash_hex, source_template.sil_template_hash);
     }
 
     #[test]
@@ -7688,13 +7932,36 @@ mod tests {
         assert_eq!(artifact.argent.templates[0].id, "template/foo");
         assert_eq!(artifact.argent.template_plan.templates[0].id, "template/foo");
         assert_eq!(
-            artifact.argent.template_plan.templates[0].canonical_template_hash,
+            artifact.argent.template_plan.templates[0].sil_template_hash,
             artifact.sil_abi.contract("Foo").unwrap().compiled.template.hash_hex
+        );
+        let template = &artifact.argent.template_plan.templates[0];
+        assert_eq!(template.actor_type_handle.state, "FooState");
+        assert!(template.actor_type_handle.context_fields.is_empty());
+        assert_eq!(
+            template.actor_type_handle.template,
+            artifact.sil_abi.contract("Foo").unwrap().compiled.template,
+            "a plain actor still exports its Sil template as its source-state handle"
         );
         artifact.verify_template_plan().expect("template plan receipt verifies");
         assert_eq!(
-            artifact.argent.states, artifact.sil_abi.states,
-            "source and ABI structural state descriptors should be derived from the same model"
+            artifact
+                .argent
+                .states
+                .iter()
+                .map(|state| {
+                    (state.name.as_str(), state.fields.iter().map(|field| (field.name.as_str(), &field.ty)).collect::<Vec<_>>())
+                })
+                .collect::<Vec<_>>(),
+            artifact
+                .sil_abi
+                .states
+                .iter()
+                .map(|state| {
+                    (state.name.as_str(), state.fields.iter().map(|field| (field.name.as_str(), &field.ty)).collect::<Vec<_>>())
+                })
+                .collect::<Vec<_>>(),
+            "Argent state fields retain the lowered Sil ABI layout"
         );
 
         let state = artifact.argent.states.iter().find(|state| state.name == "FooState").expect("source state is present");
@@ -7758,6 +8025,52 @@ mod tests {
     }
 
     #[test]
+    fn argent_states_preserve_lossy_source_types() {
+        let artifact = inline_artifact(
+            "source-state-types",
+            r#"
+            state PayloadState {
+                int value;
+            }
+
+            state HolderState {
+                cov_id controller;
+                actor_type<PayloadState> payload_type;
+                byte[32] raw;
+            }
+
+            actor Holder owns HolderState {
+                entry hold() emits one Holder {
+                    become Holder(self.state);
+                }
+            }
+
+            app Test {
+                actor Holder;
+            }
+            "#,
+        );
+
+        let state = artifact.argent.states.iter().find(|state| state.name == "HolderState").expect("HolderState exists");
+        assert_eq!(state.fields[0].ty, TypeArtifact::FixedBytes { len: 32 });
+        assert_eq!(
+            state.fields[0].source_type,
+            Some(SourceTypeArtifact { name: word::COVENANT_ID.to_string(), array: None, actor_state: None })
+        );
+        assert_eq!(state.fields[1].ty, TypeArtifact::FixedBytes { len: 32 });
+        assert_eq!(
+            state.fields[1].source_type,
+            Some(SourceTypeArtifact {
+                name: word::ACTOR_TYPE.to_string(),
+                array: None,
+                actor_state: Some("PayloadState".to_string()),
+            })
+        );
+        assert_eq!(state.fields[2].ty, TypeArtifact::FixedBytes { len: 32 });
+        assert_eq!(state.fields[2].source_type, None);
+    }
+
+    #[test]
     fn state_expansion_uses_base_storage_layout() {
         let (sil, artifact) = emit_fixture("state_expansion", "Forager");
 
@@ -7772,6 +8085,8 @@ mod tests {
 
         let forager_state = artifact.argent.states.iter().find(|state| state.name == "ForagerState").expect("ForagerState exists");
         assert_eq!(forager_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["strategy", "energy"]);
+        assert!(forager_state.fields[0].virtual_slot);
+        assert!(!forager_state.fields[1].virtual_slot);
 
         let contract = artifact.sil_abi.contract("Forager").expect("Forager Sil ABI exists");
         assert_eq!(contract.runtime_state.source, "ForagerState");
@@ -7792,7 +8107,7 @@ mod tests {
     }
 
     #[test]
-    fn expanded_actor_records_canonical_and_capsule_template_cuts() {
+    fn expanded_actor_records_sil_and_capsule_template_cuts() {
         let (sil, artifact) = emit_fixture("capsule_route_context", "ReserveAsset");
         let (wallet_sil, _) = emit_fixture("capsule_route_context", "WalletAsset");
 
@@ -7810,16 +8125,16 @@ mod tests {
             .iter()
             .find(|template| template.actor == "ReserveAsset")
             .expect("ReserveAsset template receipt exists");
-        assert_eq!(receipt.canonical_template_hash, contract.compiled.template.hash_hex);
-        let handle = receipt.actor_type_handle.as_ref().expect("expanded actor exposes a capsule handle");
+        assert_eq!(receipt.sil_template_hash, contract.compiled.template.hash_hex);
+        let handle = &receipt.actor_type_handle;
         assert_eq!(handle.state, "AssetCapsule");
         assert_eq!(handle.context_fields, runtime_plan.field_roles.iter().map(|field| field.name.clone()).collect::<Vec<_>>());
-        assert_ne!(handle.template.hash_hex, receipt.canonical_template_hash);
+        assert_ne!(handle.template.hash_hex, receipt.sil_template_hash);
 
-        let canonical_prefix = crate::codec::decode_hex(&contract.compiled.template.prefix_hex).expect("canonical prefix decodes");
+        let sil_prefix = crate::codec::decode_hex(&contract.compiled.template.prefix_hex).expect("Sil prefix decodes");
         let capsule_prefix = crate::codec::decode_hex(&handle.template.prefix_hex).expect("capsule prefix decodes");
-        assert!(capsule_prefix.starts_with(&canonical_prefix));
-        assert!(capsule_prefix.len() > canonical_prefix.len());
+        assert!(capsule_prefix.starts_with(&sil_prefix));
+        assert!(capsule_prefix.len() > sil_prefix.len());
         assert_eq!(handle.template.suffix_hex, contract.compiled.template.suffix_hex);
         artifact.verify_template_plan().expect("capsule template receipt verifies");
 
@@ -7831,7 +8146,7 @@ mod tests {
             .iter_mut()
             .find(|template| template.actor == "ReserveAsset")
             .expect("ReserveAsset template receipt exists");
-        let handle = receipt.actor_type_handle.as_mut().expect("expanded actor exposes a capsule handle");
+        let handle = &mut receipt.actor_type_handle;
         let mut prefix = crate::codec::decode_hex(&handle.template.prefix_hex).expect("capsule prefix decodes");
         *prefix.last_mut().expect("capsule prefix contains context") ^= 1;
         handle.template.prefix_hex = encode_hex(&prefix);
@@ -7845,7 +8160,7 @@ mod tests {
             .templates
             .iter_mut()
             .find(|template| template.actor == "ReserveAsset")
-            .and_then(|template| template.actor_type_handle.as_mut())
+            .map(|template| &mut template.actor_type_handle)
             .expect("ReserveAsset capsule handle exists");
         handle.template.hash_hex = "00".repeat(32);
         let err = corrupted.verify_template_plan().expect_err("corrupted capsule hash is rejected");
@@ -7994,7 +8309,9 @@ mod tests {
             }
 
             app Test {
+                actor KCC20;
                 actor Minter;
+                actor MinterProxy;
             }
             "#,
         );
@@ -8007,14 +8324,21 @@ mod tests {
         assert_eq!(observe.name, "asset");
         assert_eq!(observe.covenant_expr, "self.kcc20_covid");
         assert_eq!(observe.covenant_id_source, CovenantIdSourceArtifact::StateField { field: "kcc20_covid".to_string() });
-        assert_eq!(
-            observe.inputs.iter().map(|input| (input.name.as_str(), input.actor.as_str())).collect::<Vec<_>>(),
-            vec![("proxy", "MinterProxy")]
-        );
-        assert_eq!(
-            observe.outputs.iter().map(|output| (output.name.as_str(), output.actor.as_str())).collect::<Vec<_>>(),
-            vec![("proxy", "MinterProxy"), ("recipient", "KCC20")]
-        );
+        assert_eq!(observe.inputs[0].name, "proxy");
+        assert!(matches!(
+            &observe.inputs[0].target,
+            ObservedTargetArtifact::StaticActor { app, actor } if app == "Test" && actor == "MinterProxy"
+        ));
+        assert_eq!(observe.outputs[0].name, "proxy");
+        assert!(matches!(
+            &observe.outputs[0].target,
+            ObservedTargetArtifact::StaticActor { app, actor } if app == "Test" && actor == "MinterProxy"
+        ));
+        assert_eq!(observe.outputs[1].name, "recipient");
+        assert!(matches!(
+            &observe.outputs[1].target,
+            ObservedTargetArtifact::StaticActor { app, actor } if app == "Test" && actor == "KCC20"
+        ));
         assert_eq!(
             mint.hidden_params.iter().map(|param| (param.name.as_str(), &param.subject, param.purpose)).collect::<Vec<_>>(),
             vec![
@@ -8077,24 +8401,8 @@ mod tests {
                 .map(|role| (role.name.as_str(), role.role.clone()))
                 .collect::<Vec<_>>(),
             vec![
-                (
-                    "gen__asset_minter_proxy_template",
-                    RuntimeFieldRoleArtifact::ObservedTemplate {
-                        observe: "asset".to_string(),
-                        side: ObservedActorSideArtifact::Input,
-                        handle: "proxy".to_string(),
-                        contract: "MinterProxy".to_string(),
-                    },
-                ),
-                (
-                    "gen__asset_kcc20_template",
-                    RuntimeFieldRoleArtifact::ObservedTemplate {
-                        observe: "asset".to_string(),
-                        side: ObservedActorSideArtifact::Output,
-                        handle: "recipient".to_string(),
-                        contract: "KCC20".to_string(),
-                    },
-                ),
+                ("gen__asset_minter_proxy_template", RuntimeFieldRoleArtifact::Template { contract: "MinterProxy".to_string() },),
+                ("gen__asset_kcc20_template", RuntimeFieldRoleArtifact::Template { contract: "KCC20".to_string() },),
             ]
         );
     }
@@ -8128,6 +8436,7 @@ mod tests {
             }
 
             app Test {
+                actor Foreign;
                 actor Local;
             }
             "#,
@@ -8332,18 +8641,22 @@ mod tests {
         let out_dir = std::env::temp_dir().join(format!("argent-icc-observed-input-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&out_dir);
 
-        let program = crate::loader::load_program(Path::new("examples/icc/minter.ag")).expect("ICC example loads");
-        emit_build(&program, &out_dir).expect("ICC example builds");
+        crate::build_file("examples/icc/minter.ag", &out_dir).expect("ICC example builds");
 
         let minter_sil = fs::read_to_string(out_dir.join("sil/Minter.sil")).expect("Minter.sil exists");
-        assert!(minter_sil.contains("contract Minter(\n    byte[32] gen__init_asset_minter_proxy_template,"), "{minter_sil}");
+        assert!(
+            minter_sil.contains("contract Minter(\n    byte[32] gen__init_asset_kcc20_asset__minter_proxy_template,"),
+            "{minter_sil}"
+        );
         assert!(minter_sil.contains("entrypoint function mint(\n"), "{minter_sil}");
         assert!(minter_sil.contains("sig owner_sig,"), "{minter_sil}");
         assert!(minter_sil.contains("byte[32] recipient_owner,"), "{minter_sil}");
-        assert!(minter_sil.contains("int gen__asset_minter_proxy_prefix_len,"), "{minter_sil}");
-        assert!(minter_sil.contains("byte[] gen__asset_kcc20_suffix"), "{minter_sil}");
+        assert!(minter_sil.contains("int gen__asset_kcc20_asset__minter_proxy_prefix_len,"), "{minter_sil}");
+        assert!(minter_sil.contains("byte[] gen__asset_kcc20_asset__kcc20_suffix"), "{minter_sil}");
         assert!(
-            minter_sil.contains("byte[32] gen__asset_minter_proxy_template = gen__init_asset_minter_proxy_template;"),
+            minter_sil.contains(
+                "byte[32] gen__asset_kcc20_asset__minter_proxy_template = gen__init_asset_kcc20_asset__minter_proxy_template;"
+            ),
             "{minter_sil}"
         );
         assert!(minter_sil.contains("struct MinterProxyState"), "{minter_sil}");
@@ -8351,14 +8664,14 @@ mod tests {
         assert!(minter_sil.contains("byte[32] gen__asset_cov_id = kcc20_covid; // observe asset"), "{minter_sil}");
         assert!(minter_sil.contains("require(OpCovInputCount(gen__asset_cov_id) == 1);"), "{minter_sil}");
         assert!(minter_sil.contains("require(OpCovOutputCount(gen__asset_cov_id) == 2);"), "{minter_sil}");
-        assert!(!minter_sil.contains("gen__asset_minter_proxy_prefix.length"), "{minter_sil}");
-        assert!(!minter_sil.contains("gen__asset_minter_proxy_suffix.length"), "{minter_sil}");
+        assert!(!minter_sil.contains("gen__asset_kcc20_asset__minter_proxy_prefix.length"), "{minter_sil}");
+        assert!(!minter_sil.contains("gen__asset_kcc20_asset__minter_proxy_suffix.length"), "{minter_sil}");
         assert!(minter_sil.contains("MinterProxyState gen__asset_proxy_state = readInputStateWithTemplate("), "{minter_sil}");
         assert!(minter_sil.contains("gen__asset_proxy_input_idx,"), "{minter_sil}");
-        assert!(minter_sil.contains("gen__asset_minter_proxy_template"), "{minter_sil}");
-        assert!(minter_sil.contains("// :: observed output asset.proxy: MinterProxy"), "{minter_sil}");
+        assert!(minter_sil.contains("gen__asset_kcc20_asset__minter_proxy_template"), "{minter_sil}");
+        assert!(minter_sil.contains("// :: observed output asset.proxy: KCC20Asset::MinterProxy"), "{minter_sil}");
         assert!(minter_sil.contains("int gen__asset_proxy_output_idx = OpCovOutputIdx(gen__asset_cov_id, 0);"), "{minter_sil}");
-        assert!(minter_sil.contains("// :: observed output asset.recipient: KCC20"), "{minter_sil}");
+        assert!(minter_sil.contains("// :: observed output asset.recipient: KCC20Asset::KCC20"), "{minter_sil}");
         assert!(minter_sil.contains("int gen__asset_recipient_output_idx = OpCovOutputIdx(gen__asset_cov_id, 1);"), "{minter_sil}");
         assert!(
             minter_sil.contains("validateOutputStateWithInputTemplate(\n            gen__asset_proxy_output_idx,"),
@@ -8366,7 +8679,7 @@ mod tests {
         );
         assert!(minter_sil.contains("gen__asset_proxy_input_idx,"), "{minter_sil}");
         assert!(minter_sil.contains("validateOutputStateWithTemplate(\n            gen__asset_recipient_output_idx,"), "{minter_sil}");
-        assert!(minter_sil.contains("gen__asset_kcc20_template"), "{minter_sil}");
+        assert!(minter_sil.contains("gen__asset_kcc20_asset__kcc20_template"), "{minter_sil}");
         assert!(minter_sil.contains("MinterProxyState prev_proxy = gen__asset_proxy_state;"), "{minter_sil}");
 
         let artifact_json = fs::read_to_string(out_dir.join("artifact.json")).expect("artifact json exists");
@@ -8472,6 +8785,7 @@ mod tests {
             }
 
             app Test {
+                actor Foreign;
                 actor Local;
             }
             "#,
@@ -8510,6 +8824,7 @@ mod tests {
             }
 
             app Test {
+                actor Foreign;
                 actor Local;
             }
             "#,
@@ -8532,15 +8847,7 @@ mod tests {
                 .iter()
                 .map(|role| (role.name.as_str(), role.role.clone()))
                 .collect::<Vec<_>>(),
-            vec![(
-                "gen__asset_foreign_template",
-                RuntimeFieldRoleArtifact::ObservedTemplate {
-                    observe: "asset".to_string(),
-                    side: ObservedActorSideArtifact::Input,
-                    handle: "src".to_string(),
-                    contract: "Foreign".to_string(),
-                },
-            )]
+            vec![("gen__asset_foreign_template", RuntimeFieldRoleArtifact::Template { contract: "Foreign".to_string() },)]
         );
 
         let local_actor = artifact.argent.actors.iter().find(|actor| actor.name == "Local").expect("Local artifact actor exists");
@@ -8672,6 +8979,66 @@ mod tests {
     }
 
     #[test]
+    fn unselected_actors_do_not_shape_selected_app_state() {
+        let path = PathBuf::from("app_state_isolation.ag");
+        let module = crate::parser::parse_module(
+            path.clone(),
+            r#"
+            state SharedState {
+                int count;
+            }
+
+            state TargetState {}
+
+            actor Current owns SharedState {
+                entry step() emits one Current {
+                    become Current(self.state);
+                }
+            }
+
+            actor Outside owns SharedState {
+                entry step() emits one Target {
+                    TargetState next = {};
+                    become Target(next);
+                }
+            }
+
+            actor Target owns TargetState {
+                entry hold() emits none {
+                    require(1 == 1);
+                }
+            }
+
+            app CurrentApp {
+                actor Current;
+            }
+
+            app OtherApp {
+                actor Outside;
+                actor Target;
+            }
+            "#
+            .to_string(),
+        )
+        .expect("source parses");
+        let program = Program { root: path, modules: vec![module] };
+        let model = Model::from_program_app(&program, "CurrentApp").expect("selected app model validates");
+        let actor_sil = actor_sil_for_model(&model);
+        let artifact = emit_artifact(&program, &model, &actor_sil).expect("selected app artifact emits");
+        let template = artifact
+            .argent
+            .template_plan
+            .templates
+            .iter()
+            .find(|template| template.actor == "Current")
+            .expect("Current template exists");
+
+        assert!(runtime_state_plan(&artifact, "Current").is_none());
+        assert!(template.actor_type_handle.context_fields.is_empty());
+        assert_eq!(template.actor_type_handle.template.hash_hex, template.sil_template_hash);
+    }
+
+    #[test]
     fn open_observed_actor_binding_lowers_to_runtime_template_handle() {
         let (sil, artifact) = emit_fixture("open_observed_actor_binding", "Cell");
 
@@ -8682,8 +9049,8 @@ mod tests {
         let cell_actor = artifact.argent.actors.iter().find(|actor| actor.name == "Cell").expect("Cell artifact actor exists");
         let advance = cell_actor.entries.iter().find(|entry| entry.name == "advance").expect("advance entry exists");
         let observe = advance.observes.first().expect("advance observes remote");
-        assert_eq!(observe.inputs[0].open_state.as_deref(), Some("AgentCapsule"));
-        assert_eq!(observe.outputs[0].open_state.as_deref(), Some("AgentCapsule"));
+        assert_eq!(observe.inputs[0].target, ObservedTargetArtifact::DynamicActor { state: "AgentCapsule".to_string() });
+        assert_eq!(observe.outputs[0].target, ObservedTargetArtifact::DynamicActor { state: "AgentCapsule".to_string() });
         assert_eq!(
             advance.hidden_params.iter().map(|param| (param.name.as_str(), param.purpose)).collect::<Vec<_>>(),
             vec![
@@ -8705,10 +9072,8 @@ mod tests {
         let cell_actor = artifact.argent.actors.iter().find(|actor| actor.name == "Cell").expect("Cell artifact actor exists");
         let advance = cell_actor.entries.iter().find(|entry| entry.name == "advance").expect("advance entry exists");
         let observe = advance.observes.first().expect("advance observes remote");
-        assert_eq!(observe.inputs[0].actor, "self.agent_type");
-        assert_eq!(observe.outputs[0].actor, "self.agent_type");
-        assert_eq!(observe.inputs[0].open_state.as_deref(), Some("AgentCapsule"));
-        assert_eq!(observe.outputs[0].open_state.as_deref(), Some("AgentCapsule"));
+        assert_eq!(observe.inputs[0].target, ObservedTargetArtifact::DynamicActor { state: "AgentCapsule".to_string() });
+        assert_eq!(observe.outputs[0].target, ObservedTargetArtifact::DynamicActor { state: "AgentCapsule".to_string() });
         assert_eq!(
             advance.hidden_params.iter().map(|param| param.name.as_str()).collect::<Vec<_>>(),
             vec!["gen__remote_self_agent_type_prefix_len", "gen__remote_self_agent_type_suffix_len"]
@@ -8791,6 +9156,7 @@ mod tests {
             }
 
             app Test {
+                actor Foreign;
                 actor Local;
             }
             "#,
@@ -8838,6 +9204,7 @@ mod tests {
             }
 
             app Test {
+                actor Foreign;
                 actor Local;
             }
             "#,
@@ -8889,6 +9256,8 @@ mod tests {
             }
 
             app Test {
+                actor ForeignA;
+                actor ForeignB;
                 actor Local;
             }
             "#,
@@ -11497,10 +11866,7 @@ mod tests {
         let out_dir = std::env::temp_dir().join(format!("argent-{name}-artifact-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&out_dir);
 
-        let program = crate::loader::load_program(Path::new(input)).expect("example loads");
-        emit_build(&program, &out_dir).expect("example builds");
-        let artifact_json = fs::read_to_string(out_dir.join("artifact.json")).expect("artifact json exists");
-        let artifact: Artifact = serde_json::from_str(&artifact_json).expect("artifact deserializes");
+        let artifact = crate::build_file(input, &out_dir).expect("example builds");
         artifact.check_schema_version().expect("artifact schema version is supported");
         artifact.verify_template_plan().expect("template plan receipt verifies");
 
@@ -11565,7 +11931,7 @@ mod tests {
         assert_eq!(
             encode_hex(&template_hash),
             compiled.template.hash_hex,
-            "actor `{actor}` template hash must use the canonical template hash"
+            "actor `{actor}` template hash must use the Sil template hash"
         );
     }
 

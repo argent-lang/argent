@@ -59,11 +59,26 @@ impl Parser {
     fn parse_import(&mut self) -> Result<Import> {
         self.expect_ident(word::IMPORT)?;
         if self.consume_ident(word::ACTOR) {
-            let name = self.expect_any_ident()?;
+            let first = self.expect_any_ident()?;
+            let qualified_actor = if self.consume_symbol(':') {
+                self.expect_symbol(':')?;
+                Some(self.expect_any_ident()?)
+            } else {
+                None
+            };
             self.expect_ident(word::FROM)?;
             let path = self.expect_string()?;
             self.expect_symbol(';')?;
-            Ok(Import::Actor { name, path })
+            Ok(match qualified_actor {
+                Some(actor) => Import::AppActor { app: first, actor, path },
+                None => Import::Actor { actor: first, path },
+            })
+        } else if self.consume_ident(word::APP) {
+            let app = self.expect_any_ident()?;
+            self.expect_ident(word::FROM)?;
+            let path = self.expect_string()?;
+            self.expect_symbol(';')?;
+            Ok(Import::App { app, path })
         } else {
             let path = self.expect_string()?;
             self.expect_symbol(';')?;
@@ -618,7 +633,37 @@ mod tests {
     use std::path::PathBuf;
 
     use super::parse_module;
-    use crate::ast::TypeRef;
+    use crate::ast::{Import, TypeRef};
+
+    #[test]
+    fn parses_source_backed_app_imports() {
+        let module = parse_module(
+            PathBuf::from("controller.ag"),
+            r#"
+            import actor AssetApp::Asset from "./asset.ag";
+            import app RegistryApp from "./registry.ag";
+            import actor Helper from "./helper.ag";
+            "#
+            .to_string(),
+        )
+        .expect("app-qualified imports parse");
+
+        assert!(matches!(
+            &module.imports[0],
+            Import::AppActor { app, actor, path }
+                if app == "AssetApp" && actor == "Asset" && path == "./asset.ag"
+        ));
+        assert!(matches!(
+            &module.imports[1],
+            Import::App { app, path }
+                if app == "RegistryApp" && path == "./registry.ag"
+        ));
+        assert!(matches!(
+            &module.imports[2],
+            Import::Actor { actor, path }
+                if actor == "Helper" && path == "./helper.ag"
+        ));
+    }
 
     #[test]
     fn parses_type_first_function_entry_and_delegate_parameters() {

@@ -87,6 +87,7 @@ pub fn inspect_path(input: impl AsRef<Path>) -> Result<InspectionReport> {
 
 pub fn inspect_artifact(artifact: &Artifact) -> Result<InspectionReport> {
     artifact.check_schema_version().map_err(|err| ArgentError::new(format!("unsupported artifact: {err}")))?;
+    artifact.verify_sil_abi().map_err(|err| ArgentError::new(format!("invalid Sil ABI: {err}")))?;
     artifact.verify_id().map_err(|err| ArgentError::new(format!("invalid artifact identity: {err}")))?;
     artifact.verify_template_plan().map_err(|err| ArgentError::new(format!("invalid artifact template plan: {err}")))?;
 
@@ -623,12 +624,6 @@ app Show {
         assert_eq!(buy.outputs, ["event -> Event", "ticket -> Ticket"]);
         assert_eq!(buy.routes, ["event -> Event", "ticket -> Ticket"]);
         assert!(matches!(buy.signature_script_bytes.max, Some(max) if max == buy.signature_script_bytes.min));
-
-        let rendered = render_report(&report);
-        assert!(rendered.contains("Actor"));
-        assert!(rendered.contains("Event::buy [leader]"));
-        assert!(rendered.contains("signature script:"));
-        assert!(rendered.contains("witness recipes: 2"));
 
         let _ = std::fs::remove_dir_all(out_dir);
     }

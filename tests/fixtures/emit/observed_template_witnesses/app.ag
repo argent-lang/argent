@@ -36,5 +36,6 @@ actor Local owns LocalState {
 }
 
 app Test {
+    actor Foreign;
     actor Local;
 }

@@ -38,6 +38,28 @@ for these remaining cases:
 - one `actor_type` value used by `observes` and `spawns`
 - one actor used by two `observes` blocks
 
+## Resolve observed state read types
+
+**Area:** Compiler code generation and Silverscript type checking.
+
+**Context:** Argent assigns each `readInputStateWithTemplate` result to the
+declared state type. Two valid observation shapes do not compile:
+
+- An observed actor has an empty state.
+- Two observed actors have different state names but the same Sil field
+  layout.
+
+In the second case, Silverscript reports more than one matching struct layout
+even though the generated assignment names the target type. These failures also
+occur for actors in one app. They are not specific to app linking.
+
+**Follow-up:** Define how an empty-state observation authenticates the input
+template without a state value to decode. Make Silverscript use the declared
+assignment type before it tries to match a struct by field layout.
+
+Add compiler tests for both shapes. Add a runtime test that proves the observed
+input template is still authenticated.
+
 ## Decode observed application transactions
 
 **Area:** `argent-rt`, the artifact ABI, and application observers or indexers.

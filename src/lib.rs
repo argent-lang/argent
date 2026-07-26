@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 pub mod artifact;
 pub mod ast;
@@ -9,6 +12,7 @@ pub mod error;
 pub mod inspect;
 mod language;
 pub mod lexer;
+mod link;
 pub mod loader;
 pub mod parser;
 pub mod routes;
@@ -16,6 +20,42 @@ pub mod routing;
 mod stdlib;
 
 pub use error::{ArgentError, Result};
+
+/// Artifacts compiled together from one source-app dependency graph.
+#[derive(Debug, Clone)]
+pub struct CompiledAppBundle {
+    primary_app: String,
+    artifacts: BTreeMap<String, artifact::Artifact>,
+}
+
+impl CompiledAppBundle {
+    pub fn primary(&self) -> &artifact::Artifact {
+        self.artifacts.get(&self.primary_app).expect("compiled bundle contains its primary app")
+    }
+
+    pub fn app(&self, app: &str) -> Option<&artifact::Artifact> {
+        self.artifacts.get(app)
+    }
+
+    pub fn apps(&self) -> impl Iterator<Item = (&str, &artifact::Artifact)> {
+        self.artifacts.iter().map(|(app, artifact)| (app.as_str(), artifact))
+    }
+
+    /// Build the runtime bundle with the selected app as its primary artifact.
+    pub fn runtime_bundle(&self) -> builder::BuilderResult<builder::ArtifactBundle<'_>> {
+        let mut bundle = builder::ArtifactBundle::new(self.primary())?;
+        for (app, artifact) in &self.artifacts {
+            if app != &self.primary_app {
+                bundle = bundle.with_artifact(artifact)?;
+            }
+        }
+        Ok(bundle)
+    }
+
+    fn into_primary(mut self) -> artifact::Artifact {
+        self.artifacts.remove(&self.primary_app).expect("compiled bundle contains its primary app")
+    }
+}
 
 /// Compile an inline Argent source string and return its artifact.
 ///
@@ -52,19 +92,70 @@ pub fn build_inline(
 /// This is the library equivalent of `argentc build <app.ag> --out <dir>`.
 /// Imports are resolved relative to the input file.
 pub fn build_file(input: impl AsRef<Path>, out_dir: impl AsRef<Path>) -> Result<artifact::Artifact> {
-    let program = loader::load_program(input.as_ref())?;
-    emit::emit_build(&program, out_dir.as_ref())?;
-    read_artifact(out_dir.as_ref())
+    let input = input.as_ref();
+    let out_dir = out_dir.as_ref();
+    let program = loader::load_program(input)?;
+    let root = program.modules.iter().find(|module| module.path == program.root).expect("loaded program contains its root module");
+    if let [app] = root.apps.as_slice() {
+        let app_name = app.name.clone();
+        return Ok(build_app_graph(loader::plan_app_graph(program, &app_name)?, &app_name, out_dir)?.into_primary());
+    }
+    emit::emit_build(&program, out_dir)?;
+    read_artifact(out_dir)
 }
 
 /// Build one named app from a file that declares multiple apps.
 ///
-/// Only apps declared in the input file are selectable. App declarations in
-/// imported files remain supporting compilation context.
+/// Only apps declared in the input file are selectable. A module import that
+/// declares another app keeps its shared source declarations available and
+/// exposes that app through `App::Actor`. Explicit app imports also form
+/// separate app dependencies.
 pub fn build_file_app(input: impl AsRef<Path>, app_name: &str, out_dir: impl AsRef<Path>) -> Result<artifact::Artifact> {
-    let program = loader::load_program(input.as_ref())?;
-    emit::emit_build_app(&program, app_name, out_dir.as_ref())?;
-    read_artifact(out_dir.as_ref())
+    Ok(build_file_app_bundle(input, app_name, out_dir)?.into_primary())
+}
+
+/// Compile one source app and all source-backed app dependencies.
+///
+/// Dependencies are compiled once in dependency order. Their generated files
+/// are written below `out_dir/apps/<AppName>`. The selected app keeps the
+/// existing `out_dir` layout.
+pub fn build_file_app_bundle(input: impl AsRef<Path>, app_name: &str, out_dir: impl AsRef<Path>) -> Result<CompiledAppBundle> {
+    let apps = loader::load_app_graph(input.as_ref(), app_name)?;
+    build_app_graph(apps, app_name, out_dir.as_ref())
+}
+
+fn build_app_graph(
+    apps: Vec<(loader::SourceApp, Vec<loader::SourceApp>, ast::Program)>,
+    app_name: &str,
+    out_dir: &Path,
+) -> Result<CompiledAppBundle> {
+    let dependency_dir = out_dir.join("apps");
+    if dependency_dir.exists() {
+        std::fs::remove_dir_all(&dependency_dir)?;
+    }
+
+    let mut artifacts = BTreeMap::<String, artifact::Artifact>::new();
+    for (index, (source_app, dependencies, program)) in apps.iter().enumerate() {
+        let linked = dependencies
+            .iter()
+            .map(|dependency| {
+                artifacts.get(&dependency.app).map(|artifact| (dependency.app.clone(), artifact)).ok_or_else(|| {
+                    ArgentError::new(format!("app `{}` dependency `{}` was not compiled first", source_app.app, dependency.app))
+                })
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let app_out = if index + 1 == apps.len() { out_dir.to_path_buf() } else { dependency_dir.join(&source_app.app) };
+        emit::emit_build_app_linked(program, &source_app.app, &linked, &app_out)?;
+        let artifact = read_artifact(&app_out)?;
+        if artifacts.insert(source_app.app.clone(), artifact).is_some() {
+            return Err(ArgentError::new(format!(
+                "app name `{}` occurs more than once in the compiled dependency graph",
+                source_app.app
+            )));
+        }
+    }
+
+    Ok(CompiledAppBundle { primary_app: app_name.to_string(), artifacts })
 }
 
 fn inline_program(source_label: PathBuf, source: String) -> Result<ast::Program> {
@@ -286,6 +377,142 @@ app RightApp {
     }
 
     #[test]
+    fn app_qualified_actor_imports_keep_each_selected_app_compilation() {
+        let temp = std::env::temp_dir().join(format!("argent-app-qualified-actor-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("temp dir created");
+
+        std::fs::write(
+            temp.join("shared.ag"),
+            r#"
+state SharedState {
+    int count;
+}
+
+actor Shared owns SharedState {
+    entry merge()
+    consumes {
+        other: Shared,
+    }
+    emits one Shared {
+        SharedState next = {
+            count: count + other.count,
+        };
+        become Shared(next);
+    }
+}
+
+state GuardState {}
+
+actor Guard owns GuardState {
+    entry hold() emits one Guard {
+        become Guard(self.state);
+    }
+}
+
+app SoloApp {
+    actor Shared;
+}
+
+app CohortApp {
+    actor Shared;
+    actor Guard;
+}
+"#,
+        )
+        .expect("shared actor source written");
+
+        std::fs::write(
+            temp.join("controller.ag"),
+            r#"
+import actor SoloApp::Shared from "./shared.ag";
+import app CohortApp from "./shared.ag";
+
+state CtrlState {}
+
+actor Ctrl owns CtrlState {
+    entry inspect(cov_id solo_id, cov_id cohort_id)
+    observes solo by solo_id {
+        inputs {
+            src: Shared,
+        }
+    }
+    observes cohort by cohort_id {
+        inputs {
+            src: CohortApp::Shared,
+        }
+    }
+    emits none {
+        SharedState solo_state = solo.inputs.src.state;
+        SharedState cohort_state = cohort.inputs.src.state;
+        require(solo_state.count >= 0);
+        require(cohort_state.count >= 0);
+    }
+}
+
+app CtrlApp {
+    actor Ctrl;
+}
+"#,
+        )
+        .expect("controller source written");
+
+        let compiled = build_file_app_bundle(temp.join("controller.ag"), "CtrlApp", temp.join("build"))
+            .expect("both app-qualified identities compile in one bundle");
+        let solo_actor = compiled
+            .app("SoloApp")
+            .expect("solo dependency exists")
+            .argent
+            .template_plan
+            .templates
+            .iter()
+            .find(|template| template.actor == "Shared")
+            .expect("solo Shared template exists");
+        let cohort_actor = compiled
+            .app("CohortApp")
+            .expect("cohort dependency exists")
+            .argent
+            .template_plan
+            .templates
+            .iter()
+            .find(|template| template.actor == "Shared")
+            .expect("cohort Shared template exists");
+        assert_ne!(
+            solo_actor.sil_template_hash, cohort_actor.sil_template_hash,
+            "one source actor must compile in each selected app context"
+        );
+        assert_ne!(
+            solo_actor.actor_type_handle.template.hash_hex, cohort_actor.actor_type_handle.template.hash_hex,
+            "each app-qualified actor must export its own handle"
+        );
+
+        let imported_handles = compiled
+            .primary()
+            .argent
+            .template_plan
+            .runtime_states
+            .iter()
+            .find(|state| state.contract == "Ctrl")
+            .expect("controller runtime state exists")
+            .field_roles
+            .iter()
+            .filter_map(|field| match &field.role {
+                artifact::RuntimeFieldRoleArtifact::ImportedTemplate { app, hash_hex, .. } => Some((app.as_str(), hash_hex.as_str())),
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(imported_handles.get("SoloApp").copied(), Some(solo_actor.actor_type_handle.template.hash_hex.as_str()));
+        assert_eq!(imported_handles.get("CohortApp").copied(), Some(cohort_actor.actor_type_handle.template.hash_hex.as_str()));
+
+        let solo_sil = std::fs::read_to_string(temp.join("build/apps/SoloApp/sil/Shared.sil")).expect("solo Shared Sil exists");
+        let cohort_sil = std::fs::read_to_string(temp.join("build/apps/CohortApp/sil/Shared.sil")).expect("cohort Shared Sil exists");
+        assert!(solo_sil.contains("State other = readInputState("), "{solo_sil}");
+        assert!(cohort_sil.contains("State other = readInputStateWithTemplate("), "{cohort_sil}");
+
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
     fn build_file_app_removes_stale_selected_app_contracts() {
         let temp = std::env::temp_dir().join(format!("argent-build-file-app-clean-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
@@ -302,6 +529,391 @@ app RightApp {
         assert!(!out_dir.join("sil/Left.sil").exists());
         assert!(out_dir.join("sil/Right.sil").exists());
         assert!(out_dir.join("sil/RightAlt.sil").exists());
+
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn app_bundle_compiles_transitive_imports_from_dependency_artifacts() {
+        let temp = std::env::temp_dir().join(format!("argent-build-transitive-apps-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("temp dir created");
+
+        std::fs::write(
+            temp.join("leaf.ag"),
+            r#"
+state LeafState {
+    int n;
+}
+
+actor Leaf owns LeafState {
+    entry update() emits one Leaf {
+        LeafState next = {
+            n: n + 1,
+        };
+        become Leaf(next);
+    }
+}
+
+app LeafApp {
+    actor Leaf;
+}
+"#,
+        )
+        .expect("leaf source written");
+        std::fs::write(
+            temp.join("middle.ag"),
+            r#"
+import actor LeafApp::Leaf from "./leaf.ag";
+
+state MiddleState {
+    int n;
+}
+
+actor Middle owns MiddleState {
+    entry update(cov_id leaf_id)
+    observes leaf by leaf_id {
+        inputs {
+            src: Leaf,
+        }
+        outputs {
+            next: Leaf,
+        }
+    }
+    emits one Middle {
+        LeafState next_leaf = leaf.inputs.src.state;
+        require leaf.outputs become {
+            next <- Leaf(next_leaf),
+        };
+        MiddleState next = {
+            n: n + 1,
+        };
+        become Middle(next);
+    }
+}
+
+app MiddleApp {
+    actor Middle;
+}
+"#,
+        )
+        .expect("middle source written");
+        std::fs::write(
+            temp.join("root.ag"),
+            r#"
+import actor MiddleApp::Middle from "./middle.ag";
+
+state RootState {
+    int n;
+}
+
+actor Root owns RootState {
+    entry update(cov_id middle_id)
+    observes middle by middle_id {
+        inputs {
+            src: Middle,
+        }
+        outputs {
+            next: Middle,
+        }
+    }
+    emits one Root {
+        MiddleState next_middle = middle.inputs.src.state;
+        require middle.outputs become {
+            next <- Middle(next_middle),
+        };
+        RootState next = {
+            n: n + 1,
+        };
+        become Root(next);
+    }
+}
+
+app RootApp {
+    actor Root;
+}
+"#,
+        )
+        .expect("root source written");
+
+        let out_dir = temp.join("build");
+        let compiled =
+            build_file_app_bundle(temp.join("root.ag"), "RootApp", &out_dir).expect("transitive app dependency graph compiles");
+
+        assert_eq!(compiled.apps().map(|(app, _)| app).collect::<Vec<_>>(), ["LeafApp", "MiddleApp", "RootApp"]);
+        assert!(out_dir.join("apps/LeafApp/artifact.json").is_file());
+        assert!(out_dir.join("apps/MiddleApp/artifact.json").is_file());
+        let middle_handle = compiled
+            .app("MiddleApp")
+            .expect("bundle contains MiddleApp")
+            .argent
+            .template_plan
+            .templates
+            .iter()
+            .find(|template| template.actor == "Middle")
+            .map(|template| &template.actor_type_handle)
+            .expect("Middle exports a source-state handle that contains its Leaf dependency");
+        let root_import_hash = compiled
+            .primary()
+            .argent
+            .template_plan
+            .runtime_states
+            .iter()
+            .find(|state| state.contract == "Root")
+            .and_then(|state| {
+                state.field_roles.iter().find_map(|field| match &field.role {
+                    artifact::RuntimeFieldRoleArtifact::ImportedTemplate { hash_hex, .. } => Some(hash_hex),
+                    _ => None,
+                })
+            })
+            .expect("Root fixes the exported Middle source-state template");
+        assert_eq!(root_import_hash, &middle_handle.template.hash_hex);
+        compiled.runtime_bundle().expect("all transitive artifacts form one runtime bundle");
+
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn app_bundle_compiles_a_diamond_dependency_once() {
+        let temp = std::env::temp_dir().join(format!("argent-build-diamond-apps-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("temp dir created");
+
+        std::fs::write(
+            temp.join("shared.ag"),
+            r#"
+state SharedState {
+    int n;
+}
+
+actor Shared owns SharedState {
+    entry hold() emits none {
+        require(n >= 0);
+    }
+}
+
+app SharedApp {
+    actor Shared;
+}
+"#,
+        )
+        .expect("shared source written");
+        std::fs::write(
+            temp.join("left.ag"),
+            r#"
+import app SharedApp from "./shared.ag";
+
+state LeftState {
+    int n;
+}
+
+actor Left owns LeftState {
+    entry inspect(cov_id shared_id)
+    observes shared by shared_id {
+        inputs {
+            src: SharedApp::Shared,
+        }
+    }
+    emits none {
+        SharedState current = shared.inputs.src.state;
+        require(current.n >= 0);
+    }
+}
+
+app LeftApp {
+    actor Left;
+}
+"#,
+        )
+        .expect("left source written");
+        std::fs::write(
+            temp.join("right.ag"),
+            r#"
+import actor SharedApp::Shared from "./shared.ag";
+
+state RightState {
+    byte tag;
+}
+
+actor Right owns RightState {
+    entry inspect(cov_id shared_id)
+    observes shared by shared_id {
+        inputs {
+            src: Shared,
+        }
+    }
+    emits none {
+        SharedState current = shared.inputs.src.state;
+        require(current.n >= 0);
+    }
+}
+
+app RightApp {
+    actor Right;
+}
+"#,
+        )
+        .expect("right source written");
+        std::fs::write(
+            temp.join("root.ag"),
+            r#"
+import app LeftApp from "./left.ag";
+import actor RightApp::Right from "./right.ag";
+
+state RootState {}
+
+actor Root owns RootState {
+    entry inspect(cov_id left_id, cov_id right_id)
+    observes left by left_id {
+        inputs {
+            src: LeftApp::Left,
+        }
+    }
+    observes right by right_id {
+        inputs {
+            src: Right,
+        }
+    }
+    emits none {
+        require(1 == 1);
+    }
+}
+
+app RootApp {
+    actor Root;
+}
+"#,
+        )
+        .expect("root source written");
+
+        let out_dir = temp.join("build");
+        let compiled =
+            build_file_app_bundle(temp.join("root.ag"), "RootApp", &out_dir).expect("diamond app dependency graph compiles");
+        assert_eq!(compiled.apps().count(), 4);
+        for app in ["SharedApp", "LeftApp", "RightApp", "RootApp"] {
+            assert!(compiled.app(app).is_some(), "compiled bundle is missing `{app}`");
+        }
+        assert!(out_dir.join("apps/SharedApp/artifact.json").is_file());
+        assert!(out_dir.join("apps/LeftApp/artifact.json").is_file());
+        assert!(out_dir.join("apps/RightApp/artifact.json").is_file());
+
+        let shared_handle = compiled
+            .app("SharedApp")
+            .expect("shared dependency exists")
+            .argent
+            .template_plan
+            .templates
+            .iter()
+            .find(|template| template.actor == "Shared")
+            .map(|template| template.actor_type_handle.template.hash_hex.as_str())
+            .expect("shared actor handle exists");
+        for app in ["LeftApp", "RightApp"] {
+            let imported_hash = compiled
+                .app(app)
+                .expect("diamond branch artifact exists")
+                .argent
+                .template_plan
+                .runtime_states
+                .iter()
+                .flat_map(|state| &state.field_roles)
+                .find_map(|field| match &field.role {
+                    artifact::RuntimeFieldRoleArtifact::ImportedTemplate { hash_hex, .. } => Some(hash_hex.as_str()),
+                    _ => None,
+                })
+                .expect("diamond branch records the shared actor handle");
+            assert_eq!(imported_hash, shared_handle);
+        }
+        compiled.runtime_bundle().expect("all four diamond artifacts form one runtime bundle");
+
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn module_import_links_qualified_app_actors_and_shares_constants() {
+        let temp = std::env::temp_dir().join(format!("argent-build-module-app-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("temp dir created");
+
+        std::fs::write(
+            temp.join("asset.ag"),
+            r#"
+const byte ASSET_TAG = 0x01;
+
+state AssetState {
+    byte tag;
+}
+
+actor Asset owns AssetState {
+    entry keep() emits one Asset {
+        become Asset(self.state);
+    }
+}
+
+app AssetApp {
+    actor Asset;
+}
+"#,
+        )
+        .expect("asset source written");
+        std::fs::write(
+            temp.join("controller.ag"),
+            r#"
+import "./asset.ag";
+
+state ControllerState {
+    cov_id asset_id;
+}
+
+actor Controller owns ControllerState {
+    entry update()
+    observes asset by self.asset_id {
+        inputs {
+            src: AssetApp::Asset,
+        }
+        outputs {
+            next: AssetApp::Asset,
+        }
+    }
+    emits one Controller {
+        AssetState current = asset.inputs.src.state;
+        require(current.tag == ASSET_TAG);
+        require asset.outputs become {
+            next <- AssetApp::Asset(current),
+        };
+        become Controller(self.state);
+    }
+}
+
+app ControllerApp {
+    actor Controller;
+}
+"#,
+        )
+        .expect("controller source written");
+
+        let out_dir = temp.join("build");
+        let compiled =
+            build_file_app_bundle(temp.join("controller.ag"), "ControllerApp", &out_dir).expect("module app dependency compiles");
+
+        assert_eq!(compiled.apps().map(|(app, _)| app).collect::<Vec<_>>(), ["AssetApp", "ControllerApp"]);
+        assert!(out_dir.join("apps/AssetApp/artifact.json").is_file());
+        let controller_sil = std::fs::read_to_string(out_dir.join("sil/Controller.sil")).expect("controller Sil exists");
+        assert!(controller_sil.contains("byte constant ASSET_TAG = 0x01;"), "{controller_sil}");
+        let observed = &compiled
+            .primary()
+            .argent
+            .actors
+            .iter()
+            .find(|actor| actor.name == "Controller")
+            .expect("controller artifact exists")
+            .entries[0]
+            .observes[0]
+            .inputs[0];
+        assert!(matches!(
+            &observed.target,
+            artifact::ObservedTargetArtifact::StaticActor { app, actor }
+                if app == "AssetApp" && actor == "Asset"
+        ));
 
         let _ = std::fs::remove_dir_all(temp);
     }

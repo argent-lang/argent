@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "940372fe130d999edc57b08debbe617a0692ad900fc247704db4292e7764fbaa",
+  "id": "15f6f39b92847f7153979a980f3dcc8b3781ce0b9c286fa1d8dfefff8cf9ec08",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -30,14 +30,32 @@
           "actor": "Controller",
           "contract": "Controller",
           "symbol": "gen__controller_template",
-          "canonical_template_hash": "ced10d77dfaf3cb278516e90a48626badebe3a2a7e3e894b1e21063b0731ab11"
+          "sil_template_hash": "ced10d77dfaf3cb278516e90a48626badebe3a2a7e3e894b1e21063b0731ab11",
+          "actor_type_handle": {
+            "state": "ControllerState",
+            "context_fields": [],
+            "template": {
+              "prefix_hex": "",
+              "suffix_hex": "b9cb519c695579d5b9bab9bb58cd00547f7e5258cd7e577958cd00547f7e5779c258cd7e0200007e012358cd7e5779520125c87e567958cd00547f7e5679c258cd7e0200007e012358cd7e5679520125c87e0a436f76656e616e744944a787695379827c75519658cd54797e5379827c75519658cd54797e7e52797caa8769577958cd01087c7e54797c7e53797eaa02000001aa7e01207e7c7e01877e5679c387695379827c75519658cd54797e5379827c75519658cd54797e7e52797caa8769567958cd01087c7e54797c7e53797eaa02000001aa7e01207e7c7e01877e5579c387697801207c7e78519358cd01087c7e7eb976c97602490194012a937cbc7eaa02000001aa7e01207e7c7e01877eb900ccc38769757575757575757551",
+              "hash_hex": "ced10d77dfaf3cb278516e90a48626badebe3a2a7e3e894b1e21063b0731ab11"
+            }
+          }
         },
         {
           "id": "template/pair",
           "actor": "Pair",
           "contract": "Pair",
           "symbol": "gen__pair_template",
-          "canonical_template_hash": "de7551b69e8bacda42e8d7a8acc64b3da8f0973c537d21e0c69ce24a4a3f9f50"
+          "sil_template_hash": "de7551b69e8bacda42e8d7a8acc64b3da8f0973c537d21e0c69ce24a4a3f9f50",
+          "actor_type_handle": {
+            "state": "PairState",
+            "context_fields": [],
+            "template": {
+              "prefix_hex": "",
+              "suffix_hex": "b9cb519c69b900ccc3b9bf87697551",
+              "hash_hex": "de7551b69e8bacda42e8d7a8acc64b3da8f0973c537d21e0c69ce24a4a3f9f50"
+            }
+          }
         }
       ],
       "runtime_states": [],
@@ -103,12 +121,14 @@
       "exports": [
         {
           "id": "interface/actor/Controller",
+          "app": "Spawns",
           "actor": "Controller",
           "state": "ControllerState",
           "fingerprint_hex": "36d77187df5b3a510395ae040f35202a2309876742ee6af77f9270042595d35e"
         },
         {
           "id": "interface/actor/Pair",
+          "app": "Spawns",
           "actor": "Pair",
           "state": "PairState",
           "fingerprint_hex": "9b0368f937b81c0b086a8abeb52c233617acf970bf24e2c5a984a2f682689bb2"
@@ -125,6 +145,10 @@
             "type": {
               "kind": "fixed_bytes",
               "len": 32
+            },
+            "source_type": {
+              "name": "actor_type",
+              "actor_state": "PairState"
             }
           },
           {

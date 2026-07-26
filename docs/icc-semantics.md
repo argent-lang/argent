@@ -124,28 +124,30 @@ Example: a mint controller observes the concrete `MinterProxy` and `KCC20`
 actors from the KCC20 asset app.
 
 ```rust
-import "./kcc20_asset.ag";
+import app KCC20Asset from "./kcc20_asset.ag";
 
 actor Minter owns MinterState {
     entry mint(...)
     observes asset by self.kcc20_covid {
         inputs {
-            proxy: MinterProxy,
+            proxy: KCC20Asset::MinterProxy,
         }
 
         outputs {
-            proxy: MinterProxy,
-            recipient: KCC20,
+            proxy: KCC20Asset::MinterProxy,
+            recipient: KCC20Asset::KCC20,
         }
     }
     ...
 }
 ```
 
-In closed ICC, actor names inside `observes` are concrete. `MinterProxy` means
-the `MinterProxy` actor from the imported asset app. `KCC20` means the concrete
-`KCC20` actor from that same app. The observer is compiled against those actors,
-and the dependency should remain explicit in the source and artifact interface.
+In closed ICC, actor names inside `observes` are concrete.
+`KCC20Asset::MinterProxy` means the `MinterProxy` actor from the imported asset
+app. `KCC20Asset::KCC20` means the concrete `KCC20` actor from that same app.
+The controller compiles the asset app first. It then uses the exported actor
+interfaces and actor-type handles. It does not compile the asset actors as
+members of the controller app.
 
 Closed ICC is the right model when the observer is intentionally composed with a
 specific known app or protocol.
@@ -273,43 +275,51 @@ observer does not execute the implementation body. The observed implementation
 is a covenant input in the same transaction and validates itself. The observer
 only constrains the parts of that transition it cares about.
 
-## Expanded capsule handles
+## Source-state actor handles
 
-An actor whose state expands a shared capsule may also carry compiler-owned
-route commitments. Argent gives its redeem script two logical template cuts:
+Each actor exports one `actor_type_handle`. The handle uses the physical source
+state that an external app can provide. If the actor state expands another
+state, the handle uses that base state.
+
+An actor can also carry compiler-owned route commitments. In that case, Argent
+gives its redeem script two logical template cuts:
 
 ```text
-canonical app template:
+canonical sil template used inside the defining app:
 [ prefix ][ fixed route context ][ concrete state ][ suffix ]
 
 external actor_type<Capsule> handle:
 [ prefix + fixed route context ][ Capsule state ][ suffix ]
 ```
 
-Internal routes use the canonical template. The external handle absorbs the
+Internal routes use the canonical sil template. The external handle absorbs the
 fixed route context into its prefix, so an observer sees only the stable capsule
 layout. Virtual fields remain implementation-owned state and are not used for
 route metadata.
 
-Each expanded actor has at most one external capsule handle: the base state it
-expands. Its template receipt records both identities:
+Each actor has exactly one source-state handle. Its template receipt records
+both identities:
 
 ```json
 {
-  "canonical_template_hash": "<canonical-hash>",
+  "sil_template_hash": "<sil-template-hash>",
   "actor_type_handle": {
     "state": "AssetCapsule",
     "context_fields": ["gen__wallet_asset_template"],
     "template": {
       "prefix_hex": "<wider-prefix>",
-      "suffix_hex": "<canonical-suffix>",
+      "suffix_hex": "<sil-suffix>",
       "hash_hex": "<external-handle>"
     }
   }
 }
 ```
 
-Route context is initialized from canonical in-app template hashes. External
+For an actor with no compiler-owned context, the handle template equals the
+canonical sil template. The artifact still includes the handle. This rule gives
+linkers and runtimes one required field for all actors.
+
+Route context is initialized from in-app canonical sil template hashes. External
 handles therefore do not feed back into the route graph and cannot create a
 recursive template definition. Artifact verification also requires the listed
 context fields to be the leading compiler-owned fields in the physical runtime

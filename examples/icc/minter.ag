@@ -1,8 +1,7 @@
 // KCC20 mint controller app.
 //
 // The observed asset covenant family lives in `kcc20_asset.ag`; this controller
-// imports those state and actor declarations and commits to their templates via
-// the observed-covenant lowering.
+// imports its artifact and commits to its exported actor-type handles.
 
 import "./kcc20_asset.ag";
 
@@ -19,13 +18,13 @@ actor Minter owns MinterState {
     observes asset by self.kcc20_covid {
         // Named handles are exhaustive over the observed covenant inputs.
         inputs {
-            proxy: MinterProxy,
+            proxy: KCC20Asset::MinterProxy,
         }
 
         // Declaration order defines the op_cov_output_idx order; no auth/cov index syntax.
         outputs {
-            proxy: MinterProxy,
-            recipient: KCC20,
+            proxy: KCC20Asset::MinterProxy,
+            recipient: KCC20Asset::KCC20,
         }
     }
     emits {
@@ -49,8 +48,8 @@ actor Minter owns MinterState {
         };
 
         require asset.outputs become {
-            proxy <- MinterProxy(next_proxy),
-            recipient <- KCC20(next_recipient),
+            proxy <- KCC20Asset::MinterProxy(next_proxy),
+            recipient <- KCC20Asset::KCC20(next_recipient),
         };
 
         MinterState next_controller = {
