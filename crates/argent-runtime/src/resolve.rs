@@ -916,6 +916,15 @@ mod tests {
         template_selectors: Vec<TemplateSelectorArtifact>,
     ) -> Artifact {
         let state = format!("{actor}State");
+        let runtime_state = RuntimeStateArtifact {
+            source: state.clone(),
+            fields: vec![RuntimeFieldArtifact { name: "count".to_string(), ty: TypeArtifact::Int }],
+        };
+        let state_script = silverscript_abi::encode_runtime_state_script(
+            &runtime_state,
+            &BTreeMap::from([("count".to_string(), ArtifactValue::Int(0))]),
+        )
+        .expect("test runtime state encodes");
         let mut artifact = Artifact {
             schema_version: ARTIFACT_SCHEMA_VERSION,
             id: String::new(),
@@ -957,15 +966,12 @@ mod tests {
                 contracts: vec![SilContractArtifact {
                     name: actor.to_string(),
                     source_path: format!("sil/{actor}.sil"),
-                    runtime_state: RuntimeStateArtifact {
-                        source: state,
-                        fields: vec![RuntimeFieldArtifact { name: "count".to_string(), ty: TypeArtifact::Int }],
-                    },
+                    runtime_state,
                     entries: vec![SilEntryArtifact { name: entry.to_string(), selector: None, params }],
                     compiled: CompiledContractArtifact {
-                        script_hex: String::new(),
+                        script_hex: silverscript_abi::encode_hex(&state_script),
                         template_hash_hex: silverscript_abi::encode_hex(&silverscript_abi::template_hash(&[], &[])),
-                        state_span: StateSpanArtifact { offset: 0, len: 0 },
+                        state_span: StateSpanArtifact { offset: 0, len: state_script.len() },
                     },
                 }],
             },

@@ -32,23 +32,6 @@ each imported receipt with a verified export from the attached app artifact.
 Add tests for a changed route context, changed nested state, changed source
 type, invalid exported fingerprint, missing dependency, and wrong dependency.
 
-## Verify the Sil state span
-
-**Area:** `silverscript-abi`, artifact verification, and `argent-rt`.
-
-**Context:** The Sil ABI verifier checks the compiled script, state span bounds,
-and the template hash derived from the bytes outside the span. It does not check
-that the span contains the encoded runtime state.
-
-A wrong state span can pass if it is inside the script and all related hashes
-are calculated again. The runtime can then insert state at the wrong position
-in the script.
-
-**Follow-up:** Check the state span against the fixed runtime-state layout.
-
-Add tests with an incorrect state offset and state length that are inside the
-script bounds.
-
 ## Support cross-app static spawn targets
 
 **Area:** Compiler linking and lowering, artifact metadata, `argent-rt`, and

@@ -7275,6 +7275,8 @@ mod tests {
         path::{Path, PathBuf},
     };
 
+    use kaspa_txscript::opcodes::codes::OpPushData1;
+
     use super::*;
 
     #[test]
@@ -8157,7 +8159,39 @@ mod tests {
         let mut prefix = crate::codec::decode_hex(&handle.template.prefix_hex).expect("capsule prefix decodes");
         *prefix.last_mut().expect("capsule prefix contains context") ^= 1;
         handle.template.prefix_hex = encode_hex(&prefix);
+        let suffix = crate::codec::decode_hex(&handle.template.suffix_hex).expect("capsule suffix decodes");
+        handle.template.hash_hex = encode_hex(&silverscript_lang::template::template_hash(&prefix, &suffix));
         let err = corrupted.verify_template_plan().expect_err("corrupted capsule context is rejected");
+        assert!(matches!(err, TemplatePlanError::ActorTypeHandleMismatch { .. }), "unexpected error: {err}");
+
+        let mut corrupted = artifact.clone();
+        let handle = corrupted
+            .argent
+            .template_plan
+            .templates
+            .iter_mut()
+            .find(|template| template.actor == "ReserveAsset")
+            .map(|template| &mut template.actor_type_handle)
+            .expect("ReserveAsset capsule handle exists");
+        let prefix = crate::codec::decode_hex(&handle.template.prefix_hex).expect("capsule prefix decodes");
+        let context = &prefix[sil_prefix.len()..];
+        let first_push_end = 1 + context[0] as usize;
+        assert!(first_push_end <= context.len(), "test context starts with one direct data push");
+        let mut noncanonical_prefix = prefix[..sil_prefix.len()].to_vec();
+        noncanonical_prefix.extend_from_slice(&[OpPushData1, context[0]]);
+        noncanonical_prefix.extend_from_slice(&context[1..first_push_end]);
+        noncanonical_prefix.extend_from_slice(&context[first_push_end..]);
+        let suffix = crate::codec::decode_hex(&handle.template.suffix_hex).expect("capsule suffix decodes");
+        handle.template.prefix_hex = encode_hex(&noncanonical_prefix);
+        handle.template.hash_hex = encode_hex(&silverscript_lang::template::template_hash(&noncanonical_prefix, &suffix));
+        let err = corrupted.verify_template_plan().expect_err("non-canonical capsule context is rejected");
+        assert!(matches!(err, TemplatePlanError::ActorTypeHandleMismatch { .. }), "unexpected error: {err}");
+
+        let mut corrupted = artifact.clone();
+        let capsule =
+            corrupted.sil_abi.states.iter_mut().find(|state| state.name == "AssetCapsule").expect("AssetCapsule Sil layout exists");
+        capsule.fields.last_mut().expect("AssetCapsule has fields").ty = TypeArtifact::Bool;
+        let err = corrupted.verify_template_plan().expect_err("capsule state layout mismatch is rejected");
         assert!(matches!(err, TemplatePlanError::ActorTypeHandleMismatch { .. }), "unexpected error: {err}");
 
         let mut corrupted = artifact.clone();

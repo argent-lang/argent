@@ -1344,6 +1344,21 @@ fn verify_actor_type_handle(
     {
         return Err(mismatch("context fields are not the leading physical runtime fields".to_string()));
     }
+    let handle_state = artifact
+        .sil_abi
+        .states
+        .iter()
+        .find(|state| state.name == handle.state)
+        .ok_or_else(|| mismatch(format!("missing Sil state layout `{}`", handle.state)))?;
+    let open_runtime_fields = &contract.runtime_state.fields[handle.context_fields.len()..];
+    if open_runtime_fields.len() != handle_state.fields.len()
+        || open_runtime_fields
+            .iter()
+            .zip(&handle_state.fields)
+            .any(|(runtime, source)| runtime.name != source.name || runtime.ty != source.ty)
+    {
+        return Err(mismatch(format!("runtime fields after the fixed context do not match Sil state layout `{}`", handle.state)));
+    }
 
     let sil_script = decode_hex_for_template(&template.id, &contract.compiled.script_hex)?;
     let (sil_prefix, _, sil_suffix) = contract
@@ -1370,8 +1385,14 @@ fn verify_actor_type_handle(
 
     let context_state =
         RuntimeStateArtifact { source: handle.state.clone(), fields: leading_runtime_fields.into_iter().cloned().collect() };
-    let decoded_context = silverscript_abi::decode_runtime_state_script(&context_state, &handle_prefix[sil_prefix.len()..])
+    let context_script = &handle_prefix[sil_prefix.len()..];
+    let decoded_context = silverscript_abi::decode_runtime_state_script(&context_state, context_script)
         .map_err(|err| mismatch(format!("prefix context does not decode according to its runtime fields: {err}")))?;
+    let canonical_context = silverscript_abi::encode_runtime_state_script(&context_state, &decoded_context)
+        .map_err(|err| mismatch(format!("prefix context cannot be canonically encoded: {err}")))?;
+    if canonical_context != context_script {
+        return Err(mismatch("prefix context is not canonically encoded".to_string()));
+    }
     if let Some(runtime_plan) = runtime_plan {
         for field in &runtime_plan.field_roles {
             let expected = fixed_runtime_context_value(plan, runtime_plan, field)?;

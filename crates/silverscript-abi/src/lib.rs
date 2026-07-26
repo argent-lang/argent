@@ -147,11 +147,11 @@ impl SilAbiArtifact {
         }
     }
 
-    /// Verify that each compiled template describes its contract script.
+    /// Verify each compiled script, runtime-state span, and template hash.
     pub fn verify(&self) -> std::result::Result<(), SilAbiVerificationError> {
         self.check_schema_version()?;
         for contract in &self.contracts {
-            verify_compiled_template(contract)?;
+            verify_compiled_contract(contract)?;
         }
         Ok(())
     }
@@ -234,6 +234,12 @@ pub enum SilAbiVerificationError {
     InvalidCompiledHex { contract: String, field: &'static str, message: String },
     #[error("contract `{contract}` has state span offset {offset} length {len}, but its compiled script has {script_len} bytes")]
     InvalidStateSpan { contract: String, offset: usize, len: usize, script_len: usize },
+    #[error("contract `{contract}` runtime state field `{field}` has unsupported type `{ty}`")]
+    UnsupportedRuntimeStateType { contract: String, field: String, ty: String },
+    #[error("contract `{contract}` state span does not encode its runtime state: {message}")]
+    InvalidRuntimeStateEncoding { contract: String, message: String },
+    #[error("contract `{contract}` state span is not canonically encoded")]
+    NonCanonicalRuntimeStateEncoding { contract: String },
     #[error("contract `{contract}` template hash must contain 32 bytes, found {len}")]
     InvalidTemplateHashLength { contract: String, len: usize },
     #[error("contract `{contract}` template hash mismatch: expected `{expected}`, found `{found}`")]
@@ -394,7 +400,7 @@ pub fn encode_hex(bytes: &[u8]) -> String {
     String::from_utf8(out).expect("hex is always valid ascii")
 }
 
-fn verify_compiled_template(contract: &SilContractArtifact) -> std::result::Result<(), SilAbiVerificationError> {
+fn verify_compiled_contract(contract: &SilContractArtifact) -> std::result::Result<(), SilAbiVerificationError> {
     let decode = |field, value| {
         decode_hex(value).map_err(|err| SilAbiVerificationError::InvalidCompiledHex {
             contract: contract.name.clone(),
@@ -406,7 +412,7 @@ fn verify_compiled_template(contract: &SilContractArtifact) -> std::result::Resu
     let found_hash = decode("template hash", &contract.compiled.template_hash_hex)?;
 
     let span = &contract.compiled.state_span;
-    let Some((prefix, _, suffix)) = contract.compiled.script_parts(&script) else {
+    let Some((prefix, state_script, suffix)) = contract.compiled.script_parts(&script) else {
         return Err(SilAbiVerificationError::InvalidStateSpan {
             contract: contract.name.clone(),
             offset: span.offset,
@@ -414,6 +420,24 @@ fn verify_compiled_template(contract: &SilContractArtifact) -> std::result::Resu
             script_len: script.len(),
         });
     };
+    for field in &contract.runtime_state.fields {
+        if fixed_payload_len(&field.ty).is_none() {
+            return Err(SilAbiVerificationError::UnsupportedRuntimeStateType {
+                contract: contract.name.clone(),
+                field: field.name.clone(),
+                ty: type_name(&field.ty),
+            });
+        }
+    }
+    let state_values = decode_runtime_state_script(&contract.runtime_state, state_script).map_err(|err| {
+        SilAbiVerificationError::InvalidRuntimeStateEncoding { contract: contract.name.clone(), message: err.to_string() }
+    })?;
+    let canonical_state = encode_runtime_state_script(&contract.runtime_state, &state_values).map_err(|err| {
+        SilAbiVerificationError::InvalidRuntimeStateEncoding { contract: contract.name.clone(), message: err.to_string() }
+    })?;
+    if canonical_state != state_script {
+        return Err(SilAbiVerificationError::NonCanonicalRuntimeStateEncoding { contract: contract.name.clone() });
+    }
     if found_hash.len() != 32 {
         return Err(SilAbiVerificationError::InvalidTemplateHashLength { contract: contract.name.clone(), len: found_hash.len() });
     }
@@ -680,7 +704,7 @@ fn fixed_payload_len(ty: &TypeArtifact) -> Option<usize> {
         TypeArtifact::Sig => Some(65),
         TypeArtifact::Datasig => Some(64),
         TypeArtifact::FixedBytes { len } => Some(*len),
-        TypeArtifact::FixedArray { item, len } => fixed_payload_len(item).map(|item_len| item_len * len),
+        TypeArtifact::FixedArray { item, len } => fixed_payload_len(item).and_then(|item_len| item_len.checked_mul(*len)),
         TypeArtifact::Bytes | TypeArtifact::Text | TypeArtifact::DynamicArray { .. } | TypeArtifact::Struct { .. } => None,
     }
 }
@@ -880,11 +904,14 @@ mod tests {
     }
 
     #[test]
-    fn verifies_compiled_template_against_contract_script() {
+    fn verifies_compiled_contract_against_its_script() {
         let mut abi = tiny_sil_abi();
         let contract = &mut abi.contracts[0];
         let prefix = [0xaa];
-        let state = [0x01, 0x02];
+        contract.runtime_state.fields = vec![RuntimeFieldArtifact { name: "value".to_string(), ty: TypeArtifact::Byte }];
+        let state =
+            encode_runtime_state_script(&contract.runtime_state, &BTreeMap::from([("value".to_string(), ArtifactValue::Byte(2))]))
+                .expect("state encodes");
         let suffix = [0xbb, 0xcc];
         contract.compiled.script_hex = encode_hex(&[prefix.as_slice(), state.as_slice(), suffix.as_slice()].concat());
         contract.compiled.template_hash_hex = encode_hex(&template_hash(&prefix, &suffix));
@@ -904,6 +931,58 @@ mod tests {
             abi.verify(),
             Err(SilAbiVerificationError::TemplateHashMismatch { ref contract, .. }) if contract == "Foo"
         ));
+    }
+
+    #[test]
+    fn rejects_state_spans_that_do_not_match_the_runtime_state() {
+        let mut abi = tiny_sil_abi();
+        let contract = &mut abi.contracts[0];
+        contract.runtime_state.fields = vec![RuntimeFieldArtifact { name: "value".to_string(), ty: TypeArtifact::Byte }];
+        let prefix = [0xaa];
+        let state =
+            encode_runtime_state_script(&contract.runtime_state, &BTreeMap::from([("value".to_string(), ArtifactValue::Byte(2))]))
+                .expect("state encodes");
+        let suffix = [0xbb];
+        contract.compiled.script_hex = encode_hex(&[prefix.as_slice(), state.as_slice(), suffix.as_slice()].concat());
+
+        contract.compiled.state_span = StateSpanArtifact { offset: 0, len: prefix.len() + state.len() };
+        contract.compiled.template_hash_hex = encode_hex(&template_hash(&[], &suffix));
+        assert!(matches!(
+            abi.verify(),
+            Err(SilAbiVerificationError::InvalidRuntimeStateEncoding { ref contract, .. }) if contract == "Foo"
+        ));
+
+        let contract = &mut abi.contracts[0];
+        contract.compiled.state_span = StateSpanArtifact { offset: prefix.len(), len: state.len() - 1 };
+        contract.compiled.template_hash_hex = encode_hex(&template_hash(&prefix, &[state[state.len() - 1], suffix[0]]));
+        assert!(matches!(
+            abi.verify(),
+            Err(SilAbiVerificationError::InvalidRuntimeStateEncoding { ref contract, .. }) if contract == "Foo"
+        ));
+    }
+
+    #[test]
+    fn rejects_noncanonical_and_variable_runtime_state_encodings() {
+        let mut abi = tiny_sil_abi();
+        let contract = &mut abi.contracts[0];
+        contract.runtime_state.fields = vec![RuntimeFieldArtifact { name: "value".to_string(), ty: TypeArtifact::Byte }];
+        let prefix = [0xaa];
+        let state = [OP_PUSH_DATA_1, 1, 2];
+        let suffix = [0xbb];
+        contract.compiled.script_hex = encode_hex(&[prefix.as_slice(), state.as_slice(), suffix.as_slice()].concat());
+        contract.compiled.template_hash_hex = encode_hex(&template_hash(&prefix, &suffix));
+        contract.compiled.state_span = StateSpanArtifact { offset: prefix.len(), len: state.len() };
+        assert_eq!(abi.verify(), Err(SilAbiVerificationError::NonCanonicalRuntimeStateEncoding { contract: "Foo".to_string() }));
+
+        abi.contracts[0].runtime_state.fields[0].ty = TypeArtifact::Bytes;
+        assert_eq!(
+            abi.verify(),
+            Err(SilAbiVerificationError::UnsupportedRuntimeStateType {
+                contract: "Foo".to_string(),
+                field: "value".to_string(),
+                ty: "bytes".to_string(),
+            })
+        );
     }
 
     #[test]
