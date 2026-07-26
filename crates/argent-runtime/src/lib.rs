@@ -27,8 +27,8 @@ use argent_artifact::{
     ActorArtifact, ActorInterfaceArtifact, ArgentStateArtifact, ArtifactIdentityError, ArtifactVersionError, CompiledTemplateArtifact,
     EntryArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, ObserveArtifact,
     ObservedActorArtifact, ObservedActorSideArtifact, ObservedTargetArtifact, RouteTemplateLeafArtifact, RouteTemplateProofArtifact,
-    RuntimeFieldRoleArtifact, RuntimeStatePlanArtifact, SilContractArtifact, SilEntryArtifact, TemplatePlanError,
-    fixed_runtime_context_value,
+    RuntimeFieldRoleArtifact, RuntimeStatePlanArtifact, SilAbiVerificationError, SilContractArtifact, SilEntryArtifact,
+    TemplatePlanError, fixed_runtime_context_value,
 };
 use kaspa_consensus_core::{
     Hash,
@@ -259,6 +259,8 @@ impl From<ObservedActorSideArtifact> for Side {
 pub enum BuilderError {
     #[error(transparent)]
     ArtifactVersion(#[from] ArtifactVersionError),
+    #[error(transparent)]
+    SilAbiVerification(#[from] SilAbiVerificationError),
     #[error(transparent)]
     TemplatePlan(#[from] TemplatePlanError),
     #[error(transparent)]
@@ -1656,6 +1658,7 @@ impl<'a> TxBuilder<'a> {
 
 fn validate_artifact(app: &str, artifact: &Artifact) -> BuilderResult<()> {
     artifact.check_schema_version()?;
+    artifact.verify_sil_abi()?;
     artifact.verify_template_plan()?;
     artifact.verify_id().map_err(|source| BuilderError::ArtifactIdentity { app: app.to_string(), source })?;
     Ok(())

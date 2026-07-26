@@ -967,7 +967,7 @@ mod tests {
                         template: CompiledTemplateArtifact {
                             prefix_hex: String::new(),
                             suffix_hex: String::new(),
-                            hash_hex: String::new(),
+                            hash_hex: silverscript_abi::encode_hex(&silverscript_abi::template_hash(&[], &[])),
                         },
                         state_span: StateSpanArtifact { offset: 0, len: 0 },
                     },

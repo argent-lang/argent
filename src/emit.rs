@@ -5060,6 +5060,7 @@ fn emit_artifact(program: &Program, model: &Model<'_>, actor_sil: &BTreeMap<Stri
         },
         sil_abi: SilAbiArtifact { schema_version: SIL_ABI_SCHEMA_VERSION, states, contracts: sil_contracts },
     };
+    artifact.verify_sil_abi().map_err(|err| ArgentError::new(format!("invalid Sil ABI: {err}")))?;
     artifact.verify_template_plan().map_err(|err| ArgentError::new(format!("invalid template plan receipt: {err}")))?;
     artifact.id = artifact.computed_id_hex().map_err(|err| ArgentError::new(format!("failed to compute artifact id: {err}")))?;
     Ok(artifact)

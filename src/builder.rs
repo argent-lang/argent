@@ -6,7 +6,8 @@ mod tests {
     use crate::{
         artifact::{
             HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, ObservedTargetArtifact, RuntimeFieldRoleArtifact,
-            TemplatePlanError, TypeArtifact, route_template_proof_receipt_id, route_template_table_receipt_id,
+            SilAbiVerificationError, TemplatePlanError, TypeArtifact, route_template_proof_receipt_id,
+            route_template_table_receipt_id,
         },
         codec::{CodecError, decode_hex, encode_entry_sig_script},
         emit::emit_build_app,
@@ -1818,6 +1819,38 @@ mod tests {
         };
         assert!(
             matches!(err, BuilderError::TemplatePlan(TemplatePlanError::TemplateHashMismatch { ref id, .. }) if id == "template/issuer"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn builder_rejects_sil_template_hash_mismatch() {
+        let mut artifact = tickets_artifact();
+        artifact.verify_sil_abi().expect("fixture Sil ABI verifies before mutation");
+        let issuer_contract =
+            artifact.sil_abi.contracts.iter_mut().find(|contract| contract.name == "Issuer").expect("Issuer Sil contract exists");
+        issuer_contract.compiled.template.hash_hex = "00".repeat(32);
+        let issuer_receipt = artifact
+            .argent
+            .template_plan
+            .templates
+            .iter_mut()
+            .find(|template| template.actor == "Issuer")
+            .expect("Issuer template receipt exists");
+        issuer_receipt.sil_template_hash = issuer_contract.compiled.template.hash_hex.clone();
+
+        let err = match TxBuilder::new(&artifact) {
+            Ok(_) => panic!("builder must reject a Sil template hash that does not match its contract code"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(
+                err,
+                BuilderError::SilAbiVerification(SilAbiVerificationError::TemplateHashMismatch {
+                    ref contract,
+                    ..
+                }) if contract == "Issuer"
+            ),
             "unexpected error: {err}"
         );
     }

@@ -16,8 +16,8 @@ use thiserror::Error;
 
 pub use silverscript_abi::{
     ArtifactVersionError, CompiledContractArtifact, CompiledTemplateArtifact, FieldArtifact, ParamArtifact, RuntimeFieldArtifact,
-    RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, SilContractArtifact, SilEntryArtifact, StateArtifact,
-    StateSpanArtifact, TypeArtifact,
+    RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, SilAbiVerificationError, SilContractArtifact, SilEntryArtifact,
+    StateArtifact, StateSpanArtifact, TypeArtifact,
 };
 
 pub const ARTIFACT_SCHEMA_VERSION: u32 = 1;
@@ -103,6 +103,10 @@ impl Artifact {
 
     pub fn verify_template_plan(&self) -> std::result::Result<(), TemplatePlanError> {
         self.argent.template_plan.verify(self)
+    }
+
+    pub fn verify_sil_abi(&self) -> std::result::Result<(), SilAbiVerificationError> {
+        self.sil_abi.verify()
     }
 
     pub fn computed_id_hex(&self) -> std::result::Result<String, ArtifactIdentityError> {
