@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "4fb2464732d080e7c4ad7e6d6400b2183b4f9e5498189e6718a0dd9edd0b5211",
+  "id": "47dafda6afe38c66dba7b0f3df8d8122e60526bddd9174cf0653a33e308a5b7d",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -8,7 +8,8 @@
   "app": "KCC20MintController",
   "root": "examples/icc/minter.ag",
   "modules": [
-    "examples/icc/minter.ag"
+    "examples/icc/minter.ag",
+    "examples/icc/kcc20_asset.ag"
   ],
   "argent": {
     "templates": [
@@ -159,39 +160,6 @@
     },
     "states": [
       {
-        "name": "MinterState",
-        "fields": [
-          {
-            "name": "owner",
-            "type": {
-              "kind": "pubkey"
-            }
-          },
-          {
-            "name": "kcc20_covid",
-            "type": {
-              "kind": "fixed_bytes",
-              "len": 32
-            },
-            "source_type": {
-              "name": "cov_id"
-            }
-          },
-          {
-            "name": "amount",
-            "type": {
-              "kind": "int"
-            }
-          },
-          {
-            "name": "initialized",
-            "type": {
-              "kind": "bool"
-            }
-          }
-        ]
-      },
-      {
         "name": "KCC20State",
         "fields": [
           {
@@ -226,6 +194,39 @@
             },
             "source_type": {
               "name": "cov_id"
+            }
+          }
+        ]
+      },
+      {
+        "name": "MinterState",
+        "fields": [
+          {
+            "name": "owner",
+            "type": {
+              "kind": "pubkey"
+            }
+          },
+          {
+            "name": "kcc20_covid",
+            "type": {
+              "kind": "fixed_bytes",
+              "len": 32
+            },
+            "source_type": {
+              "name": "cov_id"
+            }
+          },
+          {
+            "name": "amount",
+            "type": {
+              "kind": "int"
+            }
+          },
+          {
+            "name": "initialized",
+            "type": {
+              "kind": "bool"
             }
           }
         ]
@@ -472,36 +473,6 @@
     "schema_version": 1,
     "states": [
       {
-        "name": "MinterState",
-        "fields": [
-          {
-            "name": "owner",
-            "type": {
-              "kind": "pubkey"
-            }
-          },
-          {
-            "name": "kcc20_covid",
-            "type": {
-              "kind": "fixed_bytes",
-              "len": 32
-            }
-          },
-          {
-            "name": "amount",
-            "type": {
-              "kind": "int"
-            }
-          },
-          {
-            "name": "initialized",
-            "type": {
-              "kind": "bool"
-            }
-          }
-        ]
-      },
-      {
         "name": "KCC20State",
         "fields": [
           {
@@ -533,6 +504,36 @@
             "type": {
               "kind": "fixed_bytes",
               "len": 32
+            }
+          }
+        ]
+      },
+      {
+        "name": "MinterState",
+        "fields": [
+          {
+            "name": "owner",
+            "type": {
+              "kind": "pubkey"
+            }
+          },
+          {
+            "name": "kcc20_covid",
+            "type": {
+              "kind": "fixed_bytes",
+              "len": 32
+            }
+          },
+          {
+            "name": "amount",
+            "type": {
+              "kind": "int"
+            }
+          },
+          {
+            "name": "initialized",
+            "type": {
+              "kind": "bool"
             }
           }
         ]

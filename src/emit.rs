@@ -23,8 +23,8 @@ pub fn emit_build_app(program: &Program, app_name: &str, out_dir: impl AsRef<Pat
 
 /// Build one app with its direct app dependencies already compiled.
 ///
-/// The map is keyed by the source app name used in `import app` and
-/// `import actor App::Actor` declarations.
+/// The map is keyed by the source app name used in explicit app imports or
+/// exposed by an ordinary module import.
 pub(crate) fn emit_build_app_linked(
     program: &Program,
     app_name: &str,

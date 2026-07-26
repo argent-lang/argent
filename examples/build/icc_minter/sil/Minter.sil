@@ -12,6 +12,7 @@ contract Minter(
 ) {
     // :: shared constants
     byte constant IDENTIFIER_PUBKEY = 0x00;
+    byte constant IDENTIFIER_COVENANT_ID = 0x02;
 
     // :: state layouts
     struct MinterProxyState {

@@ -160,8 +160,8 @@ impl AppGraphPlanner {
         self.stack.push(app.clone());
 
         let program = self.load_source(&app.source)?;
-        root_app(&program, &app)?;
-        let dependencies = app_dependencies(&program)?;
+        let selected_app = root_app(&program, &app)?;
+        let dependencies = app_dependencies(&program, selected_app)?;
         for dependency in &dependencies {
             self.visit(dependency.clone())?;
         }
@@ -182,30 +182,89 @@ impl AppGraphPlanner {
     }
 }
 
-fn app_dependencies(program: &Program) -> Result<BTreeSet<SourceApp>> {
+fn app_dependencies(program: &Program, selected_app: &crate::ast::AppDecl) -> Result<BTreeSet<SourceApp>> {
     let mut dependencies = BTreeSet::<SourceApp>::new();
     let mut app_sources = BTreeMap::<String, PathBuf>::new();
+    let referenced_apps = qualified_app_references(program, selected_app);
     for module in &program.modules {
         let base = module.path.parent().ok_or_else(|| ArgentError::at(&module.path, "module path has no parent"))?;
         for import in &module.imports {
-            let (app, path) = match import {
-                Import::AppActor { app, path, .. } | Import::App { app, path } => (app, path),
-                Import::Module { .. } | Import::Actor { .. } => continue,
-            };
-            let source = canonical_source(&base.join(path))?;
-            if let Some(previous) = app_sources.insert(app.clone(), source.clone())
-                && previous != source
-            {
-                return Err(ArgentError::at(
-                    &module.path,
-                    format!("app `{app}` is imported from both `{}` and `{}`", previous.display(), source.display()),
-                ));
+            match import {
+                Import::AppActor { app, path, .. } | Import::App { app, path } => {
+                    let source = canonical_source(&base.join(path))?;
+                    insert_app_dependency(&mut dependencies, &mut app_sources, SourceApp { source, app: app.clone() }, &module.path)?;
+                }
+                Import::Module { path } if !is_standard_module(path) => {
+                    let source = canonical_source(&base.join(path))?;
+                    let imported = program
+                        .modules
+                        .iter()
+                        .find(|candidate| candidate.path == source)
+                        .ok_or_else(|| ArgentError::at(&module.path, format!("module import source `{path}` was not loaded")))?;
+                    for app in imported.apps.iter().filter(|app| referenced_apps.contains(&app.name)) {
+                        insert_app_dependency(
+                            &mut dependencies,
+                            &mut app_sources,
+                            SourceApp { source: source.clone(), app: app.name.clone() },
+                            &module.path,
+                        )?;
+                    }
+                }
+                Import::Module { .. } | Import::Actor { .. } => {}
             }
-            let source_app = SourceApp { source, app: app.clone() };
-            dependencies.insert(source_app);
         }
     }
     Ok(dependencies)
+}
+
+fn qualified_app_references(program: &Program, selected_app: &crate::ast::AppDecl) -> BTreeSet<String> {
+    let actors =
+        program.modules.iter().flat_map(|module| &module.actors).map(|actor| (actor.name.as_str(), actor)).collect::<BTreeMap<_, _>>();
+    let mut apps = BTreeSet::new();
+    // Consumes and emits are always in-app. Only observations and spawns can
+    // introduce a foreign static actor dependency.
+    for actor in selected_app.actors.iter().filter_map(|name| actors.get(name.as_str())) {
+        for entry in &actor.entries {
+            for observe in &entry.observes {
+                for observed in observe.inputs.iter().chain(&observe.outputs) {
+                    insert_qualified_app(&mut apps, &observed.actor);
+                }
+            }
+            for spawn in &entry.spawns {
+                for output in &spawn.outputs {
+                    insert_qualified_app(&mut apps, &output.actor);
+                }
+            }
+        }
+    }
+    apps
+}
+
+fn insert_qualified_app(apps: &mut BTreeSet<String>, actor: &str) {
+    if let Some((app, actor)) = actor.split_once("::")
+        && !app.is_empty()
+        && !actor.is_empty()
+    {
+        apps.insert(app.to_string());
+    }
+}
+
+fn insert_app_dependency(
+    dependencies: &mut BTreeSet<SourceApp>,
+    app_sources: &mut BTreeMap<String, PathBuf>,
+    dependency: SourceApp,
+    importing_module: &Path,
+) -> Result<()> {
+    if let Some(previous) = app_sources.insert(dependency.app.clone(), dependency.source.clone())
+        && previous != dependency.source
+    {
+        return Err(ArgentError::at(
+            importing_module,
+            format!("app `{}` is imported from both `{}` and `{}`", dependency.app, previous.display(), dependency.source.display()),
+        ));
+    }
+    dependencies.insert(dependency);
+    Ok(())
 }
 
 fn root_app<'a>(program: &'a Program, source_app: &SourceApp) -> Result<&'a crate::ast::AppDecl> {
@@ -250,6 +309,57 @@ mod tests {
         let (_, root_dependencies, root_program) = graph.last().unwrap();
         assert_eq!(root_dependencies.iter().map(|dependency| dependency.app.as_str()).collect::<Vec<_>>(), ["LeftApp", "RightApp"]);
         assert_eq!(root_program.modules.len(), 1, "app imports do not enter the importing program");
+
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn app_graph_infers_apps_declared_by_module_imports() {
+        let temp = temp_dir("module-app");
+        write_app(&temp.join("asset.ag"), "", "AssetApp", "Asset");
+        fs::write(
+            temp.join("controller.ag"),
+            r#"
+import "./asset.ag";
+
+state ControllerState {}
+
+actor Controller owns ControllerState {
+    entry inspect(cov_id asset_id)
+    observes asset by asset_id {
+        inputs {
+            src: AssetApp::Asset,
+        }
+    }
+    emits none {}
+}
+
+app ControllerApp {
+    actor Controller;
+}
+"#,
+        )
+        .expect("controller source written");
+
+        let graph = load_app_graph(temp.join("controller.ag"), "ControllerApp").expect("module app dependency graph loads");
+        assert_eq!(graph.iter().map(|(app, _, _)| app.app.as_str()).collect::<Vec<_>>(), ["AssetApp", "ControllerApp"]);
+        let (_, dependencies, program) = graph.last().unwrap();
+        assert_eq!(dependencies.iter().map(|dependency| dependency.app.as_str()).collect::<Vec<_>>(), ["AssetApp"]);
+        assert_eq!(program.modules.len(), 2, "ordinary imports retain shared source declarations");
+
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn module_apps_without_qualified_references_remain_shared_source() {
+        let temp = temp_dir("shared-module-app");
+        write_app(&temp.join("shared.ag"), "", "SharedApp", "Shared");
+        write_app(&temp.join("root.ag"), "import \"./shared.ag\";", "RootApp", "Root");
+
+        let graph = load_app_graph(temp.join("root.ag"), "RootApp").expect("shared source module loads");
+        assert_eq!(graph.iter().map(|(app, _, _)| app.app.as_str()).collect::<Vec<_>>(), ["RootApp"]);
+        assert!(graph[0].1.is_empty());
+        assert_eq!(graph[0].2.modules.len(), 2);
 
         let _ = fs::remove_dir_all(temp);
     }

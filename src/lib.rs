@@ -106,9 +106,10 @@ pub fn build_file(input: impl AsRef<Path>, out_dir: impl AsRef<Path>) -> Result<
 
 /// Build one named app from a file that declares multiple apps.
 ///
-/// Only apps declared in the input file are selectable. App declarations in
-/// ordinary module imports remain supporting compilation context.
-/// App-qualified imports form separate app dependencies.
+/// Only apps declared in the input file are selectable. A module import that
+/// declares another app keeps its shared source declarations available and
+/// exposes that app through `App::Actor`. Explicit app imports also form
+/// separate app dependencies.
 pub fn build_file_app(input: impl AsRef<Path>, app_name: &str, out_dir: impl AsRef<Path>) -> Result<artifact::Artifact> {
     Ok(build_file_app_bundle(input, app_name, out_dir)?.into_primary())
 }
@@ -532,6 +533,96 @@ app RootApp {
             .expect("Root fixes the exported Middle source-state template");
         assert_eq!(root_import_hash, &middle_handle.template.hash_hex);
         compiled.runtime_bundle().expect("all transitive artifacts form one runtime bundle");
+
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn module_import_links_qualified_app_actors_and_shares_constants() {
+        let temp = std::env::temp_dir().join(format!("argent-build-module-app-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("temp dir created");
+
+        std::fs::write(
+            temp.join("asset.ag"),
+            r#"
+const byte ASSET_TAG = 0x01;
+
+state AssetState {
+    byte tag;
+}
+
+actor Asset owns AssetState {
+    entry keep() emits one Asset {
+        become Asset(self.state);
+    }
+}
+
+app AssetApp {
+    actor Asset;
+}
+"#,
+        )
+        .expect("asset source written");
+        std::fs::write(
+            temp.join("controller.ag"),
+            r#"
+import "./asset.ag";
+
+state ControllerState {
+    cov_id asset_id;
+}
+
+actor Controller owns ControllerState {
+    entry update()
+    observes asset by self.asset_id {
+        inputs {
+            src: AssetApp::Asset,
+        }
+        outputs {
+            next: AssetApp::Asset,
+        }
+    }
+    emits one Controller {
+        AssetState current = asset.inputs.src.state;
+        require(current.tag == ASSET_TAG);
+        require asset.outputs become {
+            next <- AssetApp::Asset(current),
+        };
+        become Controller(self.state);
+    }
+}
+
+app ControllerApp {
+    actor Controller;
+}
+"#,
+        )
+        .expect("controller source written");
+
+        let out_dir = temp.join("build");
+        let compiled =
+            build_file_app_bundle(temp.join("controller.ag"), "ControllerApp", &out_dir).expect("module app dependency compiles");
+
+        assert_eq!(compiled.apps().map(|(app, _)| app).collect::<Vec<_>>(), ["AssetApp", "ControllerApp"]);
+        assert!(out_dir.join("apps/AssetApp/artifact.json").is_file());
+        let controller_sil = std::fs::read_to_string(out_dir.join("sil/Controller.sil")).expect("controller Sil exists");
+        assert!(controller_sil.contains("byte constant ASSET_TAG = 0x01;"), "{controller_sil}");
+        let observed = &compiled
+            .primary()
+            .argent
+            .actors
+            .iter()
+            .find(|actor| actor.name == "Controller")
+            .expect("controller artifact exists")
+            .entries[0]
+            .observes[0]
+            .inputs[0];
+        assert!(matches!(
+            &observed.target,
+            artifact::ObservedTargetArtifact::StaticActor { app, actor }
+                if app == "AssetApp" && actor == "Asset"
+        ));
 
         let _ = std::fs::remove_dir_all(temp);
     }

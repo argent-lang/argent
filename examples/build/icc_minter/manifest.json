@@ -2,7 +2,8 @@
   "app": "KCC20MintController",
   "root": "examples/icc/minter.ag",
   "modules": [
-    "examples/icc/minter.ag"
+    "examples/icc/minter.ag",
+    "examples/icc/kcc20_asset.ag"
   ],
   "templates": [
     { "actor": "Minter", "symbol": "gen__minter_template", "hash": null }

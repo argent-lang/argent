@@ -3,9 +3,8 @@
 // The observed asset covenant family lives in `kcc20_asset.ag`; this controller
 // imports its artifact and commits to its exported actor-type handles.
 
-import app KCC20Asset from "./kcc20_asset.ag";
+import "./kcc20_asset.ag";
 
-const byte IDENTIFIER_PUBKEY = 0x00;
 state MinterState {
     pubkey owner;
     cov_id kcc20_covid;

@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::path::Path;
 
 use crate::artifact::*;
 use crate::ast::*;
 use crate::error::{ArgentError, Result};
+use crate::stdlib::is_standard_module;
 
 #[derive(Debug, Clone)]
 pub(crate) struct LinkedActor {
@@ -55,17 +57,20 @@ pub(crate) fn link_imported_actors(
                     insert_linked_binding(&mut bindings, actor.clone(), app, actor, &module.path)?;
                 }
                 Import::App { app, .. } => {
-                    let artifact = dependencies.get(app).ok_or_else(|| {
-                        ArgentError::at(&module.path, format!("app import `{app}` has no compiled dependency artifact"))
-                    })?;
-                    for interface in &artifact.argent.interfaces.exports {
-                        insert_linked_binding(
-                            &mut bindings,
-                            format!("{app}::{}", interface.actor),
-                            app,
-                            &interface.actor,
-                            &module.path,
-                        )?;
+                    insert_app_bindings(&mut bindings, dependencies, app, &module.path)?;
+                }
+                Import::Module { path } if !is_standard_module(path) => {
+                    let base = module.path.parent().ok_or_else(|| ArgentError::at(&module.path, "module path has no parent"))?;
+                    let source = fs::canonicalize(base.join(path)).map_err(|err| ArgentError::at(&module.path, err.to_string()))?;
+                    let imported = program
+                        .modules
+                        .iter()
+                        .find(|candidate| candidate.path == source)
+                        .ok_or_else(|| ArgentError::at(&module.path, format!("module import source `{path}` was not loaded")))?;
+                    for app in &imported.apps {
+                        if dependencies.contains_key(&app.name) {
+                            insert_app_bindings(&mut bindings, dependencies, &app.name, &module.path)?;
+                        }
                     }
                 }
                 Import::Module { .. } | Import::Actor { .. } => {}
@@ -157,6 +162,20 @@ fn insert_linked_binding(
     Ok(())
 }
 
+fn insert_app_bindings(
+    bindings: &mut BTreeMap<String, (String, String)>,
+    dependencies: &BTreeMap<String, &Artifact>,
+    app: &str,
+    path: &Path,
+) -> Result<()> {
+    let artifact =
+        dependencies.get(app).ok_or_else(|| ArgentError::at(path, format!("app `{app}` has no compiled dependency artifact")))?;
+    for interface in &artifact.argent.interfaces.exports {
+        insert_linked_binding(bindings, format!("{app}::{}", interface.actor), app, &interface.actor, path)?;
+    }
+    Ok(())
+}
+
 fn import_linked_state_closure(
     artifact: &Artifact,
     root: &str,
@@ -187,13 +206,14 @@ fn import_linked_state_closure(
                 .collect(),
         });
         let decl = StateDecl { name: name.clone(), fields, expansion };
-        if local_states.contains_key(&name) {
-            return Err(ArgentError::new(format!(
-                "linked app `{}` state `{name}` conflicts with a local state declaration",
-                artifact.app
-            )));
-        }
-        if let Some(previous) = linked_states.insert(name.clone(), decl.clone())
+        if let Some(local) = local_states.get(&name) {
+            if !same_state_decl(local, &decl) {
+                return Err(ArgentError::new(format!(
+                    "linked app `{}` state `{name}` conflicts with its imported source declaration",
+                    artifact.app
+                )));
+            }
+        } else if let Some(previous) = linked_states.insert(name.clone(), decl.clone())
             && !same_state_decl(&previous, &decl)
         {
             return Err(ArgentError::new(format!("linked apps provide conflicting state definitions for `{name}`")));
