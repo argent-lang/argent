@@ -8257,6 +8257,52 @@ mod tests {
     }
 
     #[test]
+    fn in_app_observe_preserves_observed_route_context() {
+        let (local_sil, artifact) = emit_fixture("in_app_observe_routes", "Local");
+        let (foreign_sil, _) = emit_fixture("in_app_observe_routes", "Foreign");
+        let (target_sil, _) = emit_fixture("in_app_observe_routes", "Target");
+
+        assert_eq!(local_sil, include_str!("../tests/fixtures/emit/in_app_observe_routes/Local.sil"));
+        assert_eq!(foreign_sil, include_str!("../tests/fixtures/emit/in_app_observe_routes/Foreign.sil"));
+        assert_eq!(target_sil, include_str!("../tests/fixtures/emit/in_app_observe_routes/Target.sil"));
+
+        assert_eq!(
+            runtime_state_plan(&artifact, "Foreign")
+                .expect("Foreign runtime state role overlay exists")
+                .field_roles
+                .iter()
+                .map(|role| (role.name.as_str(), role.role.clone()))
+                .collect::<Vec<_>>(),
+            vec![("gen__target_template", RuntimeFieldRoleArtifact::Template { contract: "Target".to_string() },)]
+        );
+        assert_eq!(
+            runtime_state_plan(&artifact, "Local")
+                .expect("Local runtime state role overlay exists")
+                .field_roles
+                .iter()
+                .map(|role| (role.name.as_str(), role.role.clone()))
+                .collect::<Vec<_>>(),
+            vec![("gen__remote_foreign_template", RuntimeFieldRoleArtifact::Template { contract: "Foreign".to_string() },)]
+        );
+
+        let foreign_template = artifact
+            .argent
+            .template_plan
+            .templates
+            .iter()
+            .find(|template| template.actor == "Foreign")
+            .expect("Foreign template exists");
+        assert_eq!(foreign_template.actor_type_handle.context_fields, vec!["gen__target_template"]);
+
+        let local_actor = artifact.argent.actors.iter().find(|actor| actor.name == "Local").expect("Local actor exists");
+        let step = local_actor.entries.iter().find(|entry| entry.name == "step").expect("step entry exists");
+        assert_eq!(
+            step.hidden_params.iter().map(|param| param.name.as_str()).collect::<Vec<_>>(),
+            vec!["gen__remote_foreign_prefix_len", "gen__remote_foreign_suffix_len"]
+        );
+    }
+
+    #[test]
     fn consumed_route_reuses_input_template() {
         let (sil, artifact) = emit_fixture("input_template_route_reuse", "Controller");
 
