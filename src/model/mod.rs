@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::artifact::{AppDependencyArtifact, EntryRefArtifact};
-use crate::ast::{ActorDecl, ConstDecl, EntryDecl, FunctionDecl, StateDecl};
+use crate::ast::{ActorDecl, ConstDecl, EntryDecl, FunctionDecl, RouteCall, StateDecl, TypeRef};
 use crate::error::{ArgentError, Result};
 use crate::link::LinkedActor;
 use crate::naming::to_snake;
@@ -171,6 +171,95 @@ impl<'m> StaticActorTarget<'m> {
 }
 
 impl Model<'_> {
+    /// Resolve a local or linked state declaration.
+    pub(crate) fn state(&self, name: &str) -> Result<&StateDecl> {
+        self.states
+            .get(name)
+            .copied()
+            .or_else(|| self.linked_states.get(name))
+            .ok_or_else(|| ArgentError::new(format!("unknown state `{name}`")))
+    }
+
+    /// Resolve the physical state stored for a source state.
+    pub(crate) fn storage_state_name(&self, name: &str) -> Result<String> {
+        let state = self.state(name)?;
+        Ok(state.expansion.as_ref().map_or_else(|| name.to_string(), |expansion| expansion.base.clone()))
+    }
+
+    /// Return the physical state declaration stored for a source state.
+    pub(crate) fn storage_state(&self, name: &str) -> Result<&StateDecl> {
+        self.state(&self.storage_state_name(name)?)
+    }
+
+    /// Return whether a local or linked state is available.
+    pub(crate) fn has_state(&self, name: &str) -> bool {
+        self.states.contains_key(name) || self.linked_states.contains_key(name)
+    }
+
+    /// Iterate local followed by linked state declarations.
+    pub(crate) fn all_states(&self) -> impl Iterator<Item = &StateDecl> {
+        self.states.values().copied().chain(self.linked_states.values())
+    }
+
+    /// Resolve a local or linked actor declaration.
+    pub(crate) fn actor(&self, name: &str) -> Result<&ActorDecl> {
+        self.actors_by_name
+            .get(name)
+            .copied()
+            .or_else(|| self.linked_actor_decls.get(name))
+            .ok_or_else(|| ArgentError::new(format!("unknown actor `{name}`")))
+    }
+
+    /// Return the physical state carried by an actor template.
+    pub(crate) fn actor_state(&self, name: &str) -> Result<&StateDecl> {
+        let actor = self.actor(name)?;
+        self.storage_state(&actor.state)
+    }
+
+    /// Return the route family containing an actor.
+    pub(crate) fn route_family_for_actor(&self, actor: &str) -> Option<&RouteFamily> {
+        self.route_families.iter().find(|family| family.actors.iter().any(|member| member == actor))
+    }
+
+    /// Resolve a route family by its artifact ID.
+    pub(crate) fn route_family(&self, family_id: &str) -> Option<&RouteFamily> {
+        self.route_families.iter().find(|family| family.id == family_id)
+    }
+
+    /// Resolve the planned cut transition between two app actors.
+    pub(crate) fn route_transition(&self, source: &str, target: &str) -> Option<&CompilerRouteTransition> {
+        self.route_transitions.get(&(source.to_string(), target.to_string()))
+    }
+
+    /// Return route families whose actors carry one state type.
+    pub(crate) fn route_families_for_state(&self, state: &str) -> Vec<&RouteFamily> {
+        self.route_families.iter().filter(|family| family.state == state).collect()
+    }
+
+    /// Return delegate entries for which an actor is the leader.
+    pub(crate) fn leader_for(&self, actor: &str) -> &[EntryRefArtifact] {
+        self.leader_for.get(actor).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// Return whether an actor leads at least one delegate entry.
+    pub(crate) fn is_leader_actor(&self, actor: &str) -> bool {
+        !self.leader_for(actor).is_empty()
+    }
+
+    /// Return whether a type names an actor enum.
+    pub(crate) fn is_actor_enum_type(&self, ty: &TypeRef) -> bool {
+        ty.array.is_none() && self.actor_enums.contains_key(&ty.name)
+    }
+
+    /// Expand fixed actors and actor-enum domains to concrete actor names.
+    pub(crate) fn expand_actor_refs(&self, refs: &[String]) -> Vec<String> {
+        refs.iter()
+            .flat_map(|actor| {
+                self.actor_enums.get(actor).map_or_else(|| vec![actor.clone()], |actor_enum| actor_enum.variants.clone())
+            })
+            .collect()
+    }
+
     /// Resolve a fixed selected-app or linked actor without changing routing.
     pub(crate) fn static_actor_target(&self, expression: &str) -> Option<StaticActorTarget<'_>> {
         let reference = expression.trim();
@@ -184,11 +273,7 @@ impl Model<'_> {
 
     /// Collect shared local and imported actor-template uses for one entry.
     pub(crate) fn entry_template_uses(&self, actor: &ActorDecl, entry: &EntryDecl) -> Result<ActorTemplateUses> {
-        let entry_model = self
-            .actor_models
-            .get(actor.name.as_str())
-            .and_then(|actor_model| actor_model.entry(&entry.name))
-            .ok_or_else(|| ArgentError::new(format!("unknown entry model `{}::{}`", actor.name, entry.name)))?;
+        let entry_model = self.entry_model(actor, entry)?;
         let mut uses = entry_model.actor_template_uses(&actor.name, &self.app_actors);
 
         let insert_linked = |target: &str, actors: &mut BTreeSet<String>| {
@@ -212,6 +297,40 @@ impl Model<'_> {
             }
         }
         Ok(uses)
+    }
+}
+
+impl<'a> Model<'a> {
+    /// Resolve an actor model in the selected application.
+    pub(crate) fn actor_model(&self, actor: &str) -> Result<&ActorModel<'a>> {
+        self.actor_models.get(actor).ok_or_else(|| ArgentError::new(format!("unknown app actor `{actor}`")))
+    }
+
+    /// Resolve the normalized model for one source entry.
+    pub(crate) fn entry_model(&self, actor: &ActorDecl, entry: &EntryDecl) -> Result<&EntryModel<'a>> {
+        self.actor_model(&actor.name)?
+            .entry(&entry.name)
+            .ok_or_else(|| ArgentError::new(format!("unknown entry model `{}::{}`", actor.name, entry.name)))
+    }
+
+    /// Return a linked actor by its source reference.
+    pub(crate) fn linked_actor(&self, name: &str) -> Option<&LinkedActor> {
+        self.linked_actors.get(name)
+    }
+
+    /// Return selector routes visible to one entry.
+    pub(crate) fn template_selectors_for_entry(
+        &self,
+        actor: &ActorDecl,
+        entry: &EntryDecl,
+    ) -> Result<BTreeMap<String, TemplateSelector>> {
+        Ok(self.entry_model(actor, entry)?.template_selectors().clone())
+    }
+
+    /// Expand one body-selected route to its concrete targets.
+    pub(crate) fn route_targets(&self, actor: &ActorDecl, entry: &EntryDecl, route: &RouteCall) -> Result<Vec<String>> {
+        let selectors = self.template_selectors_for_entry(actor, entry)?;
+        Ok(selectors.get(&route.actor).map_or_else(|| vec![route.actor.clone()], TemplateSelector::route_actors))
     }
 }
 
