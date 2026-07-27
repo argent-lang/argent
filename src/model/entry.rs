@@ -10,7 +10,7 @@ use crate::language::word;
 use crate::lexer::{Token, TokenKind, lex};
 use crate::naming::{is_identifier, to_snake};
 
-use super::ActorEnumInfo;
+use super::{ActorEnumInfo, AppActors};
 
 /// The normalized interactions and selector-expanded routes for one entry.
 #[derive(Debug)]
@@ -119,6 +119,11 @@ impl<'a> EntryModel<'a> {
         self.groups.first().expect("entry model always contains its current covenant")
     }
 
+    /// Iterate all covenant groups in current, existing, then genesis order.
+    pub(crate) fn groups(&self) -> impl Iterator<Item = &CovenantGroup<'a>> {
+        self.groups.iter()
+    }
+
     /// Iterate existing-covenant groups in `observes` declaration order.
     pub(crate) fn existing_groups(&self) -> impl Iterator<Item = &CovenantGroup<'a>> {
         self.groups.iter().filter(|group| matches!(group.covenant, CovenantContext::Existing(_)))
@@ -143,25 +148,23 @@ impl<'a> EntryModel<'a> {
     ///
     /// Current outputs follow the body-selected routes; existing and genesis
     /// outputs are exhaustive in their covenant groups.
-    pub(crate) fn actor_template_uses(&self, source_actor: &str, app_actors: &[String]) -> ActorTemplateUses {
-        let app_actor_set = app_actors.iter().map(String::as_str).collect::<BTreeSet<_>>();
-        let uses_current_template = |target: &str| app_actors.len() == 1 && app_actors[0] == source_actor && target == source_actor;
+    pub(crate) fn actor_template_uses(&self, source_actor: &str, app_actors: &AppActors) -> ActorTemplateUses {
         let mut uses = ActorTemplateUses::default();
 
-        for group in std::iter::once(self.current()).chain(self.existing_groups()) {
+        for group in self.groups() {
             for interaction in group.inputs() {
                 for target in interaction.target().concrete_actors() {
-                    if app_actor_set.contains(target) && !uses_current_template(target) {
+                    if app_actors.contains(target) && !app_actors.is_singleton_actor_self_target(source_actor, target) {
                         uses.reads.insert(target.to_string());
                     }
                 }
             }
         }
 
+        // Current declarations define allowed output domains; body routes identify
+        // concrete template writes, while selector routes use selector witnesses.
         for route in &self.source.routes {
-            if !self.template_selectors.contains_key(&route.actor)
-                && app_actor_set.contains(route.actor.as_str())
-                && route.actor != source_actor
+            if !self.template_selectors.contains_key(&route.actor) && app_actors.contains(&route.actor) && route.actor != source_actor
             {
                 uses.writes.insert(route.actor.clone());
             }
@@ -169,7 +172,7 @@ impl<'a> EntryModel<'a> {
         for group in self.existing_groups().chain(self.genesis_groups()) {
             for interaction in group.outputs() {
                 for target in interaction.target().concrete_actors() {
-                    if app_actor_set.contains(target) && target != source_actor {
+                    if app_actors.contains(target) && target != source_actor {
                         uses.writes.insert(target.to_string());
                     }
                 }
@@ -771,11 +774,10 @@ mod tests {
         assert_eq!(spawn_group.outputs()[0].target().concrete_actors().collect::<Vec<_>>(), ["Child"]);
 
         assert_eq!(model.expanded_routes()[0].actor, "King");
+        let app_actors =
+            AppActors::new(["Source", "Peer", "Remote", "Child", "Pawn", "King"].into_iter().map(str::to_string).collect());
         assert_eq!(
-            model.actor_template_uses(
-                "Source",
-                &["Source", "Peer", "Remote", "Child", "Pawn", "King"].into_iter().map(str::to_string).collect::<Vec<_>>(),
-            ),
+            model.actor_template_uses("Source", &app_actors),
             ActorTemplateUses {
                 reads: ["Peer", "Remote"].into_iter().map(str::to_string).collect(),
                 writes: ["Remote", "Child"].into_iter().map(str::to_string).collect(),

@@ -10,10 +10,9 @@ use crate::language::word;
 use crate::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, Token, TokenKind, lex};
 use crate::link::{LinkedActor, LinkedContext, link_imported_actors};
 use crate::model::{
-    ActorEnumInfo, ActorModel, CompilerRoutePlan, CompilerRoutePlanner, CompilerRouteTransition, CovenantGroup, EntryInteraction,
-    EntryModel, InteractionSource, Model, RouteFamily, RouteRootLeaf, StaticActorTarget, TemplateSelector,
-    actor_enum_variant_const_expr, default_route_planner, infer_direct_routes, is_single_actor_self_consume,
-    is_single_actor_self_target, parse_actor_enum_selector, parse_actor_enum_variant,
+    ActorEnumInfo, ActorModel, AppActors, CompilerRoutePlan, CompilerRoutePlanner, CompilerRouteTransition, CovenantGroup,
+    EntryInteraction, EntryModel, InteractionSource, Model, RouteFamily, RouteRootLeaf, StaticActorTarget, TemplateSelector,
+    actor_enum_variant_const_expr, default_route_planner, infer_direct_routes, parse_actor_enum_selector, parse_actor_enum_variant,
 };
 use crate::naming::{is_identifier, to_snake};
 use silverscript_lang::ast::Expr as SilExpr;
@@ -144,10 +143,11 @@ impl<'a> Model<'a> {
         } else {
             ("ArgentApp".to_string(), all_actors.keys().cloned().collect())
         };
+        let app_actors = AppActors::new(app_actors);
         validate_direct_actor_imports(program, &app_name, &app_actors)?;
 
         let mut actors = Vec::new();
-        for name in &app_actors {
+        for name in app_actors.iter() {
             let actor =
                 all_actors.get(name).copied().ok_or_else(|| ArgentError::new(format!("app references unknown actor `{name}`")))?;
             if !states.contains_key(&actor.state) {
@@ -277,14 +277,6 @@ impl<'a> Model<'a> {
         !self.leader_for(actor).is_empty()
     }
 
-    fn consume_uses_current_template(&self, actor: &ActorDecl, consume: &ConsumeDecl) -> bool {
-        is_single_actor_self_consume(&self.app_actors, actor, consume)
-    }
-
-    fn actor_uses_current_template(&self, actor: &ActorDecl, target: &str) -> bool {
-        is_single_actor_self_target(&self.app_actors, actor, target)
-    }
-
     fn template_selectors_for_entry(&self, actor: &ActorDecl, entry: &EntryDecl) -> Result<BTreeMap<String, TemplateSelector>> {
         Ok(self.entry_model(actor, entry)?.template_selectors().clone())
     }
@@ -313,10 +305,9 @@ impl<'a> Model<'a> {
         self.validate_generated_actor_suffixes()?;
         self.validate_route_plan_coverage()?;
 
-        let app_actor_set = self.app_actors.iter().cloned().collect::<BTreeSet<_>>();
         for actor in &self.actors {
             for entry in &actor.entries {
-                self.validate_entry(actor, entry, &app_actor_set)?;
+                self.validate_entry(actor, entry)?;
             }
         }
         self.validate_imported_template_state_fields()?;
@@ -337,18 +328,18 @@ impl<'a> Model<'a> {
     }
 
     fn validate_route_plan_coverage(&self) -> Result<()> {
-        let app_actors = self.app_actors.iter().cloned().collect::<BTreeSet<_>>();
         let planned_actors = self.route_leaves_by_actor.keys().cloned().collect::<BTreeSet<_>>();
-        if planned_actors != app_actors {
+        if &planned_actors != self.app_actors.members() {
             return Err(ArgentError::new(format!(
                 "route planner actor coverage differs from the selected app; expected {:?}, found {:?}",
-                app_actors, planned_actors
+                self.app_actors.members(),
+                planned_actors
             )));
         }
 
         let family_ids = self.route_families.iter().map(|family| family.id.as_str()).collect::<BTreeSet<_>>();
         for ((source, target), transition) in &self.route_transitions {
-            if !app_actors.contains(source) || !app_actors.contains(target) {
+            if !self.app_actors.contains(source) || !self.app_actors.contains(target) {
                 return Err(ArgentError::new(format!("route transition `{source}` -> `{target}` falls outside the selected app")));
             }
             for family_id in transition.families_to_open.iter().chain(&transition.families_to_pack) {
@@ -530,7 +521,7 @@ impl<'a> Model<'a> {
 
     fn validate_generated_actor_suffixes(&self) -> Result<()> {
         let mut seen = BTreeMap::new();
-        for actor in &self.app_actors {
+        for actor in self.app_actors.iter() {
             let suffix = to_snake(actor);
             if let Some(previous) = seen.insert(suffix.clone(), actor.as_str()) {
                 return Err(ArgentError::new(format!(
@@ -541,7 +532,7 @@ impl<'a> Model<'a> {
         Ok(())
     }
 
-    fn validate_entry(&self, actor: &ActorDecl, entry: &EntryDecl, app_actor_set: &BTreeSet<String>) -> Result<()> {
+    fn validate_entry(&self, actor: &ActorDecl, entry: &EntryDecl) -> Result<()> {
         self.validate_observes(actor, entry)?;
         self.validate_spawns(actor, entry)?;
 
@@ -555,7 +546,6 @@ impl<'a> Model<'a> {
         for consume in &entry.consumes {
             self.require_template_actor(
                 &consume.actor,
-                app_actor_set,
                 format!("entry `{}::{}` consumes unknown actor `{}`", actor.name, entry.name, consume.actor),
             )?;
         }
@@ -566,7 +556,6 @@ impl<'a> Model<'a> {
                 for target in self.expand_actor_refs(actors) {
                     self.require_template_actor(
                         &target,
-                        app_actor_set,
                         format!("entry `{}::{}` emits unknown actor `{target}`", actor.name, entry.name),
                     )?;
                 }
@@ -600,7 +589,6 @@ impl<'a> Model<'a> {
                     for target in self.expand_actor_refs(&output.actors) {
                         self.require_template_actor(
                             &target,
-                            app_actor_set,
                             format!("entry `{}::{}` output `{}` emits unknown actor `{target}`", actor.name, entry.name, output.name),
                         )?;
                     }
@@ -625,7 +613,6 @@ impl<'a> Model<'a> {
             for target in self.route_targets(actor, entry, route)? {
                 self.require_template_actor(
                     &target,
-                    app_actor_set,
                     format!("entry `{}::{}` routes to unknown actor `{target}`", actor.name, entry.name),
                 )?;
                 self.actor_state(&target)?;
@@ -828,8 +815,8 @@ impl<'a> Model<'a> {
         Ok(())
     }
 
-    fn require_template_actor(&self, actor: &str, app_actor_set: &BTreeSet<String>, message: String) -> Result<()> {
-        if !app_actor_set.contains(actor) {
+    fn require_template_actor(&self, actor: &str, message: String) -> Result<()> {
+        if !self.app_actors.contains(actor) {
             return Err(ArgentError::new(message));
         }
         self.actor_state(actor)?;
@@ -1029,12 +1016,11 @@ fn build_actor_enums(
     actor_enum_decls: &BTreeMap<String, &ActorEnumDecl>,
     actors_by_name: &BTreeMap<String, &ActorDecl>,
     states: &BTreeMap<String, &StateDecl>,
-    app_actors: &[String],
+    app_actors: &AppActors,
 ) -> Result<BTreeMap<String, ActorEnumInfo>> {
-    let app_actor_set = app_actors.iter().cloned().collect::<BTreeSet<_>>();
     let mut out = BTreeMap::new();
     for actor_enum in actor_enum_decls.values() {
-        if !actor_enum.variants.iter().any(|variant| app_actor_set.contains(variant)) {
+        if !actor_enum.variants.iter().any(|variant| app_actors.contains(variant)) {
             continue;
         }
         if actors_by_name.contains_key(&actor_enum.name) || states.contains_key(&actor_enum.name) {
@@ -1049,7 +1035,7 @@ fn build_actor_enums(
             if !seen.insert(variant.as_str()) {
                 return Err(ArgentError::new(format!("actor enum `{}` repeats variant `{variant}`", actor_enum.name)));
             }
-            if !app_actor_set.contains(variant) {
+            if !app_actors.contains(variant) {
                 return Err(ArgentError::new(format!(
                     "actor enum `{}` references actor `{variant}` outside the app",
                     actor_enum.name
@@ -1128,8 +1114,7 @@ fn select_root_app<'a>(program: &'a Program, app_name: Option<&str>) -> Result<O
     }
 }
 
-fn validate_direct_actor_imports(program: &Program, app_name: &str, app_actors: &[String]) -> Result<()> {
-    let app_actors = app_actors.iter().map(String::as_str).collect::<BTreeSet<_>>();
+fn validate_direct_actor_imports(program: &Program, app_name: &str, app_actors: &AppActors) -> Result<()> {
     for module in &program.modules {
         let base = module.path.parent().ok_or_else(|| ArgentError::at(&module.path, "module path has no parent"))?;
         for import in &module.imports {
@@ -1148,7 +1133,7 @@ fn validate_direct_actor_imports(program: &Program, app_name: &str, app_actors: 
                     format!("direct actor import `{actor}` does not name an actor declared by `{path}`"),
                 ));
             }
-            if app_actors.contains(actor.as_str()) {
+            if app_actors.contains(actor) {
                 continue;
             }
 
@@ -1423,7 +1408,7 @@ fn emit_entry(out: &mut String, actor: &ActorDecl, entry: &EntryDecl, model: &Mo
             // only for a self-consume in a single-actor covenant domain. The domain
             // restricts every input with this covenant ID to one of its contracts.
             // With one actor, every group input has this contract's template.
-            if model.consume_uses_current_template(actor, consume) {
+            if model.app_actors.is_singleton_actor_self_target(&actor.name, &consume.actor) {
                 out.push_str("        // :: direct input state (single-actor covenant has one template)\n");
                 push_generated_call(out, 8, &format!("{state_struct} {} = ", consume.name), "readInputState", &[input_idx]);
             } else {
@@ -1636,7 +1621,7 @@ fn emit_observed_inputs(out: &mut String, actor: &ActorDecl, entry: &EntryDecl, 
                 &format!("int {input_idx} = OpCovInputIdx({cov_id}, {idx})"),
                 &format!("observed input {}.{}: {}", observe.name, input.name, input.actor),
             );
-            if in_app_target.is_some_and(|target| model.actor_uses_current_template(actor, &target.name)) {
+            if in_app_target.is_some_and(|target| model.app_actors.is_singleton_actor_self_target(&actor.name, &target.name)) {
                 push_generated_call(out, 8, &format!("{state_struct} {state_name} = "), "readInputState", &[input_idx]);
             } else {
                 let target_reference = static_target.map(|target| target.artifact_reference());
@@ -3806,7 +3791,7 @@ fn template_witness_specs(
 ) -> Vec<TemplateWitnessSpec> {
     let mut required = read_actors.union(&write_actors).cloned().collect::<BTreeSet<_>>();
     let mut ordered = Vec::new();
-    for actor in &model.app_actors {
+    for actor in model.app_actors.iter() {
         if required.remove(actor) {
             ordered.push(TemplateWitnessSpec {
                 actor: actor.clone(),
@@ -3997,6 +3982,8 @@ fn template_input_index_for_target(
             return Ok(Some(hidden_input_idx_name(&consume.name)));
         }
     }
+    // Genesis groups have no inputs, so only existing groups can authenticate
+    // a template beyond the current covenant's consumes.
     for group in model.entry_model(actor, entry)?.existing_groups() {
         let observe = group.observe().expect("existing covenant group retains its observe declaration");
         for interaction in group.inputs() {

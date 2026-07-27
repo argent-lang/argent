@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::artifact::{AppDependencyArtifact, EntryRefArtifact};
-use crate::ast::{ActorDecl, ConstDecl, ConsumeDecl, EntryDecl, FunctionDecl, StateDecl};
+use crate::ast::{ActorDecl, ConstDecl, EntryDecl, FunctionDecl, StateDecl};
 use crate::error::{ArgentError, Result};
 use crate::link::LinkedActor;
 use crate::naming::to_snake;
@@ -24,7 +24,7 @@ pub(crate) struct Model<'a> {
     pub(crate) app_name: String,
     /// Direct artifacts used to link the selected app.
     pub(crate) app_dependencies: Vec<AppDependencyArtifact>,
-    pub(crate) app_actors: Vec<String>,
+    pub(crate) app_actors: AppActors,
     pub(crate) route_families: Vec<RouteFamily>,
     pub(crate) consts: Vec<&'a ConstDecl>,
     pub(crate) functions: Vec<&'a FunctionDecl>,
@@ -41,6 +41,41 @@ pub(crate) struct Model<'a> {
     /// The planned route commitment cut carried by each app actor.
     pub(crate) route_leaves_by_actor: BTreeMap<String, Vec<RouteRootLeaf>>,
     pub(crate) route_transitions: BTreeMap<(String, String), CompilerRouteTransition>,
+}
+
+/// Ordered membership of the selected application's actor domain.
+#[derive(Debug)]
+pub(crate) struct AppActors {
+    actors: Vec<String>,
+    members: BTreeSet<String>,
+}
+
+impl AppActors {
+    /// Build ordered and membership views of the selected app's actors.
+    pub(crate) fn new(actors: Vec<String>) -> Self {
+        let members = actors.iter().cloned().collect();
+        Self { actors, members }
+    }
+
+    /// Iterate actors in app declaration order.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &String> {
+        self.actors.iter()
+    }
+
+    /// Return whether an actor belongs to the selected app.
+    pub(crate) fn contains(&self, actor: &str) -> bool {
+        self.members.contains(actor)
+    }
+
+    /// Return the selected app's actor set.
+    pub(crate) fn members(&self) -> &BTreeSet<String> {
+        &self.members
+    }
+
+    /// Return whether `target` is the source actor in a singleton app.
+    pub(crate) fn is_singleton_actor_self_target(&self, source_actor: &str, target: &str) -> bool {
+        self.actors.len() == 1 && self.actors[0] == source_actor && target == source_actor
+    }
 }
 
 /// An actor enum resolved to one state domain and its ordered variants.
@@ -140,8 +175,7 @@ impl Model<'_> {
     pub(crate) fn static_actor_target(&self, expression: &str) -> Option<StaticActorTarget<'_>> {
         let reference = expression.trim();
         self.app_actors
-            .iter()
-            .any(|actor| actor == reference)
+            .contains(reference)
             .then(|| self.actors_by_name.get(reference).copied())
             .flatten()
             .map(StaticActorTarget::Local)
@@ -162,14 +196,15 @@ impl Model<'_> {
                 actors.insert(target.artifact_reference());
             }
         };
-        for group in std::iter::once(entry_model.current()).chain(entry_model.existing_groups()) {
+
+        // Current interactions are restricted to the selected app; only external
+        // covenant groups can reference imported actors.
+        for group in entry_model.existing_groups().chain(entry_model.genesis_groups()) {
             for interaction in group.inputs() {
                 for target in interaction.target().concrete_actors() {
                     insert_linked(target, &mut uses.reads);
                 }
             }
-        }
-        for group in entry_model.existing_groups().chain(entry_model.genesis_groups()) {
             for interaction in group.outputs() {
                 for target in interaction.target().concrete_actors() {
                     insert_linked(target, &mut uses.writes);
@@ -209,23 +244,20 @@ pub(crate) fn default_route_planner(
 
 pub(crate) fn infer_direct_routes<'a>(
     actor_models: &BTreeMap<&'a str, ActorModel<'a>>,
-    app_actors: &[String],
+    app_actors: &AppActors,
     route_planner: &CompilerRoutePlanner,
 ) -> Result<CompilerRoutePlan> {
-    let app_actor_set = app_actors.iter().cloned().collect::<BTreeSet<_>>();
     let mut graph = RouteGraph::default();
     let mut domains = BTreeMap::<String, Vec<String>>::new();
     let mut selector_requirements = Vec::new();
     let mut transition_pairs = BTreeSet::new();
 
-    for actor_name in app_actors {
+    for actor_name in app_actors.iter() {
         let actor_model = actor_models.get(actor_name.as_str()).expect("selected app actor has a model");
         let actor = actor_model.source();
         // Route-isolated actors still need an empty cut in the final plan.
-        if app_actor_set.contains(&actor.name) {
-            graph.add_actor(actor.name.clone());
-            domains.entry(actor.state.clone()).or_default().push(actor.name.clone());
-        }
+        graph.add_actor(actor.name.clone());
+        domains.entry(actor.state.clone()).or_default().push(actor.name.clone());
         for entry_model in actor_model.entries() {
             // Selectors constrain the table shape independently of concrete
             // relations contributed by this entry's interaction groups.
@@ -234,21 +266,19 @@ pub(crate) fn infer_direct_routes<'a>(
                 source: actor.name.clone(),
                 variants: selector.variants.clone(),
             }));
-            for group in
-                std::iter::once(entry_model.current()).chain(entry_model.existing_groups()).chain(entry_model.genesis_groups())
-            {
+            for group in entry_model.groups() {
                 for interaction in group.inputs() {
                     for target in interaction.target().concrete_actors() {
                         // A single-actor covenant already authenticates its only
                         // possible template, so its self-input needs no route leaf.
-                        if app_actor_set.contains(target) && !is_single_actor_self_target(app_actors, actor, target) {
+                        if app_actors.contains(target) && !app_actors.is_singleton_actor_self_target(&actor.name, target) {
                             graph.add_consume(actor.name.clone(), target.to_string());
                         }
                     }
                 }
                 for interaction in group.outputs() {
                     for target_name in interaction.target().concrete_actors() {
-                        if !app_actor_set.contains(target_name) {
+                        if !app_actors.contains(target_name) {
                             continue;
                         }
                         // A self-output adds no dependency edge. Still plan its no-op
@@ -290,14 +320,6 @@ pub(crate) fn infer_direct_routes<'a>(
         .collect();
 
     Ok(CompilerRoutePlan { families, leaves_by_actor, transitions })
-}
-
-pub(crate) fn is_single_actor_self_consume(app_actors: &[String], actor: &ActorDecl, consume: &ConsumeDecl) -> bool {
-    is_single_actor_self_target(app_actors, actor, &consume.actor)
-}
-
-pub(crate) fn is_single_actor_self_target(app_actors: &[String], actor: &ActorDecl, target: &str) -> bool {
-    app_actors.len() == 1 && app_actors[0] == actor.name && target == actor.name
 }
 
 fn compiler_route_leaves(plan: &PlannerRoutePlan) -> Result<BTreeMap<String, Vec<RouteRootLeaf>>> {
