@@ -1,3 +1,6 @@
+//! Compiler naming helpers shared by modeling and emission.
+
+/// Return whether `input` is a source identifier.
 pub(crate) fn is_identifier(input: &str) -> bool {
     let mut chars = input.chars();
     let Some(first) = chars.next() else {
@@ -6,6 +9,7 @@ pub(crate) fn is_identifier(input: &str) -> bool {
     (first.is_ascii_alphabetic() || first == '_') && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
+/// Convert a source name to snake case while preserving acronym runs.
 pub(crate) fn to_snake(input: &str) -> String {
     let mut out = String::new();
     let chars = input.chars().collect::<Vec<_>>();

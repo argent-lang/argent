@@ -1,3 +1,5 @@
+//! Source-backed actor and entry lookup.
+
 use std::collections::BTreeMap;
 
 use crate::ast::ActorDecl;
@@ -5,6 +7,7 @@ use crate::error::{ArgentError, Result};
 
 use super::{ActorEnumInfo, EntryModel};
 
+/// An actor's entry models, indexed by name and iterated in source order.
 #[derive(Debug)]
 pub(crate) struct ActorModel<'a> {
     source: &'a ActorDecl,
@@ -12,6 +15,7 @@ pub(crate) struct ActorModel<'a> {
 }
 
 impl<'a> ActorModel<'a> {
+    /// Build the entry models for one source actor.
     pub(crate) fn build(source: &'a ActorDecl, actor_enums: &BTreeMap<String, ActorEnumInfo>) -> Result<Self> {
         let mut entries_by_name = BTreeMap::new();
         for entry in &source.entries {
@@ -24,14 +28,17 @@ impl<'a> ActorModel<'a> {
         Ok(Self { source, entries: entries_by_name })
     }
 
+    /// Return the source actor declaration.
     pub(crate) fn source(&self) -> &'a ActorDecl {
         self.source
     }
 
+    /// Iterate entry models in source declaration order.
     pub(crate) fn entries(&self) -> impl Iterator<Item = &EntryModel<'a>> {
         self.source.entries.iter().map(|entry| self.entries.get(entry.name.as_str()).expect("source entry has an entry model"))
     }
 
+    /// Look up an entry model by source name.
     pub(crate) fn entry(&self, name: &str) -> Option<&EntryModel<'a>> {
         self.entries.get(name)
     }

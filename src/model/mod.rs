@@ -1,3 +1,5 @@
+//! Source-backed compiler models shared by validation, planning, and code generation.
+
 use std::collections::BTreeMap;
 
 use crate::artifact::{AppDependencyArtifact, EntryRefArtifact};
@@ -13,6 +15,7 @@ pub(crate) use entry::{
     parse_actor_enum_variant,
 };
 
+/// The selected application's compiler-wide source and routing model.
 #[derive(Debug)]
 pub(crate) struct Model<'a> {
     pub(crate) app_name: String,
@@ -37,6 +40,7 @@ pub(crate) struct Model<'a> {
     pub(crate) state_route_leaves: BTreeMap<String, Vec<RouteRootLeaf>>,
 }
 
+/// An actor enum resolved to one state domain and its ordered variants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ActorEnumInfo {
     pub(crate) name: String,
@@ -44,6 +48,9 @@ pub(crate) struct ActorEnumInfo {
     pub(crate) variants: Vec<String>,
 }
 
+/// A state-local actor family represented by one ordered route table.
+///
+/// Entry actors remain direct while table actors are committed in table order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RouteFamily {
     pub(crate) id: String,
@@ -55,29 +62,35 @@ pub(crate) struct RouteFamily {
 }
 
 impl RouteFamily {
+    /// Return the actor representing this family.
     pub(crate) fn rep(&self) -> &str {
         &self.rep
     }
 
+    /// Return family actors whose templates remain direct.
     pub(crate) fn direct_template_actors(&self) -> &[String] {
         &self.entry_actors
     }
 
+    /// Return family actors committed in the route table.
     pub(crate) fn table_actors(&self) -> &[String] {
         &self.table_actors
     }
 
+    /// Return the serialized byte length of the route table.
     pub(crate) fn table_byte_len(&self) -> usize {
         self.table_actors().len() * 32
     }
 }
 
+/// One selected root in a state-carried route commitment.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum RouteRootLeaf {
     Actor(String),
     Family(String),
 }
 
+/// Operations that transform one actor's route cut into another's.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct CompilerRouteTransition {
     pub(crate) families_to_open: Vec<String>,

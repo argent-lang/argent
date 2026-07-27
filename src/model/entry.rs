@@ -1,3 +1,5 @@
+//! Source-backed entry interactions grouped by covenant context.
+
 use std::collections::BTreeMap;
 
 use crate::ast::{ActorDecl, ConsumeDecl, EntryDecl, ObserveDecl, ObservedActorDecl, RouteCall, SpawnDecl, SpawnOutputDecl};
@@ -8,6 +10,7 @@ use crate::naming::{is_identifier, to_snake};
 
 use super::ActorEnumInfo;
 
+/// The normalized interactions and selector-expanded routes for one entry.
 #[derive(Debug)]
 pub(crate) struct EntryModel<'a> {
     source: &'a EntryDecl,
@@ -16,6 +19,7 @@ pub(crate) struct EntryModel<'a> {
 }
 
 impl<'a> EntryModel<'a> {
+    /// Build an entry model from its source actor and declaration.
     pub(crate) fn build(actor: &'a ActorDecl, source: &'a EntryDecl, actor_enums: &BTreeMap<String, ActorEnumInfo>) -> Result<Self> {
         Ok(Self::new(source, template_selectors_for_entry(actor, source, actor_enums)?))
     }
@@ -75,26 +79,32 @@ impl<'a> EntryModel<'a> {
         Self { source, groups, template_selectors }
     }
 
+    /// Return the source entry declaration.
     pub(crate) fn source(&self) -> &'a EntryDecl {
         self.source
     }
 
+    /// Return the interaction group governed by the current covenant.
     pub(crate) fn current(&self) -> &CovenantGroup<'a> {
         self.groups.first().expect("entry model always contains its current covenant")
     }
 
+    /// Iterate existing-covenant groups in `observes` declaration order.
     pub(crate) fn existing_groups(&self) -> impl Iterator<Item = &CovenantGroup<'a>> {
         self.groups.iter().filter(|group| matches!(group.covenant, CovenantContext::Existing(_)))
     }
 
+    /// Iterate genesis groups in `spawns` declaration order.
     pub(crate) fn genesis_groups(&self) -> impl Iterator<Item = &CovenantGroup<'a>> {
         self.groups.iter().filter(|group| matches!(group.covenant, CovenantContext::Genesis(_)))
     }
 
+    /// Return the actor-enum selectors visible to this entry.
     pub(crate) fn template_selectors(&self) -> &BTreeMap<String, TemplateSelector> {
         &self.template_selectors
     }
 
+    /// Expand body-derived routes to their concrete artifact targets.
     pub(crate) fn expanded_routes(&self) -> Vec<RouteCall> {
         let routes = self.current().outputs().iter().map(|interaction| {
             let InteractionSource::Emit(route) = interaction.source() else {
@@ -106,6 +116,9 @@ impl<'a> EntryModel<'a> {
     }
 }
 
+/// Entry inputs and outputs governed by one covenant ID.
+///
+/// The shared covenant places every concrete target in the same app domain.
 #[derive(Debug)]
 pub(crate) struct CovenantGroup<'a> {
     covenant: CovenantContext<'a>,
@@ -114,14 +127,17 @@ pub(crate) struct CovenantGroup<'a> {
 }
 
 impl<'a> CovenantGroup<'a> {
+    /// Return the group's ordered input interactions.
     pub(crate) fn inputs(&self) -> &[EntryInteraction<'a>] {
         &self.inputs
     }
 
+    /// Return the group's ordered output interactions.
     pub(crate) fn outputs(&self) -> &[EntryInteraction<'a>] {
         &self.outputs
     }
 
+    /// Return the source `observes` clause for an existing covenant.
     pub(crate) fn observe(&self) -> Option<&'a ObserveDecl> {
         match self.covenant {
             CovenantContext::Existing(observe) => Some(observe),
@@ -129,6 +145,7 @@ impl<'a> CovenantGroup<'a> {
         }
     }
 
+    /// Return the source `spawns` clause for a genesis covenant.
     pub(crate) fn spawn(&self) -> Option<&'a SpawnDecl> {
         match self.covenant {
             CovenantContext::Genesis(spawn) => Some(spawn),
@@ -137,13 +154,18 @@ impl<'a> CovenantGroup<'a> {
     }
 }
 
+/// The covenant instance described by an interaction group.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum CovenantContext<'a> {
+    /// The covenant executing the entry.
     Current,
+    /// An existing covenant selected by an `observes` clause.
     Existing(&'a ObserveDecl),
+    /// A new covenant created by a `spawns` clause.
     Genesis(&'a SpawnDecl),
 }
 
+/// One normalized interaction retaining its source and target domain.
 #[derive(Debug)]
 pub(crate) struct EntryInteraction<'a> {
     source: InteractionSource<'a>,
@@ -151,24 +173,36 @@ pub(crate) struct EntryInteraction<'a> {
 }
 
 impl<'a> EntryInteraction<'a> {
+    /// Return the exact source node that declared this interaction.
     pub(crate) fn source(&self) -> InteractionSource<'a> {
         self.source
     }
 
+    /// Return the compiler-known target candidates.
     pub(crate) fn target(&self) -> &ActorTarget {
         &self.target
     }
 }
 
+/// The exact source declaration represented by an entry interaction.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum InteractionSource<'a> {
+    /// A current-covenant input from `consumes`.
     Consume(&'a ConsumeDecl),
+    /// A body-derived current-covenant output route.
     Emit(&'a RouteCall),
+    /// An input from an `observes` clause.
     ObserveInput(&'a ObservedActorDecl),
+    /// An output from an `observes` clause.
     ObserveOutput(&'a ObservedActorDecl),
+    /// An output from a `spawns` clause.
     SpawnOutput(&'a SpawnOutputDecl),
 }
 
+/// Compiler-known actor candidates for an interaction target.
+///
+/// Selector routes can have several candidates; other clauses currently retain
+/// one unresolved source expression.
 #[derive(Debug)]
 pub(crate) struct ActorTarget {
     actors: Vec<String>,
@@ -179,11 +213,13 @@ impl ActorTarget {
         Self { actors: vec![expression.to_string()] }
     }
 
+    /// Iterate candidate actor names or unresolved target expressions.
     pub(crate) fn actors(&self) -> impl Iterator<Item = &str> {
         self.actors.iter().map(String::as_str)
     }
 }
 
+/// An actor-enum value selecting a template within one state domain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TemplateSelector {
     pub(crate) name: String,
@@ -195,17 +231,20 @@ pub(crate) struct TemplateSelector {
 }
 
 impl TemplateSelector {
+    /// Return the fixed actor, or the complete selector domain when dynamic.
     pub(crate) fn route_actors(&self) -> Vec<String> {
         self.fixed_actor.as_ref().map_or_else(|| self.variants.clone(), |actor| vec![actor.clone()])
     }
 }
 
+/// Source context shared while validating template selectors.
 struct TemplateSelectorContext<'a> {
     actor: &'a ActorDecl,
     entry: &'a EntryDecl,
     actor_enums: &'a BTreeMap<String, ActorEnumInfo>,
 }
 
+/// One selector construction request and its optional type constraints.
 struct TemplateSelectorRequest<'a> {
     name: &'a str,
     actor_enum_name: &'a str,
@@ -215,6 +254,7 @@ struct TemplateSelectorRequest<'a> {
     expected_actor_enum: Option<&'a str>,
 }
 
+/// Collect actor-enum selectors declared by entry parameters and body locals.
 fn template_selectors_for_entry(
     actor: &ActorDecl,
     entry: &EntryDecl,
@@ -471,6 +511,7 @@ fn template_selector_from_actor_enum_value(
     })
 }
 
+/// Parse an indexed actor-enum expression such as `MoveActor[index]`.
 pub(crate) fn parse_actor_enum_selector(expr: &str) -> Option<(&str, &str)> {
     let expr = expr.trim();
     let (actor_enum, rest) = expr.split_once('[')?;
@@ -485,6 +526,7 @@ pub(crate) fn parse_actor_enum_selector(expr: &str) -> Option<(&str, &str)> {
     Some((actor_enum, selector))
 }
 
+/// Parse a fixed actor-enum variant such as `MoveActor::Knight`.
 pub(crate) fn parse_actor_enum_variant(expr: &str) -> Option<(String, String)> {
     let expr = expr.trim();
     let (actor_enum, variant) = expr.split_once("::")?;
@@ -496,6 +538,7 @@ pub(crate) fn parse_actor_enum_variant(expr: &str) -> Option<(String, String)> {
     Some((actor_enum.to_string(), variant.to_string()))
 }
 
+/// Return the generated integer expression for an actor-enum variant.
 pub(crate) fn actor_enum_variant_const_expr(actor_enum: &ActorEnumInfo, variant: &str) -> Option<String> {
     actor_enum
         .variants
