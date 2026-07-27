@@ -3,41 +3,6 @@
 This file contains small follow-up items. Each item gives its area, context,
 and required work.
 
-## Entry-wide template witness deduplication
-
-**Area:** Compiler lowering, artifact recipes, `argent-rt`, generated Sil, and
-size tests.
-
-**Context:** Generated Sil uses template witnesses to validate actor inputs and
-outputs. The compiler already shares template information between `consumes`
-and direct `emits`. It also shares within one `observes` block and across
-`spawns` blocks that use the same fixed actor or source `actor_type` value.
-
-The witness-form rule is established:
-
-- Input-only and input-plus-output use prefix and suffix lengths.
-- Output-only uses prefix and suffix bytes.
-
-Sharing stops at the current planner-group boundaries. The same template
-identity can receive separate witnesses when it appears in direct routes,
-`observes`, and `spawns`.
-
-**Follow-up:** Reuse one template identity across all entry clauses when
-appropriate. Uses of the same fixed actor have one identity. Uses of the same
-source `actor_type<State>` value also have one identity. Separate open actor
-bindings remain distinct.
-
-Apply the existing witness-form rule after this entry-wide grouping. Record the
-shared identity in the artifact so `argent-rt` supplies the witness once.
-
-Existing fixtures pin sharing for `consumes` and `emits`, one `observes` block,
-and repeated spawn targets. Add generated Sil and signature-script size tests
-for these remaining cases:
-
-- one actor used by direct `emits` and `spawns`
-- one `actor_type` value used by `observes` and `spawns`
-- one actor used by two `observes` blocks
-
 ## Resolve observed state read types
 
 **Area:** Compiler code generation and Silverscript type checking.
