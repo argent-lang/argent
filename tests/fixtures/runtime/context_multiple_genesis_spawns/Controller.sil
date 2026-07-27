@@ -31,8 +31,8 @@ contract Controller(
         int gen__second_pair_pair_output_idx,
         int gen__third_pair_left_output_idx,
         int gen__third_pair_right_output_idx,
-        byte[] gen__spawn_self_pair_type_prefix,
-        byte[] gen__spawn_self_pair_type_suffix
+        byte[] gen__actor_type_self_pair_type_prefix,
+        byte[] gen__actor_type_self_pair_type_suffix
     ) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
@@ -115,40 +115,40 @@ contract Controller(
         validateOutputStateWithTemplate(
             gen__first_pair_left_output_idx,
             first_left,
-            gen__spawn_self_pair_type_prefix,
-            gen__spawn_self_pair_type_suffix,
+            gen__actor_type_self_pair_type_prefix,
+            gen__actor_type_self_pair_type_suffix,
             pair_type
         );
         // :: spawned become first_pair.right -> self.pair_type
         validateOutputStateWithTemplate(
             gen__first_pair_right_output_idx,
             first_right,
-            gen__spawn_self_pair_type_prefix,
-            gen__spawn_self_pair_type_suffix,
+            gen__actor_type_self_pair_type_prefix,
+            gen__actor_type_self_pair_type_suffix,
             pair_type
         );
         // :: spawned become second_pair.pair -> self.pair_type
         validateOutputStateWithTemplate(
             gen__second_pair_pair_output_idx,
             second,
-            gen__spawn_self_pair_type_prefix,
-            gen__spawn_self_pair_type_suffix,
+            gen__actor_type_self_pair_type_prefix,
+            gen__actor_type_self_pair_type_suffix,
             pair_type
         );
         // :: spawned become third_pair.left -> self.pair_type
         validateOutputStateWithTemplate(
             gen__third_pair_left_output_idx,
             third_left,
-            gen__spawn_self_pair_type_prefix,
-            gen__spawn_self_pair_type_suffix,
+            gen__actor_type_self_pair_type_prefix,
+            gen__actor_type_self_pair_type_suffix,
             pair_type
         );
         // :: spawned become third_pair.right -> self.pair_type
         validateOutputStateWithTemplate(
             gen__third_pair_right_output_idx,
             third_right,
-            gen__spawn_self_pair_type_prefix,
-            gen__spawn_self_pair_type_suffix,
+            gen__actor_type_self_pair_type_prefix,
+            gen__actor_type_self_pair_type_suffix,
             pair_type
         );
         // :: become Controller

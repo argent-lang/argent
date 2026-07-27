@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "e22b079903de40dcd917e7399a09417cb75595193213e4a605bf7b81cd625467",
+  "id": "66769ca423150857f06099ecfd9aa384437e235249914ed0f92d1e6c36bbc0c0",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -91,27 +91,27 @@
           }
         },
         {
-          "id": "witness/Controller/launch/spawn/new_pair/left/template_prefix_bytes",
+          "id": "witness/Controller/launch/actor_type/self_pair_type/template_prefix_bytes",
           "subject": {
             "kind": "spawn_actor",
             "spawn": "new_pair",
             "handle": "left",
             "actor": "self.pair_type"
           },
-          "param": "gen__spawn_self_pair_type_prefix",
+          "param": "gen__actor_type_self_pair_type_prefix",
           "purpose": {
             "kind": "template_prefix_bytes"
           }
         },
         {
-          "id": "witness/Controller/launch/spawn/new_pair/left/template_suffix_bytes",
+          "id": "witness/Controller/launch/actor_type/self_pair_type/template_suffix_bytes",
           "subject": {
             "kind": "spawn_actor",
             "spawn": "new_pair",
             "handle": "left",
             "actor": "self.pair_type"
           },
-          "param": "gen__spawn_self_pair_type_suffix",
+          "param": "gen__actor_type_self_pair_type_suffix",
           "purpose": {
             "kind": "template_suffix_bytes"
           }
@@ -212,8 +212,8 @@
               "witness_recipe_ids": [
                 "witness/Controller/launch/spawn/new_pair/left/spawn_output_index",
                 "witness/Controller/launch/spawn/new_pair/right/spawn_output_index",
-                "witness/Controller/launch/spawn/new_pair/left/template_prefix_bytes",
-                "witness/Controller/launch/spawn/new_pair/left/template_suffix_bytes"
+                "witness/Controller/launch/actor_type/self_pair_type/template_prefix_bytes",
+                "witness/Controller/launch/actor_type/self_pair_type/template_suffix_bytes"
               ]
             },
             "hidden_params": [
@@ -250,8 +250,8 @@
                 }
               },
               {
-                "recipe_id": "witness/Controller/launch/spawn/new_pair/left/template_prefix_bytes",
-                "name": "gen__spawn_self_pair_type_prefix",
+                "recipe_id": "witness/Controller/launch/actor_type/self_pair_type/template_prefix_bytes",
+                "name": "gen__actor_type_self_pair_type_prefix",
                 "type": {
                   "kind": "bytes"
                 },
@@ -266,8 +266,8 @@
                 }
               },
               {
-                "recipe_id": "witness/Controller/launch/spawn/new_pair/left/template_suffix_bytes",
-                "name": "gen__spawn_self_pair_type_suffix",
+                "recipe_id": "witness/Controller/launch/actor_type/self_pair_type/template_suffix_bytes",
+                "name": "gen__actor_type_self_pair_type_suffix",
                 "type": {
                   "kind": "bytes"
                 },
@@ -331,8 +331,8 @@
                 }
               },
               {
-                "recipe_id": "witness/Controller/launch/spawn/new_pair/left/template_prefix_bytes",
-                "param": "gen__spawn_self_pair_type_prefix",
+                "recipe_id": "witness/Controller/launch/actor_type/self_pair_type/template_prefix_bytes",
+                "param": "gen__actor_type_self_pair_type_prefix",
                 "subject": {
                   "kind": "spawn_actor",
                   "spawn": "new_pair",
@@ -344,8 +344,8 @@
                 }
               },
               {
-                "recipe_id": "witness/Controller/launch/spawn/new_pair/left/template_suffix_bytes",
-                "param": "gen__spawn_self_pair_type_suffix",
+                "recipe_id": "witness/Controller/launch/actor_type/self_pair_type/template_suffix_bytes",
+                "param": "gen__actor_type_self_pair_type_suffix",
                 "subject": {
                   "kind": "spawn_actor",
                   "spawn": "new_pair",
@@ -520,13 +520,13 @@
                 }
               },
               {
-                "name": "gen__spawn_self_pair_type_prefix",
+                "name": "gen__actor_type_self_pair_type_prefix",
                 "type": {
                   "kind": "bytes"
                 }
               },
               {
-                "name": "gen__spawn_self_pair_type_suffix",
+                "name": "gen__actor_type_self_pair_type_suffix",
                 "type": {
                   "kind": "bytes"
                 }

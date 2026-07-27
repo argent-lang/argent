@@ -3363,7 +3363,7 @@ fn split_top_level_commas(input: &str) -> Vec<&str> {
     parts
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum TemplateWitnessForm {
     Bytes,
     Len,
@@ -3436,6 +3436,22 @@ struct SpawnActorWitnessSpec {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+enum ActorTypeSourceWitnessProvider {
+    Observed(ObservedActorWitnessSpec),
+    Spawn(SpawnActorWitnessSpec),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ActorTypeSourceWitnessSpec {
+    /// The actor-type value identifies one template across all clause uses.
+    source: ClauseActorTypeRef,
+    /// Inputs need lengths; outputs need bytes, so the forms remain distinct.
+    form: TemplateWitnessForm,
+    /// The first clause use supplies the concrete template at runtime.
+    provider: ActorTypeSourceWitnessProvider,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct StateExpansionWitnessSpec {
     state: String,
     field: String,
@@ -3457,7 +3473,7 @@ struct EntryWitnessSpecs {
     selectors: Vec<TemplateSelectorWitnessSpec>,
     observed_actors: Vec<ObservedActorWitnessSpec>,
     spawn_outputs: Vec<SpawnActorWitnessSpec>,
-    spawn_templates: Vec<SpawnActorWitnessSpec>,
+    actor_type_source_templates: Vec<ActorTypeSourceWitnessSpec>,
     state_expansions: Vec<StateExpansionWitnessSpec>,
     observed_output_fields: Vec<ObservedOutputFieldWitnessSpec>,
 }
@@ -3527,9 +3543,17 @@ fn lower_entry_params(actor: &ActorDecl, entry: &EntryDecl, witness_specs: &Entr
     for spec in &witness_specs.spawn_outputs {
         out.push(format!("int {}", hidden_spawn_output_idx_name(&spec.spawn, &spec.handle)));
     }
-    for spec in &witness_specs.spawn_templates {
-        out.push(format!("byte[] {}", hidden_spawn_actor_prefix_name(spec)));
-        out.push(format!("byte[] {}", hidden_spawn_actor_suffix_name(spec)));
+    for spec in &witness_specs.actor_type_source_templates {
+        match spec.form {
+            TemplateWitnessForm::Bytes => {
+                out.push(format!("byte[] {}", hidden_actor_type_source_prefix_name(&spec.source)));
+                out.push(format!("byte[] {}", hidden_actor_type_source_suffix_name(&spec.source)));
+            }
+            TemplateWitnessForm::Len => {
+                out.push(format!("int {}", hidden_actor_type_source_prefix_len_name(&spec.source)));
+                out.push(format!("int {}", hidden_actor_type_source_suffix_len_name(&spec.source)));
+            }
+        }
     }
     for spec in &witness_specs.state_expansions {
         let len = state_packed_len(&spec.memory_state, model).expect("state expansion memory fields were validated before codegen");
@@ -3555,9 +3579,10 @@ fn entry_witness_specs(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) 
         .collect::<Vec<_>>();
     let mut specs = template_witness_specs_for_actor(actor, model, uses.reads, uses.writes);
     specs.selectors = selector_specs;
-    specs.observed_actors = observed_actor_witness_specs(actor, entry, model)?;
+    let observed_actors = observed_actor_witness_specs(actor, entry, model)?;
     specs.spawn_outputs = spawn_output_witness_specs(actor, entry, model)?;
-    specs.spawn_templates = spawn_template_witness_specs(&specs.spawn_outputs);
+    specs.actor_type_source_templates = actor_type_source_witness_specs(&observed_actors, &specs.spawn_outputs);
+    specs.observed_actors = observed_actors.into_iter().filter(|spec| spec.source.is_none()).collect();
     specs.state_expansions = state_expansion_witness_specs_for_actor(actor, model);
     specs.observed_output_fields = observed_output_field_witness_specs(actor, entry, model);
     Ok(specs)
@@ -3592,9 +3617,57 @@ fn spawn_output_witness_specs(actor: &ActorDecl, entry: &EntryDecl, model: &Mode
     Ok(specs)
 }
 
-fn spawn_template_witness_specs(outputs: &[SpawnActorWitnessSpec]) -> Vec<SpawnActorWitnessSpec> {
+fn actor_type_source_witness_specs(
+    observed: &[ObservedActorWitnessSpec],
+    spawned: &[SpawnActorWitnessSpec],
+) -> Vec<ActorTypeSourceWitnessSpec> {
     let mut seen = BTreeSet::new();
-    outputs.iter().filter(|spec| spec.source.as_ref().is_some_and(|source| seen.insert(source.witness_suffix()))).cloned().collect()
+    let mut specs = Vec::new();
+    for spec in observed {
+        let Some(source) = &spec.source else {
+            continue;
+        };
+        let form = match spec.side {
+            ObservedActorSideArtifact::Input => TemplateWitnessForm::Len,
+            ObservedActorSideArtifact::Output => TemplateWitnessForm::Bytes,
+        };
+        if seen.insert((source.clone(), form)) {
+            specs.push(ActorTypeSourceWitnessSpec {
+                source: source.clone(),
+                form,
+                provider: ActorTypeSourceWitnessProvider::Observed(spec.clone()),
+            });
+        }
+    }
+    for spec in spawned {
+        let Some(source) = &spec.source else {
+            continue;
+        };
+        if seen.insert((source.clone(), TemplateWitnessForm::Bytes)) {
+            specs.push(ActorTypeSourceWitnessSpec {
+                source: source.clone(),
+                form: TemplateWitnessForm::Bytes,
+                provider: ActorTypeSourceWitnessProvider::Spawn(spec.clone()),
+            });
+        }
+    }
+    specs
+}
+
+fn actor_type_source_witness_subject(provider: &ActorTypeSourceWitnessProvider) -> HiddenParamSubjectArtifact {
+    match provider {
+        ActorTypeSourceWitnessProvider::Observed(spec) => HiddenParamSubjectArtifact::ObservedActor {
+            observe: spec.observe.clone(),
+            side: spec.side,
+            handle: spec.handle.clone(),
+            actor: spec.actor.clone(),
+        },
+        ActorTypeSourceWitnessProvider::Spawn(spec) => HiddenParamSubjectArtifact::SpawnActor {
+            spawn: spec.spawn.clone(),
+            handle: spec.handle.clone(),
+            actor: spec.actor.clone(),
+        },
+    }
 }
 
 fn observed_output_field_witness_specs(
@@ -3671,7 +3744,7 @@ fn template_witness_specs_for_actor(
         selectors: Vec::new(),
         observed_actors: Vec::new(),
         spawn_outputs: Vec::new(),
-        spawn_templates: Vec::new(),
+        actor_type_source_templates: Vec::new(),
         state_expansions: Vec::new(),
         observed_output_fields: Vec::new(),
     }
@@ -5096,26 +5169,40 @@ fn hidden_params_for_entry(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'
             route_proof_id: None,
         });
     }
-    for spec in &witness_specs.spawn_templates {
-        let subject = HiddenParamSubjectArtifact::SpawnActor {
-            spawn: spec.spawn.clone(),
-            handle: spec.handle.clone(),
-            actor: spec.actor.clone(),
+    for spec in &witness_specs.actor_type_source_templates {
+        let subject = actor_type_source_witness_subject(&spec.provider);
+        let (prefix_purpose, suffix_purpose, prefix_name, suffix_name, prefix_ty, suffix_ty) = match spec.form {
+            TemplateWitnessForm::Bytes => (
+                HiddenParamPurposeArtifact::TemplatePrefixBytes,
+                HiddenParamPurposeArtifact::TemplateSuffixBytes,
+                hidden_actor_type_source_prefix_name(&spec.source),
+                hidden_actor_type_source_suffix_name(&spec.source),
+                TypeArtifact::Bytes,
+                TypeArtifact::Bytes,
+            ),
+            TemplateWitnessForm::Len => (
+                HiddenParamPurposeArtifact::TemplatePrefixLen,
+                HiddenParamPurposeArtifact::TemplateSuffixLen,
+                hidden_actor_type_source_prefix_len_name(&spec.source),
+                hidden_actor_type_source_suffix_len_name(&spec.source),
+                TypeArtifact::Int,
+                TypeArtifact::Int,
+            ),
         };
         hidden_params.push(HiddenParamArtifact {
-            recipe_id: spawn_actor_witness_recipe_id(actor, entry, spec, HiddenParamPurposeArtifact::TemplatePrefixBytes),
-            name: hidden_spawn_actor_prefix_name(spec),
-            ty: TypeArtifact::Bytes,
+            recipe_id: actor_type_source_witness_recipe_id(actor, entry, &spec.source, prefix_purpose),
+            name: prefix_name,
+            ty: prefix_ty,
             subject: subject.clone(),
-            purpose: HiddenParamPurposeArtifact::TemplatePrefixBytes,
+            purpose: prefix_purpose,
             route_proof_id: None,
         });
         hidden_params.push(HiddenParamArtifact {
-            recipe_id: spawn_actor_witness_recipe_id(actor, entry, spec, HiddenParamPurposeArtifact::TemplateSuffixBytes),
-            name: hidden_spawn_actor_suffix_name(spec),
-            ty: TypeArtifact::Bytes,
+            recipe_id: actor_type_source_witness_recipe_id(actor, entry, &spec.source, suffix_purpose),
+            name: suffix_name,
+            ty: suffix_ty,
             subject,
-            purpose: HiddenParamPurposeArtifact::TemplateSuffixBytes,
+            purpose: suffix_purpose,
             route_proof_id: None,
         });
     }
@@ -6205,6 +6292,15 @@ fn spawn_actor_witness_recipe_id(
     format!("witness/{}/{}/spawn/{}/{}/{}", actor.name, entry.name, spec.spawn, spec.handle, hidden_param_purpose_id(purpose))
 }
 
+fn actor_type_source_witness_recipe_id(
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    source: &ClauseActorTypeRef,
+    purpose: HiddenParamPurposeArtifact,
+) -> String {
+    format!("witness/{}/{}/actor_type/{}/{}", actor.name, entry.name, source.witness_suffix(), hidden_param_purpose_id(purpose))
+}
+
 fn state_expansion_witness_recipe_id(spec: &StateExpansionWitnessSpec) -> String {
     format!(
         "witness/state_expansion/{}/{}/{}/{}",
@@ -6292,18 +6388,30 @@ fn actor_expr_suffix(actor: &str) -> String {
 }
 
 fn hidden_observed_actor_prefix_name(spec: &ObservedActorWitnessSpec) -> String {
+    if let Some(source) = &spec.source {
+        return hidden_actor_type_source_prefix_name(source);
+    }
     format!("{RESERVED_GENERATED_PREFIX}{}_{}_prefix", spec.observe, observed_actor_spec_suffix(spec))
 }
 
 fn hidden_observed_actor_suffix_name(spec: &ObservedActorWitnessSpec) -> String {
+    if let Some(source) = &spec.source {
+        return hidden_actor_type_source_suffix_name(source);
+    }
     format!("{RESERVED_GENERATED_PREFIX}{}_{}_suffix", spec.observe, observed_actor_spec_suffix(spec))
 }
 
 fn hidden_observed_actor_prefix_len_name(spec: &ObservedActorWitnessSpec) -> String {
+    if let Some(source) = &spec.source {
+        return hidden_actor_type_source_prefix_len_name(source);
+    }
     format!("{RESERVED_GENERATED_PREFIX}{}_{}_prefix_len", spec.observe, observed_actor_spec_suffix(spec))
 }
 
 fn hidden_observed_actor_suffix_len_name(spec: &ObservedActorWitnessSpec) -> String {
+    if let Some(source) = &spec.source {
+        return hidden_actor_type_source_suffix_len_name(source);
+    }
     format!("{RESERVED_GENERATED_PREFIX}{}_{}_suffix_len", spec.observe, observed_actor_spec_suffix(spec))
 }
 
@@ -6320,15 +6428,37 @@ fn hidden_imported_template_init_name(spec: &ImportedTemplateSpec) -> String {
 }
 
 fn hidden_spawn_actor_prefix_name(spec: &SpawnActorWitnessSpec) -> String {
-    format!("{RESERVED_GENERATED_PREFIX}spawn_{}_prefix", spawn_actor_spec_suffix(spec))
+    spec.source.as_ref().map_or_else(
+        || format!("{RESERVED_GENERATED_PREFIX}spawn_{}_prefix", spawn_actor_spec_suffix(spec)),
+        hidden_actor_type_source_prefix_name,
+    )
 }
 
 fn hidden_spawn_actor_suffix_name(spec: &SpawnActorWitnessSpec) -> String {
-    format!("{RESERVED_GENERATED_PREFIX}spawn_{}_suffix", spawn_actor_spec_suffix(spec))
+    spec.source.as_ref().map_or_else(
+        || format!("{RESERVED_GENERATED_PREFIX}spawn_{}_suffix", spawn_actor_spec_suffix(spec)),
+        hidden_actor_type_source_suffix_name,
+    )
 }
 
 fn spawn_actor_spec_suffix(spec: &SpawnActorWitnessSpec) -> String {
     spec.source.as_ref().map_or_else(|| actor_expr_suffix(&spec.actor), ClauseActorTypeRef::witness_suffix)
+}
+
+fn hidden_actor_type_source_prefix_name(source: &ClauseActorTypeRef) -> String {
+    format!("{RESERVED_GENERATED_PREFIX}actor_type_{}_prefix", source.witness_suffix())
+}
+
+fn hidden_actor_type_source_suffix_name(source: &ClauseActorTypeRef) -> String {
+    format!("{RESERVED_GENERATED_PREFIX}actor_type_{}_suffix", source.witness_suffix())
+}
+
+fn hidden_actor_type_source_prefix_len_name(source: &ClauseActorTypeRef) -> String {
+    format!("{RESERVED_GENERATED_PREFIX}actor_type_{}_prefix_len", source.witness_suffix())
+}
+
+fn hidden_actor_type_source_suffix_len_name(source: &ClauseActorTypeRef) -> String {
+    format!("{RESERVED_GENERATED_PREFIX}actor_type_{}_suffix_len", source.witness_suffix())
 }
 
 fn hidden_state_expansion_preimage_name(spec: &StateExpansionWitnessSpec) -> String {
@@ -7913,10 +8043,10 @@ mod tests {
         assert_eq!(
             inspect.hidden_params.iter().map(|param| param.name.as_str()).collect::<Vec<_>>(),
             vec![
-                "gen__remote_self_target_prefix_len",
-                "gen__remote_self_target_suffix_len",
-                "gen__remote_arg_self_target_prefix_len",
-                "gen__remote_arg_self_target_suffix_len",
+                "gen__actor_type_self_target_prefix_len",
+                "gen__actor_type_self_target_suffix_len",
+                "gen__actor_type_arg_self_target_prefix_len",
+                "gen__actor_type_arg_self_target_suffix_len",
             ]
         );
     }
@@ -8402,7 +8532,7 @@ mod tests {
         assert_eq!(observe.outputs[0].target, ObservedTargetArtifact::DynamicActor { state: "AgentCapsule".to_string() });
         assert_eq!(
             advance.hidden_params.iter().map(|param| param.name.as_str()).collect::<Vec<_>>(),
-            vec!["gen__remote_self_agent_type_prefix_len", "gen__remote_self_agent_type_suffix_len"]
+            vec!["gen__actor_type_self_agent_type_prefix_len", "gen__actor_type_self_agent_type_suffix_len"]
         );
     }
 
@@ -10655,8 +10785,8 @@ mod tests {
             vec![
                 "gen__new_pair_left_output_idx",
                 "gen__new_pair_right_output_idx",
-                "gen__spawn_self_pair_type_prefix",
-                "gen__spawn_self_pair_type_suffix",
+                "gen__actor_type_self_pair_type_prefix",
+                "gen__actor_type_self_pair_type_suffix",
             ]
         );
         controller_artifact.verify_template_plan().expect("spawn metadata verifies");
@@ -10717,14 +10847,76 @@ mod tests {
                 "gen__second_pair_pair_output_idx",
                 "gen__third_pair_left_output_idx",
                 "gen__third_pair_right_output_idx",
-                "gen__spawn_self_pair_type_prefix",
-                "gen__spawn_self_pair_type_suffix",
+                "gen__actor_type_self_pair_type_prefix",
+                "gen__actor_type_self_pair_type_suffix",
             ]
         );
         controller_artifact.verify_template_plan().expect("multiple-spawn metadata verifies");
 
         let (pair_sil, _) = emit_selected_fixture(source, "PairApp", "Pair");
         assert_eq!(pair_sil, include_str!("../tests/fixtures/runtime/context_multiple_genesis_spawns/Pair.sil"));
+    }
+
+    #[test]
+    fn observed_and_spawned_source_actor_share_pinned_witnesses() {
+        let source = "tests/fixtures/runtime/context_shared_actor_witness/app.ag";
+        let (controller_sil, controller_artifact) = emit_selected_fixture(source, "SharedActorWitness", "Controller");
+        assert_eq!(controller_sil, include_str!("../tests/fixtures/runtime/context_shared_actor_witness/Controller.sil"));
+
+        let advance =
+            controller_artifact.argent.actors[0].entries.iter().find(|entry| entry.name == "advance").expect("advance entry exists");
+        assert_eq!(
+            advance.hidden_params.iter().map(|param| param.name.as_str()).collect::<Vec<_>>(),
+            vec![
+                "gen__anchor_prefix_len",
+                "gen__anchor_suffix_len",
+                "gen__newborn_pair_output_idx",
+                "gen__actor_type_self_pair_type_prefix",
+                "gen__actor_type_self_pair_type_suffix",
+            ]
+        );
+        let source_witnesses =
+            advance.hidden_params.iter().filter(|param| param.name.starts_with("gen__actor_type_self_pair_type_")).collect::<Vec<_>>();
+        assert_eq!(source_witnesses.len(), 2);
+        assert!(source_witnesses.iter().all(|param| {
+            matches!(
+                &param.subject,
+                HiddenParamSubjectArtifact::ObservedActor {
+                    observe,
+                    side: ObservedActorSideArtifact::Output,
+                    handle,
+                    actor,
+                } if observe == "existing" && handle == "pair" && actor == "self.pair_type"
+            )
+        }));
+        assert_eq!(
+            source_witnesses.iter().map(|param| param.recipe_id.as_str()).collect::<Vec<_>>(),
+            vec![
+                "witness/Controller/advance/actor_type/self_pair_type/template_prefix_bytes",
+                "witness/Controller/advance/actor_type/self_pair_type/template_suffix_bytes",
+            ]
+        );
+        controller_artifact.verify_template_plan().expect("shared observe/spawn witness metadata verifies");
+
+        let mut malformed = controller_artifact.clone();
+        let prefix = malformed.argent.actors[0].entries[0]
+            .hidden_params
+            .iter_mut()
+            .find(|param| param.name == "gen__actor_type_self_pair_type_prefix")
+            .expect("shared prefix witness exists");
+        let HiddenParamSubjectArtifact::ObservedActor { handle, .. } = &mut prefix.subject else {
+            panic!("shared prefix uses its first observed output");
+        };
+        *handle = "missing".to_string();
+        assert!(
+            matches!(malformed.verify_template_plan(), Err(TemplatePlanError::InvalidSpawnMetadata { .. })),
+            "spawn metadata rejects an invalid observed witness provider"
+        );
+
+        let (anchor_sil, _) = emit_selected_fixture(source, "SharedActorWitness", "Anchor");
+        assert_eq!(anchor_sil, include_str!("../tests/fixtures/runtime/context_shared_actor_witness/Anchor.sil"));
+        let (pair_sil, _) = emit_selected_fixture(source, "SharedActorWitness", "Pair");
+        assert_eq!(pair_sil, include_str!("../tests/fixtures/runtime/context_shared_actor_witness/Pair.sil"));
     }
 
     #[test]
@@ -10776,10 +10968,10 @@ mod tests {
             vec![
                 "gen__stored_pair_output_idx",
                 "gen__argument_pair_output_idx",
-                "gen__spawn_self_pair_type_prefix",
-                "gen__spawn_self_pair_type_suffix",
-                "gen__spawn_arg_self_pair_type_prefix",
-                "gen__spawn_arg_self_pair_type_suffix",
+                "gen__actor_type_self_pair_type_prefix",
+                "gen__actor_type_self_pair_type_suffix",
+                "gen__actor_type_arg_self_pair_type_prefix",
+                "gen__actor_type_arg_self_pair_type_suffix",
             ]
         );
     }
@@ -10846,8 +11038,8 @@ mod tests {
             .iter()
             .find(|param| param.purpose == HiddenParamPurposeArtifact::TemplatePrefixBytes)
             .expect("second spawn prefix exists");
-        assert_eq!(first_recipe.recipe_id, "witness/Launcher/launch_first/spawn/child/pair/template_prefix_bytes");
-        assert_eq!(second_recipe.recipe_id, "witness/Launcher/launch_second/spawn/child/pair/template_prefix_bytes");
+        assert_eq!(first_recipe.recipe_id, "witness/Launcher/launch_first/actor_type/self_first_type/template_prefix_bytes");
+        assert_eq!(second_recipe.recipe_id, "witness/Launcher/launch_second/actor_type/self_second_type/template_prefix_bytes");
         assert_ne!(first_recipe.recipe_id, second_recipe.recipe_id);
     }
 

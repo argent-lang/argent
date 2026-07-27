@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "f0ec0633e2ee86ed22af41fe09d2e6891ed5d109382c2b36545dc3633550b778",
+  "id": "97e58cacc5853d5811c27a91ebb1b541f89b802efaee51656f3c064a8ff797d1",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -44,7 +44,7 @@
       "route_families": [],
       "witness_recipes": [
         {
-          "id": "witness/observed/remote/input/self_occupant_agent_type/template_prefix_len",
+          "id": "witness/Cell/advance/actor_type/self_occupant_agent_type/template_prefix_len",
           "subject": {
             "kind": "observed_actor",
             "observe": "remote",
@@ -52,13 +52,13 @@
             "handle": "agent",
             "actor": "self.occupant_agent_type"
           },
-          "param": "gen__remote_self_occupant_agent_type_prefix_len",
+          "param": "gen__actor_type_self_occupant_agent_type_prefix_len",
           "purpose": {
             "kind": "template_prefix_len"
           }
         },
         {
-          "id": "witness/observed/remote/input/self_occupant_agent_type/template_suffix_len",
+          "id": "witness/Cell/advance/actor_type/self_occupant_agent_type/template_suffix_len",
           "subject": {
             "kind": "observed_actor",
             "observe": "remote",
@@ -66,7 +66,7 @@
             "handle": "agent",
             "actor": "self.occupant_agent_type"
           },
-          "param": "gen__remote_self_occupant_agent_type_suffix_len",
+          "param": "gen__actor_type_self_occupant_agent_type_suffix_len",
           "purpose": {
             "kind": "template_suffix_len"
           }
@@ -83,6 +83,34 @@
           "param": "gen__remote_agent_next_strategy",
           "purpose": {
             "kind": "observed_output_field_value"
+          }
+        },
+        {
+          "id": "witness/Cell/move/actor_type/self_occupant_agent_type/template_prefix_len",
+          "subject": {
+            "kind": "observed_actor",
+            "observe": "remote",
+            "side": "input",
+            "handle": "agent",
+            "actor": "self.occupant_agent_type"
+          },
+          "param": "gen__actor_type_self_occupant_agent_type_prefix_len",
+          "purpose": {
+            "kind": "template_prefix_len"
+          }
+        },
+        {
+          "id": "witness/Cell/move/actor_type/self_occupant_agent_type/template_suffix_len",
+          "subject": {
+            "kind": "observed_actor",
+            "observe": "remote",
+            "side": "input",
+            "handle": "agent",
+            "actor": "self.occupant_agent_type"
+          },
+          "param": "gen__actor_type_self_occupant_agent_type_suffix_len",
+          "purpose": {
+            "kind": "template_suffix_len"
           }
         }
       ]
@@ -272,15 +300,15 @@
                 }
               ],
               "witness_recipe_ids": [
-                "witness/observed/remote/input/self_occupant_agent_type/template_prefix_len",
-                "witness/observed/remote/input/self_occupant_agent_type/template_suffix_len",
+                "witness/Cell/advance/actor_type/self_occupant_agent_type/template_prefix_len",
+                "witness/Cell/advance/actor_type/self_occupant_agent_type/template_suffix_len",
                 "witness/observed/remote/output/agent/agent_capsule/strategy/observed_output_field_value"
               ]
             },
             "hidden_params": [
               {
-                "recipe_id": "witness/observed/remote/input/self_occupant_agent_type/template_prefix_len",
-                "name": "gen__remote_self_occupant_agent_type_prefix_len",
+                "recipe_id": "witness/Cell/advance/actor_type/self_occupant_agent_type/template_prefix_len",
+                "name": "gen__actor_type_self_occupant_agent_type_prefix_len",
                 "type": {
                   "kind": "int"
                 },
@@ -296,8 +324,8 @@
                 }
               },
               {
-                "recipe_id": "witness/observed/remote/input/self_occupant_agent_type/template_suffix_len",
-                "name": "gen__remote_self_occupant_agent_type_suffix_len",
+                "recipe_id": "witness/Cell/advance/actor_type/self_occupant_agent_type/template_suffix_len",
+                "name": "gen__actor_type_self_occupant_agent_type_suffix_len",
                 "type": {
                   "kind": "int"
                 },
@@ -362,8 +390,8 @@
             ],
             "witnesses": [
               {
-                "recipe_id": "witness/observed/remote/input/self_occupant_agent_type/template_prefix_len",
-                "param": "gen__remote_self_occupant_agent_type_prefix_len",
+                "recipe_id": "witness/Cell/advance/actor_type/self_occupant_agent_type/template_prefix_len",
+                "param": "gen__actor_type_self_occupant_agent_type_prefix_len",
                 "subject": {
                   "kind": "observed_actor",
                   "observe": "remote",
@@ -376,8 +404,8 @@
                 }
               },
               {
-                "recipe_id": "witness/observed/remote/input/self_occupant_agent_type/template_suffix_len",
-                "param": "gen__remote_self_occupant_agent_type_suffix_len",
+                "recipe_id": "witness/Cell/advance/actor_type/self_occupant_agent_type/template_suffix_len",
+                "param": "gen__actor_type_self_occupant_agent_type_suffix_len",
                 "subject": {
                   "kind": "observed_actor",
                   "observe": "remote",
@@ -468,15 +496,15 @@
                 }
               ],
               "witness_recipe_ids": [
-                "witness/observed/remote/input/self_occupant_agent_type/template_prefix_len",
-                "witness/observed/remote/input/self_occupant_agent_type/template_suffix_len",
+                "witness/Cell/move/actor_type/self_occupant_agent_type/template_prefix_len",
+                "witness/Cell/move/actor_type/self_occupant_agent_type/template_suffix_len",
                 "witness/observed/remote/output/agent/agent_capsule/strategy/observed_output_field_value"
               ]
             },
             "hidden_params": [
               {
-                "recipe_id": "witness/observed/remote/input/self_occupant_agent_type/template_prefix_len",
-                "name": "gen__remote_self_occupant_agent_type_prefix_len",
+                "recipe_id": "witness/Cell/move/actor_type/self_occupant_agent_type/template_prefix_len",
+                "name": "gen__actor_type_self_occupant_agent_type_prefix_len",
                 "type": {
                   "kind": "int"
                 },
@@ -492,8 +520,8 @@
                 }
               },
               {
-                "recipe_id": "witness/observed/remote/input/self_occupant_agent_type/template_suffix_len",
-                "name": "gen__remote_self_occupant_agent_type_suffix_len",
+                "recipe_id": "witness/Cell/move/actor_type/self_occupant_agent_type/template_suffix_len",
+                "name": "gen__actor_type_self_occupant_agent_type_suffix_len",
                 "type": {
                   "kind": "int"
                 },
@@ -558,8 +586,8 @@
             ],
             "witnesses": [
               {
-                "recipe_id": "witness/observed/remote/input/self_occupant_agent_type/template_prefix_len",
-                "param": "gen__remote_self_occupant_agent_type_prefix_len",
+                "recipe_id": "witness/Cell/move/actor_type/self_occupant_agent_type/template_prefix_len",
+                "param": "gen__actor_type_self_occupant_agent_type_prefix_len",
                 "subject": {
                   "kind": "observed_actor",
                   "observe": "remote",
@@ -572,8 +600,8 @@
                 }
               },
               {
-                "recipe_id": "witness/observed/remote/input/self_occupant_agent_type/template_suffix_len",
-                "param": "gen__remote_self_occupant_agent_type_suffix_len",
+                "recipe_id": "witness/Cell/move/actor_type/self_occupant_agent_type/template_suffix_len",
+                "param": "gen__actor_type_self_occupant_agent_type_suffix_len",
                 "subject": {
                   "kind": "observed_actor",
                   "observe": "remote",
@@ -831,13 +859,13 @@
             "selector": 0,
             "params": [
               {
-                "name": "gen__remote_self_occupant_agent_type_prefix_len",
+                "name": "gen__actor_type_self_occupant_agent_type_prefix_len",
                 "type": {
                   "kind": "int"
                 }
               },
               {
-                "name": "gen__remote_self_occupant_agent_type_suffix_len",
+                "name": "gen__actor_type_self_occupant_agent_type_suffix_len",
                 "type": {
                   "kind": "int"
                 }
@@ -889,13 +917,13 @@
                 }
               },
               {
-                "name": "gen__remote_self_occupant_agent_type_prefix_len",
+                "name": "gen__actor_type_self_occupant_agent_type_prefix_len",
                 "type": {
                   "kind": "int"
                 }
               },
               {
-                "name": "gen__remote_self_occupant_agent_type_suffix_len",
+                "name": "gen__actor_type_self_occupant_agent_type_suffix_len",
                 "type": {
                   "kind": "int"
                 }

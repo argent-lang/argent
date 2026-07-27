@@ -1547,6 +1547,48 @@ mod tests {
     }
 
     #[test]
+    fn context_reuses_source_actor_witness_across_observe_and_spawn() {
+        let artifact = example_artifact("tests/fixtures/runtime/context_shared_actor_witness/app.ag", "context-shared-actor-witness");
+        let builder = TxBuilder::new(&artifact).expect("builder accepts artifact");
+
+        let controller_id = Hash::from_bytes([0xa1; 32]);
+        let pair_id = Hash::from_bytes([0xa2; 32]);
+        let controller_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0xa3; 32]), 0);
+        let anchor_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0xa4; 32]), 0);
+        let pair_type = builder.actor_type_handle("Pair", "PairState").expect("pair actor type resolves");
+        let controller_initial = state! { pair_type: pair_type.clone(), launches: 0 };
+        let controller_next = state! { pair_type: pair_type, launches: 1 };
+        let anchor_initial = state! { amount: 7 };
+        let observed_next = state! { amount: 8 };
+        let spawned = state! { amount: 9 };
+        let controller_utxo = builder
+            .covenant_utxo("Controller", controller_initial.clone(), 6_000, 0, false, Some(controller_id))
+            .expect("controller UTXO builds");
+        let anchor_utxo =
+            builder.covenant_utxo("Anchor", anchor_initial.clone(), 2_000, 0, false, Some(pair_id)).expect("anchor UTXO builds");
+
+        let context = TxContext::new()
+            .actor_input(
+                "Controller",
+                controller_initial,
+                EntryCall::new("advance").args(args![pair_id, 9]),
+                controller_outpoint,
+                controller_utxo,
+                0,
+            )
+            .actor_input("Anchor", anchor_initial, "advance", anchor_outpoint, anchor_utxo, 0)
+            .actor_output("Controller", controller_next, CovenantBinding::new(0, controller_id), 6_000)
+            .actor_output("Pair", observed_next, CovenantBinding::new(1, pair_id), 2_000)
+            .actor_genesis_output(0, "spawn::newborn", "Pair", spawned, 1_000);
+        let transaction = builder.build(&context).expect("shared observed witness supplies the spawned template");
+
+        assert_eq!(transaction.inputs.len(), 2);
+        assert_eq!(transaction.outputs.len(), 3);
+        assert_eq!(transaction.outputs[1].covenant, Some(CovenantBinding::new(1, pair_id)));
+        assert_eq!(transaction.outputs[2].covenant.expect("spawned output has a covenant").authorizing_input, 0);
+    }
+
+    #[test]
     fn route_plan_builds_stones_start_game_and_rejects_bad_routes() {
         let artifact = example_artifact("examples/stones/app.ag", "stones-route-plan");
         let builder = TxBuilder::new(&artifact).expect("builder accepts artifact");
