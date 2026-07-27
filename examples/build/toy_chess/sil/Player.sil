@@ -9,14 +9,15 @@ contract Player(
 ) {
     // :: state layouts
     struct LeagueState {
-        // :: generated fields
-        byte[32] gen__mux_template;
-        byte[32] gen__player_template;
-        byte[32] gen__mux_routes_digest;
         // :: user declared fields
         int nonce;
     }
     struct BoardState {
+        // :: user declared fields
+        int selector;
+        int ply;
+    }
+    struct Gen__MuxState {
         // :: generated fields
         byte[32] gen__mux_template;
         byte[64] gen__mux_routes;
@@ -46,7 +47,7 @@ contract Player(
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // emits one Mux
 
-        BoardState next_board = {
+        Gen__MuxState next_board = {
             // :: generated fields
             gen__mux_template: gen__mux_template,
             gen__mux_routes: gen__mux_routes,

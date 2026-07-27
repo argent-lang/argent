@@ -8,8 +8,6 @@ contract Foreign(
 ) {
     // :: state layouts
     struct LocalState {
-        // :: generated fields
-        byte[32] gen__remote_foreign_template;
         // :: user declared fields
         byte[32] foreign_id;
         int steps;

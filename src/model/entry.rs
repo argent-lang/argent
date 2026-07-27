@@ -39,7 +39,7 @@ impl<'a> EntryModel<'a> {
                 source: InteractionSource::Consume(consume),
                 handle: Some(&consume.name),
                 index,
-                target: ActorTarget::one(&consume.actor),
+                target: ActorTarget::concrete(&consume.actor),
             })
             .collect();
         let current_outputs = match &source.emits {
@@ -74,7 +74,7 @@ impl<'a> EntryModel<'a> {
                         source: InteractionSource::ObserveInput(input),
                         handle: Some(&input.name),
                         index,
-                        target: ActorTarget::one(&input.actor),
+                        target: ActorTarget::observed(source, observe, input),
                     })
                     .collect(),
                 outputs: observe
@@ -85,7 +85,7 @@ impl<'a> EntryModel<'a> {
                         source: InteractionSource::ObserveOutput(output),
                         handle: Some(&output.name),
                         index,
-                        target: ActorTarget::one(&output.actor),
+                        target: ActorTarget::observed(source, observe, output),
                     })
                     .collect(),
             }
@@ -101,7 +101,7 @@ impl<'a> EntryModel<'a> {
                         source: InteractionSource::SpawnOutput(output),
                         handle: Some(&output.name),
                         index: output.group_index,
-                        target: ActorTarget::one(&output.actor),
+                        target: ActorTarget::source_or_concrete(source, &output.actor),
                     })
                     .collect(),
             }
@@ -237,16 +237,32 @@ pub(crate) enum InteractionSource<'a> {
 
 /// Compiler-known actor candidates for an interaction target.
 ///
-/// Selector routes can have several candidates; other clauses currently retain
-/// one unresolved source expression.
+/// The original spelling is retained even when a source value prevents the
+/// target from participating in static app planning.
 #[derive(Debug)]
 pub(crate) struct ActorTarget {
     actors: Vec<String>,
+    concrete: bool,
 }
 
 impl ActorTarget {
-    fn one(expression: &str) -> Self {
-        Self { actors: vec![expression.to_string()] }
+    fn concrete(actor: &str) -> Self {
+        Self { actors: vec![actor.to_string()], concrete: true }
+    }
+
+    fn source_or_concrete(entry: &EntryDecl, expression: &str) -> Self {
+        let concrete = is_identifier(expression)
+            && !entry.params.iter().any(|param| param.name == expression)
+            && !expression.strip_prefix("self.").is_some_and(is_identifier);
+        Self { actors: vec![expression.to_string()], concrete }
+    }
+
+    fn observed(entry: &EntryDecl, observe: &ObserveDecl, observed: &ObservedActorDecl) -> Self {
+        let open_binding = observed.open_state.is_some()
+            || observe.inputs.iter().any(|input| input.actor == observed.actor && input.open_state.is_some());
+        let mut target = Self::source_or_concrete(entry, &observed.actor);
+        target.concrete &= !open_binding;
+        target
     }
 
     fn domain(actors: &[String], actor_enums: &BTreeMap<String, ActorEnumInfo>) -> Self {
@@ -255,12 +271,18 @@ impl ActorTarget {
                 .iter()
                 .flat_map(|actor| actor_enums.get(actor).map_or_else(|| vec![actor.clone()], |actor_enum| actor_enum.variants.clone()))
                 .collect(),
+            concrete: true,
         }
     }
 
     /// Iterate candidate actor names or unresolved target expressions.
     pub(crate) fn actors(&self) -> impl Iterator<Item = &str> {
         self.actors.iter().map(String::as_str)
+    }
+
+    /// Iterate only compiler-known concrete actor candidates.
+    pub(crate) fn concrete_actors(&self) -> impl Iterator<Item = &str> {
+        self.actors().filter(|_| self.concrete)
     }
 }
 
@@ -676,6 +698,7 @@ mod tests {
         assert!(std::ptr::eq(observed, &entry.observes[0].inputs[0]));
         assert_eq!(observe_group.inputs()[0].handle(), Some("before"));
         assert_eq!(observe_group.inputs()[0].index(), 0);
+        assert_eq!(observe_group.inputs()[0].target().concrete_actors().collect::<Vec<_>>(), ["Remote"]);
 
         let spawn_group = model.genesis_groups().next().expect("spawn group");
         assert!(std::ptr::eq(spawn_group.spawn().expect("spawn source"), &entry.spawns[0]));
@@ -685,8 +708,45 @@ mod tests {
         assert!(std::ptr::eq(output, &entry.spawns[0].outputs[0]));
         assert_eq!(spawn_group.outputs()[0].handle(), Some("child"));
         assert_eq!(spawn_group.outputs()[0].index(), 0);
+        assert_eq!(spawn_group.outputs()[0].target().concrete_actors().collect::<Vec<_>>(), ["Child"]);
 
         assert_eq!(model.expanded_routes()[0].actor, "King");
+    }
+
+    #[test]
+    fn actor_targets_keep_source_expressions_out_of_concrete_planning() {
+        let entry = EntryDecl {
+            kind: EntryKind::Leader,
+            name: "step".to_string(),
+            params: Vec::new(),
+            consumes: Vec::new(),
+            observes: Vec::new(),
+            spawns: Vec::new(),
+            emits: EmitSpec::None,
+            body: String::new(),
+            routes: Vec::new(),
+            terminal_route_sets: Vec::new(),
+        };
+        let observe = ObserveDecl {
+            name: "remote".to_string(),
+            covenant_expr: "self.remote_id".to_string(),
+            inputs: vec![ObservedActorDecl {
+                name: "before".to_string(),
+                actor: "Foreign".to_string(),
+                open_state: Some("ForeignState".to_string()),
+            }],
+            outputs: Vec::new(),
+        };
+
+        let source = ActorTarget::source_or_concrete(&entry, "self.foreign_type");
+        assert_eq!(source.actors().collect::<Vec<_>>(), ["self.foreign_type"]);
+        assert!(source.concrete_actors().next().is_none());
+
+        let open = ActorTarget::observed(&entry, &observe, &observe.inputs[0]);
+        assert_eq!(open.actors().collect::<Vec<_>>(), ["Foreign"]);
+        assert!(open.concrete_actors().next().is_none());
+
+        assert_eq!(ActorTarget::concrete("Foreign").concrete_actors().collect::<Vec<_>>(), ["Foreign"]);
     }
 
     #[test]

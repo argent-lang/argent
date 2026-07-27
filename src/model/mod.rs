@@ -6,7 +6,7 @@ use crate::artifact::{AppDependencyArtifact, EntryRefArtifact};
 use crate::ast::{ActorDecl, ConstDecl, ConsumeDecl, FunctionDecl, StateDecl};
 use crate::error::{ArgentError, Result};
 use crate::link::LinkedActor;
-use crate::naming::{is_identifier, to_snake};
+use crate::naming::to_snake;
 use crate::routing::{CommitmentNode, RouteGraph, RoutePlan as PlannerRoutePlan, SelectorRequirement, route_plan};
 
 mod actor;
@@ -38,9 +38,9 @@ pub(crate) struct Model<'a> {
     pub(crate) actor_models: BTreeMap<&'a str, ActorModel<'a>>,
     /// Delegate entries that establish each actor as a leader actor.
     pub(crate) leader_for: BTreeMap<String, Vec<EntryRefArtifact>>,
+    /// The planned route commitment cut carried by each app actor.
     pub(crate) route_leaves_by_actor: BTreeMap<String, Vec<RouteRootLeaf>>,
     pub(crate) route_transitions: BTreeMap<(String, String), CompilerRouteTransition>,
-    pub(crate) state_route_leaves: BTreeMap<String, Vec<RouteRootLeaf>>,
 }
 
 /// An actor enum resolved to one state domain and its ordered variants.
@@ -86,7 +86,7 @@ impl RouteFamily {
     }
 }
 
-/// One selected root in a state-carried route commitment.
+/// One selected root in an actor-carried route commitment.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum RouteRootLeaf {
     Actor(String),
@@ -120,163 +120,6 @@ pub(crate) fn default_route_planner(
     route_plan(graph, domains, selectors).map_err(|err| ArgentError::new(err.to_string()))
 }
 
-pub(crate) fn compute_state_template_deps<'a>(
-    actor_models: &BTreeMap<&'a str, ActorModel<'a>>,
-    app_actors: &[String],
-) -> Result<BTreeMap<String, Vec<String>>> {
-    let app_actor_set = app_actors.iter().cloned().collect::<BTreeSet<_>>();
-    let mut deps = BTreeMap::<String, BTreeSet<String>>::new();
-    let mut routes = BTreeMap::<String, BTreeSet<String>>::new();
-
-    for actor_name in app_actors {
-        let actor_model = actor_models.get(actor_name.as_str()).expect("selected app actor has a model");
-        let actor = actor_model.source();
-        deps.entry(actor.state.clone()).or_default();
-        routes.entry(actor.state.clone()).or_default();
-
-        for entry_model in actor_model.entries() {
-            for interaction in entry_model.current().inputs() {
-                let InteractionSource::Consume(consume) = interaction.source() else {
-                    unreachable!("current entry inputs are consumes");
-                };
-                if app_actor_set.contains(&consume.actor) && !is_single_actor_self_consume(app_actors, actor, consume) {
-                    deps.entry(actor.state.clone()).or_default().insert(consume.actor.clone());
-                }
-            }
-
-            for group in entry_model.genesis_groups() {
-                for interaction in group.outputs() {
-                    for target in interaction.target().actors() {
-                        if is_identifier(target) && app_actor_set.contains(target) {
-                            deps.entry(actor.state.clone()).or_default().insert(target.to_string());
-                            let target_actor = actor_models.get(target).expect("selected app actor has a model").source();
-                            routes.entry(actor.state.clone()).or_default().insert(target_actor.state.clone());
-                            routes.entry(target_actor.state.clone()).or_default();
-                            deps.entry(target_actor.state.clone()).or_default();
-                        }
-                    }
-                }
-            }
-
-            for interaction in entry_model.current().outputs() {
-                for target_name in interaction.target().actors() {
-                    if !app_actor_set.contains(target_name) {
-                        continue;
-                    }
-                    let target = actor_models.get(target_name).expect("selected app actor has a model").source();
-                    routes.entry(actor.state.clone()).or_default().insert(target.state.clone());
-                    routes.entry(target.state.clone()).or_default();
-                    deps.entry(target.state.clone()).or_default();
-
-                    if target_name != actor.name {
-                        deps.entry(actor.state.clone()).or_default().insert(target_name.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    // A source state must also carry the templates needed to construct any
-    // successor state. Propagate those requirements backward to a fixed point;
-    // this preserves route cycles without leaking them into terminal states.
-    loop {
-        let mut changed = false;
-        for (state, targets) in &routes {
-            let inherited = targets.iter().flat_map(|target| deps.get(target).into_iter().flatten()).cloned().collect::<BTreeSet<_>>();
-            let state_deps = deps.get_mut(state).expect("route source state has dependency storage");
-            for actor in inherited {
-                changed |= state_deps.insert(actor);
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-
-    Ok(deps
-        .into_iter()
-        .map(|(state, deps)| {
-            let ordered = app_actors.iter().filter(|actor| deps.contains(*actor)).cloned().collect::<Vec<_>>();
-            (state, ordered)
-        })
-        .collect())
-}
-
-pub(crate) fn compute_direct_state_template_deps<'a>(
-    actor_models: &BTreeMap<&'a str, ActorModel<'a>>,
-    app_actors: &[String],
-) -> Result<BTreeMap<String, BTreeSet<String>>> {
-    let app_actor_set = app_actors.iter().cloned().collect::<BTreeSet<_>>();
-    let mut direct = BTreeMap::<String, BTreeSet<String>>::new();
-    for actor_name in app_actors {
-        let actor_model = actor_models.get(actor_name.as_str()).expect("selected app actor has a model");
-        let actor = actor_model.source();
-        direct.entry(actor.state.clone()).or_default();
-        for entry_model in actor_model.entries() {
-            for interaction in entry_model.current().inputs() {
-                let InteractionSource::Consume(consume) = interaction.source() else {
-                    unreachable!("current entry inputs are consumes");
-                };
-                if app_actor_set.contains(&consume.actor) && !is_single_actor_self_consume(app_actors, actor, consume) {
-                    direct.entry(actor.state.clone()).or_default().insert(consume.actor.clone());
-                }
-            }
-            for group in entry_model.genesis_groups() {
-                for interaction in group.outputs() {
-                    for target in interaction.target().actors() {
-                        if is_identifier(target) && app_actor_set.contains(target) {
-                            direct.entry(actor.state.clone()).or_default().insert(target.to_string());
-                        }
-                    }
-                }
-            }
-            for interaction in entry_model.current().outputs() {
-                for target_name in interaction.target().actors() {
-                    if app_actor_set.contains(target_name) && target_name != actor.name {
-                        direct.entry(actor.state.clone()).or_default().insert(target_name.to_string());
-                    }
-                }
-            }
-        }
-    }
-    Ok(direct)
-}
-
-pub(crate) fn compute_state_route_leaves(
-    state_template_deps: &BTreeMap<String, Vec<String>>,
-    direct_state_template_deps: &BTreeMap<String, BTreeSet<String>>,
-    route_families: &[RouteFamily],
-) -> BTreeMap<String, Vec<RouteRootLeaf>> {
-    let family_actor_sets = route_families
-        .iter()
-        .map(|family| (family.id.as_str(), family.actors.iter().map(String::as_str).collect::<BTreeSet<_>>()))
-        .collect::<BTreeMap<_, _>>();
-    let mut out = BTreeMap::new();
-    for (state, deps) in state_template_deps {
-        let mut leaves = Vec::new();
-        let mut emitted_families = BTreeSet::new();
-        let direct = direct_state_template_deps.get(state);
-        for actor in deps {
-            let family = route_families.iter().find(|family| family_actor_sets[family.id.as_str()].contains(actor.as_str()));
-            if let Some(family) = family {
-                if family.direct_template_actors().contains(actor)
-                    || family.state == *state
-                    || direct.is_some_and(|direct| direct.contains(actor))
-                {
-                    leaves.push(RouteRootLeaf::Actor(actor.clone()));
-                }
-                if emitted_families.insert(family.id.as_str()) {
-                    leaves.push(RouteRootLeaf::Family(family.id.clone()));
-                }
-            } else {
-                leaves.push(RouteRootLeaf::Actor(actor.clone()));
-            }
-        }
-        out.insert(state.clone(), leaves);
-    }
-    out
-}
-
 pub(crate) fn infer_direct_routes<'a>(
     actor_models: &BTreeMap<&'a str, ActorModel<'a>>,
     app_actors: &[String],
@@ -301,18 +144,31 @@ pub(crate) fn infer_direct_routes<'a>(
                 source: actor.name.clone(),
                 variants: selector.variants.clone(),
             }));
-            for interaction in entry_model.current().inputs() {
-                let InteractionSource::Consume(consume) = interaction.source() else {
-                    unreachable!("current entry inputs are consumes");
-                };
-                if app_actor_set.contains(&consume.actor) && !is_single_actor_self_consume(app_actors, actor, consume) {
-                    graph.add_consume(actor.name.clone(), consume.actor.clone());
+            for group in std::iter::once(entry_model.current()).chain(entry_model.existing_groups()) {
+                for interaction in group.inputs() {
+                    for target in interaction.target().concrete_actors() {
+                        if app_actor_set.contains(target) && !is_single_actor_self_target(app_actors, actor, target) {
+                            graph.add_consume(actor.name.clone(), target.to_string());
+                        }
+                    }
+                }
+                for interaction in group.outputs() {
+                    for target_name in interaction.target().concrete_actors() {
+                        if !app_actor_set.contains(target_name) {
+                            continue;
+                        }
+                        if actor.name != target_name {
+                            graph.add_emit(actor.name.clone(), target_name.to_string());
+                        }
+                        transition_pairs.insert((actor.name.clone(), target_name.to_string()));
+                    }
                 }
             }
+
             for group in entry_model.genesis_groups() {
                 for interaction in group.outputs() {
-                    for target in interaction.target().actors() {
-                        if !is_identifier(target) || !app_actor_set.contains(target) {
+                    for target in interaction.target().concrete_actors() {
+                        if !app_actor_set.contains(target) {
                             continue;
                         }
                         graph.add_emit(actor.name.clone(), target.to_string());
@@ -320,17 +176,6 @@ pub(crate) fn infer_direct_routes<'a>(
                             transition_pairs.insert((actor.name.clone(), target.to_string()));
                         }
                     }
-                }
-            }
-            for interaction in entry_model.current().outputs() {
-                for target_name in interaction.target().actors() {
-                    if !app_actor_set.contains(target_name) {
-                        continue;
-                    }
-                    if actor.name != target_name {
-                        graph.add_emit(actor.name.clone(), target_name.to_string());
-                    }
-                    transition_pairs.insert((actor.name.clone(), target_name.to_string()));
                 }
             }
         }
@@ -366,7 +211,11 @@ pub(crate) fn infer_direct_routes<'a>(
 }
 
 pub(crate) fn is_single_actor_self_consume(app_actors: &[String], actor: &ActorDecl, consume: &ConsumeDecl) -> bool {
-    app_actors.len() == 1 && app_actors[0] == actor.name && consume.actor == actor.name
+    is_single_actor_self_target(app_actors, actor, &consume.actor)
+}
+
+pub(crate) fn is_single_actor_self_target(app_actors: &[String], actor: &ActorDecl, target: &str) -> bool {
+    app_actors.len() == 1 && app_actors[0] == actor.name && target == actor.name
 }
 
 fn compiler_route_leaves(plan: &PlannerRoutePlan) -> Result<BTreeMap<String, Vec<RouteRootLeaf>>> {

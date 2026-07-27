@@ -9,6 +9,10 @@ contract Child(
 ) {
     // :: state layouts
     struct LauncherState {
+        // :: user declared fields
+        int launches;
+    }
+    struct Gen__LauncherState {
         // :: generated fields
         byte[32] gen__child_template;
         byte[32] gen__launcher_template;
@@ -33,7 +37,7 @@ contract Child(
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // emits one Launcher
 
-        LauncherState next = {
+        Gen__LauncherState next = {
             // :: generated fields
             gen__child_template: gen__child_template,
             gen__launcher_template: gen__launcher_template,

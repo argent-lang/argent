@@ -10,20 +10,20 @@ contract Lobby(
 ) {
     // :: state layouts
     struct BoardState {
+        // :: user declared fields
+        int ply;
+    }
+    struct ArchiveState {
+        // :: user declared fields
+        int final_ply;
+    }
+    struct Gen__MuxState {
         // :: generated fields
         byte[32] gen__archive_template;
         byte[32] gen__mux_template;
         byte[64] gen__mux_routes;
         // :: user declared fields
         int ply;
-    }
-    struct ArchiveState {
-        // :: generated fields
-        byte[32] gen__archive_template;
-        byte[32] gen__mux_template;
-        byte[32] gen__mux_routes_digest;
-        // :: user declared fields
-        int final_ply;
     }
 
     // :: route templates
@@ -48,7 +48,7 @@ contract Lobby(
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // emits one Mux
 
-        BoardState next_board = {
+        Gen__MuxState next_board = {
             // :: generated fields
             gen__archive_template: gen__archive_template,
             gen__mux_template: gen__mux_template,

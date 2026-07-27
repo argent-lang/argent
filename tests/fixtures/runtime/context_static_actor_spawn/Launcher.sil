@@ -9,6 +9,10 @@ contract Launcher(
 ) {
     // :: state layouts
     struct ChildState {
+        // :: user declared fields
+        int amount;
+    }
+    struct Gen__ChildState {
         // :: generated fields
         byte[32] gen__child_template;
         byte[32] gen__launcher_template;
@@ -49,9 +53,6 @@ contract Launcher(
         require(OpOutputCovenantId(gen__child_group_child_output_idx) == child_id);
 
         ChildState child_state = {
-            // :: generated fields
-            gen__child_template: gen__child_template,
-            gen__launcher_template: gen__launcher_template,
             // :: user declared fields
             amount: amount,
         };
@@ -62,10 +63,17 @@ contract Launcher(
             // :: user declared fields
             launches: launches + 1,
         };
+        Gen__ChildState gen__state_child_gen__child_state = {
+            // :: generated fields
+            gen__child_template: gen__child_template,
+            gen__launcher_template: gen__launcher_template,
+            // :: user declared fields
+            amount: child_state.amount,
+        };
         // :: spawned become child_group.child -> Child
         validateOutputStateWithTemplate(
             gen__child_group_child_output_idx,
-            child_state,
+            gen__state_child_gen__child_state,
             gen__spawn_child_prefix,
             gen__spawn_child_suffix,
             gen__child_template

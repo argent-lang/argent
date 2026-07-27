@@ -13,8 +13,6 @@ contract KCC20(
 
     // :: state layouts
     struct MinterProxyState {
-        // :: generated fields
-        byte[32] gen__kcc20_template;
         // :: user declared fields
         byte[32] controller_id;
     }

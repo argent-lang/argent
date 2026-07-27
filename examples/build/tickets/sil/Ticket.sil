@@ -9,8 +9,6 @@ contract Ticket(
 ) {
     // :: state layouts
     struct IssuerState {
-        // :: generated fields
-        byte[32] gen__ticket_template;
         // :: user declared fields
         byte[32] admin;
         int next_serial;

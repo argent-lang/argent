@@ -7,14 +7,10 @@ contract Target(
 ) {
     // :: state layouts
     struct ForeignState {
-        // :: generated fields
-        byte[32] gen__target_template;
         // :: user declared fields
         int amount;
     }
     struct LocalState {
-        // :: generated fields
-        byte[32] gen__remote_foreign_template;
         // :: user declared fields
         byte[32] foreign_id;
         int steps;
