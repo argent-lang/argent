@@ -10877,6 +10877,56 @@ mod tests {
     }
 
     #[test]
+    fn spawn_actor_type_parameter_shadows_same_named_app_actor() {
+        let artifact = inline_artifact(
+            "spawn_actor_type_parameter_shadows_app_actor",
+            r#"
+            state LauncherState {
+                int launches;
+            }
+
+            state ChildState {
+                int amount;
+            }
+
+            actor Launcher owns LauncherState {
+                entry launch(actor_type<ChildState> Child)
+                spawns child_group by child_id {
+                    outputs {
+                        child: Child,
+                    }
+                }
+                emits one Launcher {
+                    ChildState child_state = { amount: 1 };
+                    LauncherState next = { launches: launches + 1 };
+                    require child_group.outputs become {
+                        child <- Child(child_state),
+                    };
+                    become Launcher(next);
+                }
+            }
+
+            actor Child owns ChildState {}
+
+            app Test {
+                actor Launcher;
+                actor Child;
+            }
+            "#,
+        );
+
+        let launcher = artifact.argent.actors.iter().find(|actor| actor.name == "Launcher").expect("Launcher artifact exists");
+        let launch = launcher.entries.iter().find(|entry| entry.name == "launch").expect("launch entry exists");
+        assert!(launch.spawns[0].outputs[0].target.is_none(), "the source actor_type value remains a dynamic spawn target");
+        assert!(launch.hidden_params.iter().any(|param| {
+            matches!(
+                &param.subject,
+                HiddenParamSubjectArtifact::SpawnActor { actor, .. } if actor == "Child"
+            ) && param.purpose == HiddenParamPurposeArtifact::TemplatePrefixBytes
+        }));
+    }
+
+    #[test]
     fn fixed_actor_spawn_uses_compiler_owned_template_and_keeps_its_closure() {
         let source = r#"
             state LauncherState {
