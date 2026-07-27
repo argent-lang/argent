@@ -1244,8 +1244,8 @@ fn compute_state_template_deps<'a>(
                 }
             }
 
-            for interaction in entry_model.current().outputs() {
-                for target_name in interaction.target().actors() {
+            for route in entry_model.routes() {
+                for target_name in route.target().actors() {
                     let target = actors_by_name.get(target_name).copied().ok_or_else(|| {
                         ArgentError::new(format!(
                             "entry `{}::{}` routes to unknown actor `{target_name}`",
@@ -1320,8 +1320,8 @@ fn compute_direct_state_template_deps<'a>(
                     }
                 }
             }
-            for interaction in entry_model.current().outputs() {
-                for target_name in interaction.target().actors() {
+            for route in entry_model.routes() {
+                for target_name in route.target().actors() {
                     let target = actors_by_name.get(target_name).copied().ok_or_else(|| {
                         ArgentError::new(format!(
                             "entry `{}::{}` routes to unknown actor `{target_name}`",
@@ -1420,8 +1420,8 @@ fn infer_direct_routes<'a>(
                     }
                 }
             }
-            for interaction in entry_model.current().outputs() {
-                for target_name in interaction.target().actors() {
+            for route in entry_model.routes() {
+                for target_name in route.target().actors() {
                     let target = actors_by_name.get(target_name).copied().ok_or_else(|| {
                         ArgentError::new(format!(
                             "entry `{}::{}` routes to unknown actor `{target_name}`",
@@ -5570,7 +5570,7 @@ fn entry_artifact(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Re
             EntryKind::Delegate => EntryKindArtifact::Delegate,
         },
         abi: EntryAbiRefArtifact { actor: actor.name.clone(), entry: entry.name.clone() },
-        route_plan: entry_route_plan_artifact(actor, entry, model, &witnesses)?,
+        route_plan: entry_route_plan_artifact(actor, entry_model, &witnesses)?,
         hidden_params,
         template_selectors: model
             .template_selectors_for_entry(actor, entry)?
@@ -5594,7 +5594,7 @@ fn entry_artifact(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Re
             .iter()
             .map(|consume| ConsumeArtifact { name: consume.name.clone(), actor: consume.actor.clone() })
             .collect(),
-        emits: emit_spec_artifact(&entry.emits, model),
+        emits: emit_spec_artifact(entry_model),
         routes: expanded_routes.iter().map(route_artifact).collect(),
     })
 }
@@ -5747,10 +5747,10 @@ fn observed_actor_artifact(
 
 fn entry_route_plan_artifact(
     actor: &ActorDecl,
-    entry: &EntryDecl,
-    model: &Model<'_>,
+    entry_model: &EntryModel<'_>,
     witnesses: &[WitnessArtifact],
 ) -> Result<EntryRoutePlanArtifact> {
+    let entry = entry_model.source();
     let active_input = RouteInputArtifact {
         name: "self".to_string(),
         actor: actor.name.clone(),
@@ -5770,7 +5770,7 @@ fn entry_route_plan_artifact(
         EntryKind::Leader => Some(active_input.clone()),
         EntryKind::Delegate => consumes.first().cloned(),
     };
-    let outputs = route_output_handles(&entry.emits, model);
+    let outputs = route_output_handles(entry_model);
     Ok(EntryRoutePlanArtifact {
         active_input: Some(active_input),
         leader_input,
@@ -5787,21 +5787,17 @@ fn consume_cov_index(kind: EntryKind, idx: usize) -> usize {
     }
 }
 
-fn route_output_handles(emits: &EmitSpec, model: &Model<'_>) -> Vec<RouteOutputHandleArtifact> {
-    match emits {
-        EmitSpec::None => Vec::new(),
-        EmitSpec::One { actors } => {
-            vec![RouteOutputHandleArtifact { name: None, auth_index: 0, actors: model.expand_actor_refs(actors) }]
-        }
-        EmitSpec::Outputs(outputs) => outputs
-            .iter()
-            .map(|output| RouteOutputHandleArtifact {
-                name: Some(output.name.clone()),
-                auth_index: output.auth_index,
-                actors: model.expand_actor_refs(&output.actors),
-            })
-            .collect(),
-    }
+fn route_output_handles(entry: &EntryModel<'_>) -> Vec<RouteOutputHandleArtifact> {
+    entry
+        .current()
+        .outputs()
+        .iter()
+        .map(|output| RouteOutputHandleArtifact {
+            name: output.handle().map(str::to_string),
+            auth_index: output.index(),
+            actors: output.target().actors().map(str::to_string).collect(),
+        })
+        .collect()
 }
 
 fn sil_entry_artifact(actor: &ActorDecl, entry_index: usize, entry: &EntryDecl, model: &Model<'_>) -> SilEntryArtifact {
@@ -5817,17 +5813,34 @@ fn sil_entry_artifact(actor: &ActorDecl, entry_index: usize, entry: &EntryDecl, 
     SilEntryArtifact { name: entry.name.clone(), selector: (actor.entries.len() > 1).then_some(entry_index as i64), params }
 }
 
-fn emit_spec_artifact(emits: &EmitSpec, model: &Model<'_>) -> EmitArtifact {
-    match emits {
+fn emit_spec_artifact(entry: &EntryModel<'_>) -> EmitArtifact {
+    match &entry.source().emits {
         EmitSpec::None => EmitArtifact::None,
-        EmitSpec::One { actors } => EmitArtifact::One { actors: model.expand_actor_refs(actors) },
-        EmitSpec::Outputs(outputs) => EmitArtifact::Outputs {
-            outputs: outputs
+        EmitSpec::One { .. } => {
+            let [output] = entry.current().outputs() else {
+                unreachable!("emits one has one modeled output");
+            };
+            let InteractionSource::CurrentOutput { declaration, output: None } = output.source() else {
+                unreachable!("emits one retains its emit spec");
+            };
+            debug_assert!(matches!(declaration, EmitSpec::One { .. }));
+            EmitArtifact::One { actors: output.target().actors().map(str::to_string).collect() }
+        }
+        EmitSpec::Outputs(_) => EmitArtifact::Outputs {
+            outputs: entry
+                .current()
+                .outputs()
                 .iter()
-                .map(|output| EmitOutputArtifact {
-                    name: output.name.clone(),
-                    auth_index: output.auth_index,
-                    actors: model.expand_actor_refs(&output.actors),
+                .map(|interaction| {
+                    let InteractionSource::CurrentOutput { declaration, output: Some(_) } = interaction.source() else {
+                        unreachable!("named emits output retains its source");
+                    };
+                    debug_assert!(matches!(declaration, EmitSpec::Outputs(_)));
+                    EmitOutputArtifact {
+                        name: interaction.handle().expect("named output has a modeled handle").to_string(),
+                        auth_index: interaction.index(),
+                        actors: interaction.target().actors().map(str::to_string).collect(),
+                    }
                 })
                 .collect(),
         },

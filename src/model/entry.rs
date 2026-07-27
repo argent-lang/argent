@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::ast::{ActorDecl, ConsumeDecl, EntryDecl, ObserveDecl, ObservedActorDecl, RouteCall, SpawnDecl, SpawnOutputDecl};
+use crate::ast::{
+    ActorDecl, ConsumeDecl, EmitOutput, EmitSpec, EntryDecl, ObserveDecl, ObservedActorDecl, RouteCall, SpawnDecl, SpawnOutputDecl,
+};
 use crate::error::{ArgentError, Result};
 use crate::language::word;
 use crate::lexer::{Token, TokenKind, lex};
@@ -15,29 +17,60 @@ use super::ActorEnumInfo;
 pub(crate) struct EntryModel<'a> {
     source: &'a EntryDecl,
     groups: Vec<CovenantGroup<'a>>,
+    routes: Vec<EntryRoute<'a>>,
     template_selectors: BTreeMap<String, TemplateSelector>,
 }
 
 impl<'a> EntryModel<'a> {
     /// Build an entry model from its source actor and declaration.
     pub(crate) fn build(actor: &'a ActorDecl, source: &'a EntryDecl, actor_enums: &BTreeMap<String, ActorEnumInfo>) -> Result<Self> {
-        Ok(Self::new(source, template_selectors_for_entry(actor, source, actor_enums)?))
+        Ok(Self::new(source, actor_enums, template_selectors_for_entry(actor, source, actor_enums)?))
     }
 
-    fn new(source: &'a EntryDecl, template_selectors: BTreeMap<String, TemplateSelector>) -> Self {
+    fn new(
+        source: &'a EntryDecl,
+        actor_enums: &BTreeMap<String, ActorEnumInfo>,
+        template_selectors: BTreeMap<String, TemplateSelector>,
+    ) -> Self {
         let current_inputs = source
             .consumes
             .iter()
-            .map(|consume| EntryInteraction { source: InteractionSource::Consume(consume), target: ActorTarget::one(&consume.actor) })
+            .enumerate()
+            .map(|(index, consume)| EntryInteraction {
+                source: InteractionSource::Consume(consume),
+                handle: Some(&consume.name),
+                index,
+                target: ActorTarget::one(&consume.actor),
+            })
             .collect();
-        let current_outputs = source
+        let current_outputs = match &source.emits {
+            EmitSpec::None => Vec::new(),
+            EmitSpec::One { actors } => {
+                vec![EntryInteraction {
+                    source: InteractionSource::CurrentOutput { declaration: &source.emits, output: None },
+                    handle: None,
+                    index: 0,
+                    target: ActorTarget::domain(actors, actor_enums),
+                }]
+            }
+            EmitSpec::Outputs(outputs) => outputs
+                .iter()
+                .map(|output| EntryInteraction {
+                    source: InteractionSource::CurrentOutput { declaration: &source.emits, output: Some(output) },
+                    handle: Some(&output.name),
+                    index: output.auth_index,
+                    target: ActorTarget::domain(&output.actors, actor_enums),
+                })
+                .collect(),
+        };
+        let routes = source
             .routes
             .iter()
             .map(|route| {
                 let actors = template_selectors
                     .get(&route.actor)
                     .map_or_else(|| vec![route.actor.clone()], |selector| selector.variants.clone());
-                EntryInteraction { source: InteractionSource::Emit(route), target: ActorTarget { actors } }
+                EntryRoute { source: route, target: ActorTarget { actors } }
             })
             .collect();
         let mut groups = vec![CovenantGroup { covenant: CovenantContext::Current, inputs: current_inputs, outputs: current_outputs }];
@@ -47,16 +80,22 @@ impl<'a> EntryModel<'a> {
                 inputs: observe
                     .inputs
                     .iter()
-                    .map(|input| EntryInteraction {
+                    .enumerate()
+                    .map(|(index, input)| EntryInteraction {
                         source: InteractionSource::ObserveInput(input),
+                        handle: Some(&input.name),
+                        index,
                         target: ActorTarget::one(&input.actor),
                     })
                     .collect(),
                 outputs: observe
                     .outputs
                     .iter()
-                    .map(|output| EntryInteraction {
+                    .enumerate()
+                    .map(|(index, output)| EntryInteraction {
                         source: InteractionSource::ObserveOutput(output),
+                        handle: Some(&output.name),
+                        index,
                         target: ActorTarget::one(&output.actor),
                     })
                     .collect(),
@@ -71,12 +110,14 @@ impl<'a> EntryModel<'a> {
                     .iter()
                     .map(|output| EntryInteraction {
                         source: InteractionSource::SpawnOutput(output),
+                        handle: Some(&output.name),
+                        index: output.group_index,
                         target: ActorTarget::one(&output.actor),
                     })
                     .collect(),
             }
         }));
-        Self { source, groups, template_selectors }
+        Self { source, groups, routes, template_selectors }
     }
 
     /// Return the source entry declaration.
@@ -104,14 +145,14 @@ impl<'a> EntryModel<'a> {
         &self.template_selectors
     }
 
+    /// Return body-derived routes in analysis order.
+    pub(crate) fn routes(&self) -> &[EntryRoute<'a>] {
+        &self.routes
+    }
+
     /// Expand body-derived routes to their concrete artifact targets.
     pub(crate) fn expanded_routes(&self) -> Vec<RouteCall> {
-        let routes = self.current().outputs().iter().map(|interaction| {
-            let InteractionSource::Emit(route) = interaction.source() else {
-                unreachable!("current entry outputs are emits");
-            };
-            route
-        });
+        let routes = self.routes.iter().map(EntryRoute::source);
         expand_routes(routes, &self.template_selectors)
     }
 }
@@ -169,6 +210,8 @@ pub(crate) enum CovenantContext<'a> {
 #[derive(Debug)]
 pub(crate) struct EntryInteraction<'a> {
     source: InteractionSource<'a>,
+    handle: Option<&'a str>,
+    index: usize,
     target: ActorTarget,
 }
 
@@ -176,6 +219,16 @@ impl<'a> EntryInteraction<'a> {
     /// Return the exact source node that declared this interaction.
     pub(crate) fn source(&self) -> InteractionSource<'a> {
         self.source
+    }
+
+    /// Return the declared handle, or `None` for an implicit output.
+    pub(crate) fn handle(&self) -> Option<&'a str> {
+        self.handle
+    }
+
+    /// Return the interaction's index within its covenant side.
+    pub(crate) fn index(&self) -> usize {
+        self.index
     }
 
     /// Return the compiler-known target candidates.
@@ -189,8 +242,8 @@ impl<'a> EntryInteraction<'a> {
 pub(crate) enum InteractionSource<'a> {
     /// A current-covenant input from `consumes`.
     Consume(&'a ConsumeDecl),
-    /// A body-derived current-covenant output route.
-    Emit(&'a RouteCall),
+    /// A current-covenant output and its optional named source node.
+    CurrentOutput { declaration: &'a EmitSpec, output: Option<&'a EmitOutput> },
     /// An input from an `observes` clause.
     ObserveInput(&'a ObservedActorDecl),
     /// An output from an `observes` clause.
@@ -213,9 +266,37 @@ impl ActorTarget {
         Self { actors: vec![expression.to_string()] }
     }
 
+    fn domain(actors: &[String], actor_enums: &BTreeMap<String, ActorEnumInfo>) -> Self {
+        Self {
+            actors: actors
+                .iter()
+                .flat_map(|actor| actor_enums.get(actor).map_or_else(|| vec![actor.clone()], |actor_enum| actor_enum.variants.clone()))
+                .collect(),
+        }
+    }
+
     /// Iterate candidate actor names or unresolved target expressions.
     pub(crate) fn actors(&self) -> impl Iterator<Item = &str> {
         self.actors.iter().map(String::as_str)
+    }
+}
+
+/// One body-derived route and its planning target domain.
+#[derive(Debug)]
+pub(crate) struct EntryRoute<'a> {
+    source: &'a RouteCall,
+    target: ActorTarget,
+}
+
+impl<'a> EntryRoute<'a> {
+    /// Return the analyzed body route.
+    pub(crate) fn source(&self) -> &'a RouteCall {
+        self.source
+    }
+
+    /// Return the route targets used by dependency and commitment planning.
+    pub(crate) fn target(&self) -> &ActorTarget {
+        &self.target
     }
 }
 
@@ -563,7 +644,7 @@ fn expand_routes<'a>(routes: impl Iterator<Item = &'a RouteCall>, selectors: &BT
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{EmitSpec, EntryKind};
+    use crate::ast::{EmitOutput, EmitSpec, EntryKind};
 
     #[test]
     fn models_covenant_groups_and_preserves_source_nodes() {
@@ -599,14 +680,32 @@ mod tests {
                 fixed_actor: Some("King".to_string()),
             },
         )]);
+        let actor_enums = BTreeMap::from([(
+            "Move".to_string(),
+            ActorEnumInfo {
+                name: "Move".to_string(),
+                state: "Game".to_string(),
+                variants: vec!["Pawn".to_string(), "King".to_string()],
+            },
+        )]);
 
-        let model = EntryModel::new(&entry, selectors);
+        let model = EntryModel::new(&entry, &actor_enums, selectors);
 
         let InteractionSource::Consume(consume) = model.current().inputs()[0].source() else {
             panic!("current input must retain its consume declaration");
         };
         assert!(std::ptr::eq(consume, &entry.consumes[0]));
+        assert_eq!(model.current().inputs()[0].handle(), Some("peer"));
+        assert_eq!(model.current().inputs()[0].index(), 0);
+        let InteractionSource::CurrentOutput { declaration, output: None } = model.current().outputs()[0].source() else {
+            panic!("current output must retain its emits declaration");
+        };
+        assert!(std::ptr::eq(declaration, &entry.emits));
+        assert_eq!(model.current().outputs()[0].handle(), None);
+        assert_eq!(model.current().outputs()[0].index(), 0);
         assert_eq!(model.current().outputs()[0].target().actors().collect::<Vec<_>>(), ["Pawn", "King"]);
+        assert!(std::ptr::eq(model.routes()[0].source(), &entry.routes[0]));
+        assert_eq!(model.routes()[0].target().actors().collect::<Vec<_>>(), ["Pawn", "King"]);
 
         let observe_group = model.existing_groups().next().expect("observe group");
         assert!(std::ptr::eq(observe_group.observe().expect("observe source"), &entry.observes[0]));
@@ -614,6 +713,8 @@ mod tests {
             panic!("observe input must retain its source declaration");
         };
         assert!(std::ptr::eq(observed, &entry.observes[0].inputs[0]));
+        assert_eq!(observe_group.inputs()[0].handle(), Some("before"));
+        assert_eq!(observe_group.inputs()[0].index(), 0);
 
         let spawn_group = model.genesis_groups().next().expect("spawn group");
         assert!(std::ptr::eq(spawn_group.spawn().expect("spawn source"), &entry.spawns[0]));
@@ -621,7 +722,66 @@ mod tests {
             panic!("spawn output must retain its source declaration");
         };
         assert!(std::ptr::eq(output, &entry.spawns[0].outputs[0]));
+        assert_eq!(spawn_group.outputs()[0].handle(), Some("child"));
+        assert_eq!(spawn_group.outputs()[0].index(), 0);
 
         assert_eq!(model.expanded_routes()[0].actor, "King");
+    }
+
+    #[test]
+    fn models_named_and_empty_emit_domains() {
+        let entry = EntryDecl {
+            kind: EntryKind::Leader,
+            name: "step".to_string(),
+            params: Vec::new(),
+            consumes: Vec::new(),
+            observes: Vec::new(),
+            spawns: Vec::new(),
+            emits: EmitSpec::Outputs(vec![
+                EmitOutput { name: "first".to_string(), actors: vec!["Pawn".to_string()], auth_index: 0 },
+                EmitOutput { name: "second".to_string(), actors: vec!["Move".to_string()], auth_index: 1 },
+            ]),
+            body: String::new(),
+            routes: Vec::new(),
+            terminal_route_sets: Vec::new(),
+        };
+        let actor_enums = BTreeMap::from([(
+            "Move".to_string(),
+            ActorEnumInfo {
+                name: "Move".to_string(),
+                state: "Game".to_string(),
+                variants: vec!["Pawn".to_string(), "King".to_string()],
+            },
+        )]);
+
+        let model = EntryModel::new(&entry, &actor_enums, BTreeMap::new());
+        let EmitSpec::Outputs(outputs) = &entry.emits else {
+            panic!("test entry must have named outputs");
+        };
+        let InteractionSource::CurrentOutput { declaration: first_declaration, output: Some(first) } =
+            model.current().outputs()[0].source()
+        else {
+            panic!("named output must retain its emit output");
+        };
+        let InteractionSource::CurrentOutput { declaration: second_declaration, output: Some(second) } =
+            model.current().outputs()[1].source()
+        else {
+            panic!("named output must retain its emit output");
+        };
+        assert!(std::ptr::eq(first_declaration, &entry.emits));
+        assert!(std::ptr::eq(second_declaration, &entry.emits));
+        assert!(std::ptr::eq(first, &outputs[0]));
+        assert!(std::ptr::eq(second, &outputs[1]));
+        assert_eq!(model.current().outputs()[0].handle(), Some("first"));
+        assert_eq!(model.current().outputs()[0].index(), 0);
+        assert_eq!(model.current().outputs()[0].target().actors().collect::<Vec<_>>(), ["Pawn"]);
+        assert_eq!(model.current().outputs()[1].handle(), Some("second"));
+        assert_eq!(model.current().outputs()[1].index(), 1);
+        assert_eq!(model.current().outputs()[1].target().actors().collect::<Vec<_>>(), ["Pawn", "King"]);
+
+        let mut empty_entry = entry.clone();
+        empty_entry.emits = EmitSpec::None;
+        let empty_model = EntryModel::new(&empty_entry, &actor_enums, BTreeMap::new());
+        assert!(empty_model.current().outputs().is_empty());
     }
 }
