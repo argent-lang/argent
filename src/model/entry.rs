@@ -190,9 +190,9 @@ pub(crate) struct ActorTemplateUses {
     pub(crate) writes: BTreeSet<String>,
 }
 
-/// Entry inputs and outputs governed by one covenant ID.
+/// Ordered interactions governed by one covenant ID.
 ///
-/// The shared covenant places every concrete target in the same app domain.
+/// The current covenant and each observe or spawn clause form separate groups.
 #[derive(Debug)]
 pub(crate) struct CovenantGroup<'a> {
     covenant: CovenantContext<'a>,

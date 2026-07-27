@@ -437,6 +437,14 @@ impl<'a> Model<'a> {
     }
 
     fn validate_entry(&self, actor: &ActorDecl, entry: &EntryDecl) -> Result<()> {
+        for param in &entry.params {
+            if param.ty.is_actor_type() && self.static_actor_target(&param.name).is_some() {
+                return Err(ArgentError::new(format!(
+                    "entry `{}::{}` actor_type parameter `{}` shadows an actor reference with the same name; rename the parameter",
+                    actor.name, entry.name, param.name
+                )));
+            }
+        }
         self.validate_observes(actor, entry)?;
         self.validate_spawns(actor, entry)?;
 
@@ -10893,9 +10901,8 @@ mod tests {
     }
 
     #[test]
-    fn spawn_actor_type_parameter_shadows_same_named_app_actor() {
-        let artifact = inline_artifact(
-            "spawn_actor_type_parameter_shadows_app_actor",
+    fn rejects_actor_type_parameter_shadowing_same_named_app_actor() {
+        let err = parse_and_validate(
             r#"
             state LauncherState {
                 int launches;
@@ -10933,17 +10940,13 @@ mod tests {
                 actor Child;
             }
             "#,
-        );
+        )
+        .expect_err("actor_type parameters must not shadow actor references");
 
-        let launcher = artifact.argent.actors.iter().find(|actor| actor.name == "Launcher").expect("Launcher artifact exists");
-        let launch = launcher.entries.iter().find(|entry| entry.name == "launch").expect("launch entry exists");
-        assert!(launch.spawns[0].outputs[0].target.is_none(), "the source actor_type value remains a dynamic spawn target");
-        assert!(launch.hidden_params.iter().any(|param| {
-            matches!(
-                &param.subject,
-                HiddenParamSubjectArtifact::SpawnActor { actor, .. } if actor == "Child"
-            ) && param.purpose == HiddenParamPurposeArtifact::TemplatePrefixBytes
-        }));
+        assert_eq!(
+            err.message,
+            "entry `Launcher::launch` actor_type parameter `Child` shadows an actor reference with the same name; rename the parameter"
+        );
     }
 
     #[test]
