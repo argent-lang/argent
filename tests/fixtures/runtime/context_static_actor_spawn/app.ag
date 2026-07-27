@@ -8,6 +8,9 @@ state ChildState {
 
 actor Launcher owns LauncherState {
     entry launch(int amount)
+    consumes {
+        source: Child,
+    }
     spawns child_group by child_id {
         outputs {
             child: Child,
@@ -15,7 +18,7 @@ actor Launcher owns LauncherState {
     }
     emits one Launcher {
         ChildState child_state = {
-            amount: amount,
+            amount: source.amount + amount,
         };
         LauncherState next = {
             launches: launches + 1,
@@ -29,6 +32,11 @@ actor Launcher owns LauncherState {
 }
 
 actor Child owns ChildState {
+    delegate support_launch()
+    consumes {
+        launcher: Launcher,
+    } {}
+
     entry return_to_launcher() emits one Launcher {
         LauncherState next = {
             launches: 0,

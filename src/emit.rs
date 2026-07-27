@@ -10,9 +10,9 @@ use crate::language::word;
 use crate::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, Token, TokenKind, lex};
 use crate::link::{LinkedActor, LinkedContext, link_imported_actors};
 use crate::model::{
-    ActorEnumInfo, ActorModel, CompilerRoutePlan, CompilerRoutePlanner, CompilerRouteTransition, CovenantGroup, EntryModel,
-    InteractionSource, Model, RouteFamily, RouteRootLeaf, TemplateSelector, actor_enum_variant_const_expr, default_route_planner,
-    infer_direct_routes, is_single_actor_self_consume, is_single_actor_self_target, parse_actor_enum_selector,
+    ActorEnumInfo, ActorModel, ActorTemplateUses, CompilerRoutePlan, CompilerRoutePlanner, CompilerRouteTransition, CovenantGroup,
+    EntryModel, InteractionSource, Model, RouteFamily, RouteRootLeaf, TemplateSelector, actor_enum_variant_const_expr,
+    default_route_planner, infer_direct_routes, is_single_actor_self_consume, is_single_actor_self_target, parse_actor_enum_selector,
     parse_actor_enum_variant,
 };
 use crate::naming::{is_identifier, to_snake};
@@ -2389,19 +2389,37 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
 
         push_indent(out, indent);
         out.push_str(&format!("// :: spawned become {}.{} -> {}\n", spawn.name, output.name, output.actor));
-        push_generated_call(
-            out,
-            indent,
-            "",
-            "validateOutputStateWithTemplate",
-            &[
-                hidden_spawn_output_idx_name(&spawn.name, &output.name),
-                state_arg,
-                hidden_spawn_actor_prefix_name(&spec),
-                hidden_spawn_actor_suffix_name(&spec),
-                template,
-            ],
-        );
+        let output_idx = hidden_spawn_output_idx_name(&spawn.name, &output.name);
+        if concrete_actor == Some(self.actor.name.as_str()) {
+            push_generated_call(out, indent, "", "validateOutputState", &[output_idx, state_arg]);
+        } else if let Some(target) = concrete_actor
+            && let Some(input_idx) = template_input_index_for_actor(self.actor, self.entry, target, self.model)?
+        {
+            push_generated_call(
+                out,
+                indent,
+                "",
+                "validateOutputStateWithInputTemplate",
+                &[
+                    output_idx,
+                    state_arg,
+                    input_idx,
+                    hidden_witness_prefix_len_name(target),
+                    hidden_witness_suffix_len_name(target),
+                    template,
+                ],
+            );
+        } else {
+            let prefix = concrete_actor.map_or_else(|| hidden_spawn_actor_prefix_name(&spec), hidden_witness_prefix_name);
+            let suffix = concrete_actor.map_or_else(|| hidden_spawn_actor_suffix_name(&spec), hidden_witness_suffix_name);
+            push_generated_call(
+                out,
+                indent,
+                "",
+                "validateOutputStateWithTemplate",
+                &[output_idx, state_arg, prefix, suffix, template],
+            );
+        }
         Ok(())
     }
 
@@ -3437,7 +3455,6 @@ fn split_top_level_commas(input: &str) -> Vec<&str> {
 enum TemplateWitnessForm {
     Bytes,
     Len,
-    Materialize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3548,7 +3565,6 @@ fn lower_entry_params(actor: &ActorDecl, entry: &EntryDecl, witness_specs: &Entr
                 out.push(format!("int {}", hidden_witness_prefix_len_name(&spec.actor)));
                 out.push(format!("int {}", hidden_witness_suffix_len_name(&spec.actor)));
             }
-            TemplateWitnessForm::Materialize => {}
         }
     }
     for spec in &witness_specs.families {
@@ -3591,12 +3607,8 @@ fn lower_entry_params(actor: &ActorDecl, entry: &EntryDecl, witness_specs: &Entr
 }
 
 fn entry_witness_specs(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Result<EntryWitnessSpecs> {
-    let mut read_actors = entry
-        .consumes
-        .iter()
-        .filter(|consume| !model.consume_uses_current_template(actor, consume))
-        .map(|consume| consume.actor.clone())
-        .collect::<BTreeSet<_>>();
+    let ActorTemplateUses { reads: read_actors, writes: write_actors } =
+        model.entry_model(actor, entry)?.actor_template_uses(&actor.name, &model.app_actors);
     let selectors = model.template_selectors_for_entry(actor, entry).expect("entry selectors are valid after model validation");
     let selector_specs = selectors
         .values()
@@ -3607,43 +3619,7 @@ fn entry_witness_specs(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) 
             variants: selector.variants,
         })
         .collect::<Vec<_>>();
-    let mut write_actors = entry
-        .routes
-        .iter()
-        .filter(|route| !selectors.contains_key(&route.actor))
-        .filter(|route| route_validation_kind(actor, route) == RouteValidationKind::ForeignTemplate)
-        .map(|route| route.actor.clone())
-        .collect::<BTreeSet<_>>();
-    for group in model.entry_model(actor, entry)?.existing_groups() {
-        let observe = group.observe().expect("existing covenant group retains its observe declaration");
-        for interaction in group.inputs() {
-            let InteractionSource::ObserveInput(observed) = interaction.source() else {
-                unreachable!("existing covenant inputs are observed inputs");
-            };
-            if let Some(target) = static_in_app_observed_actor(actor, entry, observe, observed, model)?
-                && !model.actor_uses_current_template(actor, &target.name)
-            {
-                read_actors.insert(target.name.clone());
-            }
-        }
-        for interaction in group.outputs() {
-            let InteractionSource::ObserveOutput(observed) = interaction.source() else {
-                unreachable!("existing covenant outputs are observed outputs");
-            };
-            if let Some(target) = static_in_app_observed_actor(actor, entry, observe, observed, model)?
-                && target.name != actor.name
-            {
-                write_actors.insert(target.name.clone());
-            }
-        }
-    }
-    let materialized_actors = entry
-        .spawns
-        .iter()
-        .flat_map(|spawn| &spawn.outputs)
-        .filter_map(|output| model.static_app_actor(&output.actor).map(|actor| actor.name.clone()))
-        .collect::<BTreeSet<_>>();
-    let mut specs = template_witness_specs_for_actor(actor, model, read_actors, write_actors, materialized_actors);
+    let mut specs = template_witness_specs_for_actor(actor, model, read_actors, write_actors);
     specs.selectors = selector_specs;
     specs.observed_actors = observed_actor_witness_specs(actor, entry, model)?;
     specs.spawn_outputs = spawn_output_witness_specs(actor, entry, model)?;
@@ -3683,17 +3659,7 @@ fn spawn_output_witness_specs(actor: &ActorDecl, entry: &EntryDecl, model: &Mode
 
 fn spawn_template_witness_specs(outputs: &[SpawnActorWitnessSpec]) -> Vec<SpawnActorWitnessSpec> {
     let mut seen = BTreeSet::new();
-    outputs
-        .iter()
-        .filter(|spec| {
-            let key = spec
-                .source
-                .as_ref()
-                .map_or_else(|| format!("static:{}", spec.actor), |source| format!("dynamic:{}", source.witness_suffix()));
-            seen.insert(key)
-        })
-        .cloned()
-        .collect()
+    outputs.iter().filter(|spec| spec.source.as_ref().is_some_and(|source| seen.insert(source.witness_suffix()))).cloned().collect()
 }
 
 fn observed_output_field_witness_specs(
@@ -3735,11 +3701,10 @@ fn template_witness_specs_for_actor(
     model: &Model<'_>,
     read_actors: BTreeSet<String>,
     write_actors: BTreeSet<String>,
-    materialized_actors: BTreeSet<String>,
 ) -> EntryWitnessSpecs {
-    let mut specs = template_witness_specs(model, read_actors, write_actors.clone(), materialized_actors.clone());
+    let mut specs = template_witness_specs(model, read_actors, write_actors.clone());
     let mut family_specs = BTreeMap::<String, RouteFamilyWitnessSpec>::new();
-    for target in write_actors.union(&materialized_actors) {
+    for target in &write_actors {
         if target == &actor.name {
             continue;
         }
@@ -3809,10 +3774,8 @@ fn template_witness_specs(
     model: &Model<'_>,
     read_actors: BTreeSet<String>,
     write_actors: BTreeSet<String>,
-    materialized_actors: BTreeSet<String>,
 ) -> Vec<TemplateWitnessSpec> {
     let mut required = read_actors.union(&write_actors).cloned().collect::<BTreeSet<_>>();
-    required.extend(materialized_actors.iter().cloned());
     let mut ordered = Vec::new();
     for actor in &model.app_actors {
         if required.remove(actor) {
@@ -3831,13 +3794,7 @@ fn template_witness_specs(
 }
 
 fn witness_form(actor: &str, read_actors: &BTreeSet<String>, write_actors: &BTreeSet<String>) -> TemplateWitnessForm {
-    if write_actors.contains(actor) && !read_actors.contains(actor) {
-        TemplateWitnessForm::Bytes
-    } else if read_actors.contains(actor) || write_actors.contains(actor) {
-        TemplateWitnessForm::Len
-    } else {
-        TemplateWitnessForm::Materialize
-    }
+    if write_actors.contains(actor) && !read_actors.contains(actor) { TemplateWitnessForm::Bytes } else { TemplateWitnessForm::Len }
 }
 
 fn template_source_for_actor(state: &str, actor: &str, model: &Model<'_>) -> TemplateWitnessSource {
@@ -5102,7 +5059,6 @@ fn hidden_params_for_entry(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'
                     route_proof_id: None,
                 });
             }
-            TemplateWitnessForm::Materialize => {}
         }
     }
     for spec in &witness_specs.families {
@@ -9255,8 +9211,7 @@ mod tests {
         let choose_pawn = mux.entries.iter().find(|entry| entry.name == "choose_pawn").expect("choose_pawn exists");
         assert!(entry_witness_specs(mux, choose_pawn, &model).expect("choose_pawn witnesses lower").families.is_empty());
 
-        let read_only_mux =
-            template_witness_specs_for_actor(player, &model, BTreeSet::from(["Mux".to_string()]), BTreeSet::new(), BTreeSet::new());
+        let read_only_mux = template_witness_specs_for_actor(player, &model, BTreeSet::from(["Mux".to_string()]), BTreeSet::new());
         assert!(read_only_mux.families.is_empty());
     }
 
@@ -11066,7 +11021,23 @@ mod tests {
             2,
             "two fixed outputs for one actor share one prefix/suffix pair"
         );
+        assert!(launcher.entries[0].hidden_params.iter().any(|param| {
+            param.name == "gen__child_prefix" && param.subject == HiddenParamSubjectArtifact::Actor { actor: "Child".to_string() }
+        }));
+        assert!(!launcher.entries[0].hidden_params.iter().any(|param| {
+            matches!(param.subject, HiddenParamSubjectArtifact::SpawnActor { .. })
+                && matches!(
+                    param.purpose,
+                    HiddenParamPurposeArtifact::TemplatePrefixBytes | HiddenParamPurposeArtifact::TemplateSuffixBytes
+                )
+        }));
         artifact.verify_template_plan().expect("fixed spawn template closure verifies");
+        let mut malformed = artifact.clone();
+        malformed.argent.actors[0].entries[0].hidden_params.retain(|param| param.name != "gen__child_suffix");
+        assert!(
+            matches!(malformed.verify_template_plan(), Err(TemplatePlanError::InvalidSpawnMetadata { .. })),
+            "static spawn metadata must retain one complete actor-scoped template pair"
+        );
 
         let unselected = source.replace("                actor Child;\n", "");
         let err = parse_and_validate(&unselected).expect_err("fixed spawn actor must belong to the selected app");
@@ -11074,13 +11045,39 @@ mod tests {
     }
 
     #[test]
-    fn fixed_actor_spawn_lowers_to_pinned_sil() {
+    fn fixed_actor_spawn_reuses_consumed_template_in_pinned_sil() {
         let source = "tests/fixtures/runtime/context_static_actor_spawn/app.ag";
         let (launcher_sil, launcher_artifact) = emit_selected_fixture(source, "StaticActorSpawn", "Launcher");
         let (child_sil, _) = emit_selected_fixture(source, "StaticActorSpawn", "Child");
 
         assert_eq!(launcher_sil, include_str!("../tests/fixtures/runtime/context_static_actor_spawn/Launcher.sil"));
         assert_eq!(child_sil, include_str!("../tests/fixtures/runtime/context_static_actor_spawn/Child.sil"));
+        let launch =
+            launcher_artifact.argent.actors[0].entries.iter().find(|entry| entry.name == "launch").expect("launch entry exists");
+        assert_eq!(
+            launch.hidden_params.iter().map(|param| (param.name.as_str(), &param.subject, param.purpose)).collect::<Vec<_>>(),
+            vec![
+                (
+                    "gen__child_prefix_len",
+                    &HiddenParamSubjectArtifact::Actor { actor: "Child".to_string() },
+                    HiddenParamPurposeArtifact::TemplatePrefixLen,
+                ),
+                (
+                    "gen__child_suffix_len",
+                    &HiddenParamSubjectArtifact::Actor { actor: "Child".to_string() },
+                    HiddenParamPurposeArtifact::TemplateSuffixLen,
+                ),
+                (
+                    "gen__child_group_child_output_idx",
+                    &HiddenParamSubjectArtifact::SpawnActor {
+                        spawn: "child_group".to_string(),
+                        handle: "child".to_string(),
+                        actor: "Child".to_string(),
+                    },
+                    HiddenParamPurposeArtifact::SpawnOutputIndex,
+                ),
+            ]
+        );
         launcher_artifact.verify_template_plan().expect("pinned fixed-spawn template plan verifies");
     }
 
@@ -11118,6 +11115,16 @@ mod tests {
 
         let state = runtime_state_plan(&artifact, "Node").expect("self-spawning Node stores route context");
         assert!(state.field_roles.iter().any(|field| field.name == "gen__node_template"));
+        let fork = artifact.argent.actors[0].entries.iter().find(|entry| entry.name == "fork").expect("fork entry exists");
+        assert!(!fork.hidden_params.iter().any(|param| {
+            matches!(
+                param.purpose,
+                HiddenParamPurposeArtifact::TemplatePrefixBytes
+                    | HiddenParamPurposeArtifact::TemplateSuffixBytes
+                    | HiddenParamPurposeArtifact::TemplatePrefixLen
+                    | HiddenParamPurposeArtifact::TemplateSuffixLen
+            )
+        }));
         artifact.verify_template_plan().expect("fixed self-spawn template plan verifies");
     }
 
@@ -11184,7 +11191,12 @@ mod tests {
         let launcher = artifact.argent.actors.iter().find(|actor| actor.name == "Launcher").expect("Launcher artifact exists");
         let launch = launcher.entries.iter().find(|entry| entry.name == "launch").expect("launch entry exists");
         assert!(launch.hidden_params.iter().any(|param| param.purpose == HiddenParamPurposeArtifact::RouteFamilyTable));
-        assert!(!launch.hidden_params.iter().any(|param| param.name == "gen__mux_prefix" || param.name == "gen__mux_suffix"));
+        assert!(launch.hidden_params.iter().any(|param| {
+            param.name == "gen__mux_prefix" && param.subject == HiddenParamSubjectArtifact::Actor { actor: "Mux".to_string() }
+        }));
+        assert!(launch.hidden_params.iter().any(|param| {
+            param.name == "gen__mux_suffix" && param.subject == HiddenParamSubjectArtifact::Actor { actor: "Mux".to_string() }
+        }));
         artifact.verify_template_plan().expect("fixed family spawn template plan verifies");
     }
 

@@ -14,8 +14,8 @@ mod entry;
 
 pub(crate) use actor::ActorModel;
 pub(crate) use entry::{
-    CovenantGroup, EntryModel, InteractionSource, TemplateSelector, actor_enum_variant_const_expr, parse_actor_enum_selector,
-    parse_actor_enum_variant,
+    ActorTemplateUses, CovenantGroup, EntryModel, InteractionSource, TemplateSelector, actor_enum_variant_const_expr,
+    parse_actor_enum_selector, parse_actor_enum_variant,
 };
 
 /// The selected application's compiler-wide source and routing model.

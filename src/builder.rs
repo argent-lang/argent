@@ -1123,19 +1123,24 @@ mod tests {
 
         let launcher_id = Hash::from_bytes([0x91; 32]);
         let launcher_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0x92; 32]), 3);
+        let child_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0x93; 32]), 4);
         let launcher_state = state! { launches: 0 };
+        let child_state = state! { amount: 10 };
         let launcher_utxo = builder
             .covenant_utxo("Launcher", launcher_state.clone(), 5_000, 0, false, Some(launcher_id))
             .expect("launcher UTXO builds");
+        let child_utxo =
+            builder.covenant_utxo("Child", child_state.clone(), 2_000, 0, false, Some(launcher_id)).expect("child UTXO builds");
         let context = TxContext::new()
             .actor_input(
                 "Launcher",
-                launcher_state,
-                EntryCall::new("launch").args(args![42]),
+                launcher_state.clone(),
+                EntryCall::new("launch").args(args![32]),
                 launcher_outpoint,
                 launcher_utxo.clone(),
                 0,
             )
+            .actor_input("Child", child_state.clone(), "support_launch", child_outpoint, child_utxo.clone(), 0)
             .actor_output("Launcher", state! { launches: 1 }, CovenantBinding::new(0, launcher_id), 3_000)
             .actor_genesis_output(0, "spawn::child_group", "Child", state! { amount: 42 }, 2_000);
 
@@ -1144,14 +1149,8 @@ mod tests {
         assert_eq!(transaction.outputs[1].covenant, Some(CovenantBinding::new(0, child_id)));
 
         let wrong_actor = TxContext::new()
-            .actor_input(
-                "Launcher",
-                state! { launches: 0 },
-                EntryCall::new("launch").args(args![42]),
-                launcher_outpoint,
-                launcher_utxo,
-                0,
-            )
+            .actor_input("Launcher", launcher_state, EntryCall::new("launch").args(args![32]), launcher_outpoint, launcher_utxo, 0)
+            .actor_input("Child", child_state, "support_launch", child_outpoint, child_utxo, 0)
             .actor_output("Launcher", state! { launches: 1 }, CovenantBinding::new(0, launcher_id), 3_000)
             .actor_genesis_output(0, "spawn::child_group", "Launcher", state! { launches: 42 }, 2_000);
         let err = builder.build(&wrong_actor).expect_err("static spawn requires the declared actor template");

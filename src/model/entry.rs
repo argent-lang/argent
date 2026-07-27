@@ -1,6 +1,6 @@
 //! Source-backed entry interactions grouped by covenant context.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{
     ActorDecl, ConsumeDecl, EmitOutput, EmitSpec, EntryDecl, ObserveDecl, ObservedActorDecl, RouteCall, SpawnDecl, SpawnOutputDecl,
@@ -138,6 +138,53 @@ impl<'a> EntryModel<'a> {
     pub(crate) fn expanded_routes(&self) -> Vec<RouteCall> {
         expand_routes(self.source.routes.iter(), &self.template_selectors)
     }
+
+    /// Collect concrete app actors whose templates this entry reads or writes.
+    ///
+    /// Current outputs follow the body-selected routes; existing and genesis
+    /// outputs are exhaustive in their covenant groups.
+    pub(crate) fn actor_template_uses(&self, source_actor: &str, app_actors: &[String]) -> ActorTemplateUses {
+        let app_actor_set = app_actors.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        let uses_current_template = |target: &str| app_actors.len() == 1 && app_actors[0] == source_actor && target == source_actor;
+        let mut uses = ActorTemplateUses::default();
+
+        for group in std::iter::once(self.current()).chain(self.existing_groups()) {
+            for interaction in group.inputs() {
+                for target in interaction.target().concrete_actors() {
+                    if app_actor_set.contains(target) && !uses_current_template(target) {
+                        uses.reads.insert(target.to_string());
+                    }
+                }
+            }
+        }
+
+        for route in &self.source.routes {
+            if !self.template_selectors.contains_key(&route.actor)
+                && app_actor_set.contains(route.actor.as_str())
+                && route.actor != source_actor
+            {
+                uses.writes.insert(route.actor.clone());
+            }
+        }
+        for group in self.existing_groups().chain(self.genesis_groups()) {
+            for interaction in group.outputs() {
+                for target in interaction.target().concrete_actors() {
+                    if app_actor_set.contains(target) && target != source_actor {
+                        uses.writes.insert(target.to_string());
+                    }
+                }
+            }
+        }
+
+        uses
+    }
+}
+
+/// Actor template capabilities used while lowering one entry.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct ActorTemplateUses {
+    pub(crate) reads: BTreeSet<String>,
+    pub(crate) writes: BTreeSet<String>,
 }
 
 /// Entry inputs and outputs governed by one covenant ID.
@@ -711,6 +758,16 @@ mod tests {
         assert_eq!(spawn_group.outputs()[0].target().concrete_actors().collect::<Vec<_>>(), ["Child"]);
 
         assert_eq!(model.expanded_routes()[0].actor, "King");
+        assert_eq!(
+            model.actor_template_uses(
+                "Source",
+                &["Source", "Peer", "Remote", "Child", "Pawn", "King"].into_iter().map(str::to_string).collect::<Vec<_>>(),
+            ),
+            ActorTemplateUses {
+                reads: ["Peer", "Remote"].into_iter().map(str::to_string).collect(),
+                writes: ["Remote", "Child"].into_iter().map(str::to_string).collect(),
+            }
+        );
     }
 
     #[test]
