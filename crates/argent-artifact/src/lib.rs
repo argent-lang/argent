@@ -476,9 +476,16 @@ pub struct SpawnArtifact {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnOutputArtifact {
     pub name: String,
+    /// Source actor expression; dynamic targets use it for actor-type lookup.
     pub actor: String,
     pub state: String,
     pub group_index: usize,
+    /// Canonical dependency target for a statically linked actor.
+    ///
+    /// Selected-app actors and dynamic actor-type values retain their existing
+    /// artifact-local inference when this field is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<ActorTargetArtifact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -516,9 +523,12 @@ pub struct ObservedActorArtifact {
     pub target: ObservedTargetArtifact,
 }
 
+pub type ObservedTargetArtifact = ActorTargetArtifact;
+
+/// A statically resolved actor or a runtime-selected actor state domain.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ObservedTargetArtifact {
+pub enum ActorTargetArtifact {
     StaticActor { app: String, actor: String },
     DynamicActor { state: String },
 }
@@ -735,6 +745,8 @@ pub enum TemplatePlanError {
     RouteFamilyTableMismatch { id: String, table_id: String, expected: String },
     #[error("witness recipe `{id}` references missing template receipt `{template_id}`")]
     MissingWitnessTemplate { id: String, template_id: String },
+    #[error("witness recipe `{id}` references missing imported actor template `{actor}`")]
+    MissingWitnessImportedTemplate { id: String, actor: String },
     #[error("witness recipe `{id}` references missing route family `{family_id}`")]
     MissingWitnessRouteFamily { id: String, family_id: String },
     #[error("witness recipe `{id}` references missing route proof receipt `{route_proof_id}`")]
@@ -1003,6 +1015,7 @@ impl TemplatePlanArtifact {
 
         // TODO: Extract runtime-state-to-route-table binding verification into dedicated helpers.
         let mut referenced_route_table_ids = BTreeSet::new();
+        let mut imported_templates = BTreeSet::new();
         for runtime_state in &self.runtime_states {
             let contract = sil_contracts_by_name
                 .get(runtime_state.contract.as_str())
@@ -1039,7 +1052,7 @@ impl TemplatePlanArtifact {
                     }
                     RuntimeFieldRoleArtifact::TemplateRoot { leaves } => (leaves.clone(), TypeArtifact::FixedBytes { len: 32 }),
                     RuntimeFieldRoleArtifact::Template { .. } => continue,
-                    RuntimeFieldRoleArtifact::ImportedTemplate { hash_hex, .. } => {
+                    RuntimeFieldRoleArtifact::ImportedTemplate { app, contract, hash_hex, .. } => {
                         if sil_field.ty != (TypeArtifact::FixedBytes { len: 32 }) {
                             return Err(TemplatePlanError::RuntimeStatePlanMismatch {
                                 contract: runtime_state.contract.clone(),
@@ -1047,6 +1060,7 @@ impl TemplatePlanArtifact {
                             });
                         }
                         decode_hash_hex(&field.name, hash_hex)?;
+                        imported_templates.insert((app.as_str(), contract.as_str()));
                         continue;
                     }
                 };
@@ -1160,21 +1174,29 @@ impl TemplatePlanArtifact {
             }
             match &recipe.subject {
                 HiddenParamSubjectArtifact::Actor { actor } => {
-                    let Some(template_id) = &recipe.template_id else {
-                        return Err(TemplatePlanError::MissingWitnessTemplate { id: recipe.id.clone(), template_id: String::new() });
-                    };
-                    let Some(template) = templates_by_id.get(template_id.as_str()) else {
-                        return Err(TemplatePlanError::MissingWitnessTemplate {
-                            id: recipe.id.clone(),
-                            template_id: template_id.clone(),
-                        });
-                    };
-                    if *actor != template.actor {
-                        return Err(TemplatePlanError::WitnessTemplateMismatch {
-                            id: recipe.id.clone(),
-                            actor: actor.clone(),
-                            template_actor: template.actor.clone(),
-                        });
+                    if let Some(template_id) = &recipe.template_id {
+                        let Some(template) = templates_by_id.get(template_id.as_str()) else {
+                            return Err(TemplatePlanError::MissingWitnessTemplate {
+                                id: recipe.id.clone(),
+                                template_id: template_id.clone(),
+                            });
+                        };
+                        if *actor != template.actor {
+                            return Err(TemplatePlanError::WitnessTemplateMismatch {
+                                id: recipe.id.clone(),
+                                actor: actor.clone(),
+                                template_actor: template.actor.clone(),
+                            });
+                        }
+                    } else {
+                        let imported =
+                            actor.split_once("::").is_some_and(|(app, contract)| imported_templates.contains(&(app, contract)));
+                        if !imported {
+                            return Err(TemplatePlanError::MissingWitnessImportedTemplate {
+                                id: recipe.id.clone(),
+                                actor: actor.clone(),
+                            });
+                        }
                     }
                 }
                 HiddenParamSubjectArtifact::ObservedActor { .. } => {}

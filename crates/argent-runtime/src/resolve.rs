@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use argent_artifact::{
-    ActorArtifact, CovenantIdSourceArtifact, EntryArtifact, EntryKindArtifact, ObserveArtifact, ObservedActorArtifact,
-    SilContractArtifact, SilEntryArtifact, SpawnArtifact,
+    ActorArtifact, ActorTargetArtifact, CovenantIdSourceArtifact, EntryArtifact, EntryKindArtifact, ObserveArtifact,
+    ObservedActorArtifact, SilContractArtifact, SilEntryArtifact, SpawnArtifact,
 };
 use kaspa_consensus_core::{
     Hash,
@@ -517,7 +517,12 @@ impl<'artifact> TxBuilder<'artifact> {
                 ));
             };
             let actor_name = &actor.contract.contract.name;
-            let target_matches = if input.artifact.argent.actors.iter().any(|actor| actor.name == output.actor) {
+            let target_matches = if let Some(ActorTargetArtifact::StaticActor { app, actor: target_actor }) = &output.target {
+                let expected = self.observed_contract_ref(input.artifact, app, target_actor)?;
+                actor.contract.artifact.app == expected.artifact.app
+                    && actor_name == &expected.contract.name
+                    && actor.contract.contract.compiled.template_hash_hex == expected.contract.compiled.template_hash_hex
+            } else if input.artifact.argent.actors.iter().any(|actor| actor.name == output.actor) {
                 let expected = self.contract_in_artifact(input.artifact, &output.actor)?;
                 actor.contract.contract.compiled.template_hash_hex == expected.compiled.template_hash_hex
             } else {

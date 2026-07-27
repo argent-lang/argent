@@ -1,10 +1,12 @@
-use crate::{EntryArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, SpawnOutputArtifact, TemplatePlanError};
+use crate::{
+    ActorTargetArtifact, EntryArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, SpawnOutputArtifact, TemplatePlanError,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Validated lookup state shared by the spawn-specific verification phases.
 struct SpawnIndex<'a> {
     outputs: BTreeMap<(&'a str, &'a str), &'a SpawnOutputArtifact>,
-    template_subjects: BTreeMap<&'a str, (&'a str, &'a str)>,
+    template_subjects: BTreeMap<String, (&'a str, &'a str, &'a str)>,
 }
 
 /// Verifies the complete spawn metadata contract for one entry.
@@ -12,9 +14,9 @@ struct SpawnIndex<'a> {
 /// On success, every declared spawn has a valid ordered output group, every
 /// output has exactly one index witness, every dynamic actor expression has one
 /// shared prefix/suffix witness pair, and every spawn-related hidden parameter
-/// refers to a matching declaration. Static app actors use the entry's shared
-/// actor-template witnesses instead. Generic hidden-parameter-to-recipe
-/// matching remains the caller's concern.
+/// refers to a matching declaration. Static selected-app or linked actors use
+/// the entry's shared actor-template witnesses instead. Generic
+/// hidden-parameter-to-recipe matching remains the caller's concern.
 pub(crate) fn verify_entry_spawns(entry_id: &str, entry: &EntryArtifact) -> Result<(), TemplatePlanError> {
     let index = index_spawn_outputs(entry_id, entry)?;
     verify_spawn_output_index_params(entry_id, entry, &index)?;
@@ -59,7 +61,17 @@ fn index_spawn_outputs<'a>(entry_id: &str, entry: &'a EntryArtifact) -> Result<S
             if outputs.insert((spawn.name.as_str(), output.name.as_str()), output).is_some() {
                 return Err(invalid_spawn_metadata(entry_id, format!("spawn `{}` repeats output `{}`", spawn.name, output.name)));
             }
-            template_subjects.entry(output.actor.as_str()).or_insert((spawn.name.as_str(), output.name.as_str()));
+            let template_actor = match &output.target {
+                Some(ActorTargetArtifact::StaticActor { app, actor }) => format!("{app}::{actor}"),
+                Some(ActorTargetArtifact::DynamicActor { .. }) => {
+                    return Err(invalid_spawn_metadata(
+                        entry_id,
+                        format!("spawn `{}.{}` cannot record a dynamic canonical target", spawn.name, output.name),
+                    ));
+                }
+                None => output.actor.clone(),
+            };
+            template_subjects.entry(template_actor).or_insert((output.actor.as_str(), spawn.name.as_str(), output.name.as_str()));
         }
     }
 
@@ -98,17 +110,17 @@ fn verify_spawn_output_index_params(entry_id: &str, entry: &EntryArtifact, index
 
 /// Requires one valid template witness path per actor expression.
 ///
-/// Static app actors use one actor-scoped byte or length pair shared with other
-/// covenant groups. A self spawn may use the active template without witnesses.
-/// Dynamic expressions retain one spawn-scoped byte pair anchored to their
-/// first declared output.
+/// Static selected-app or linked actors use one actor-scoped byte or length
+/// pair shared with other covenant groups. A self spawn may use the active
+/// template without witnesses. Dynamic expressions retain one spawn-scoped byte
+/// pair anchored to their first declared output.
 fn verify_spawn_template_params(entry_id: &str, entry: &EntryArtifact, index: &SpawnIndex<'_>) -> Result<(), TemplatePlanError> {
-    for (actor_expr, (spawn, handle)) in &index.template_subjects {
+    for (actor_subject, (actor_expr, spawn, handle)) in &index.template_subjects {
         let spawn_template_params = entry
             .hidden_params
             .iter()
             .filter(|param| {
-                matches!(&param.subject, HiddenParamSubjectArtifact::SpawnActor { actor, .. } if actor == actor_expr)
+                matches!(&param.subject, HiddenParamSubjectArtifact::SpawnActor { actor, .. } if actor == *actor_expr)
                     && matches!(
                         param.purpose,
                         HiddenParamPurposeArtifact::TemplatePrefixBytes | HiddenParamPurposeArtifact::TemplateSuffixBytes
@@ -119,7 +131,7 @@ fn verify_spawn_template_params(entry_id: &str, entry: &EntryArtifact, index: &S
             .hidden_params
             .iter()
             .filter(|param| {
-                matches!(&param.subject, HiddenParamSubjectArtifact::Actor { actor } if actor == actor_expr)
+                matches!(&param.subject, HiddenParamSubjectArtifact::Actor { actor } if actor == actor_subject)
                     && matches!(
                         param.purpose,
                         HiddenParamPurposeArtifact::TemplatePrefixBytes
@@ -133,7 +145,7 @@ fn verify_spawn_template_params(entry_id: &str, entry: &EntryArtifact, index: &S
             if !spawn_template_params.is_empty() {
                 return Err(invalid_spawn_metadata(
                     entry_id,
-                    format!("static spawn actor `{actor_expr}` mixes actor-scoped and spawn-scoped template witnesses"),
+                    format!("static spawn actor `{actor_subject}` mixes actor-scoped and spawn-scoped template witnesses"),
                 ));
             }
             let count = |purpose| actor_params.iter().filter(|param| param.purpose == purpose).count();
@@ -143,16 +155,16 @@ fn verify_spawn_template_params(entry_id: &str, entry: &EntryArtifact, index: &S
             if !matches!((bytes, lengths), ((1, 1), (0, 0)) | ((0, 0), (1, 1))) {
                 return Err(invalid_spawn_metadata(
                     entry_id,
-                    format!("static spawn actor `{actor_expr}` has an invalid shared actor-template witness pair"),
+                    format!("static spawn actor `{actor_subject}` has an invalid shared actor-template witness pair"),
                 ));
             }
             continue;
         }
-        if *actor_expr == entry.abi.actor {
+        if actor_subject == &entry.abi.actor {
             if !spawn_template_params.is_empty() {
                 return Err(invalid_spawn_metadata(
                     entry_id,
-                    format!("self spawn actor `{actor_expr}` must use the active template without spawn-scoped witnesses"),
+                    format!("self spawn actor `{actor_subject}` must use the active template without spawn-scoped witnesses"),
                 ));
             }
             continue;
@@ -170,7 +182,7 @@ fn verify_spawn_template_params(entry_id: &str, entry: &EntryArtifact, index: &S
                 .filter(|param| {
                     matches!(
                         &param.subject,
-                        HiddenParamSubjectArtifact::SpawnActor { actor, .. } if actor == actor_expr
+                        HiddenParamSubjectArtifact::SpawnActor { actor, .. } if actor == *actor_expr
                     ) && param.purpose == purpose
                 })
                 .collect::<Vec<_>>();

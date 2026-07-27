@@ -1,0 +1,13 @@
+state ChildState {
+    int amount;
+}
+
+actor Child owns ChildState {
+    entry hold() emits none {
+        require(amount >= 0);
+    }
+}
+
+app ChildApp {
+    actor Child;
+}

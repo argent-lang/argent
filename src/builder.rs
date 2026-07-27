@@ -5,9 +5,9 @@ mod tests {
     use super::*;
     use crate::{
         artifact::{
-            CompiledTemplateArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, ObservedTargetArtifact,
-            RuntimeFieldRoleArtifact, SilAbiVerificationError, SilContractArtifact, TemplatePlanError, TypeArtifact,
-            route_template_proof_receipt_id, route_template_table_receipt_id,
+            ActorTargetArtifact, CompiledTemplateArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact,
+            ObservedTargetArtifact, RuntimeFieldRoleArtifact, SilAbiVerificationError, SilContractArtifact, TemplatePlanError,
+            TypeArtifact, route_template_proof_receipt_id, route_template_table_receipt_id,
         },
         codec::{CodecError, decode_hex, encode_entry_sig_script},
         emit::emit_build_app,
@@ -1158,6 +1158,105 @@ mod tests {
     }
 
     #[test]
+    fn context_spawns_a_static_actor_from_a_linked_app() {
+        let fixture = "tests/fixtures/runtime/context_static_linked_spawn";
+        let out_dir = std::env::temp_dir().join(format!(
+            "argent-static-linked-spawn-{}-{}",
+            std::process::id(),
+            ARTIFACT_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let compiled = crate::build_file_app_bundle(format!("{fixture}/launcher.ag"), "LauncherApp", &out_dir)
+            .expect("launcher and child apps compile as one dependency bundle");
+        let launcher_artifact = compiled.primary();
+        let child_artifact = compiled.app("ChildApp").expect("compiled bundle contains ChildApp");
+        let launch = entry_artifact(launcher_artifact, "Launcher", "launch");
+        assert!(matches!(
+            &launch.spawns[0].outputs[0].target,
+            Some(ActorTargetArtifact::StaticActor { app, actor }) if app == "ChildApp" && actor == "Child"
+        ));
+        assert_eq!(
+            launch.hidden_params.iter().map(|param| (param.name.as_str(), subject_label(&param.subject))).collect::<Vec<_>>(),
+            vec![
+                ("gen__child_app__child_prefix_len", "ChildApp::Child"),
+                ("gen__child_app__child_suffix_len", "ChildApp::Child"),
+                ("gen__children_child_output_idx", "ChildApp::Child"),
+            ]
+        );
+        assert!(launcher_artifact.sil_abi.contract("Child").is_none(), "the importing app must not recompile Child");
+        assert_eq!(
+            launcher_artifact.argent.interfaces.imports[0].fingerprint_hex,
+            child_artifact.argent.interfaces.exports[0].fingerprint_hex
+        );
+        launcher_artifact.verify_template_plan().expect("linked static-spawn template plan verifies");
+        let mut malformed_target = launcher_artifact.clone();
+        let Some(ActorTargetArtifact::StaticActor { app, .. }) =
+            &mut malformed_target.argent.actors[0].entries[0].spawns[0].outputs[0].target
+        else {
+            unreachable!("fixture records a linked static target");
+        };
+        *app = "OtherApp".to_string();
+        assert!(
+            matches!(malformed_target.verify_template_plan(), Err(TemplatePlanError::InvalidSpawnMetadata { .. })),
+            "linked spawn metadata must agree with its shared actor-template witnesses"
+        );
+        assert_eq!(
+            fs::read_to_string(out_dir.join("sil/Launcher.sil")).expect("generated launcher Sil exists"),
+            include_str!("../tests/fixtures/runtime/context_static_linked_spawn/Launcher.sil")
+        );
+        assert_eq!(
+            fs::read_to_string(out_dir.join("apps/ChildApp/sil/Child.sil")).expect("generated child Sil exists"),
+            include_str!("../tests/fixtures/runtime/context_static_linked_spawn/Child.sil")
+        );
+
+        let bundle = compiled.runtime_bundle().expect("compiled artifacts form a runtime bundle");
+        let builder = TxBuilder::from_bundle(&bundle).expect("builder accepts the linked static-spawn bundle");
+        let launcher_id = Hash::from_bytes([0x94; 32]);
+        let source_child_id = Hash::from_bytes([0x96; 32]);
+        let launcher_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0x95; 32]), 5);
+        let source_child_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0x97; 32]), 6);
+        let launcher_state = state! { launches: 0 };
+        let source_child_state = state! { amount: 10 };
+        let launcher_utxo = builder
+            .covenant_utxo("Launcher", launcher_state.clone(), 5_000, 0, false, Some(launcher_id))
+            .expect("launcher UTXO carries the imported Child template");
+        let source_child_utxo = builder
+            .covenant_utxo("child_app::Child", source_child_state.clone(), 2_000, 0, false, Some(source_child_id))
+            .expect("source Child UTXO builds from the dependency artifact");
+        let context = TxContext::new()
+            .actor_input(
+                "Launcher",
+                launcher_state.clone(),
+                EntryCall::new("launch").args(args![source_child_id, 32]),
+                launcher_outpoint,
+                launcher_utxo.clone(),
+                0,
+            )
+            .actor_input("child_app::Child", source_child_state.clone(), "hold", source_child_outpoint, source_child_utxo.clone(), 0)
+            .actor_output("Launcher", state! { launches: 1 }, CovenantBinding::new(0, launcher_id), 3_000)
+            .actor_genesis_output(0, "spawn::children", "child_app::Child", state! { amount: 42 }, 2_000);
+
+        let transaction = builder.build(&context).expect("linked static actor spawn executes");
+        let child_id = covenant_id(launcher_outpoint, [(1, &transaction.outputs[1])].into_iter());
+        assert_eq!(transaction.outputs[1].covenant, Some(CovenantBinding::new(0, child_id)));
+
+        let wrong_actor = TxContext::new()
+            .actor_input(
+                "Launcher",
+                launcher_state,
+                EntryCall::new("launch").args(args![source_child_id, 32]),
+                launcher_outpoint,
+                launcher_utxo,
+                0,
+            )
+            .actor_input("child_app::Child", source_child_state, "hold", source_child_outpoint, source_child_utxo, 0)
+            .actor_output("Launcher", state! { launches: 1 }, CovenantBinding::new(0, launcher_id), 3_000)
+            .actor_genesis_output(0, "spawn::children", "Launcher", state! { launches: 42 }, 2_000);
+        let err = builder.build(&wrong_actor).expect_err("linked static spawn requires the dependency actor");
+        assert!(matches!(err, BuilderError::InvalidSpawnGroup(ref spawn, _) if spawn == "children"), "unexpected error: {err}");
+        fs::remove_dir_all(out_dir).expect("temporary bundle build is removed");
+    }
+
+    #[test]
     fn context_orders_multiple_spawn_groups_and_rejects_invalid_witnesses() {
         let source = "tests/fixtures/runtime/context_multiple_genesis_spawns/app.ag";
         let controller_artifact = selected_app_artifact(source, "ControllerApp", "context-multiple-spawns-controller");
@@ -2171,8 +2270,7 @@ mod tests {
         let recipient_state = kcc20_state(recipient_owner.clone(), minted_amount);
 
         let mut explicit_observed_template_state = minter_initial.clone();
-        explicit_observed_template_state
-            .insert("gen__asset_kcc20_asset__kcc20_template".to_string(), ArtifactValue::Bytes(vec![0; 32]));
+        explicit_observed_template_state.insert("gen__kcc20_asset__kcc20_template".to_string(), ArtifactValue::Bytes(vec![0; 32]));
         let explicit_hidden_state = TxContext::new().actor_output(
             "Minter",
             explicit_observed_template_state,
@@ -2185,7 +2283,7 @@ mod tests {
             matches!(
                 hidden_field_err,
                 BuilderError::HiddenRuntimeFieldProvided { ref field, .. }
-                    if field == "gen__asset_kcc20_asset__kcc20_template"
+                    if field == "gen__kcc20_asset__kcc20_template"
             ),
             "unexpected error: {hidden_field_err}"
         );
@@ -2234,8 +2332,6 @@ mod tests {
                 ArtifactValue::Bytes(sign_mutable_input(&MutableTransaction::with_entries(tx.clone(), entries.clone()), 0, &owner)),
                 ArtifactValue::Bytes(recipient_owner.clone()),
                 ArtifactValue::Int(minted_amount),
-                ArtifactValue::Int(proxy_prefix_len),
-                ArtifactValue::Int(bad_proxy_suffix_len),
                 ArtifactValue::Bytes(
                     decode_hex(&sil_template(asset_artifact.sil_abi.contract("KCC20").expect("KCC20 contract exists")).prefix_hex)
                         .expect("KCC20 prefix decodes"),
@@ -2244,6 +2340,8 @@ mod tests {
                     decode_hex(&sil_template(asset_artifact.sil_abi.contract("KCC20").expect("KCC20 contract exists")).suffix_hex)
                         .expect("KCC20 suffix decodes"),
                 ),
+                ArtifactValue::Int(proxy_prefix_len),
+                ArtifactValue::Int(bad_proxy_suffix_len),
             ],
         )
         .expect("manual corrupt observed sigscript encodes");
@@ -2485,6 +2583,17 @@ mod tests {
     fn artifact_bundle_verifies_imported_template_roles() {
         let controller_artifact = icc_controller_artifact();
         let asset_artifact = icc_asset_artifact();
+        let first_imported_actor = controller_artifact
+            .argent
+            .template_plan
+            .runtime_states
+            .iter()
+            .flat_map(|state| &state.field_roles)
+            .find_map(|field| match &field.role {
+                RuntimeFieldRoleArtifact::ImportedTemplate { contract, .. } => Some(contract.clone()),
+                _ => None,
+            })
+            .expect("controller has an imported actor template");
 
         let mut wrong_hash = controller_artifact.clone();
         rewrite_first_imported_template_hash(&mut wrong_hash, &"11".repeat(32));
@@ -2495,7 +2604,7 @@ mod tests {
             BuilderError::ImportedTemplateMismatch { app, dependency, actor, message }
                 if app == "KCC20MintController"
                     && dependency == "KCC20Asset"
-                    && actor == "MinterProxy"
+                    && actor == first_imported_actor
                     && message.contains("template hash")
         ));
 
@@ -2509,7 +2618,7 @@ mod tests {
         assert!(matches!(
             wrong_state_err,
             BuilderError::ImportedTemplateMismatch { dependency, actor, message, .. }
-                if dependency == "KCC20Asset" && actor == "MinterProxy" && message.contains("state `WrongState`")
+                if dependency == "KCC20Asset" && actor == first_imported_actor && message.contains("state `WrongState`")
         ));
 
         let mut wrong_actor = controller_artifact.clone();
@@ -2518,13 +2627,11 @@ mod tests {
         };
         *contract = "MissingActor".to_string();
         wrong_actor.id = wrong_actor.computed_id_hex().expect("controller with changed imported actor computes");
-        let wrong_actor_err = icc_bundle_builder_error(&wrong_actor, &asset_artifact);
+        let wrong_actor_err = wrong_actor.verify_template_plan().expect_err("imported actor witnesses must match a runtime field");
         assert!(matches!(
             wrong_actor_err,
-            BuilderError::ImportedTemplateMismatch { dependency, actor, message, .. }
-                if dependency == "KCC20Asset"
-                    && actor == "MissingActor"
-                    && message.contains("does not contain this actor")
+            TemplatePlanError::MissingWitnessImportedTemplate { actor, .. }
+                if actor == format!("KCC20Asset::{first_imported_actor}")
         ));
 
         let mut undeclared_dependency = controller_artifact;
@@ -2536,7 +2643,7 @@ mod tests {
             undeclared_err,
             BuilderError::ImportedTemplateMismatch { dependency, actor, message, .. }
                 if dependency == "KCC20Asset"
-                    && actor == "MinterProxy"
+                    && actor == first_imported_actor
                     && message.contains("not a direct dependency")
         ));
     }

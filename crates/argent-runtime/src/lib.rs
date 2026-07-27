@@ -1164,6 +1164,15 @@ impl<'a> TxBuilder<'a> {
         self.contract_ref_in_app(&alias, contract)
     }
 
+    /// Resolve a shared actor-template subject in the primary or an imported app.
+    fn actor_subject_contract_ref(&self, primary_artifact: &'a Artifact, actor: &str) -> BuilderResult<ContractRef<'a>> {
+        if primary_artifact.sil_abi.contract(actor).is_some() {
+            return self.contract_ref_in_artifact(primary_artifact, actor);
+        }
+        let (app, contract) = actor.split_once("::").ok_or_else(|| BuilderError::UnknownActor(actor.to_string()))?;
+        self.observed_contract_ref(primary_artifact, app, contract)
+    }
+
     fn contract_in_artifact(&self, artifact: &'a Artifact, name: &str) -> BuilderResult<&'a SilContractArtifact> {
         artifact.sil_abi.contract(name).ok_or_else(|| BuilderError::UnknownActor(name.to_string()))
     }
@@ -1186,7 +1195,8 @@ impl<'a> TxBuilder<'a> {
         contexts: HiddenArgContexts<'_>,
     ) -> BuilderResult<TemplateRef<'a>> {
         let contract_ref = self.hidden_template_contract_ref(primary_artifact, hidden, entry, template_selectors, contexts)?;
-        let static_observe = match &hidden.subject {
+        let imported_app = match &hidden.subject {
+            HiddenParamSubjectArtifact::Actor { actor } => actor.split_once("::").map(|(app, _)| app),
             HiddenParamSubjectArtifact::ObservedActor { observe, side, handle, .. } => {
                 match &self.observed_actor(entry, observe, *side, handle)?.target {
                     ObservedTargetArtifact::StaticActor { app, .. } => Some(app.as_str()),
@@ -1195,8 +1205,8 @@ impl<'a> TxBuilder<'a> {
             }
             _ => None,
         };
-        if let Some(observed_app) = static_observe {
-            if observed_app == primary_artifact.app {
+        if let Some(imported_app) = imported_app {
+            if imported_app == primary_artifact.app {
                 return Ok(TemplateRef::Sil(contract_ref.contract));
             }
             let template = contract_ref
@@ -1265,7 +1275,7 @@ impl<'a> TxBuilder<'a> {
         contexts: HiddenArgContexts<'_>,
     ) -> BuilderResult<ContractRef<'a>> {
         match &hidden.subject {
-            HiddenParamSubjectArtifact::Actor { actor } => self.contract_ref_in_artifact(primary_artifact, actor),
+            HiddenParamSubjectArtifact::Actor { actor } => self.actor_subject_contract_ref(primary_artifact, actor),
             HiddenParamSubjectArtifact::ObservedActor { observe, side, handle, actor } => {
                 match contexts.observed.and_then(|contexts| contexts.get(observe)) {
                     Some(context) => {

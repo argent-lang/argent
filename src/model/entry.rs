@@ -198,6 +198,15 @@ pub(crate) struct CovenantGroup<'a> {
 }
 
 impl<'a> CovenantGroup<'a> {
+    /// Return the authored clause name, or `None` for the current covenant.
+    pub(crate) fn name(&self) -> Option<&'a str> {
+        match self.covenant {
+            CovenantContext::Current => None,
+            CovenantContext::Existing(observe) => Some(&observe.name),
+            CovenantContext::Genesis(spawn) => Some(&spawn.name),
+        }
+    }
+
     /// Return the group's ordered input interactions.
     pub(crate) fn inputs(&self) -> &[EntryInteraction<'a>] {
         &self.inputs
@@ -298,7 +307,7 @@ impl ActorTarget {
     }
 
     fn source_or_concrete(entry: &EntryDecl, expression: &str) -> Self {
-        let concrete = is_identifier(expression)
+        let concrete = is_actor_reference(expression)
             && !entry.params.iter().any(|param| param.name == expression)
             && !expression.strip_prefix("self.").is_some_and(is_identifier);
         Self { actors: vec![expression.to_string()], concrete }
@@ -331,6 +340,10 @@ impl ActorTarget {
     pub(crate) fn concrete_actors(&self) -> impl Iterator<Item = &str> {
         self.actors().filter(|_| self.concrete)
     }
+}
+
+fn is_actor_reference(value: &str) -> bool {
+    is_identifier(value) || value.split_once("::").is_some_and(|(app, actor)| is_identifier(app) && is_identifier(actor))
 }
 
 /// An actor-enum value selecting a template within one state domain.

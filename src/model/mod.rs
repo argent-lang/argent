@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::artifact::{AppDependencyArtifact, EntryRefArtifact};
-use crate::ast::{ActorDecl, ConstDecl, ConsumeDecl, FunctionDecl, StateDecl};
+use crate::ast::{ActorDecl, ConstDecl, ConsumeDecl, EntryDecl, FunctionDecl, StateDecl};
 use crate::error::{ArgentError, Result};
 use crate::link::LinkedActor;
 use crate::naming::to_snake;
@@ -14,8 +14,8 @@ mod entry;
 
 pub(crate) use actor::ActorModel;
 pub(crate) use entry::{
-    ActorTemplateUses, CovenantGroup, EntryModel, InteractionSource, TemplateSelector, actor_enum_variant_const_expr,
-    parse_actor_enum_selector, parse_actor_enum_variant,
+    ActorTemplateUses, CovenantGroup, EntryInteraction, EntryModel, InteractionSource, TemplateSelector,
+    actor_enum_variant_const_expr, parse_actor_enum_selector, parse_actor_enum_variant,
 };
 
 /// The selected application's compiler-wide source and routing model.
@@ -91,6 +91,93 @@ impl RouteFamily {
 pub(crate) enum RouteRootLeaf {
     Actor(String),
     Family(String),
+}
+
+/// A compiler-known actor target resolved without changing route membership.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum StaticActorTarget<'m> {
+    Local(&'m ActorDecl),
+    Linked(&'m LinkedActor),
+}
+
+impl<'m> StaticActorTarget<'m> {
+    /// Return the target's source state.
+    pub(crate) fn state(&self) -> &str {
+        match self {
+            Self::Local(actor) => &actor.state,
+            Self::Linked(actor) => &actor.state,
+        }
+    }
+
+    /// Return the stable artifact reference used by shared template witnesses.
+    pub(crate) fn artifact_reference(&self) -> String {
+        match self {
+            Self::Local(actor) => actor.name.clone(),
+            Self::Linked(actor) => format!("{}::{}", actor.app, actor.actor),
+        }
+    }
+
+    /// Return the selected-app actor, if this target belongs to it.
+    pub(crate) fn local_actor(self) -> Option<&'m ActorDecl> {
+        match self {
+            Self::Local(actor) => Some(actor),
+            Self::Linked(_) => None,
+        }
+    }
+
+    /// Compare canonical actor identity across local and imported spellings.
+    pub(crate) fn same_actor(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Local(left), Self::Local(right)) => left.name == right.name,
+            (Self::Linked(left), Self::Linked(right)) => left.app == right.app && left.actor == right.actor,
+            (Self::Local(_), Self::Linked(_)) | (Self::Linked(_), Self::Local(_)) => false,
+        }
+    }
+}
+
+impl Model<'_> {
+    /// Resolve a fixed selected-app or linked actor without changing routing.
+    pub(crate) fn static_actor_target(&self, expression: &str) -> Option<StaticActorTarget<'_>> {
+        let reference = expression.trim();
+        self.app_actors
+            .iter()
+            .any(|actor| actor == reference)
+            .then(|| self.actors_by_name.get(reference).copied())
+            .flatten()
+            .map(StaticActorTarget::Local)
+            .or_else(|| self.linked_actors.get(reference).map(StaticActorTarget::Linked))
+    }
+
+    /// Collect shared local and imported actor-template uses for one entry.
+    pub(crate) fn entry_template_uses(&self, actor: &ActorDecl, entry: &EntryDecl) -> Result<ActorTemplateUses> {
+        let entry_model = self
+            .actor_models
+            .get(actor.name.as_str())
+            .and_then(|actor_model| actor_model.entry(&entry.name))
+            .ok_or_else(|| ArgentError::new(format!("unknown entry model `{}::{}`", actor.name, entry.name)))?;
+        let mut uses = entry_model.actor_template_uses(&actor.name, &self.app_actors);
+
+        let insert_linked = |target: &str, actors: &mut BTreeSet<String>| {
+            if let Some(target @ StaticActorTarget::Linked(_)) = self.static_actor_target(target) {
+                actors.insert(target.artifact_reference());
+            }
+        };
+        for group in std::iter::once(entry_model.current()).chain(entry_model.existing_groups()) {
+            for interaction in group.inputs() {
+                for target in interaction.target().concrete_actors() {
+                    insert_linked(target, &mut uses.reads);
+                }
+            }
+        }
+        for group in entry_model.existing_groups().chain(entry_model.genesis_groups()) {
+            for interaction in group.outputs() {
+                for target in interaction.target().concrete_actors() {
+                    insert_linked(target, &mut uses.writes);
+                }
+            }
+        }
+        Ok(uses)
+    }
 }
 
 /// Operations that transform one actor's route cut into another's.

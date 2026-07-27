@@ -1,0 +1,37 @@
+import app ChildApp from "./child.ag";
+
+state LauncherState {
+    int launches;
+}
+
+actor Launcher owns LauncherState {
+    entry launch(cov_id source_id, int amount)
+    observes source by source_id {
+        inputs {
+            child: ChildApp::Child,
+        }
+    }
+    spawns children by child_id {
+        outputs {
+            child: ChildApp::Child,
+        }
+    }
+    emits one Launcher {
+        ChildState source_state = source.inputs.child.state;
+        ChildState child_state = {
+            amount: source_state.amount + amount,
+        };
+        LauncherState next = {
+            launches: launches + 1,
+        };
+
+        require children.outputs become {
+            child <- ChildApp::Child(child_state),
+        };
+        become Launcher(next);
+    }
+}
+
+app LauncherApp {
+    actor Launcher;
+}
