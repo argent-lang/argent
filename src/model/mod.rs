@@ -221,19 +221,26 @@ pub(crate) fn infer_direct_routes<'a>(
     for actor_name in app_actors {
         let actor_model = actor_models.get(actor_name.as_str()).expect("selected app actor has a model");
         let actor = actor_model.source();
+        // Route-isolated actors still need an empty cut in the final plan.
         if app_actor_set.contains(&actor.name) {
             graph.add_actor(actor.name.clone());
             domains.entry(actor.state.clone()).or_default().push(actor.name.clone());
         }
         for entry_model in actor_model.entries() {
+            // Selectors constrain the table shape independently of concrete
+            // relations contributed by this entry's interaction groups.
             selector_requirements.extend(entry_model.template_selectors().values().map(|selector| SelectorRequirement {
                 domain: selector.state.clone(),
                 source: actor.name.clone(),
                 variants: selector.variants.clone(),
             }));
-            for group in std::iter::once(entry_model.current()).chain(entry_model.existing_groups()) {
+            for group in
+                std::iter::once(entry_model.current()).chain(entry_model.existing_groups()).chain(entry_model.genesis_groups())
+            {
                 for interaction in group.inputs() {
                     for target in interaction.target().concrete_actors() {
+                        // A single-actor covenant already authenticates its only
+                        // possible template, so its self-input needs no route leaf.
                         if app_actor_set.contains(target) && !is_single_actor_self_target(app_actors, actor, target) {
                             graph.add_consume(actor.name.clone(), target.to_string());
                         }
@@ -244,24 +251,12 @@ pub(crate) fn infer_direct_routes<'a>(
                         if !app_actor_set.contains(target_name) {
                             continue;
                         }
+                        // A self-output adds no dependency edge. Still plan its no-op
+                        // cut transition so an actor-enum output may select the current actor.
                         if actor.name != target_name {
                             graph.add_emit(actor.name.clone(), target_name.to_string());
                         }
                         transition_pairs.insert((actor.name.clone(), target_name.to_string()));
-                    }
-                }
-            }
-
-            for group in entry_model.genesis_groups() {
-                for interaction in group.outputs() {
-                    for target in interaction.target().concrete_actors() {
-                        if !app_actor_set.contains(target) {
-                            continue;
-                        }
-                        graph.add_emit(actor.name.clone(), target.to_string());
-                        if actor.name != target {
-                            transition_pairs.insert((actor.name.clone(), target.to_string()));
-                        }
                     }
                 }
             }

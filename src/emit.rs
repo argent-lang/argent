@@ -11109,7 +11109,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_actor_self_spawn_retains_its_template() {
+    fn fixed_actor_self_spawn_uses_the_active_template() {
         let artifact = inline_artifact(
             "fixed_actor_self_spawn",
             r#"
@@ -11140,8 +11140,7 @@ mod tests {
             "#,
         );
 
-        let state = runtime_state_plan(&artifact, "Node").expect("self-spawning Node stores route context");
-        assert!(state.field_roles.iter().any(|field| field.name == "gen__node_template"));
+        assert!(runtime_state_plan(&artifact, "Node").is_none(), "self-spawning Node needs no stored route context");
         let fork = artifact.argent.actors[0].entries.iter().find(|entry| entry.name == "fork").expect("fork entry exists");
         assert!(!fork.hidden_params.iter().any(|param| {
             matches!(
