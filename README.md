@@ -1,25 +1,40 @@
 # Argent
 
-Argent is an actor-based, multi-contract and multi-app language and compiler for
-building Kaspa covenant applications. It compiles `.ag` source to plain,
-auditable Silverscript contracts plus portable artifacts consumed by
-`argent-runtime`.
+Argent is an actor-based language and compiler for building stateful,
+multi-contract and multi-app applications on covenant-native UTXO rails.
 
-An Argent app describes transaction-wide state transitions over covenant UTXOs.
-Actors own typed state, entries consume and emit one or more actors, and
-`become` defines the successor actors created by the transaction.
-Inter-Covenant Communication (ICC) extends the same model across independently
-compiled apps, allowing several covenant actors to inspect and constrain one
-atomic transition.
+Applications are expressed as transaction-wide state transitions over covenant
+UTXOs. Actors own typed state, entries consume and emit actors, and `become`
+defines the successor actors created by one atomic transaction. Inter-Covenant
+Communication (ICC) extends the same model across independently compiled apps.
 
-The compiler and runtime handle the underlying covenant plumbing: state
-layouts, template commitments, route families, output validation, observed
-covenants, virtual state expansion, and hidden witness material. Application
-code stays at the level of actors, state, and transitions.
+The compiler turns `.ag` source into plain, auditable Silverscript contracts and
+portable artifacts consumed by `argent-runtime`. Together they handle state
+layouts, template commitments, routing, output validation, cross-covenant
+observation, virtual state expansion, and hidden witness material.
 
-Argent is still evolving, but the main pieces are present: compiler, generated
-Silverscript, portable artifacts, runtime transaction building, multi-actor
-routes, actor enums, closed and open ICC, and virtual-slot state expansion.
+The design targets programmable UTXO systems with script-composition primitives
+such as `OP_CAT` and `OP_SUBSTR`, transaction introspection, and
+consensus-supported covenant identities (see
+[Kaspa’s KIP-20](https://github.com/kaspanet/kips/blob/master/kip-0020.md) for a
+reference model).
+
+Kaspa is the main and current target: `.ag` programs compile to Silverscript
+and ultimately execute on the native Kaspa Script engine. The language,
+artifact, and runtime layers keep Kaspa-specific assumptions explicit and
+separated where practical.
+
+> The project is still under active development and is not yet release-ready.
+Once Silverscript completes its audit and is released, advanced users who can
+review the generated `.sil` contracts will have a viable early path to
+production. This requires understanding Argent's route semantics and compiler
+model well enough to verify that the generated contracts match the intended
+application. Argent itself will still need further audit and hardening before
+general production use.
+
+The main pieces are present: compiler, generated Silverscript, portable
+artifacts, runtime transaction building, multi-actor routes, actor enums,
+closed and open ICC, and virtual-slot state expansion.
 
 ```text
 .ag source
@@ -158,7 +173,7 @@ Core terms:
   agent state
 
 For client-side examples, see
-[argent-playground](https://github.com/michaelsutton/argent-playground). It is a
+[argent-playground](https://github.com/argent-lang/argent-playground). It is a
 separate Rust project that depends on a neighboring Argent checkout and shows
 complete app compilation and transaction-building flows through
 `argent-runtime`.
@@ -257,10 +272,7 @@ Each app artifact also records the exact artifact ID of each direct app
 dependency. Runtime bundles reject missing or different dependency artifacts
 before they build a transaction.
 
-## Current maturity
-
-Argent is an active language and compiler project. Syntax and JSON schema
-changes are still expected while the system settles. It has not been audited.
+## Current status
 
 What is useful today:
 
@@ -272,8 +284,8 @@ What is useful today:
 
 What is still being built:
 
-- launch and bootstrap tooling
-- app-level dependency syntax and qualified source references
+- broader launch and bootstrap tooling
+- richer package and dependency tooling
 - stronger diagnostics and typechecking
 - generated app-specific builder APIs
 - broader hardening and negative-test coverage
