@@ -9,6 +9,7 @@ use crate::error::{ArgentError, Result};
 use crate::language::word;
 use crate::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, Token, TokenKind, lex};
 use crate::link::{LinkedActor, LinkedContext, link_imported_actors};
+use crate::model::{ActorEnumInfo, CompilerRouteTransition, Model, RouteFamily, RouteRootLeaf};
 use crate::routing::{CommitmentNode, RouteGraph, RoutePlan as PlannerRoutePlan, SelectorRequirement, route_plan};
 use silverscript_lang::ast::Expr as SilExpr;
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract};
@@ -72,36 +73,6 @@ fn emit_build_selected(
     Ok(())
 }
 
-#[derive(Debug)]
-struct Model<'a> {
-    app_name: String,
-    /// Direct artifacts used to link the selected app.
-    app_dependencies: Vec<AppDependencyArtifact>,
-    app_actors: Vec<String>,
-    route_families: Vec<RouteFamily>,
-    consts: Vec<&'a ConstDecl>,
-    functions: Vec<&'a FunctionDecl>,
-    states: BTreeMap<String, &'a StateDecl>,
-    linked_states: BTreeMap<String, StateDecl>,
-    actors_by_name: BTreeMap<String, &'a ActorDecl>,
-    linked_actor_decls: BTreeMap<String, ActorDecl>,
-    linked_actors: BTreeMap<String, LinkedActor>,
-    actor_enums: BTreeMap<String, ActorEnumInfo>,
-    actors: Vec<&'a ActorDecl>,
-    /// Delegate entries that establish each actor as a leader actor.
-    leader_for: BTreeMap<String, Vec<EntryRefArtifact>>,
-    route_leaves_by_actor: BTreeMap<String, Vec<RouteRootLeaf>>,
-    route_transitions: BTreeMap<(String, String), CompilerRouteTransition>,
-    state_route_leaves: BTreeMap<String, Vec<RouteRootLeaf>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ActorEnumInfo {
-    name: String,
-    state: String,
-    variants: Vec<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TemplateSelector {
     name: String,
@@ -119,50 +90,10 @@ impl TemplateSelector {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct RouteFamily {
-    id: String,
-    state: String,
-    rep: String,
-    actors: Vec<String>,
-    entry_actors: Vec<String>,
-    table_actors: Vec<String>,
-}
-
-impl RouteFamily {
-    fn rep(&self) -> &str {
-        &self.rep
-    }
-
-    fn direct_template_actors(&self) -> &[String] {
-        &self.entry_actors
-    }
-
-    fn table_actors(&self) -> &[String] {
-        &self.table_actors
-    }
-
-    fn table_byte_len(&self) -> usize {
-        self.table_actors().len() * 32
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum RouteRootLeaf {
-    Actor(String),
-    Family(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct CompilerRoutePlan {
     families: Vec<RouteFamily>,
     leaves_by_actor: BTreeMap<String, Vec<RouteRootLeaf>>,
     transitions: BTreeMap<(String, String), CompilerRouteTransition>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct CompilerRouteTransition {
-    families_to_open: Vec<String>,
-    families_to_pack: Vec<String>,
 }
 
 /// Compiler-facing injection point for route classification and commitment
