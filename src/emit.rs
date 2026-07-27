@@ -10,9 +10,10 @@ use crate::language::word;
 use crate::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, Token, TokenKind, lex};
 use crate::link::{LinkedActor, LinkedContext, link_imported_actors};
 use crate::model::{
-    ActorEnumInfo, ActorModel, AppActors, CompilerRoutePlan, CompilerRoutePlanner, CompilerRouteTransition, CovenantGroup,
-    EntryInteraction, EntryModel, InteractionSource, Model, RouteFamily, RouteRootLeaf, StaticActorTarget, TemplateSelector,
-    actor_enum_variant_const_expr, default_route_planner, infer_direct_routes, parse_actor_enum_selector, parse_actor_enum_variant,
+    ActorEnumInfo, ActorModel, ActorTarget, AppActors, CompilerRoutePlan, CompilerRoutePlanner, CompilerRouteTransition,
+    CovenantGroup, EntryInteraction, EntryModel, InteractionSource, Model, RouteFamily, RouteRootLeaf, StaticActorTarget,
+    TemplateSelector, actor_enum_variant_const_expr, default_route_planner, infer_direct_routes, parse_actor_enum_selector,
+    parse_actor_enum_variant,
 };
 use crate::naming::{is_identifier, to_snake};
 use silverscript_lang::ast::Expr as SilExpr;
@@ -546,7 +547,8 @@ impl<'a> Model<'a> {
 
         let mut names = BTreeSet::new();
         let mut covenant_bindings = BTreeSet::new();
-        for spawn in &entry.spawns {
+        for group in self.entry_model(actor, entry)?.genesis_groups() {
+            let spawn = group.spawn().expect("genesis covenant group retains its spawn declaration");
             if !names.insert(spawn.name.as_str()) {
                 return Err(ArgentError::new(format!(
                     "entry `{}::{}` declares spawn `{}` more than once",
@@ -579,14 +581,17 @@ impl<'a> Model<'a> {
             }
 
             let mut output_names = BTreeSet::new();
-            for output in &spawn.outputs {
+            for interaction in group.outputs() {
+                let InteractionSource::SpawnOutput(output) = interaction.source() else {
+                    unreachable!("genesis covenant outputs are spawn outputs");
+                };
                 if !output_names.insert(output.name.as_str()) {
                     return Err(ArgentError::new(format!(
                         "entry `{}::{}` spawn `{}` declares output `{}` more than once",
                         actor.name, entry.name, spawn.name, output.name
                     )));
                 }
-                if spawn_target_state_for_expr(&output.actor, actor, entry, self)?.is_none() {
+                if spawn_target_state(interaction.target(), &output.actor, actor, entry, self)?.is_none() {
                     return Err(ArgentError::new(format!(
                         "entry `{}::{}` spawn `{}.{}` target `{}` must be an actor_type value or a selected-app or linked actor",
                         actor.name, entry.name, spawn.name, output.name, output.actor
@@ -1152,9 +1157,12 @@ fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model
                 }
             }
         }
-        for spawn in &entry.spawns {
-            for output in &spawn.outputs {
-                let state = spawn_target_state_for_expr(&output.actor, current_actor, entry, model)?
+        for group in model.entry_model(current_actor, entry)?.genesis_groups() {
+            for interaction in group.outputs() {
+                let InteractionSource::SpawnOutput(output) = interaction.source() else {
+                    unreachable!("genesis covenant outputs are spawn outputs");
+                };
+                let state = spawn_target_state(interaction.target(), &output.actor, current_actor, entry, model)?
                     .expect("spawn target checked during model validation");
                 state_names.push(state);
             }
@@ -1514,7 +1522,7 @@ fn emit_observed_inputs(out: &mut String, actor: &ActorDecl, entry: &EntryDecl, 
         for (idx, input) in observe.inputs.iter().enumerate() {
             let input_spec = observed_input_spec(actor, entry, observe, input, model)?;
             let static_target = static_observed_actor_target(actor, entry, observe, input, model)?;
-            let in_app_target = static_target.and_then(|target| target.local_actor());
+            let in_app_target = static_target.and_then(|target| target.in_app_actor());
             let input_idx = hidden_observed_input_idx_name(&observe.name, &input.name);
             let state_name = hidden_observed_input_state_name(&observe.name, &input.name);
             let state_struct = contract_state_type_for_observed_actor(actor, entry, observe, input, model)?;
@@ -2221,7 +2229,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                     route.actor
                 )));
             }
-            self.lower_covenant_output_route(out, indent, context, route)?;
+            self.lower_covenant_output_route(out, indent, context, output.target(), route)?;
         }
 
         for output in group.outputs() {
@@ -2246,6 +2254,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         out: &mut String,
         indent: usize,
         context: CovenantOutputContext<'a>,
+        target: &ActorTarget,
         route: RouteCall,
     ) -> Result<()> {
         let actor_expr = context.actor();
@@ -2253,12 +2262,15 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             CovenantOutputContext::Existing { observe, output } => {
                 static_observed_actor_target(self.actor, self.entry, observe, output, self.model)?
             }
-            CovenantOutputContext::Genesis { .. } => self.model.static_actor_target(actor_expr),
+            CovenantOutputContext::Genesis { .. } => self.model.resolve_static_actor_target(target),
         };
-        let local_actor = static_target.and_then(|target| target.local_actor()).map(|actor| actor.name.as_str());
-        let transition = local_actor.filter(|target| *target != self.actor.name).map(|target| {
-            self.model.route_transition(&self.actor.name, target).expect("fixed local output target has a planned cut transition")
-        });
+        let local_actor = static_target.and_then(|target| target.in_app_actor()).map(|actor| actor.name.as_str());
+        let transition = match local_actor.filter(|target| *target != self.actor.name) {
+            Some(target) => Some(self.model.route_transition(&self.actor.name, target).ok_or_else(|| {
+                self.error(format!("entry model has no route transition from `{}` to in-app target `{target}`", self.actor.name))
+            })?),
+            None => None,
+        };
         let state_name = match (context, static_target) {
             (_, Some(target)) => target.state().to_string(),
             (CovenantOutputContext::Existing { observe, output }, None) => {
@@ -2266,7 +2278,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                     .expect("dynamic observed actor has a validated state")
             }
             (CovenantOutputContext::Genesis { .. }, None) => {
-                spawn_target_state_for_expr(actor_expr, self.actor, self.entry, self.model)?
+                spawn_target_state(target, actor_expr, self.actor, self.entry, self.model)?
                     .expect("spawn target checked during model validation")
             }
         };
@@ -2302,11 +2314,8 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         let spawn_spec = match context {
             CovenantOutputContext::Existing { .. } => None,
             CovenantOutputContext::Genesis { spawn, output } => {
-                let source = if static_target.is_some() {
-                    None
-                } else {
-                    clause_actor_type_ref(actor_expr, self.actor, self.entry, self.model)?
-                };
+                let source =
+                    if target.is_source() { clause_actor_type_ref(actor_expr, self.actor, self.entry, self.model)? } else { None };
                 Some(SpawnActorWitnessSpec {
                     spawn: spawn.name.clone(),
                     handle: output.name.clone(),
@@ -2316,8 +2325,8 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             }
         };
         let template = match static_target {
-            Some(StaticActorTarget::Local(actor)) => hidden_template_name(&actor.name),
-            Some(StaticActorTarget::Linked(actor)) => hidden_imported_template_name(&ImportedTemplateSpec::from_linked(actor)),
+            Some(StaticActorTarget::InApp(actor)) => hidden_template_name(&actor.name),
+            Some(StaticActorTarget::CrossApp(actor)) => hidden_imported_template_name(&ImportedTemplateSpec::from_linked(actor)),
             None => match context {
                 CovenantOutputContext::Existing { observe, output } => self.observed_actor_template_expr(
                     observe,
@@ -2419,8 +2428,8 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     ) -> Result<String> {
         if let Some(target) = static_observed_actor_target(self.actor, self.entry, observe, observed, self.model)? {
             return Ok(match target {
-                StaticActorTarget::Local(target) => hidden_template_name(&target.name),
-                StaticActorTarget::Linked(target) => hidden_imported_template_name(&ImportedTemplateSpec::from_linked(target)),
+                StaticActorTarget::InApp(target) => hidden_template_name(&target.name),
+                StaticActorTarget::CrossApp(target) => hidden_imported_template_name(&ImportedTemplateSpec::from_linked(target)),
             });
         }
         if observed_is_dynamic_binding(observe, observed) {
@@ -3556,13 +3565,14 @@ fn observed_actor_witness_specs(actor: &ActorDecl, entry: &EntryDecl, model: &Mo
 
 fn spawn_output_witness_specs(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Result<Vec<SpawnActorWitnessSpec>> {
     let mut specs = Vec::new();
-    for spawn in &entry.spawns {
-        for output in &spawn.outputs {
-            let source = if model.static_actor_target(&output.actor).is_some() {
-                None
-            } else {
-                clause_actor_type_ref(&output.actor, actor, entry, model)?
+    for group in model.entry_model(actor, entry)?.genesis_groups() {
+        let spawn = group.spawn().expect("genesis covenant group retains its spawn declaration");
+        for interaction in group.outputs() {
+            let InteractionSource::SpawnOutput(output) = interaction.source() else {
+                unreachable!("genesis covenant outputs are spawn outputs");
             };
+            let source =
+                if interaction.target().is_source() { clause_actor_type_ref(&output.actor, actor, entry, model)? } else { None };
             specs.push(SpawnActorWitnessSpec {
                 spawn: spawn.name.clone(),
                 handle: output.name.clone(),
@@ -3738,8 +3748,8 @@ fn imported_template_specs_for_state(state: &str, model: &Model<'_>) -> Vec<Impo
         for entry_model in model.actor_model(&actor.name).expect("selected app actor has a model").entries() {
             for group in entry_model.existing_groups().chain(entry_model.genesis_groups()) {
                 for interaction in group.inputs().iter().chain(group.outputs()) {
-                    for target in interaction.target().concrete_actors() {
-                        if let Some(StaticActorTarget::Linked(linked)) = model.static_actor_target(target) {
+                    for target in interaction.target().static_actors() {
+                        if let Some(StaticActorTarget::CrossApp(linked)) = model.static_actor_target(target) {
                             specs
                                 .entry((linked.app.clone(), linked.actor.clone()))
                                 .or_insert_with(|| ImportedTemplateSpec::from_linked(linked));
@@ -4010,8 +4020,14 @@ fn source_actor_type_state_for_expr(expr: &str, actor: &ActorDecl, entry: &Entry
 // Spawn targets may be an explicitly dynamic actor_type value or any fixed
 // actor resolved by the selected app. Linked templates remain imported
 // capabilities and do not enter the selected app's route graph.
-fn spawn_target_state_for_expr(expr: &str, actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Result<Option<String>> {
-    if let Some(target) = model.static_actor_target(expr) {
+fn spawn_target_state(
+    target: &ActorTarget,
+    expr: &str,
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    model: &Model<'_>,
+) -> Result<Option<String>> {
+    if let Some(target) = model.resolve_static_actor_target(target) {
         return Ok(Some(target.state().to_string()));
     }
     if let Some(state) = source_actor_type_state_for_expr(expr, actor, entry, model)? {
@@ -4030,8 +4046,8 @@ fn observed_actor_template_expr_for_entry(
 ) -> Result<String> {
     if let Some(target) = static_observed_actor_target(actor, entry, observe, observed, model)? {
         return Ok(match target {
-            StaticActorTarget::Local(target) => hidden_template_name(&target.name),
-            StaticActorTarget::Linked(target) => hidden_imported_template_name(&ImportedTemplateSpec::from_linked(target)),
+            StaticActorTarget::InApp(target) => hidden_template_name(&target.name),
+            StaticActorTarget::CrossApp(target) => hidden_imported_template_name(&ImportedTemplateSpec::from_linked(target)),
         });
     }
     if observed_is_dynamic_binding(observe, observed) {
@@ -4310,14 +4326,14 @@ fn interface_set_artifact(model: &Model<'_>) -> Result<InterfaceSetArtifact> {
                     if observed_open_state_for_decl(actor, entry, observe, observed, model)?.is_some() {
                         continue;
                     }
-                    if let Some(StaticActorTarget::Linked(linked)) = model.static_actor_target(&observed.actor) {
+                    if let Some(StaticActorTarget::CrossApp(linked)) = model.static_actor_target(&observed.actor) {
                         imports.entry((linked.app.clone(), linked.actor.clone())).or_insert_with(|| linked.interface.clone());
                     }
                 }
             }
-            for spawn in &entry.spawns {
-                for output in &spawn.outputs {
-                    if let Some(StaticActorTarget::Linked(linked)) = model.static_actor_target(&output.actor) {
+            for group in model.entry_model(actor, entry)?.genesis_groups() {
+                for output in group.outputs() {
+                    if let Some(StaticActorTarget::CrossApp(linked)) = model.resolve_static_actor_target(output.target()) {
                         imports.entry((linked.app.clone(), linked.actor.clone())).or_insert_with(|| linked.interface.clone());
                     }
                 }
@@ -5191,17 +5207,17 @@ fn spawn_artifact(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>, group
                 let InteractionSource::SpawnOutput(output) = interaction.source() else {
                     unreachable!("genesis covenant outputs are spawn outputs");
                 };
-                let state = spawn_target_state_for_expr(&output.actor, actor, entry, model)?.ok_or_else(|| {
+                let state = spawn_target_state(interaction.target(), &output.actor, actor, entry, model)?.ok_or_else(|| {
                     ArgentError::new(format!(
                         "spawn `{}.{}` target `{}` is not an actor_type value or a selected-app or linked actor",
                         spawn.name, output.name, output.actor
                     ))
                 })?;
-                let target = match model.static_actor_target(&output.actor) {
-                    Some(StaticActorTarget::Linked(linked)) => {
+                let target = match model.resolve_static_actor_target(interaction.target()) {
+                    Some(StaticActorTarget::CrossApp(linked)) => {
                         Some(ActorTargetArtifact::StaticActor { app: linked.app.clone(), actor: linked.actor.clone() })
                     }
-                    Some(StaticActorTarget::Local(_)) | None => None,
+                    Some(StaticActorTarget::InApp(_)) | None => None,
                 };
                 Ok(SpawnOutputArtifact {
                     name: output.name.clone(),
@@ -10906,7 +10922,11 @@ mod tests {
                 }
             }
 
-            actor Child owns ChildState {}
+            actor Child owns ChildState {
+                entry hold() emits none {
+                    require(amount >= 0);
+                }
+            }
 
             app Test {
                 actor Launcher;

@@ -14,7 +14,7 @@ mod entry;
 
 pub(crate) use actor::ActorModel;
 pub(crate) use entry::{
-    ActorTemplateUses, CovenantGroup, EntryInteraction, EntryModel, InteractionSource, TemplateSelector,
+    ActorTarget, ActorTemplateUses, CovenantGroup, EntryInteraction, EntryModel, InteractionSource, TemplateSelector,
     actor_enum_variant_const_expr, parse_actor_enum_selector, parse_actor_enum_variant,
 };
 
@@ -131,41 +131,43 @@ pub(crate) enum RouteRootLeaf {
 /// A compiler-known actor target resolved without changing route membership.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum StaticActorTarget<'m> {
-    Local(&'m ActorDecl),
-    Linked(&'m LinkedActor),
+    /// An actor in the selected application's routing domain.
+    InApp(&'m ActorDecl),
+    /// An imported actor whose template stays outside the local route graph.
+    CrossApp(&'m LinkedActor),
 }
 
 impl<'m> StaticActorTarget<'m> {
     /// Return the target's source state.
     pub(crate) fn state(&self) -> &str {
         match self {
-            Self::Local(actor) => &actor.state,
-            Self::Linked(actor) => &actor.state,
+            Self::InApp(actor) => &actor.state,
+            Self::CrossApp(actor) => &actor.state,
         }
     }
 
     /// Return the stable artifact reference used by shared template witnesses.
     pub(crate) fn artifact_reference(&self) -> String {
         match self {
-            Self::Local(actor) => actor.name.clone(),
-            Self::Linked(actor) => format!("{}::{}", actor.app, actor.actor),
+            Self::InApp(actor) => actor.name.clone(),
+            Self::CrossApp(actor) => format!("{}::{}", actor.app, actor.actor),
         }
     }
 
     /// Return the selected-app actor, if this target belongs to it.
-    pub(crate) fn local_actor(self) -> Option<&'m ActorDecl> {
+    pub(crate) fn in_app_actor(self) -> Option<&'m ActorDecl> {
         match self {
-            Self::Local(actor) => Some(actor),
-            Self::Linked(_) => None,
+            Self::InApp(actor) => Some(actor),
+            Self::CrossApp(_) => None,
         }
     }
 
     /// Compare canonical actor identity across local and imported spellings.
     pub(crate) fn same_actor(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Local(left), Self::Local(right)) => left.name == right.name,
-            (Self::Linked(left), Self::Linked(right)) => left.app == right.app && left.actor == right.actor,
-            (Self::Local(_), Self::Linked(_)) | (Self::Linked(_), Self::Local(_)) => false,
+            (Self::InApp(left), Self::InApp(right)) => left.name == right.name,
+            (Self::CrossApp(left), Self::CrossApp(right)) => left.app == right.app && left.actor == right.actor,
+            (Self::InApp(_), Self::CrossApp(_)) | (Self::CrossApp(_), Self::InApp(_)) => false,
         }
     }
 }
@@ -267,8 +269,13 @@ impl Model<'_> {
             .contains(reference)
             .then(|| self.actors_by_name.get(reference).copied())
             .flatten()
-            .map(StaticActorTarget::Local)
-            .or_else(|| self.linked_actors.get(reference).map(StaticActorTarget::Linked))
+            .map(StaticActorTarget::InApp)
+            .or_else(|| self.linked_actors.get(reference).map(StaticActorTarget::CrossApp))
+    }
+
+    /// Resolve a normalized singleton static target.
+    pub(crate) fn resolve_static_actor_target(&self, target: &ActorTarget) -> Option<StaticActorTarget<'_>> {
+        target.single_static_actor().and_then(|actor| self.static_actor_target(actor))
     }
 
     /// Collect shared local and imported actor-template uses for one entry.
@@ -277,7 +284,7 @@ impl Model<'_> {
         let mut uses = entry_model.actor_template_uses(&actor.name, &self.app_actors);
 
         let insert_linked = |target: &str, actors: &mut BTreeSet<String>| {
-            if let Some(target @ StaticActorTarget::Linked(_)) = self.static_actor_target(target) {
+            if let Some(target @ StaticActorTarget::CrossApp(_)) = self.static_actor_target(target) {
                 actors.insert(target.artifact_reference());
             }
         };
@@ -286,12 +293,12 @@ impl Model<'_> {
         // covenant groups can reference imported actors.
         for group in entry_model.existing_groups().chain(entry_model.genesis_groups()) {
             for interaction in group.inputs() {
-                for target in interaction.target().concrete_actors() {
+                for target in interaction.target().static_actors() {
                     insert_linked(target, &mut uses.reads);
                 }
             }
             for interaction in group.outputs() {
-                for target in interaction.target().concrete_actors() {
+                for target in interaction.target().static_actors() {
                     insert_linked(target, &mut uses.writes);
                 }
             }
@@ -387,7 +394,7 @@ pub(crate) fn infer_direct_routes<'a>(
             }));
             for group in entry_model.groups() {
                 for interaction in group.inputs() {
-                    for target in interaction.target().concrete_actors() {
+                    for target in interaction.target().static_actors() {
                         // A single-actor covenant already authenticates its only
                         // possible template, so its self-input needs no route leaf.
                         if app_actors.contains(target) && !app_actors.is_singleton_actor_self_target(&actor.name, target) {
@@ -396,7 +403,7 @@ pub(crate) fn infer_direct_routes<'a>(
                     }
                 }
                 for interaction in group.outputs() {
-                    for target_name in interaction.target().concrete_actors() {
+                    for target_name in interaction.target().static_actors() {
                         if !app_actors.contains(target_name) {
                             continue;
                         }

@@ -39,7 +39,7 @@ impl<'a> EntryModel<'a> {
                 source: InteractionSource::Consume(consume),
                 handle: Some(&consume.name),
                 index,
-                target: ActorTarget::concrete(&consume.actor),
+                target: ActorTarget::static_actor(&consume.actor),
             })
             .collect();
         let current_outputs = match &source.emits {
@@ -101,7 +101,7 @@ impl<'a> EntryModel<'a> {
                         source: InteractionSource::SpawnOutput(output),
                         handle: Some(&output.name),
                         index: output.group_index,
-                        target: ActorTarget::source_or_concrete(source, &output.actor),
+                        target: ActorTarget::source_or_static(source, &output.actor),
                     })
                     .collect(),
             }
@@ -153,7 +153,7 @@ impl<'a> EntryModel<'a> {
 
         for group in self.groups() {
             for interaction in group.inputs() {
-                for target in interaction.target().concrete_actors() {
+                for target in interaction.target().static_actors() {
                     if app_actors.contains(target) && !app_actors.is_singleton_actor_self_target(source_actor, target) {
                         uses.reads.insert(target.to_string());
                     }
@@ -171,7 +171,7 @@ impl<'a> EntryModel<'a> {
         }
         for group in self.existing_groups().chain(self.genesis_groups()) {
             for interaction in group.outputs() {
-                for target in interaction.target().concrete_actors() {
+                for target in interaction.target().static_actors() {
                     if app_actors.contains(target) && target != source_actor {
                         uses.writes.insert(target.to_string());
                     }
@@ -294,54 +294,73 @@ pub(crate) enum InteractionSource<'a> {
     SpawnOutput(&'a SpawnOutputDecl),
 }
 
-/// Compiler-known actor candidates for an interaction target.
-///
-/// The original spelling is retained even when a source value prevents the
-/// target from participating in static app planning.
+/// A source-selected target or compiler-known static actor domain.
 #[derive(Debug)]
-pub(crate) struct ActorTarget {
-    actors: Vec<String>,
-    concrete: bool,
+pub(crate) enum ActorTarget {
+    /// A runtime actor-type value or open observed binding.
+    Source(String),
+    /// One fixed actor or an expanded actor-enum domain.
+    Static(Vec<String>),
 }
 
 impl ActorTarget {
-    fn concrete(actor: &str) -> Self {
-        Self { actors: vec![actor.to_string()], concrete: true }
+    fn static_actor(actor: &str) -> Self {
+        Self::Static(vec![actor.to_string()])
     }
 
-    fn source_or_concrete(entry: &EntryDecl, expression: &str) -> Self {
-        let concrete = is_actor_reference(expression)
+    fn source_or_static(entry: &EntryDecl, expression: &str) -> Self {
+        let static_target = is_actor_reference(expression)
             && !entry.params.iter().any(|param| param.name == expression)
             && !expression.strip_prefix("self.").is_some_and(is_identifier);
-        Self { actors: vec![expression.to_string()], concrete }
+        if static_target { Self::Static(vec![expression.to_string()]) } else { Self::Source(expression.to_string()) }
     }
 
     fn observed(entry: &EntryDecl, observe: &ObserveDecl, observed: &ObservedActorDecl) -> Self {
         let open_binding = observed.open_state.is_some()
             || observe.inputs.iter().any(|input| input.actor == observed.actor && input.open_state.is_some());
-        let mut target = Self::source_or_concrete(entry, &observed.actor);
-        target.concrete &= !open_binding;
-        target
+        if open_binding { Self::Source(observed.actor.clone()) } else { Self::source_or_static(entry, &observed.actor) }
     }
 
     fn domain(actors: &[String], actor_enums: &BTreeMap<String, ActorEnumInfo>) -> Self {
-        Self {
-            actors: actors
+        Self::Static(
+            actors
                 .iter()
                 .flat_map(|actor| actor_enums.get(actor).map_or_else(|| vec![actor.clone()], |actor_enum| actor_enum.variants.clone()))
                 .collect(),
-            concrete: true,
-        }
+        )
     }
 
     /// Iterate candidate actor names or unresolved target expressions.
     pub(crate) fn actors(&self) -> impl Iterator<Item = &str> {
-        self.actors.iter().map(String::as_str)
+        match self {
+            Self::Source(actor) => std::slice::from_ref(actor),
+            Self::Static(actors) => actors.as_slice(),
+        }
+        .iter()
+        .map(String::as_str)
     }
 
-    /// Iterate only compiler-known concrete actor candidates.
-    pub(crate) fn concrete_actors(&self) -> impl Iterator<Item = &str> {
-        self.actors().filter(|_| self.concrete)
+    /// Iterate only compiler-known static actor candidates.
+    pub(crate) fn static_actors(&self) -> impl Iterator<Item = &str> {
+        match self {
+            Self::Source(_) => [].as_slice(),
+            Self::Static(actors) => actors.as_slice(),
+        }
+        .iter()
+        .map(String::as_str)
+    }
+
+    /// Return the sole static actor, if this target is a singleton domain.
+    pub(crate) fn single_static_actor(&self) -> Option<&str> {
+        match self {
+            Self::Static(actors) if actors.len() == 1 => Some(actors[0].as_str()),
+            Self::Source(_) | Self::Static(_) => None,
+        }
+    }
+
+    /// Return whether a source value selects this target.
+    pub(crate) fn is_source(&self) -> bool {
+        matches!(self, Self::Source(_))
     }
 }
 
@@ -761,7 +780,7 @@ mod tests {
         assert!(std::ptr::eq(observed, &entry.observes[0].inputs[0]));
         assert_eq!(observe_group.inputs()[0].handle(), Some("before"));
         assert_eq!(observe_group.inputs()[0].index(), 0);
-        assert_eq!(observe_group.inputs()[0].target().concrete_actors().collect::<Vec<_>>(), ["Remote"]);
+        assert_eq!(observe_group.inputs()[0].target().static_actors().collect::<Vec<_>>(), ["Remote"]);
 
         let spawn_group = model.genesis_groups().next().expect("spawn group");
         assert!(std::ptr::eq(spawn_group.spawn().expect("spawn source"), &entry.spawns[0]));
@@ -771,7 +790,7 @@ mod tests {
         assert!(std::ptr::eq(output, &entry.spawns[0].outputs[0]));
         assert_eq!(spawn_group.outputs()[0].handle(), Some("child"));
         assert_eq!(spawn_group.outputs()[0].index(), 0);
-        assert_eq!(spawn_group.outputs()[0].target().concrete_actors().collect::<Vec<_>>(), ["Child"]);
+        assert_eq!(spawn_group.outputs()[0].target().static_actors().collect::<Vec<_>>(), ["Child"]);
 
         assert_eq!(model.expanded_routes()[0].actor, "King");
         let app_actors =
@@ -786,7 +805,7 @@ mod tests {
     }
 
     #[test]
-    fn actor_targets_keep_source_expressions_out_of_concrete_planning() {
+    fn actor_targets_keep_source_expressions_out_of_static_planning() {
         let entry = EntryDecl {
             kind: EntryKind::Leader,
             name: "step".to_string(),
@@ -810,15 +829,15 @@ mod tests {
             outputs: Vec::new(),
         };
 
-        let source = ActorTarget::source_or_concrete(&entry, "self.foreign_type");
+        let source = ActorTarget::source_or_static(&entry, "self.foreign_type");
         assert_eq!(source.actors().collect::<Vec<_>>(), ["self.foreign_type"]);
-        assert!(source.concrete_actors().next().is_none());
+        assert!(source.static_actors().next().is_none());
 
         let open = ActorTarget::observed(&entry, &observe, &observe.inputs[0]);
         assert_eq!(open.actors().collect::<Vec<_>>(), ["Foreign"]);
-        assert!(open.concrete_actors().next().is_none());
+        assert!(open.static_actors().next().is_none());
 
-        assert_eq!(ActorTarget::concrete("Foreign").concrete_actors().collect::<Vec<_>>(), ["Foreign"]);
+        assert_eq!(ActorTarget::static_actor("Foreign").static_actors().collect::<Vec<_>>(), ["Foreign"]);
     }
 
     #[test]
