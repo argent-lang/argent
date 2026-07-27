@@ -17,7 +17,6 @@ use super::ActorEnumInfo;
 pub(crate) struct EntryModel<'a> {
     source: &'a EntryDecl,
     groups: Vec<CovenantGroup<'a>>,
-    routes: Vec<EntryRoute<'a>>,
     template_selectors: BTreeMap<String, TemplateSelector>,
 }
 
@@ -63,16 +62,6 @@ impl<'a> EntryModel<'a> {
                 })
                 .collect(),
         };
-        let routes = source
-            .routes
-            .iter()
-            .map(|route| {
-                let actors = template_selectors
-                    .get(&route.actor)
-                    .map_or_else(|| vec![route.actor.clone()], |selector| selector.variants.clone());
-                EntryRoute { source: route, target: ActorTarget { actors } }
-            })
-            .collect();
         let mut groups = vec![CovenantGroup { covenant: CovenantContext::Current, inputs: current_inputs, outputs: current_outputs }];
         groups.extend(source.observes.iter().map(|observe| {
             CovenantGroup {
@@ -117,7 +106,7 @@ impl<'a> EntryModel<'a> {
                     .collect(),
             }
         }));
-        Self { source, groups, routes, template_selectors }
+        Self { source, groups, template_selectors }
     }
 
     /// Return the source entry declaration.
@@ -145,15 +134,9 @@ impl<'a> EntryModel<'a> {
         &self.template_selectors
     }
 
-    /// Return body-derived routes in analysis order.
-    pub(crate) fn routes(&self) -> &[EntryRoute<'a>] {
-        &self.routes
-    }
-
     /// Expand body-derived routes to their concrete artifact targets.
     pub(crate) fn expanded_routes(&self) -> Vec<RouteCall> {
-        let routes = self.routes.iter().map(EntryRoute::source);
-        expand_routes(routes, &self.template_selectors)
+        expand_routes(self.source.routes.iter(), &self.template_selectors)
     }
 }
 
@@ -278,25 +261,6 @@ impl ActorTarget {
     /// Iterate candidate actor names or unresolved target expressions.
     pub(crate) fn actors(&self) -> impl Iterator<Item = &str> {
         self.actors.iter().map(String::as_str)
-    }
-}
-
-/// One body-derived route and its planning target domain.
-#[derive(Debug)]
-pub(crate) struct EntryRoute<'a> {
-    source: &'a RouteCall,
-    target: ActorTarget,
-}
-
-impl<'a> EntryRoute<'a> {
-    /// Return the analyzed body route.
-    pub(crate) fn source(&self) -> &'a RouteCall {
-        self.source
-    }
-
-    /// Return the route targets used by dependency and commitment planning.
-    pub(crate) fn target(&self) -> &ActorTarget {
-        &self.target
     }
 }
 
@@ -704,9 +668,6 @@ mod tests {
         assert_eq!(model.current().outputs()[0].handle(), None);
         assert_eq!(model.current().outputs()[0].index(), 0);
         assert_eq!(model.current().outputs()[0].target().actors().collect::<Vec<_>>(), ["Pawn", "King"]);
-        assert!(std::ptr::eq(model.routes()[0].source(), &entry.routes[0]));
-        assert_eq!(model.routes()[0].target().actors().collect::<Vec<_>>(), ["Pawn", "King"]);
-
         let observe_group = model.existing_groups().next().expect("observe group");
         assert!(std::ptr::eq(observe_group.observe().expect("observe source"), &entry.observes[0]));
         let InteractionSource::ObserveInput(observed) = observe_group.inputs()[0].source() else {

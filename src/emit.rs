@@ -191,10 +191,10 @@ impl<'a> Model<'a> {
             }
         }
         let actor_models = build_actor_models(&actors, &actor_enums)?;
-        let state_template_deps = compute_state_template_deps(&actor_models, &all_actors, &app_actors)?;
-        let direct_state_template_deps = compute_direct_state_template_deps(&actor_models, &all_actors, &app_actors)?;
+        let state_template_deps = compute_state_template_deps(&actor_models, &app_actors)?;
+        let direct_state_template_deps = compute_direct_state_template_deps(&actor_models, &app_actors)?;
         let CompilerRoutePlan { families: route_families, leaves_by_actor: route_leaves_by_actor, transitions: route_transitions } =
-            infer_direct_routes(&actor_models, &all_actors, &app_actors, route_planner)?;
+            infer_direct_routes(&actor_models, &app_actors, route_planner)?;
         let leader_for = compute_leader_for(&actors);
         let state_route_leaves = compute_state_route_leaves(&state_template_deps, &direct_state_template_deps, &route_families);
         let model = Self {
@@ -1207,7 +1207,6 @@ fn validate_direct_actor_imports(program: &Program, app_name: &str, app_actors: 
 
 fn compute_state_template_deps<'a>(
     actor_models: &BTreeMap<&'a str, ActorModel<'a>>,
-    actors_by_name: &BTreeMap<String, &'a ActorDecl>,
     app_actors: &[String],
 ) -> Result<BTreeMap<String, Vec<String>>> {
     let app_actor_set = app_actors.iter().cloned().collect::<BTreeSet<_>>();
@@ -1233,9 +1232,9 @@ fn compute_state_template_deps<'a>(
             for group in entry_model.genesis_groups() {
                 for interaction in group.outputs() {
                     for target in interaction.target().actors() {
-                        if is_identifier(target) && actors_by_name.contains_key(target) && app_actor_set.contains(target) {
+                        if is_identifier(target) && app_actor_set.contains(target) {
                             deps.entry(actor.state.clone()).or_default().insert(target.to_string());
-                            let target_actor = actors_by_name[target];
+                            let target_actor = actor_models.get(target).expect("selected app actor has a model").source();
                             routes.entry(actor.state.clone()).or_default().insert(target_actor.state.clone());
                             routes.entry(target_actor.state.clone()).or_default();
                             deps.entry(target_actor.state.clone()).or_default();
@@ -1244,20 +1243,17 @@ fn compute_state_template_deps<'a>(
                 }
             }
 
-            for route in entry_model.routes() {
-                for target_name in route.target().actors() {
-                    let target = actors_by_name.get(target_name).copied().ok_or_else(|| {
-                        ArgentError::new(format!(
-                            "entry `{}::{}` routes to unknown actor `{target_name}`",
-                            actor.name,
-                            entry_model.source().name
-                        ))
-                    })?;
+            for interaction in entry_model.current().outputs() {
+                for target_name in interaction.target().actors() {
+                    if !app_actor_set.contains(target_name) {
+                        continue;
+                    }
+                    let target = actor_models.get(target_name).expect("selected app actor has a model").source();
                     routes.entry(actor.state.clone()).or_default().insert(target.state.clone());
                     routes.entry(target.state.clone()).or_default();
                     deps.entry(target.state.clone()).or_default();
 
-                    if app_actor_set.contains(target_name) && target_name != actor.name {
+                    if target_name != actor.name {
                         deps.entry(actor.state.clone()).or_default().insert(target_name.to_string());
                     }
                 }
@@ -1293,7 +1289,6 @@ fn compute_state_template_deps<'a>(
 
 fn compute_direct_state_template_deps<'a>(
     actor_models: &BTreeMap<&'a str, ActorModel<'a>>,
-    actors_by_name: &BTreeMap<String, &'a ActorDecl>,
     app_actors: &[String],
 ) -> Result<BTreeMap<String, BTreeSet<String>>> {
     let app_actor_set = app_actors.iter().cloned().collect::<BTreeSet<_>>();
@@ -1314,23 +1309,16 @@ fn compute_direct_state_template_deps<'a>(
             for group in entry_model.genesis_groups() {
                 for interaction in group.outputs() {
                     for target in interaction.target().actors() {
-                        if is_identifier(target) && actors_by_name.contains_key(target) && app_actor_set.contains(target) {
+                        if is_identifier(target) && app_actor_set.contains(target) {
                             direct.entry(actor.state.clone()).or_default().insert(target.to_string());
                         }
                     }
                 }
             }
-            for route in entry_model.routes() {
-                for target_name in route.target().actors() {
-                    let target = actors_by_name.get(target_name).copied().ok_or_else(|| {
-                        ArgentError::new(format!(
-                            "entry `{}::{}` routes to unknown actor `{target_name}`",
-                            actor.name,
-                            entry_model.source().name
-                        ))
-                    })?;
-                    if app_actor_set.contains(&target.name) && target.name != actor.name {
-                        direct.entry(actor.state.clone()).or_default().insert(target.name.clone());
+            for interaction in entry_model.current().outputs() {
+                for target_name in interaction.target().actors() {
+                    if app_actor_set.contains(target_name) && target_name != actor.name {
+                        direct.entry(actor.state.clone()).or_default().insert(target_name.to_string());
                     }
                 }
             }
@@ -1376,7 +1364,6 @@ fn compute_state_route_leaves(
 
 fn infer_direct_routes<'a>(
     actor_models: &BTreeMap<&'a str, ActorModel<'a>>,
-    actors_by_name: &BTreeMap<String, &'a ActorDecl>,
     app_actors: &[String],
     route_planner: &CompilerRoutePlanner,
 ) -> Result<CompilerRoutePlan> {
@@ -1420,24 +1407,15 @@ fn infer_direct_routes<'a>(
                     }
                 }
             }
-            for route in entry_model.routes() {
-                for target_name in route.target().actors() {
-                    let target = actors_by_name.get(target_name).copied().ok_or_else(|| {
-                        ArgentError::new(format!(
-                            "entry `{}::{}` routes to unknown actor `{target_name}`",
-                            actor.name,
-                            entry_model.source().name
-                        ))
-                    })?;
-                    if !app_actor_set.contains(&actor.name) || !app_actor_set.contains(&target.name) {
+            for interaction in entry_model.current().outputs() {
+                for target_name in interaction.target().actors() {
+                    if !app_actor_set.contains(target_name) {
                         continue;
                     }
-                    if actor.name != target.name {
-                        graph.add_emit(actor.name.clone(), target.name.clone());
+                    if actor.name != target_name {
+                        graph.add_emit(actor.name.clone(), target_name.to_string());
                     }
-                    // A selector can include its source actor. Keep that identity
-                    // transition without adding a false dependency edge.
-                    transition_pairs.insert((actor.name.clone(), target.name.clone()));
+                    transition_pairs.insert((actor.name.clone(), target_name.to_string()));
                 }
             }
         }
@@ -6936,6 +6914,64 @@ mod tests {
         program.modules[0].actors[0].entries[0].terminal_route_sets = vec![vec![route]];
 
         Model::from_program(&program).expect("route should be accepted");
+    }
+
+    #[test]
+    fn planning_uses_declared_emit_domain_not_body_routes() {
+        let path = PathBuf::from("declared-emit-domain.ag");
+        let module = crate::parser::parse_module(
+            path.clone(),
+            r#"
+            state SourceState {
+                int nonce;
+            }
+
+            state TargetState {
+                int nonce;
+            }
+
+            actor Source owns SourceState {
+                entry choose_a() emits one A | B {
+                    TargetState next = {
+                        nonce: nonce,
+                    };
+                    become A(next);
+                }
+            }
+
+            actor A owns TargetState {}
+            actor B owns TargetState {}
+
+            app DeclaredEmitDomain {
+                actor Source;
+                actor A;
+                actor B;
+            }
+            "#
+            .to_string(),
+        )
+        .expect("source parses");
+        let program = Program { root: path, modules: vec![module] };
+
+        let model = Model::from_program(&program).expect("declared emit domain plans");
+        let source = model.actor("Source").expect("Source exists");
+        let entry = &source.entries[0];
+        assert_eq!(
+            model
+                .entry_model(source, entry)
+                .expect("entry model exists")
+                .expanded_routes()
+                .iter()
+                .map(|route| route.actor.as_str())
+                .collect::<Vec<_>>(),
+            ["A"]
+        );
+        assert!(model.route_transitions.contains_key(&("Source".to_string(), "A".to_string())));
+        assert!(model.route_transitions.contains_key(&("Source".to_string(), "B".to_string())));
+        assert_eq!(
+            model.state_route_leaves["SourceState"],
+            [RouteRootLeaf::Actor("A".to_string()), RouteRootLeaf::Actor("B".to_string())]
+        );
     }
 
     #[test]
