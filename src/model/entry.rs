@@ -1,0 +1,584 @@
+use std::collections::BTreeMap;
+
+use crate::ast::{ActorDecl, ConsumeDecl, EntryDecl, ObserveDecl, ObservedActorDecl, RouteCall, SpawnDecl, SpawnOutputDecl};
+use crate::error::{ArgentError, Result};
+use crate::language::word;
+use crate::lexer::{Token, TokenKind, lex};
+use crate::naming::{is_identifier, to_snake};
+
+use super::ActorEnumInfo;
+
+#[derive(Debug)]
+pub(crate) struct EntryModel<'a> {
+    source: &'a EntryDecl,
+    groups: Vec<CovenantGroup<'a>>,
+    template_selectors: BTreeMap<String, TemplateSelector>,
+}
+
+impl<'a> EntryModel<'a> {
+    pub(crate) fn build(actor: &'a ActorDecl, source: &'a EntryDecl, actor_enums: &BTreeMap<String, ActorEnumInfo>) -> Result<Self> {
+        Ok(Self::new(source, template_selectors_for_entry(actor, source, actor_enums)?))
+    }
+
+    fn new(source: &'a EntryDecl, template_selectors: BTreeMap<String, TemplateSelector>) -> Self {
+        let current_inputs = source
+            .consumes
+            .iter()
+            .map(|consume| EntryInteraction { source: InteractionSource::Consume(consume), target: ActorTarget::one(&consume.actor) })
+            .collect();
+        let current_outputs = source
+            .routes
+            .iter()
+            .map(|route| {
+                let actors = template_selectors
+                    .get(&route.actor)
+                    .map_or_else(|| vec![route.actor.clone()], |selector| selector.variants.clone());
+                EntryInteraction { source: InteractionSource::Emit(route), target: ActorTarget { actors } }
+            })
+            .collect();
+        let mut groups = vec![CovenantGroup { covenant: CovenantContext::Current, inputs: current_inputs, outputs: current_outputs }];
+        groups.extend(source.observes.iter().map(|observe| {
+            CovenantGroup {
+                covenant: CovenantContext::Existing(observe),
+                inputs: observe
+                    .inputs
+                    .iter()
+                    .map(|input| EntryInteraction {
+                        source: InteractionSource::ObserveInput(input),
+                        target: ActorTarget::one(&input.actor),
+                    })
+                    .collect(),
+                outputs: observe
+                    .outputs
+                    .iter()
+                    .map(|output| EntryInteraction {
+                        source: InteractionSource::ObserveOutput(output),
+                        target: ActorTarget::one(&output.actor),
+                    })
+                    .collect(),
+            }
+        }));
+        groups.extend(source.spawns.iter().map(|spawn| {
+            CovenantGroup {
+                covenant: CovenantContext::Genesis(spawn),
+                inputs: Vec::new(),
+                outputs: spawn
+                    .outputs
+                    .iter()
+                    .map(|output| EntryInteraction {
+                        source: InteractionSource::SpawnOutput(output),
+                        target: ActorTarget::one(&output.actor),
+                    })
+                    .collect(),
+            }
+        }));
+        Self { source, groups, template_selectors }
+    }
+
+    pub(crate) fn source(&self) -> &'a EntryDecl {
+        self.source
+    }
+
+    pub(crate) fn current(&self) -> &CovenantGroup<'a> {
+        self.groups.first().expect("entry model always contains its current covenant")
+    }
+
+    pub(crate) fn existing_groups(&self) -> impl Iterator<Item = &CovenantGroup<'a>> {
+        self.groups.iter().filter(|group| matches!(group.covenant, CovenantContext::Existing(_)))
+    }
+
+    pub(crate) fn genesis_groups(&self) -> impl Iterator<Item = &CovenantGroup<'a>> {
+        self.groups.iter().filter(|group| matches!(group.covenant, CovenantContext::Genesis(_)))
+    }
+
+    pub(crate) fn template_selectors(&self) -> &BTreeMap<String, TemplateSelector> {
+        &self.template_selectors
+    }
+
+    pub(crate) fn expanded_routes(&self) -> Vec<RouteCall> {
+        let routes = self.current().outputs().iter().map(|interaction| {
+            let InteractionSource::Emit(route) = interaction.source() else {
+                unreachable!("current entry outputs are emits");
+            };
+            route
+        });
+        expand_routes(routes, &self.template_selectors)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CovenantGroup<'a> {
+    covenant: CovenantContext<'a>,
+    inputs: Vec<EntryInteraction<'a>>,
+    outputs: Vec<EntryInteraction<'a>>,
+}
+
+impl<'a> CovenantGroup<'a> {
+    pub(crate) fn inputs(&self) -> &[EntryInteraction<'a>] {
+        &self.inputs
+    }
+
+    pub(crate) fn outputs(&self) -> &[EntryInteraction<'a>] {
+        &self.outputs
+    }
+
+    pub(crate) fn observe(&self) -> Option<&'a ObserveDecl> {
+        match self.covenant {
+            CovenantContext::Existing(observe) => Some(observe),
+            CovenantContext::Current | CovenantContext::Genesis(_) => None,
+        }
+    }
+
+    pub(crate) fn spawn(&self) -> Option<&'a SpawnDecl> {
+        match self.covenant {
+            CovenantContext::Genesis(spawn) => Some(spawn),
+            CovenantContext::Current | CovenantContext::Existing(_) => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CovenantContext<'a> {
+    Current,
+    Existing(&'a ObserveDecl),
+    Genesis(&'a SpawnDecl),
+}
+
+#[derive(Debug)]
+pub(crate) struct EntryInteraction<'a> {
+    source: InteractionSource<'a>,
+    target: ActorTarget,
+}
+
+impl<'a> EntryInteraction<'a> {
+    pub(crate) fn source(&self) -> InteractionSource<'a> {
+        self.source
+    }
+
+    pub(crate) fn target(&self) -> &ActorTarget {
+        &self.target
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum InteractionSource<'a> {
+    Consume(&'a ConsumeDecl),
+    Emit(&'a RouteCall),
+    ObserveInput(&'a ObservedActorDecl),
+    ObserveOutput(&'a ObservedActorDecl),
+    SpawnOutput(&'a SpawnOutputDecl),
+}
+
+#[derive(Debug)]
+pub(crate) struct ActorTarget {
+    actors: Vec<String>,
+}
+
+impl ActorTarget {
+    fn one(expression: &str) -> Self {
+        Self { actors: vec![expression.to_string()] }
+    }
+
+    pub(crate) fn actors(&self) -> impl Iterator<Item = &str> {
+        self.actors.iter().map(String::as_str)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TemplateSelector {
+    pub(crate) name: String,
+    pub(crate) actor_enum: String,
+    pub(crate) state: String,
+    pub(crate) variants: Vec<String>,
+    pub(crate) selector_expr: String,
+    pub(crate) fixed_actor: Option<String>,
+}
+
+impl TemplateSelector {
+    pub(crate) fn route_actors(&self) -> Vec<String> {
+        self.fixed_actor.as_ref().map_or_else(|| self.variants.clone(), |actor| vec![actor.clone()])
+    }
+}
+
+struct TemplateSelectorContext<'a> {
+    actor: &'a ActorDecl,
+    entry: &'a EntryDecl,
+    actor_enums: &'a BTreeMap<String, ActorEnumInfo>,
+}
+
+struct TemplateSelectorRequest<'a> {
+    name: &'a str,
+    actor_enum_name: &'a str,
+    selector_expr: &'a str,
+    fixed_actor: Option<&'a str>,
+    expected_state: Option<&'a str>,
+    expected_actor_enum: Option<&'a str>,
+}
+
+fn template_selectors_for_entry(
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    actor_enums: &BTreeMap<String, ActorEnumInfo>,
+) -> Result<BTreeMap<String, TemplateSelector>> {
+    let ctx = TemplateSelectorContext { actor, entry, actor_enums };
+    let mut selectors = BTreeMap::new();
+    for param in &entry.params {
+        if param.ty.array.is_some() || !actor_enums.contains_key(&param.ty.name) {
+            continue;
+        }
+        let selector = template_selector_from_actor_enum_value(
+            &ctx,
+            TemplateSelectorRequest {
+                name: &param.name,
+                actor_enum_name: &param.ty.name,
+                selector_expr: &param.name,
+                fixed_actor: None,
+                expected_state: None,
+                expected_actor_enum: Some(&param.ty.name),
+            },
+        )?;
+        insert_template_selector(actor, entry, &mut selectors, selector)?;
+    }
+
+    // TODO(route clauses): Derive route domains only from entry clauses. Keep
+    // body-local selector resolution in body analysis/codegen, then remove
+    // this raw-body scan from EntryModel.
+    let tokens = lex(&entry.body)
+        .map_err(|err| ArgentError::new(format!("failed to lex body for `{}::{}`: {}", actor.name, entry.name, err.message)))?;
+    let mut pos = 0usize;
+    while pos + 3 < tokens.len() {
+        let is_actor_type = matches!(&tokens[pos].kind, TokenKind::Ident(name) if name == word::ACTOR_TYPE)
+            && matches!(tokens[pos + 1].kind, TokenKind::Symbol('<'))
+            && matches!(tokens[pos + 3].kind, TokenKind::Symbol('>'))
+            && matches!(tokens.get(pos + 4).map(|token| &token.kind), Some(TokenKind::Ident(_)))
+            && matches!(tokens.get(pos + 5).map(|token| &token.kind), Some(TokenKind::Symbol('=')));
+        if is_actor_type {
+            let state = match &tokens[pos + 2].kind {
+                TokenKind::Ident(state) => state.clone(),
+                _ => {
+                    pos += 1;
+                    continue;
+                }
+            };
+            let name = match &tokens[pos + 4].kind {
+                TokenKind::Ident(name) => name.clone(),
+                _ => {
+                    pos += 1;
+                    continue;
+                }
+            };
+            let (expr, end_pos) = take_expr_until_semicolon(&entry.body, &tokens, pos + 6, actor, entry)?;
+            let selector = template_selector_from_initializer(&ctx, &name, Some(&state), None, &expr)?;
+            insert_template_selector(actor, entry, &mut selectors, selector)?;
+            pos = end_pos + 1;
+            continue;
+        }
+
+        let is_actor_enum_local = matches!(&tokens[pos].kind, TokenKind::Ident(source_ty) if actor_enums.contains_key(source_ty))
+            && matches!(tokens.get(pos + 1).map(|token| &token.kind), Some(TokenKind::Ident(_)))
+            && matches!(tokens.get(pos + 2).map(|token| &token.kind), Some(TokenKind::Symbol('=')));
+        if is_actor_enum_local {
+            let actor_enum_name = match &tokens[pos].kind {
+                TokenKind::Ident(actor_enum_name) => actor_enum_name.clone(),
+                _ => unreachable!("checked actor enum local type"),
+            };
+            let name = match &tokens[pos + 1].kind {
+                TokenKind::Ident(name) => name.clone(),
+                _ => unreachable!("checked actor enum local name"),
+            };
+            let (expr, end_pos) = take_expr_until_semicolon(&entry.body, &tokens, pos + 3, actor, entry)?;
+            let mut selector = template_selector_from_initializer(&ctx, &name, None, Some(&actor_enum_name), &expr)?;
+            selector.selector_expr = name.clone();
+            insert_template_selector(actor, entry, &mut selectors, selector)?;
+            pos = end_pos + 1;
+            continue;
+        }
+
+        pos += 1;
+    }
+    Ok(selectors)
+}
+
+fn take_expr_until_semicolon(
+    body: &str,
+    tokens: &[Token],
+    start_pos: usize,
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+) -> Result<(String, usize)> {
+    let start = tokens
+        .get(start_pos)
+        .ok_or_else(|| ArgentError::new(format!("entry `{}::{}` has an incomplete actor enum selector", actor.name, entry.name)))?
+        .span
+        .start;
+    let mut depth = 0usize;
+    let mut scan = start_pos;
+    while scan < tokens.len() {
+        match tokens[scan].kind {
+            TokenKind::Symbol('{') | TokenKind::Symbol('(') | TokenKind::Symbol('[') => depth += 1,
+            TokenKind::Symbol('}') | TokenKind::Symbol(')') | TokenKind::Symbol(']') => depth = depth.saturating_sub(1),
+            TokenKind::Symbol(';') if depth == 0 => {
+                return Ok((body[start..tokens[scan].span.start].trim().to_string(), scan));
+            }
+            TokenKind::Eof => break,
+            _ => {}
+        }
+        scan += 1;
+    }
+    Err(ArgentError::new(format!("entry `{}::{}` has an unterminated actor enum selector", actor.name, entry.name)))
+}
+
+fn insert_template_selector(
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    selectors: &mut BTreeMap<String, TemplateSelector>,
+    selector: TemplateSelector,
+) -> Result<()> {
+    let name = selector.name.clone();
+    if selectors.insert(name.clone(), selector).is_some() {
+        return Err(ArgentError::new(format!("entry `{}::{}` declares actor handle `{name}` more than once", actor.name, entry.name)));
+    }
+    Ok(())
+}
+
+fn template_selector_from_initializer(
+    ctx: &TemplateSelectorContext<'_>,
+    name: &str,
+    expected_state: Option<&str>,
+    expected_actor_enum: Option<&str>,
+    expr: &str,
+) -> Result<TemplateSelector> {
+    if let Some((actor_enum, selector_expr)) = parse_actor_enum_selector(expr) {
+        return template_selector_from_actor_enum_value(
+            ctx,
+            TemplateSelectorRequest {
+                name,
+                actor_enum_name: actor_enum,
+                selector_expr,
+                fixed_actor: None,
+                expected_state,
+                expected_actor_enum,
+            },
+        );
+    }
+    if let Some((actor_enum, variant)) = parse_actor_enum_variant(expr) {
+        return template_selector_from_actor_enum_value(
+            ctx,
+            TemplateSelectorRequest {
+                name,
+                actor_enum_name: &actor_enum,
+                selector_expr: "",
+                fixed_actor: Some(&variant),
+                expected_state,
+                expected_actor_enum,
+            },
+        );
+    }
+    if let Some(actor_enum) = expected_actor_enum {
+        return template_selector_from_actor_enum_value(
+            ctx,
+            TemplateSelectorRequest {
+                name,
+                actor_enum_name: actor_enum,
+                selector_expr: expr,
+                fixed_actor: None,
+                expected_state,
+                expected_actor_enum,
+            },
+        );
+    }
+    Err(ArgentError::new(format!(
+        "entry `{}::{}` declares actor handle `{name}` without an actor enum initializer",
+        ctx.actor.name, ctx.entry.name
+    )))
+}
+
+fn template_selector_from_actor_enum_value(
+    ctx: &TemplateSelectorContext<'_>,
+    request: TemplateSelectorRequest<'_>,
+) -> Result<TemplateSelector> {
+    if let Some(expected_actor_enum) = request.expected_actor_enum
+        && request.actor_enum_name != expected_actor_enum
+    {
+        return Err(ArgentError::new(format!(
+            "entry `{}::{}` declares actor enum value `{name}` as `{expected_actor_enum}`, but initializes it from `{actor_enum_name}`",
+            ctx.actor.name,
+            ctx.entry.name,
+            name = request.name,
+            actor_enum_name = request.actor_enum_name
+        )));
+    }
+    let actor_enum = ctx.actor_enums.get(request.actor_enum_name).ok_or_else(|| {
+        ArgentError::new(format!(
+            "entry `{}::{}` declares actor handle `{name}` from unknown actor enum `{actor_enum_name}`",
+            ctx.actor.name,
+            ctx.entry.name,
+            name = request.name,
+            actor_enum_name = request.actor_enum_name
+        ))
+    })?;
+    if let Some(expected_state) = request.expected_state
+        && actor_enum.state != expected_state
+    {
+        return Err(ArgentError::new(format!(
+            "entry `{}::{}` declares actor handle `{name}` as {actor_type}<{expected_state}>, but `{actor_enum_name}` contains {actor_type}<{}>",
+            ctx.actor.name,
+            ctx.entry.name,
+            actor_enum.state,
+            actor_type = word::ACTOR_TYPE,
+            name = request.name,
+            actor_enum_name = request.actor_enum_name
+        )));
+    }
+    if ctx.actor.state != actor_enum.state {
+        return Err(ArgentError::new(format!(
+            "entry `{}::{}` uses actor enum `{actor_enum_name}` for state `{}`, but the entry actor owns `{}`; selector values currently require the same state",
+            ctx.actor.name,
+            ctx.entry.name,
+            actor_enum.state,
+            ctx.actor.state,
+            actor_enum_name = request.actor_enum_name
+        )));
+    }
+    let fixed_actor = request.fixed_actor.map(str::to_string);
+    let selector_expr = if let Some(fixed_actor) = &fixed_actor {
+        actor_enum_variant_const_expr(actor_enum, fixed_actor).ok_or_else(|| {
+            ArgentError::new(format!(
+                "actor enum `{actor_enum_name}` has no variant `{fixed_actor}` in `{}::{}`",
+                ctx.actor.name,
+                ctx.entry.name,
+                actor_enum_name = request.actor_enum_name
+            ))
+        })?
+    } else {
+        request.selector_expr.trim().to_string()
+    };
+    if selector_expr.is_empty() {
+        return Err(ArgentError::new(format!(
+            "entry `{}::{}` declares actor enum value `{name}` with an empty selector",
+            ctx.actor.name,
+            ctx.entry.name,
+            name = request.name
+        )));
+    }
+    Ok(TemplateSelector {
+        name: request.name.to_string(),
+        actor_enum: actor_enum.name.clone(),
+        state: actor_enum.state.clone(),
+        variants: actor_enum.variants.clone(),
+        selector_expr,
+        fixed_actor,
+    })
+}
+
+pub(crate) fn parse_actor_enum_selector(expr: &str) -> Option<(&str, &str)> {
+    let expr = expr.trim();
+    let (actor_enum, rest) = expr.split_once('[')?;
+    let actor_enum = actor_enum.trim();
+    if !is_identifier(actor_enum) {
+        return None;
+    }
+    let selector = rest.strip_suffix(']')?.trim();
+    if selector.is_empty() {
+        return None;
+    }
+    Some((actor_enum, selector))
+}
+
+pub(crate) fn parse_actor_enum_variant(expr: &str) -> Option<(String, String)> {
+    let expr = expr.trim();
+    let (actor_enum, variant) = expr.split_once("::")?;
+    let actor_enum = actor_enum.trim();
+    let variant = variant.trim();
+    if !is_identifier(actor_enum) || !is_identifier(variant) {
+        return None;
+    }
+    Some((actor_enum.to_string(), variant.to_string()))
+}
+
+pub(crate) fn actor_enum_variant_const_expr(actor_enum: &ActorEnumInfo, variant: &str) -> Option<String> {
+    actor_enum
+        .variants
+        .iter()
+        .position(|candidate| candidate == variant)
+        .map(|index| format!("{index} /*{}*/", to_snake(variant).to_ascii_uppercase()))
+}
+
+fn expand_routes<'a>(routes: impl Iterator<Item = &'a RouteCall>, selectors: &BTreeMap<String, TemplateSelector>) -> Vec<RouteCall> {
+    let mut out = Vec::new();
+    for route in routes {
+        if let Some(selector) = selectors.get(&route.actor) {
+            let actors = selector.route_actors();
+            out.extend(actors.into_iter().map(|actor| RouteCall { output: route.output.clone(), actor, state: route.state.clone() }));
+        } else {
+            out.push(route.clone());
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{EmitSpec, EntryKind};
+
+    #[test]
+    fn models_covenant_groups_and_preserves_source_nodes() {
+        let entry = EntryDecl {
+            kind: EntryKind::Leader,
+            name: "step".to_string(),
+            params: Vec::new(),
+            consumes: vec![ConsumeDecl { name: "peer".to_string(), actor: "Peer".to_string() }],
+            observes: vec![ObserveDecl {
+                name: "remote".to_string(),
+                covenant_expr: "self.remote_id".to_string(),
+                inputs: vec![ObservedActorDecl { name: "before".to_string(), actor: "Remote".to_string(), open_state: None }],
+                outputs: vec![ObservedActorDecl { name: "after".to_string(), actor: "Remote".to_string(), open_state: None }],
+            }],
+            spawns: vec![SpawnDecl {
+                name: "launch".to_string(),
+                covenant: "child".to_string(),
+                outputs: vec![SpawnOutputDecl { name: "child".to_string(), actor: "Child".to_string(), group_index: 0 }],
+            }],
+            emits: EmitSpec::One { actors: vec!["Move".to_string()] },
+            body: String::new(),
+            routes: vec![RouteCall { output: None, actor: "target".to_string(), state: "next".to_string() }],
+            terminal_route_sets: Vec::new(),
+        };
+        let selectors = BTreeMap::from([(
+            "target".to_string(),
+            TemplateSelector {
+                name: "target".to_string(),
+                actor_enum: "Move".to_string(),
+                state: "Game".to_string(),
+                variants: vec!["Pawn".to_string(), "King".to_string()],
+                selector_expr: "selector".to_string(),
+                fixed_actor: Some("King".to_string()),
+            },
+        )]);
+
+        let model = EntryModel::new(&entry, selectors);
+
+        let InteractionSource::Consume(consume) = model.current().inputs()[0].source() else {
+            panic!("current input must retain its consume declaration");
+        };
+        assert!(std::ptr::eq(consume, &entry.consumes[0]));
+        assert_eq!(model.current().outputs()[0].target().actors().collect::<Vec<_>>(), ["Pawn", "King"]);
+
+        let observe_group = model.existing_groups().next().expect("observe group");
+        assert!(std::ptr::eq(observe_group.observe().expect("observe source"), &entry.observes[0]));
+        let InteractionSource::ObserveInput(observed) = observe_group.inputs()[0].source() else {
+            panic!("observe input must retain its source declaration");
+        };
+        assert!(std::ptr::eq(observed, &entry.observes[0].inputs[0]));
+
+        let spawn_group = model.genesis_groups().next().expect("spawn group");
+        assert!(std::ptr::eq(spawn_group.spawn().expect("spawn source"), &entry.spawns[0]));
+        let InteractionSource::SpawnOutput(output) = spawn_group.outputs()[0].source() else {
+            panic!("spawn output must retain its source declaration");
+        };
+        assert!(std::ptr::eq(output, &entry.spawns[0].outputs[0]));
+
+        assert_eq!(model.expanded_routes()[0].actor, "King");
+    }
+}

@@ -4,6 +4,15 @@ use crate::artifact::{AppDependencyArtifact, EntryRefArtifact};
 use crate::ast::{ActorDecl, ConstDecl, FunctionDecl, StateDecl};
 use crate::link::LinkedActor;
 
+mod actor;
+mod entry;
+
+pub(crate) use actor::ActorModel;
+pub(crate) use entry::{
+    CovenantGroup, EntryModel, InteractionSource, TemplateSelector, actor_enum_variant_const_expr, parse_actor_enum_selector,
+    parse_actor_enum_variant,
+};
+
 #[derive(Debug)]
 pub(crate) struct Model<'a> {
     pub(crate) app_name: String,
@@ -20,6 +29,7 @@ pub(crate) struct Model<'a> {
     pub(crate) linked_actors: BTreeMap<String, LinkedActor>,
     pub(crate) actor_enums: BTreeMap<String, ActorEnumInfo>,
     pub(crate) actors: Vec<&'a ActorDecl>,
+    pub(crate) actor_models: BTreeMap<&'a str, ActorModel<'a>>,
     /// Delegate entries that establish each actor as a leader actor.
     pub(crate) leader_for: BTreeMap<String, Vec<EntryRefArtifact>>,
     pub(crate) route_leaves_by_actor: BTreeMap<String, Vec<RouteRootLeaf>>,
