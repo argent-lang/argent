@@ -22,16 +22,26 @@ contract Player(
 
     // :: state layouts
     struct LeagueState {
-        // :: generated fields
-        byte[32] gen__player_template;
-        byte[32] gen__stones_game_template;
-        byte[32] gen__stones_settle_template;
         // :: user declared fields
         byte[32] admin;
         int default_pile;
         int default_max_take;
     }
     struct GameState {
+        // :: user declared fields
+        byte[32] player_a;
+        byte[32] player_b;
+        int pile;
+        int max_take;
+        int turn;
+    }
+    struct SettleState {
+        // :: user declared fields
+        byte[32] player_a;
+        byte[32] player_b;
+        int status;
+    }
+    struct Gen__StonesGameState {
         // :: generated fields
         byte[32] gen__player_template;
         byte[32] gen__stones_game_template;
@@ -43,7 +53,7 @@ contract Player(
         int max_take;
         int turn;
     }
-    struct SettleState {
+    struct Gen__StonesSettleState {
         // :: generated fields
         byte[32] gen__player_template;
         byte[32] gen__stones_game_template;
@@ -173,7 +183,7 @@ contract Player(
             wins: opponent.wins,
             losses: opponent.losses,
         };
-        GameState next_game = {
+        Gen__StonesGameState next_game = {
             // :: generated fields
             gen__player_template: gen__player_template,
             gen__stones_game_template: gen__stones_game_template,
@@ -239,7 +249,7 @@ contract Player(
         require(OpCovInputCount(gen__cov_id) >= 2);
         require(OpCovInputIdx(gen__cov_id, 0) != this.activeInputIndex);
         int gen__settle_input_idx = OpCovInputIdx(gen__cov_id, 0); // input StonesSettle at cov[0]
-        SettleState settle = readInputStateWithTemplate(
+        Gen__StonesSettleState settle = readInputStateWithTemplate(
             gen__settle_input_idx,
             gen__stones_settle_prefix_len,
             gen__stones_settle_suffix_len,

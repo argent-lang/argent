@@ -14,6 +14,8 @@ mod language;
 pub mod lexer;
 mod link;
 pub mod loader;
+mod model;
+mod naming;
 pub mod parser;
 pub mod routes;
 pub mod routing;

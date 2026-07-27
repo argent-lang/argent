@@ -21,20 +21,12 @@ contract StonesGame(
 
     // :: state layouts
     struct LeagueState {
-        // :: generated fields
-        byte[32] gen__player_template;
-        byte[32] gen__stones_game_template;
-        byte[32] gen__stones_settle_template;
         // :: user declared fields
         byte[32] admin;
         int default_pile;
         int default_max_take;
     }
     struct PlayerState {
-        // :: generated fields
-        byte[32] gen__player_template;
-        byte[32] gen__stones_game_template;
-        byte[32] gen__stones_settle_template;
         // :: user declared fields
         byte[32] owner;
         byte[32] player_id;
@@ -44,6 +36,12 @@ contract StonesGame(
         int losses;
     }
     struct SettleState {
+        // :: user declared fields
+        byte[32] player_a;
+        byte[32] player_b;
+        int status;
+    }
+    struct Gen__StonesSettleState {
         // :: generated fields
         byte[32] gen__player_template;
         byte[32] gen__stones_game_template;
@@ -131,19 +129,25 @@ contract StonesGame(
         require(tx.outputs[gen__next_output_idx].value == tx.inputs[this.activeInputIndex].value);
         if (next_pile == 0) {
             SettleState ticket = {
-                // :: generated fields
-                gen__player_template: gen__player_template,
-                gen__stones_game_template: gen__stones_game_template,
-                gen__stones_settle_template: gen__stones_settle_template,
                 // :: user declared fields
                 player_a: player_a,
                 player_b: player_b,
                 status: win_status(turn),
             };
+            Gen__StonesSettleState gen__state_next_gen__stones_settle_state = {
+                // :: generated fields
+                gen__player_template: gen__player_template,
+                gen__stones_game_template: gen__stones_game_template,
+                gen__stones_settle_template: gen__stones_settle_template,
+                // :: user declared fields
+                player_a: ticket.player_a,
+                player_b: ticket.player_b,
+                status: ticket.status,
+            };
             // :: become StonesSettle
             validateOutputStateWithTemplate(
                 gen__next_output_idx,
-                ticket,
+                gen__state_next_gen__stones_settle_state,
                 gen__stones_settle_prefix,
                 gen__stones_settle_suffix,
                 gen__stones_settle_template
@@ -185,7 +189,7 @@ contract StonesGame(
         require(checkSig(move_sig, move_pk));
         require(tx.outputs[gen__settle_output_idx].value == tx.inputs[this.activeInputIndex].value);
         int winner = other_side(turn);
-        SettleState ticket = {
+        Gen__StonesSettleState ticket = {
             // :: generated fields
             gen__player_template: gen__player_template,
             gen__stones_game_template: gen__stones_game_template,

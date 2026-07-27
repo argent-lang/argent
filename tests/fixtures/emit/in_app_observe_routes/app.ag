@@ -1,0 +1,62 @@
+state ForeignState {
+    int amount;
+}
+
+state LocalState {
+    cov_id foreign_id;
+    int steps;
+}
+
+state TargetState {
+    int units;
+}
+
+actor Foreign owns ForeignState {
+    entry hold() emits one Foreign {
+        become Foreign(self.state);
+    }
+
+    entry route() emits one Target {
+        TargetState next = {
+            units: 0,
+        };
+        become Target(next);
+    }
+}
+
+actor Local owns LocalState {
+    entry step()
+    observes remote by self.foreign_id {
+        inputs {
+            src: Foreign,
+        }
+
+        outputs {
+            next: Foreign,
+        }
+    }
+    emits one Local {
+        ForeignState next_foreign = remote.inputs.src.state;
+        require remote.outputs become {
+            next <- Foreign(next_foreign),
+        };
+
+        LocalState next_local = {
+            foreign_id: foreign_id,
+            steps: steps + 1,
+        };
+        become Local(next_local);
+    }
+}
+
+actor Target owns TargetState {
+    entry hold() emits none {
+        require(1 == 1);
+    }
+}
+
+app Test {
+    actor Foreign;
+    actor Local;
+    actor Target;
+}

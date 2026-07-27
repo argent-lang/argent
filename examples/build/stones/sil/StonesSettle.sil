@@ -19,16 +19,29 @@ contract StonesSettle(
 
     // :: state layouts
     struct LeagueState {
-        // :: generated fields
-        byte[32] gen__player_template;
-        byte[32] gen__stones_game_template;
-        byte[32] gen__stones_settle_template;
         // :: user declared fields
         byte[32] admin;
         int default_pile;
         int default_max_take;
     }
     struct PlayerState {
+        // :: user declared fields
+        byte[32] owner;
+        byte[32] player_id;
+        int open_games;
+        int games;
+        int wins;
+        int losses;
+    }
+    struct GameState {
+        // :: user declared fields
+        byte[32] player_a;
+        byte[32] player_b;
+        int pile;
+        int max_take;
+        int turn;
+    }
+    struct Gen__PlayerState {
         // :: generated fields
         byte[32] gen__player_template;
         byte[32] gen__stones_game_template;
@@ -40,18 +53,6 @@ contract StonesSettle(
         int games;
         int wins;
         int losses;
-    }
-    struct GameState {
-        // :: generated fields
-        byte[32] gen__player_template;
-        byte[32] gen__stones_game_template;
-        byte[32] gen__stones_settle_template;
-        // :: user declared fields
-        byte[32] player_a;
-        byte[32] player_b;
-        int pile;
-        int max_take;
-        int turn;
     }
 
     // :: shared helper functions
@@ -110,14 +111,14 @@ contract StonesSettle(
         require(OpCovInputCount(gen__cov_id) == 3);
         require(OpCovInputIdx(gen__cov_id, 0) == this.activeInputIndex);
         int gen__player_a_in_input_idx = OpCovInputIdx(gen__cov_id, 1); // input Player at cov[1]
-        PlayerState player_a_in = readInputStateWithTemplate(
+        Gen__PlayerState player_a_in = readInputStateWithTemplate(
             gen__player_a_in_input_idx,
             gen__player_prefix_len,
             gen__player_suffix_len,
             gen__player_template
         );
         int gen__player_b_in_input_idx = OpCovInputIdx(gen__cov_id, 2); // input Player at cov[2]
-        PlayerState player_b_in = readInputStateWithTemplate(
+        Gen__PlayerState player_b_in = readInputStateWithTemplate(
             gen__player_b_in_input_idx,
             gen__player_prefix_len,
             gen__player_suffix_len,
@@ -153,7 +154,7 @@ contract StonesSettle(
             require(tx.outputs[gen__player_a_out_output_idx].value == tx.inputs[gen__player_a_in_input_idx].value);
             require(tx.outputs[gen__player_b_out_output_idx].value == tx.inputs[gen__player_b_in_input_idx].value + tx.inputs[this.activeInputIndex].value);
         }
-        PlayerState next_player_a = {
+        Gen__PlayerState next_player_a = {
             // :: generated fields
             gen__player_template: gen__player_template,
             gen__stones_game_template: gen__stones_game_template,
@@ -166,7 +167,7 @@ contract StonesSettle(
             wins: player_a_wins,
             losses: player_a_losses,
         };
-        PlayerState next_player_b = {
+        Gen__PlayerState next_player_b = {
             // :: generated fields
             gen__player_template: gen__player_template,
             gen__stones_game_template: gen__stones_game_template,

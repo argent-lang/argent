@@ -9,10 +9,6 @@ contract Knight(
 ) {
     // :: state layouts
     struct LobbyState {
-        // :: generated fields
-        byte[32] gen__mux_template;
-        byte[32] gen__spectator_template;
-        byte[32] gen__mux_routes_digest;
         // :: user declared fields
         int nonce;
     }

@@ -19,6 +19,29 @@ contract League(
 
     // :: state layouts
     struct PlayerState {
+        // :: user declared fields
+        byte[32] owner;
+        byte[32] player_id;
+        int open_games;
+        int games;
+        int wins;
+        int losses;
+    }
+    struct GameState {
+        // :: user declared fields
+        byte[32] player_a;
+        byte[32] player_b;
+        int pile;
+        int max_take;
+        int turn;
+    }
+    struct SettleState {
+        // :: user declared fields
+        byte[32] player_a;
+        byte[32] player_b;
+        int status;
+    }
+    struct Gen__PlayerState {
         // :: generated fields
         byte[32] gen__player_template;
         byte[32] gen__stones_game_template;
@@ -30,28 +53,6 @@ contract League(
         int games;
         int wins;
         int losses;
-    }
-    struct GameState {
-        // :: generated fields
-        byte[32] gen__player_template;
-        byte[32] gen__stones_game_template;
-        byte[32] gen__stones_settle_template;
-        // :: user declared fields
-        byte[32] player_a;
-        byte[32] player_b;
-        int pile;
-        int max_take;
-        int turn;
-    }
-    struct SettleState {
-        // :: generated fields
-        byte[32] gen__player_template;
-        byte[32] gen__stones_game_template;
-        byte[32] gen__stones_settle_template;
-        // :: user declared fields
-        byte[32] player_a;
-        byte[32] player_b;
-        int status;
     }
 
     // :: shared helper functions
@@ -120,7 +121,7 @@ contract League(
         require(checkSig(owner_sig, owner_pk));
         byte[32] owner = blake2b(owner_pk);
         byte[32] player_id = invocation_uid(bytes("StonesPlayer"));
-        PlayerState next_player = {
+        Gen__PlayerState next_player = {
             // :: generated fields
             gen__player_template: gen__player_template,
             gen__stones_game_template: gen__stones_game_template,

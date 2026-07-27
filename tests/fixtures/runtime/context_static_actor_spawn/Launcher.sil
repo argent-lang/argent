@@ -9,6 +9,10 @@ contract Launcher(
 ) {
     // :: state layouts
     struct ChildState {
+        // :: user declared fields
+        int amount;
+    }
+    struct Gen__ChildState {
         // :: generated fields
         byte[32] gen__child_template;
         byte[32] gen__launcher_template;
@@ -24,13 +28,25 @@ contract Launcher(
     int launches = init_launches;
 
     // :: entrypoints
-    // :: leader entry (1:N)
+    // :: leader entry (M:N)
     entrypoint function launch(
         int amount,
-        int gen__child_group_child_output_idx,
-        byte[] gen__spawn_child_prefix,
-        byte[] gen__spawn_child_suffix
+        int gen__child_prefix_len,
+        int gen__child_suffix_len,
+        int gen__child_group_child_output_idx
     ) {
+        // :: cov inputs
+        byte[32] gen__cov_id = OpInputCovenantId(this.activeInputIndex);
+        require(OpCovInputCount(gen__cov_id) == 2);
+        require(OpCovInputIdx(gen__cov_id, 0) == this.activeInputIndex);
+        int gen__source_input_idx = OpCovInputIdx(gen__cov_id, 1); // input Child at cov[1]
+        Gen__ChildState source = readInputStateWithTemplate(
+            gen__source_input_idx,
+            gen__child_prefix_len,
+            gen__child_suffix_len,
+            gen__child_template
+        );
+
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // emits one Launcher
@@ -49,11 +65,8 @@ contract Launcher(
         require(OpOutputCovenantId(gen__child_group_child_output_idx) == child_id);
 
         ChildState child_state = {
-            // :: generated fields
-            gen__child_template: gen__child_template,
-            gen__launcher_template: gen__launcher_template,
             // :: user declared fields
-            amount: amount,
+            amount: source.amount + amount,
         };
         State next = {
             // :: generated fields
@@ -62,12 +75,20 @@ contract Launcher(
             // :: user declared fields
             launches: launches + 1,
         };
+        Gen__ChildState gen__state_child_gen__child_state = {
+            // :: generated fields
+            gen__child_template: gen__child_template,
+            gen__launcher_template: gen__launcher_template,
+            // :: user declared fields
+            amount: child_state.amount,
+        };
         // :: spawned become child_group.child -> Child
-        validateOutputStateWithTemplate(
+        validateOutputStateWithInputTemplate(
             gen__child_group_child_output_idx,
-            child_state,
-            gen__spawn_child_prefix,
-            gen__spawn_child_suffix,
+            gen__state_child_gen__child_state,
+            gen__source_input_idx,
+            gen__child_prefix_len,
+            gen__child_suffix_len,
             gen__child_template
         );
         // :: become Launcher
