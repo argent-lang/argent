@@ -24,9 +24,11 @@ actor Launcher owns LauncherState {
             launches: launches + 1,
         };
 
+        unrestricted(child_group.outputs.child.value);
         require child_group.outputs become {
             child <- Child(child_state),
         };
+        unrestricted(next.value);
         become next <- Launcher(next);
     }
 }
@@ -41,6 +43,7 @@ actor Child owns ChildState {
         LauncherState next = {
             launches: 0,
         };
+        unrestricted(next.value);
         become next <- Launcher(next);
     }
 }

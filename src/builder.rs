@@ -387,6 +387,7 @@ mod tests {
 
             actor Blob owns BlobState {
                 entry store(byte[] data) emits next: Blob {
+                    unrestricted(next.value);
                     BlobState next = {
                         size: data.length,
                         digest: blake2b(data),
@@ -439,6 +440,7 @@ mod tests {
 
             actor Issuer owns IssuerState {
                 entry issue(byte[] domain, byte[32] expected) emits next: Issuer {
+                    unrestricted(next.value);
                     byte[32] uid = invocation_uid(domain);
                     require(uid == expected);
 
@@ -532,6 +534,7 @@ mod tests {
 
             actor Counter owns CounterState {
                 entry bump(sig owner_sig, int delta) emits next: Counter {
+                    unrestricted(next.value);
                     require(checkSig(owner_sig, owner));
 
                     CounterState next = {
@@ -608,6 +611,8 @@ mod tests {
                     left_out: Left,
                     peer_out: Right,
                 } {
+                    unrestricted(left_out.value);
+                    unrestricted(peer_out.value);
                     BoxState next_left = { units: units - amount, };
                     BoxState next_peer = { units: peer.units + amount, };
 
@@ -823,10 +828,12 @@ mod tests {
 
             actor Foreign owns ForeignState {
                 entry hold() emits next: Foreign {
+                    unrestricted(next.value);
                     become next <- Foreign(self.state);
                 }
 
                 entry route() emits next: Target {
+                    unrestricted(next.value);
                     TargetState next = {
                         units: 0,
                     };
@@ -845,6 +852,7 @@ mod tests {
                     }
                 }
                 emits next: Local {
+                    unrestricted(next.value);
                     ForeignState next_foreign = remote.inputs.src.state;
                     require remote.outputs become {
                         next <- Foreign(next_foreign),
@@ -1952,6 +1960,7 @@ mod tests {
 
             actor Mux owns BoardState {
                 entry choose(MoveActor target) emits next: MoveActor {
+                    unrestricted(next.value);
                     BoardState next = {
                         ply: ply + 1,
                     };
@@ -2153,6 +2162,7 @@ mod tests {
 
             actor Foo owns FooState {
                 entry bump(int amount) emits next: Foo {
+                    unrestricted(next.value);
                     State next_state = {
                         count: count + amount,
                     };
@@ -3056,6 +3066,7 @@ mod tests {
 
             actor Agent owns AgentCapsule {
                 entry step(AgentCapsule next_state) emits next: Agent {
+                    unrestricted(next.value);
                     require(controller_id.co_spent());
                     become next <- Agent(next_state);
                 }
@@ -3192,6 +3203,7 @@ mod tests {
                 entry step() emits {
                     agent: Forager,
                 } {
+                    unrestricted(agent.value);
                     require(controller_id.co_spent());
 
                     ForagerState next_agent = {

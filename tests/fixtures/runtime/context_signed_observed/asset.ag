@@ -9,6 +9,7 @@ actor Asset owns AssetState {
             amount: amount,
         };
 
+        unrestricted(next.value);
         become next <- Asset(next);
     }
 }

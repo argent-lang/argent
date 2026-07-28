@@ -22,6 +22,7 @@ actor League owns LeagueState {
             nonce: nonce + 1,
         };
 
+        unrestricted(next.value);
         become next <- Player(next_player);
     }
 }
@@ -33,6 +34,7 @@ actor Player owns PlayerState {
             ply: 0,
         };
 
+        unrestricted(next.value);
         become next <- Mux(next_board);
     }
 }
@@ -48,6 +50,7 @@ actor Mux owns BoardState {
             ply: ply + 1,
         };
 
+        unrestricted(next.value);
         become next <- target(next_board);
     }
 
@@ -58,6 +61,7 @@ actor Mux owns BoardState {
         };
 
         actor_type<BoardState> target = MoveActor::Knight;
+        unrestricted(next.value);
         become next <- target(next_board);
     }
 
@@ -67,6 +71,7 @@ actor Mux owns BoardState {
             ply: ply + 1,
         };
 
+        unrestricted(next.value);
         become next <- Pawn(next_board);
     }
 
@@ -76,6 +81,7 @@ actor Mux owns BoardState {
             ply: ply + 1,
         };
 
+        unrestricted(next.value);
         become next <- Knight(next_board);
     }
 }
@@ -87,6 +93,7 @@ actor Pawn owns BoardState {
             ply: ply + 1,
         };
 
+        unrestricted(next.value);
         become next <- Mux(next_board);
     }
 }
@@ -100,6 +107,7 @@ actor Knight owns BoardState {
             ply: ply + 1,
         };
 
+        unrestricted(next.value);
         become next <- Mux(next_board);
     }
 }

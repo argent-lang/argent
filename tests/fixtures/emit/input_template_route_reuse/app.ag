@@ -24,6 +24,7 @@ actor Controller owns ControllerState {
             count: peer.count + 1,
         };
 
+        unrestricted(peer.value);
         become peer <- Peer(next_peer);
     }
 }

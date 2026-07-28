@@ -22,6 +22,7 @@ actor Lobby owns LobbyState {
             ply: nonce,
         };
 
+        unrestricted(next.value);
         become next <- Mux(next_board);
     }
 }
@@ -32,6 +33,7 @@ actor Mux owns BoardState {
             ply: ply + 1,
         };
 
+        unrestricted(next.value);
         become next <- target(next_board);
     }
 
@@ -42,6 +44,7 @@ actor Mux owns BoardState {
             final_ply: ply,
         };
 
+        unrestricted(next.value);
         become next <- Archive(next_archive);
     }
 }
@@ -74,6 +77,7 @@ actor Archive owns ArchiveState {
             ply: final_ply + 1,
         };
 
+        unrestricted(next.value);
         become next <- Pawn(next_board);
     }
 }

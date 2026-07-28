@@ -22,6 +22,7 @@ actor Forager owns ForagerState {
             energy: energy - 1,
         };
 
+        unrestricted(next.value);
         become next <- Forager(next_state);
     }
 }

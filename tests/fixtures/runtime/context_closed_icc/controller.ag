@@ -33,6 +33,7 @@ actor Controller owns ControllerState {
             minted: minted + amount,
         };
 
+        unrestricted(controller.value);
         become controller <- Controller(next);
     }
 }

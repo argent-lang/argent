@@ -181,6 +181,7 @@ state CounterState {
 
 actor Counter owns CounterState {
     entry bump(int delta) emits next: Counter {
+        unrestricted(next.value);
         CounterState next = {
             count: count + delta,
         };
@@ -203,6 +204,7 @@ state IssuerState {
 
 actor Issuer owns IssuerState {
     entry issue(byte[] domain) emits next: Issuer {
+        unrestricted(next.value);
         byte[32] uid = invocation_uid(domain);
         require(uid == invocation_uid(domain));
 
@@ -225,6 +227,7 @@ state LeftState {
 
 actor Left owns LeftState {
     entry bump() emits next: Left {
+        unrestricted(next.value);
         LeftState next = {
             amount: amount + 1,
         };
@@ -238,6 +241,7 @@ state RightState {
 
 actor Right owns RightState {
     entry bump() emits next: Right {
+        unrestricted(next.value);
         RightState next = {
             amount: amount + 1,
         };
@@ -247,6 +251,7 @@ actor Right owns RightState {
 
 actor RightAlt owns RightState {
     entry bump() emits next: RightAlt {
+        unrestricted(next.value);
         RightState next = {
             amount: amount + 1,
         };
@@ -397,6 +402,7 @@ actor Shared owns SharedState {
         other: Shared,
     }
     emits next: Shared {
+        unrestricted(next.value);
         SharedState next = {
             count: count + other.count,
         };
@@ -408,6 +414,7 @@ state GuardState {}
 
 actor Guard owns GuardState {
     entry hold() emits next: Guard {
+        unrestricted(next.value);
         become next <- Guard(self.state);
     }
 }
@@ -550,6 +557,7 @@ state LeafState {
 
 actor Leaf owns LeafState {
     entry update() emits next: Leaf {
+        unrestricted(next.value);
         LeafState next = {
             n: n + 1,
         };
@@ -583,6 +591,7 @@ actor Middle owns MiddleState {
         }
     }
     emits next: Middle {
+        unrestricted(next.value);
         LeafState next_leaf = leaf.inputs.src.state;
         require leaf.outputs become {
             next <- Leaf(next_leaf),
@@ -620,6 +629,7 @@ actor Root owns RootState {
         }
     }
     emits next: Root {
+        unrestricted(next.value);
         MiddleState next_middle = middle.inputs.src.state;
         require middle.outputs become {
             next <- Middle(next_middle),
@@ -859,6 +869,7 @@ state AssetState {
 
 actor Asset owns AssetState {
     entry keep() emits next: Asset {
+        unrestricted(next.value);
         become next <- Asset(self.state);
     }
 }
@@ -889,6 +900,7 @@ actor Controller owns ControllerState {
         }
     }
     emits next: Controller {
+        unrestricted(next.value);
         AssetState current = asset.inputs.src.state;
         require(current.tag == ASSET_TAG);
         require asset.outputs become {

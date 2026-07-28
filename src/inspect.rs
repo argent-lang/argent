@@ -576,6 +576,8 @@ actor Event owns EventState {
         event: Event,
         ticket: Ticket,
     } {
+        unrestricted(event.value);
+        unrestricted(ticket.value);
         EventState next_event = {
             remaining: remaining - 1,
         };
@@ -591,6 +593,7 @@ actor Event owns EventState {
 
 actor Ticket owns TicketState {
     entry transfer(pubkey next_owner) emits next: Ticket {
+        unrestricted(next.value);
         TicketState next = {
             owner: next_owner,
         };

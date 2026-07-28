@@ -27,16 +27,20 @@ actor Controller owns ControllerState {
             launches: launches + 1,
         };
 
+        unrestricted(new_pair.outputs.left.value);
+        unrestricted(new_pair.outputs.right.value);
         require new_pair.outputs become {
             left <- self.pair_type(left),
             right <- self.pair_type(right),
         };
+        unrestricted(next.value);
         become next <- Controller(next);
     }
 }
 
 actor Pair owns PairState {
     entry keep() emits next: Pair {
+        unrestricted(next.value);
         become next <- Pair(self.state);
     }
 }

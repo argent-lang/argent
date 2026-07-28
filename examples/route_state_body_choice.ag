@@ -19,6 +19,7 @@ actor Lobby owns LobbyState {
             ply: nonce,
         };
 
+        unrestricted(next.value);
         if (watch) {
             become next <- Spectator(next_board);
         } else {
@@ -33,6 +34,7 @@ actor Mux owns BoardState {
             ply: ply + 1,
         };
 
+        unrestricted(next.value);
         become next <- target(next_board);
     }
 }

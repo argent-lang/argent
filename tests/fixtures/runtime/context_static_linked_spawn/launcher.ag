@@ -25,9 +25,11 @@ actor Launcher owns LauncherState {
             launches: launches + 1,
         };
 
+        unrestricted(children.outputs.child.value);
         require children.outputs become {
             child <- ChildApp::Child(child_state),
         };
+        unrestricted(next.value);
         become next <- Launcher(next);
     }
 }

@@ -34,6 +34,7 @@ pub(crate) mod word {
     pub const SELF: &str = "self";
     pub const SPAWNS: &str = "spawns";
     pub const STATE: &str = "state";
+    pub const UNRESTRICTED: &str = "unrestricted";
     pub const VALUE: &str = "value";
     pub const VIRTUAL: &str = "virtual";
 }

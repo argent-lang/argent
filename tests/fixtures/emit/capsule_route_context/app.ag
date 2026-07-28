@@ -26,6 +26,7 @@ actor ReserveAsset owns ReserveAssetState {
             balance: next_balance,
         };
 
+        unrestricted(next.value);
         become next <- ReserveAsset(next_asset);
     }
 
@@ -41,12 +42,14 @@ actor ReserveAsset owns ReserveAssetState {
             balance: next_balance,
         };
 
+        unrestricted(next.value);
         become next <- WalletAsset(next_asset);
     }
 }
 
 actor WalletAsset owns ReserveAssetState {
     entry hold() emits next: WalletAsset {
+        unrestricted(next.value);
         become next <- WalletAsset(self.state);
     }
 }

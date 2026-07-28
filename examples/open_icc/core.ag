@@ -82,6 +82,7 @@ actor Cell owns CellState {
             occupant_caps_digest: occupant_caps_digest,
         };
 
+        unrestricted(cell.value);
         become cell <- Cell(next_cell);
     }
 
@@ -161,6 +162,8 @@ actor Cell owns CellState {
             agent <- self.occupant_agent_type(next_agent),
         };
 
+        unrestricted(source_cell.value);
+        unrestricted(target_cell.value);
         become {
             source_cell <- Cell(next_source),
             target_cell <- Cell(next_target),

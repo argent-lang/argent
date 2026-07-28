@@ -28,6 +28,7 @@ actor Agent owns AgentCapsule {
         require(next_agent.strategy == strategy);
         require(next_agent.generation == generation);
 
+        unrestricted(agent.value);
         become agent <- Agent(next_agent);
     }
 }
@@ -57,6 +58,7 @@ actor Forager owns ForagerState {
             generation: generation,
         };
 
+        unrestricted(agent.value);
         become agent <- Forager(next_agent);
     }
 }

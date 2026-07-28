@@ -13,6 +13,7 @@ state TargetState {
 
 actor Foreign owns ForeignState {
     entry hold() emits next: Foreign {
+        unrestricted(next.value);
         become next <- Foreign(self.state);
     }
 
@@ -20,6 +21,7 @@ actor Foreign owns ForeignState {
         TargetState next = {
             units: 0,
         };
+        unrestricted(next.value);
         become next <- Target(next);
     }
 }
@@ -45,6 +47,7 @@ actor Local owns LocalState {
             foreign_id: foreign_id,
             steps: steps + 1,
         };
+        unrestricted(next.value);
         become next <- Local(next_local);
     }
 }

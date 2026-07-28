@@ -3,28 +3,6 @@
 This file contains small follow-up items. Each item gives its area, context,
 and required work.
 
-## Require an output-value disposition
-
-**Area:** Entry validation and body analysis.
-
-**Context:** An entry can validate an emitted actor's state and template while
-placing no restriction on the output's Kaspa value. Omitting a value policy is
-easy to miss during review.
-
-**Follow-up:** Require every emitted output handle to account explicitly for
-its `.value` on every terminal path. A value can be constrained by an enforced
-boolean expression or deliberately accepted with:
-
-```rust
-unrestricted(next.value);
-```
-
-Define precisely which boolean uses count. Merely computing and discarding a
-comparison must not satisfy the rule. Start with direct use in `require(...)`
-and conditions that govern a terminal path; decide separately how annotated
-helper functions can preserve the guarantee. Report the output handle and
-uncovered terminal path in diagnostics.
-
 ## Infer the leader of a singleton-app delegate
 
 **Area:** Delegate modeling, covenant-input validation, and artifacts.

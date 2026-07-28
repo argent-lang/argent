@@ -14,6 +14,7 @@ actor Asset owns AssetState {
             amount: amount,
         };
 
+        unrestricted(next.value);
         become next <- Asset(next_state);
     }
 
@@ -34,6 +35,8 @@ actor Asset owns AssetState {
             amount: amount - amount_a,
         };
 
+        unrestricted(part_a.value);
+        unrestricted(part_b.value);
         become {
             part_a <- Asset(first),
             part_b <- Asset(second),
@@ -54,6 +57,7 @@ actor Asset owns AssetState {
             amount: amount + other.amount,
         };
 
+        unrestricted(merged.value);
         become merged <- Asset(next_state);
     }
 }

@@ -59,6 +59,7 @@ actor Minter owns MinterState {
             initialized: initialized,
         };
 
+        unrestricted(controller.value);
         become controller <- Minter(next_controller);
     }
 }

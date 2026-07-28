@@ -12,6 +12,7 @@ actor Counter owns CounterState {
             count: count + other.count,
         };
 
+        unrestricted(next.value);
         become next <- Counter(next);
     }
 

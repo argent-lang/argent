@@ -29,6 +29,7 @@ actor Ctrl owns CtrlState {
         CtrlState next_ctrl = {
             n: next_asset.amount,
         };
+        unrestricted(ctrl.value);
         become ctrl <- Ctrl(next_ctrl);
     }
 }

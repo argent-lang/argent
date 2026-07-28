@@ -307,6 +307,25 @@ and output groups. A `spawns` clause describes an ordered genesis output group
 and verifies its derived covenant ID. Flexible clause cardinality is specified
 separately in [Entry clause ranges](entry-clause-ranges.md).
 
+### Output value policy
+
+Every output created by the current entry must reference its native value
+explicitly. This includes ordinary `emits` handles and group-qualified spawn
+handles:
+
+```ag
+require(next.value == self.value);
+require(children.outputs.first.value > 0);
+```
+
+An intentionally free value uses `unrestricted(handle.value)`. The declaration
+is compile-time-only and emits no Silverscript.
+
+Observed outputs are excluded: their emitting contracts own their value policy.
+The initial check is syntactic and entry-scoped. It requires each output value
+reference to appear somewhere in the entry body; it does not prove that a
+restriction is meaningful or present on every control-flow path.
+
 ## Body lowering
 
 The compiler lowers entry bodies into plain Silverscript. Targeted lowering
