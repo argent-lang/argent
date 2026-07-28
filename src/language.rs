@@ -30,9 +30,10 @@ pub(crate) mod word {
     pub const OUTPUTS: &str = "outputs";
     pub const OWNS: &str = "owns";
     pub const REQUIRE: &str = "require";
-    pub const RESERVED_SELF_MEMBERS: [&str; 5] = [STATE, "value", COVENANT_ID, "type", "ref"];
+    pub const RESERVED_SELF_MEMBERS: [&str; 5] = [STATE, VALUE, COVENANT_ID, "type", "ref"];
     pub const SELF: &str = "self";
     pub const SPAWNS: &str = "spawns";
     pub const STATE: &str = "state";
+    pub const VALUE: &str = "value";
     pub const VIRTUAL: &str = "virtual";
 }

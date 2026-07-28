@@ -2868,8 +2868,11 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     }
 
     fn lower_refs(&self, expr: &str) -> Result<String> {
+        assert_eq!(word::SELF, "self");
+        assert_eq!(word::VALUE, "value");
+        assert_eq!(word::COVENANT_ID, "cov_id");
         let mut out = expr.replace("self.value", "tx.inputs[this.activeInputIndex].value");
-        out = out.replace("self.covenant_id", "OpInputCovenantId(this.activeInputIndex)");
+        out = out.replace("self.cov_id", "OpInputCovenantId(this.activeInputIndex)");
         for spec in state_expansion_witness_specs_for_actor(self.actor, self.model) {
             for field in &self.model.state(&spec.memory_state)?.fields {
                 let local = hidden_state_expansion_field_name(&spec, &field.name);
@@ -7067,6 +7070,34 @@ mod tests {
         assert!(!sil.contains("byte[] gen__foo_prefix"), "{sil}");
         assert!(!sil.contains("gen__state_foo_state"), "{sil}");
         assert!(!sil.contains("__argent_"), "{sil}");
+    }
+
+    #[test]
+    fn self_cov_id_lowers_to_the_active_input_covenant_id() {
+        let source = r#"
+            state FooState {}
+
+            actor Foo owns FooState {
+                entry step() emits next: Foo {
+                    require(self.cov_id == self.cov_id);
+                    become next <- Foo(self.state);
+                }
+            }
+
+            app Test {
+                actor Foo;
+            }
+        "#;
+        let path = PathBuf::from("test.ag");
+        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let program = Program { root: path, modules: vec![module] };
+        let model = Model::from_program(&program).expect("model validates");
+        let sil = emit_actor(model.actor("Foo").expect("actor exists"), &model).expect("actor emits");
+
+        assert!(
+            sil.contains("require(OpInputCovenantId(this.activeInputIndex) == OpInputCovenantId(this.activeInputIndex));"),
+            "{sil}"
+        );
     }
 
     #[test]

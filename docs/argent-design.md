@@ -1,14 +1,14 @@
 # Argent design notes
 
 Argent is an actor-style frontend for building multi-contract Silverscript apps
-as well-formed covenant state machines. This document captures design choices
-and the parts still under discussion.
+as well-formed covenant state machines. This document records the current
+language and compiler design.
 
 The focus is the compiler/runtime boundary: generated Silverscript, portable
 artifacts, ICC flows, route families, and the source features needed to make
 those pieces usable from Argent.
 
-## Settled for now
+## Core design
 
 - Argent emits plain Silverscript, not Silverscript covenant macros.
 - User state is declared once with `state`.
@@ -22,8 +22,7 @@ those pieces usable from Argent.
 - Prefix/suffix witnesses are generated Silverscript ABI, not Argent source
   surface.
 - Every `become` route must be allowed by the entry's `emits` declaration.
-- Covenant input/output shape is a first-class Argent concern, even while the
-  source syntax evolves.
+- Covenant input/output shape is a first-class Argent concern.
 - The main language/compiler contribution is hiding route logic, template
   propagation, and mechanical safety checks from application code.
 - Named actor flows use a leader-auth output pattern by default.
@@ -140,6 +139,12 @@ become {
 `white_out` and `black_out` refer to roles in the `emits` clause. The final
 semicolon terminates the `become` statement.
 
+A singleton route can omit the braces:
+
+```rust
+become next <- Player(next_player);
+```
+
 ### Consistency rule
 
 Declarations put the type before the declared name. Value, role, and route
@@ -172,10 +177,14 @@ self.value  // Native KAS value of the UTXO consumed by the active input.
             // Type: int.
 self.state  // Complete typed source-level state owned by the actor.
             // Type: the state named in the actor's owns clause.
-self.cov_id // Reserved.
+self.cov_id // Covenant ID carried by the active input. Type: cov_id.
+            // Lowers to OpInputCovenantId(this.activeInputIndex).
 self.type   // Reserved.
 self.ref    // Reserved.
 ```
+
+`self.cov_id` identifies the runtime covenant instance to which the active actor
+input belongs.
 
 An actor's effective top-level state cannot declare `state`, `value`, `cov_id`,
 `type`, or `ref` as a field. This rule also applies to base fields and expansion
@@ -196,8 +205,8 @@ state WalletState {
 
 ## Template hash rule
 
-Template hashes must exclude all instance state, including hidden template fields.
-The working rule is the chess rule:
+Argent uses Silverscript's template hash, which excludes all instance state,
+including compiler-owned state:
 
 ```text
 template_hash = blake2b(i64le(template_prefix.length) || template_prefix || i64le(template_suffix.length) || template_suffix)
@@ -208,9 +217,10 @@ state do not participate in their own template hash.
 
 ## Hidden ABI state
 
-Template fields are hidden ABI state, not source-level user fields.
+Template and route fields are compiler-owned ABI state, not source-level user
+fields.
 
-The compiler may add fields such as:
+The compiler adds fields such as these when an actor needs route context:
 
 ```text
 gen__player_template
@@ -218,55 +228,18 @@ gen__game_template
 gen__mux_routes_digest
 ```
 
-Ordinary transitions must preserve these exactly. Bootstrap or explicit handoff
-paths are the only places where hidden ABI state may be initialized or changed.
-
-Open questions:
-
-- Should imports name required symbols explicitly, such as
-  `import PlayerState, GameState, player_ref from "./types.ag";`?
-- Should hidden ABI fields be emitted as leading state fields, a named generated
-  struct prefix, or another ABI convention?
-- Do we need explicit source syntax for privileged bootstrap/handoff paths?
-- How should generated code prevent user code from accidentally shadowing hidden
-  field names?
-
-## Bootstrap and launch proofs
-
-The initial hidden ABI fields are correct because bootstrap constructs them
-correctly. Later transitions preserve them.
-
-The launch proof should let an auditor verify the current app from current UTXOs
-plus opened covenant-id/bootstrap preimages, without replaying all history.
-
-Open questions:
-
-- What exact launch artifact should Argent generate?
-- Is bootstrap a generated transaction builder, a manifest, a proof object, or
-  all three?
-- How do we represent one-time init paths in the source language?
-- How much launch proof checking belongs in Argent tooling vs external auditors
-  and indexers?
-- What does a minimal proof for the Stones example look like?
+The `gen__` namespace is reserved. The artifact records each generated field's
+role, and `argent-runtime` constructs its value from the template plan.
+Same-context transitions preserve these fields; routes to another actor derive
+the target actor's planned context.
 
 ## Transaction builder context
 
 Argent source should not expose prefix/suffix witnesses, route proofs, template
-preimages, or other Silverscript machinery. The `argent-runtime` crate provides
-the current artifact-level `TxBuilder`; a future generated transaction builder
-with an app context can wrap that lower-level surface and supply this material
-behind app-specific methods.
-
-Open questions:
-
-- What exactly lives in the app context?
-- Does the context own compiled template witnesses, route proof receipts,
-  route-family table preimages, launch proof data, or all of them?
-- How does the builder choose the right route preimage for a union output?
-- Should the builder expose actor-level methods, entry-level methods, or both?
-- How much validation should happen client-side before building the transaction?
-- What is the boundary between generated Argent builder code and reusable
-  Silverscript builder APIs?
+preimages, or other Silverscript machinery. The portable artifact records
+recipes for this hidden material. `argent-runtime`'s artifact-level `TxBuilder`
+combines those recipes with a `TxContext` to construct actor inputs, outputs,
+and entry arguments.
 
 ## Route commitments
 
@@ -295,77 +268,27 @@ compiler boundary. [Routing Optimization Opportunities](../src/routing/optimizat
 records known cases where the current policy produces correct but inefficient
 cuts.
 
-Open questions:
-
-- When should the planner create nested helper branches?
-- Should source code or compiler configuration provide forest hints?
-- When should the planner use a flat table instead of nested branches?
-- How should the planner improve cohort selection without weakening cut
-  equality or dependency propagation?
-
 ## Same-template shortcuts
 
-Same-template outputs should use the cheaper same-script validation path.
+Route lowering uses the strongest template identity already proved by the entry
+model:
 
-Desired lowering rule:
+- An exact self-continuation with `self.state` compares the successor output's
+  script public key with the active input's script public key.
+- A same-actor continuation with new state uses `validateOutputState`.
+- A foreign continuation can use `validateOutputStateWithInputTemplate` when a
+  bound input already proves the target template.
+- Other foreign continuations use `validateOutputStateWithTemplate` and a
+  compiler-planned template witness.
 
-```text
-become self_template_actor(next_state)
-  -> validateOutputState(output_idx, next_state)
-
-become foreign_template_actor(next_state)
-  -> validateOutputStateWithTemplate(output_idx, next_state, prefix, suffix, template_hash)
-```
-
-This should remove prefix/suffix witness parameters for outputs that continue
-the active input's template, such as `League -> League`, `Player -> Player`, or
-`StonesGame -> StonesGame`.
-
-Input reads are subtler. A consumed peer may have the same actor type as the
-active input, but covenant grouping alone does not prove that the peer input's
-redeem script is really the same template. For peer inputs, even same-actor
-inputs should keep `readInputStateWithTemplate(...)` unless another explicit
-proof establishes same-template identity.
-
-Safe default:
-
-```text
-self/current input fields:
-  use contract fields, or readInputState(this.activeInputIndex) when a State value is needed
-
-consumed peer input:
-  use readInputStateWithTemplate(peer_idx, prefix_len, suffix_len, expected_template)
-```
-
-This matches the chess `delegate_start_game` pattern: it reads another `Player`
-with `readInputStateWithTemplate` so the delegate independently proves that the
-leader input is really a Player template, not just an arbitrary input in the same
-covenant group.
-
-Open questions:
-
-- Should Argent infer same-template output shortcuts automatically? Probably yes.
-- Should source syntax expose "already proven same template" peer inputs, or keep
-  the conservative template-read default?
-- Can the transaction builder carry reusable proof metadata so same-template peer
-  inputs can opt into `readInputState(...)` safely in special cases?
+Consumed and observed inputs follow the same rule. Argent uses
+`readInputState` only when the entry model proves the current template is the
+expected template; otherwise it uses `readInputStateWithTemplate`.
 
 ## Input and output shape
 
-The source wants to say:
-
-```ag
-require cov.inputs == [self, opponent];
-```
-
-The compiler currently emits exact leader-entry covenant input counts and conservative
-delegate minimum counts. The source-level shape model can become more explicit.
-
-Covenant shape should be first-class in Argent. The source spelling is still
-open, but the shape belongs in declarations rather than unchecked user body
-text.
-
-Default actor-app lowering should use a coordinator shape:
+`consumes`, `emits`, `observes`, and `spawns` declare transaction shape. The
+compiler lowers ordinary actor coordination as follows:
 
 ```text
 leader input:    reads peer inputs through OpCovInput*
@@ -373,68 +296,42 @@ leader outputs:  validates successors through OpAuthOutput*
 delegate inputs: verify they are not leader and require OpAuthOutputCount(active) == 0
 ```
 
-This still uses covenant input grouping for many-input transitions, but it avoids
-covenant outputs for ordinary named actor flows. The practical upside is that
-`1:N` auth-output groups can coexist naturally in one transaction, while true
-`N:M` cov-output transitions remain singleton per covenant id per transaction.
+Coordinated leader entries enforce the declared covenant input count and order.
+Standalone entries that neither consume peers nor lead delegates allow
+covenant batching. Delegates enforce a conservative minimum input count because
+the leader may coordinate additional actors. Every entry enforces its exact
+authorized output count and handle order.
 
-True cov-output lowering should be reserved for explicit set-like transitions,
-if Argent supports them later.
-
-Open questions:
-
-- What is the right declaration syntax for covenant input shape?
-- Do delegate entries need a first-class notation for "same transaction, no
-  outputs from me"?
-- How should output value policies be expressed without making `become` carry
-  value rules?
-- Should `cov[n]` and `auth[n]` remain explicit indexes or become named output
-  handles?
-- Do we need any source-level escape hatch for explicit cov-output transitions?
+An `observes` clause currently describes the complete observed covenant input
+and output groups. A `spawns` clause describes an ordered genesis output group
+and verifies its derived covenant ID. Flexible clause cardinality is specified
+separately in [Entry clause ranges](entry-clause-ranges.md).
 
 ## Body lowering
 
-The current compiler lowers the Stones subset into plain Silverscript. It handles
-terminal `become`, simple locals, `if/else`, state constructors, output-handle
-values, consumed-input values, and generated route validation.
+The compiler lowers entry bodies into plain Silverscript. Targeted lowering
+handles terminal `become`, typed locals, `if/else`, state constructors,
+transaction values, consumed and observed state, actor selectors, and generated
+route validation.
 
 Argent does not yet own a full source typechecker. The compiler performs the
 analysis needed for lowering and leaves final helper/body validity to
 Silverscript where possible.
 
-Open questions:
+## Application continuation invariants
 
-- How much of Argent expression syntax should be Silverscript-like?
-- Should Argent own a real expression AST early, or keep copying Silverscript-like
-  helper code through?
-- How should state constructors lower into hidden-plus-user state structs?
-- How should union outputs be lowered when one handle can target several actors?
-- What diagnostics should users get when a route needs a missing template witness?
-- How much validation belongs in Argent before handing generated Silverscript to
-  `silverc`?
-
-## Exact continuation protection
-
-Chess-style player and league continuations show that multi-actor apps need
-actor-instance preservation discipline, not just template checks.
-
-Open questions:
-
-- Which continuation invariants should Argent infer from actor/state
-  declarations?
-- Which should remain explicit `require(...)` code?
-- Should "same actor instance, same hidden ABI state" become a reusable generated
-  pattern?
-- How should settlement actors prove they are closing exactly the intended live
-  actors?
+Argent proves the declared actor, template, route, and successor-state
+relationships. Application identity rules—such as preserving an owner, matching
+a game identifier, or closing the intended live actors—remain explicit
+`require(...)` conditions in source.
 
 ## Compiler obligations
 
-Argent-generated code must eventually enforce:
+Argent-generated code enforces the declared mechanical invariants:
 
-- exact covenant input shape where declared
+- covenant input shape according to the leader, delegate, and batching rules
 - exact authorized output shape where declared
-- hidden ABI state preservation
+- planned hidden ABI state preservation and transition
 - typed foreign input template checks
 - same-template output validation through `validateOutputState` where applicable
 - route commitment membership checks

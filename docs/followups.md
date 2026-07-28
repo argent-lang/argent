@@ -182,7 +182,7 @@ emits next: Minter {
     require(checkSig(owner_sig, owner));
 
     MinterProxyState proxy_state = {
-        controller_id: self.covenant_id,
+        controller_id: self.cov_id,
     };
     require asset.outputs become {
         proxy <- self.proxy_type(proxy_state),

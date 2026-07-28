@@ -35,10 +35,10 @@ actor Minter owns MinterState {
         require(checkSig(owner_sig, owner));
         require(initialized);
         require(amount >= minted_amount);
-        require(prev_proxy.controller_id == self.covenant_id);
+        require(prev_proxy.controller_id == self.cov_id);
 
         MinterProxyState next_proxy = {
-            controller_id: self.covenant_id,
+            controller_id: self.cov_id,
         };
 
         KCC20State next_recipient = {
