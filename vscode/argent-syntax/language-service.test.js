@@ -115,6 +115,13 @@ test('offers the Silverscript hash builtins exposed to Argent bodies', () => {
   assert.equal(names.has('unique'), false, 'legacy unique helper must not be offered');
 });
 
+test('offers the unrestricted output-value declaration', () => {
+  const unrestricted = BUILTINS.find((builtin) => builtin.name === 'unrestricted');
+  assert.ok(unrestricted);
+  assert.equal(unrestricted.signature, 'unrestricted(output.value)');
+  assert.deepEqual(unrestricted.params, ['output.value']);
+});
+
 test('offers the Silverscript query builtins except automated state-template helpers', () => {
   const names = new Set(BUILTINS.map((builtin) => builtin.name));
   const expected = [

@@ -227,6 +227,7 @@ emits {
         tick: tick + 1,
     };
 
+    require(cell.value == self.value);
     become cell <- Cell(next_cell);
 }
 ```

@@ -162,6 +162,7 @@ emits next: Minter {
     MinterProxyState proxy_state = {
         controller_id: self.cov_id,
     };
+    unrestricted(asset.outputs.proxy.value);
     require asset.outputs become {
         proxy <- self.proxy_type(proxy_state),
     };
@@ -173,6 +174,7 @@ emits next: Minter {
         amount: amount,
         initialized: true,
     };
+    unrestricted(next.value);
     become next <- Minter(next_controller);
 }
 ```

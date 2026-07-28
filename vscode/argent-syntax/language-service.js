@@ -99,6 +99,7 @@ const BUILTINS = Object.freeze([
   },
   { name: 'co_spent', signature: 'value.co_spent() -> bool', params: [] },
   { name: 'require', signature: 'require(condition: bool)', params: ['condition'] },
+  { name: 'unrestricted', signature: 'unrestricted(output.value)', params: ['output.value'] },
   {
     name: 'templateHash',
     signature: 'templateHash(templatePrefix: byte[], templateSuffix: byte[]) -> byte[32]',

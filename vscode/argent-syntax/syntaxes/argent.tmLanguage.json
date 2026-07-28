@@ -60,7 +60,7 @@
       "patterns": [
         {
           "name": "keyword.other.assertion.argent",
-          "match": "\\brequire\\b"
+          "match": "\\b(require|unrestricted)\\b"
         }
       ]
     },
