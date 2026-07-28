@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "96e41dcfd260de491f0cf598a4b562d3e6fd240bafad5430d8f2d5c81a78dbb0",
+  "id": "5322d689067e59520513f4b6c542484b324ae7562a513b2efd3cc26df3222c8f",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -585,7 +585,7 @@
               "consumes": [],
               "outputs": [
                 {
-                  "name": null,
+                  "name": "next",
                   "auth_index": 0,
                   "actors": [
                     "Player"
@@ -654,14 +654,20 @@
             ],
             "consumes": [],
             "emits": {
-              "kind": "one",
-              "actors": [
-                "Player"
+              "kind": "outputs",
+              "outputs": [
+                {
+                  "name": "next",
+                  "auth_index": 0,
+                  "actors": [
+                    "Player"
+                  ]
+                }
               ]
             },
             "routes": [
               {
-                "output": null,
+                "output": "next",
                 "actor": "Player",
                 "template_id": "template/player",
                 "state_expr": "next_player"
@@ -698,7 +704,7 @@
               "consumes": [],
               "outputs": [
                 {
-                  "name": null,
+                  "name": "next",
                   "auth_index": 0,
                   "actors": [
                     "Mux"
@@ -794,14 +800,20 @@
             ],
             "consumes": [],
             "emits": {
-              "kind": "one",
-              "actors": [
-                "Mux"
+              "kind": "outputs",
+              "outputs": [
+                {
+                  "name": "next",
+                  "auth_index": 0,
+                  "actors": [
+                    "Mux"
+                  ]
+                }
               ]
             },
             "routes": [
               {
-                "output": null,
+                "output": "next",
                 "actor": "Mux",
                 "template_id": "template/mux",
                 "state_expr": "next_board"
@@ -838,7 +850,7 @@
               "consumes": [],
               "outputs": [
                 {
-                  "name": null,
+                  "name": "next",
                   "auth_index": 0,
                   "actors": [
                     "Pawn",
@@ -918,21 +930,27 @@
             ],
             "consumes": [],
             "emits": {
-              "kind": "one",
-              "actors": [
-                "Pawn",
-                "Knight"
+              "kind": "outputs",
+              "outputs": [
+                {
+                  "name": "next",
+                  "auth_index": 0,
+                  "actors": [
+                    "Pawn",
+                    "Knight"
+                  ]
+                }
               ]
             },
             "routes": [
               {
-                "output": null,
+                "output": "next",
                 "actor": "Pawn",
                 "template_id": "template/pawn",
                 "state_expr": "next_board"
               },
               {
-                "output": null,
+                "output": "next",
                 "actor": "Knight",
                 "template_id": "template/knight",
                 "state_expr": "next_board"
@@ -960,7 +978,7 @@
               "consumes": [],
               "outputs": [
                 {
-                  "name": null,
+                  "name": "next",
                   "auth_index": 0,
                   "actors": [
                     "Pawn",
@@ -1041,15 +1059,21 @@
             ],
             "consumes": [],
             "emits": {
-              "kind": "one",
-              "actors": [
-                "Pawn",
-                "Knight"
+              "kind": "outputs",
+              "outputs": [
+                {
+                  "name": "next",
+                  "auth_index": 0,
+                  "actors": [
+                    "Pawn",
+                    "Knight"
+                  ]
+                }
               ]
             },
             "routes": [
               {
-                "output": null,
+                "output": "next",
                 "actor": "Knight",
                 "template_id": "template/knight",
                 "state_expr": "next_board"
@@ -1077,7 +1101,7 @@
               "consumes": [],
               "outputs": [
                 {
-                  "name": null,
+                  "name": "next",
                   "auth_index": 0,
                   "actors": [
                     "Pawn"
@@ -1146,14 +1170,20 @@
             ],
             "consumes": [],
             "emits": {
-              "kind": "one",
-              "actors": [
-                "Pawn"
+              "kind": "outputs",
+              "outputs": [
+                {
+                  "name": "next",
+                  "auth_index": 0,
+                  "actors": [
+                    "Pawn"
+                  ]
+                }
               ]
             },
             "routes": [
               {
-                "output": null,
+                "output": "next",
                 "actor": "Pawn",
                 "template_id": "template/pawn",
                 "state_expr": "next_board"
@@ -1181,7 +1211,7 @@
               "consumes": [],
               "outputs": [
                 {
-                  "name": null,
+                  "name": "next",
                   "auth_index": 0,
                   "actors": [
                     "Knight"
@@ -1250,14 +1280,20 @@
             ],
             "consumes": [],
             "emits": {
-              "kind": "one",
-              "actors": [
-                "Knight"
+              "kind": "outputs",
+              "outputs": [
+                {
+                  "name": "next",
+                  "auth_index": 0,
+                  "actors": [
+                    "Knight"
+                  ]
+                }
               ]
             },
             "routes": [
               {
-                "output": null,
+                "output": "next",
                 "actor": "Knight",
                 "template_id": "template/knight",
                 "state_expr": "next_board"
@@ -1294,7 +1330,7 @@
               "consumes": [],
               "outputs": [
                 {
-                  "name": null,
+                  "name": "next",
                   "auth_index": 0,
                   "actors": [
                     "Mux"
@@ -1363,14 +1399,20 @@
             ],
             "consumes": [],
             "emits": {
-              "kind": "one",
-              "actors": [
-                "Mux"
+              "kind": "outputs",
+              "outputs": [
+                {
+                  "name": "next",
+                  "auth_index": 0,
+                  "actors": [
+                    "Mux"
+                  ]
+                }
               ]
             },
             "routes": [
               {
-                "output": null,
+                "output": "next",
                 "actor": "Mux",
                 "template_id": "template/mux",
                 "state_expr": "next_board"
@@ -1407,7 +1449,7 @@
               "consumes": [],
               "outputs": [
                 {
-                  "name": null,
+                  "name": "next",
                   "auth_index": 0,
                   "actors": [
                     "Mux"
@@ -1476,14 +1518,20 @@
             ],
             "consumes": [],
             "emits": {
-              "kind": "one",
-              "actors": [
-                "Mux"
+              "kind": "outputs",
+              "outputs": [
+                {
+                  "name": "next",
+                  "auth_index": 0,
+                  "actors": [
+                    "Mux"
+                  ]
+                }
               ]
             },
             "routes": [
               {
-                "output": null,
+                "output": "next",
                 "actor": "Mux",
                 "template_id": "template/mux",
                 "state_expr": "next_board"

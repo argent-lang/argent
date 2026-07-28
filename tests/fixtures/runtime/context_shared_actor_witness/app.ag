@@ -26,7 +26,7 @@ actor Controller owns ControllerState {
             pair: self.pair_type,
         }
     }
-    emits one Controller {
+    emits next: Controller {
         PairState observed_next = {
             amount: existing.inputs.anchor.state.amount + 1,
         };
@@ -44,22 +44,22 @@ actor Controller owns ControllerState {
         require newborn.outputs become {
             pair <- self.pair_type(spawned),
         };
-        become Controller(next);
+        become next <- Controller(next);
     }
 }
 
 actor Anchor owns AnchorState {
-    entry advance() emits one Pair {
+    entry advance() emits next: Pair {
         PairState next = {
             amount: amount + 1,
         };
-        become Pair(next);
+        become next <- Pair(next);
     }
 }
 
 actor Pair owns PairState {
-    entry keep() emits one Pair {
-        become Pair(self.state);
+    entry keep() emits next: Pair {
+        become next <- Pair(self.state);
     }
 }
 

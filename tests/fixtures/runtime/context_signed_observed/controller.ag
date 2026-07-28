@@ -15,7 +15,7 @@ actor Controller owns ControllerState {
             reserve: self.asset_type,
         }
     }
-    emits one Controller {
+    emits next: Controller {
         AssetState payment = flow.inputs.payment.state;
         AssetState reserve = {
             owner: next_owner,
@@ -31,7 +31,7 @@ actor Controller owns ControllerState {
             swaps: swaps + 1,
         };
 
-        become Controller(next);
+        become next <- Controller(next);
     }
 }
 

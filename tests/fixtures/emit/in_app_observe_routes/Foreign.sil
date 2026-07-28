@@ -28,7 +28,8 @@ contract Foreign(
     entrypoint function hold() {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // emits one Foreign
+        // :: output next: Foreign
+        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
         // :: become Foreign
         require(
@@ -41,7 +42,7 @@ contract Foreign(
     entrypoint function route(byte[] gen__target_prefix, byte[] gen__target_suffix) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // emits one Target
+        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Target
 
         TargetState next = {
             // :: user declared fields

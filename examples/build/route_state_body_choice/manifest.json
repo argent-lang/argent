@@ -20,9 +20,9 @@
         {
           "name": "open_or_watch",
           "kind": "leader",
-          "emits": { "kind": "one", "actors": ["Mux", "Spectator"] },
+          "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["Mux", "Spectator"] }] },
           "consumes": [],
-          "routes": [{ "output": null, "actor": "Spectator", "state": "next_board" }, { "output": null, "actor": "Mux", "state": "next_board" }]
+          "routes": [{ "output": "next", "actor": "Spectator", "state": "next_board" }, { "output": "next", "actor": "Mux", "state": "next_board" }]
         }
       ]
     },
@@ -34,9 +34,9 @@
         {
           "name": "choose",
           "kind": "leader",
-          "emits": { "kind": "one", "actors": ["MoveActor"] },
+          "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["MoveActor"] }] },
           "consumes": [],
-          "routes": [{ "output": null, "actor": "target", "state": "next_board" }]
+          "routes": [{ "output": "next", "actor": "target", "state": "next_board" }]
         }
       ]
     },

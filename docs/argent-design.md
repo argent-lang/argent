@@ -103,7 +103,8 @@ are value bindings. The final semicolon terminates the declaration.
 
 The `consumes`, `emits`, `spawns`, and `observes` clauses bind role names to
 actor targets. A colon separates the role name from the actor target. Commas
-separate the role bindings.
+separate the role bindings. Output handles are always named; a singleton can
+use the unbraced `emits name: Actor` shorthand.
 
 An actor target can be a fixed actor or a dynamic actor handle. This `observes`
 clause uses a dynamic actor handle:
@@ -385,7 +386,6 @@ Open questions:
 - What is the right declaration syntax for covenant input shape?
 - Do delegate entries need a first-class notation for "same transaction, no
   outputs from me"?
-- Should output handles always be named, even for `emits one`?
 - How should output value policies be expressed without making `become` carry
   value rules?
 - Should `cov[n]` and `auth[n]` remain explicit indexes or become named output

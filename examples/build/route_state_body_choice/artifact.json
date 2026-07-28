@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "a095cbb1ea08d7ccc1e64e02e485d1ad003c660a7462ee17f485a8f61d09b17f",
+  "id": "ed892b957437575d8db13091b7dfff73d309b3026208a2dadae06b6edf469085",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -497,7 +497,7 @@
               "consumes": [],
               "outputs": [
                 {
-                  "name": null,
+                  "name": "next",
                   "auth_index": 0,
                   "actors": [
                     "Mux",
@@ -646,21 +646,27 @@
             ],
             "consumes": [],
             "emits": {
-              "kind": "one",
-              "actors": [
-                "Mux",
-                "Spectator"
+              "kind": "outputs",
+              "outputs": [
+                {
+                  "name": "next",
+                  "auth_index": 0,
+                  "actors": [
+                    "Mux",
+                    "Spectator"
+                  ]
+                }
               ]
             },
             "routes": [
               {
-                "output": null,
+                "output": "next",
                 "actor": "Spectator",
                 "template_id": "template/spectator",
                 "state_expr": "next_board"
               },
               {
-                "output": null,
+                "output": "next",
                 "actor": "Mux",
                 "template_id": "template/mux",
                 "state_expr": "next_board"
@@ -697,7 +703,7 @@
               "consumes": [],
               "outputs": [
                 {
-                  "name": null,
+                  "name": "next",
                   "auth_index": 0,
                   "actors": [
                     "Pawn",
@@ -777,21 +783,27 @@
             ],
             "consumes": [],
             "emits": {
-              "kind": "one",
-              "actors": [
-                "Pawn",
-                "Knight"
+              "kind": "outputs",
+              "outputs": [
+                {
+                  "name": "next",
+                  "auth_index": 0,
+                  "actors": [
+                    "Pawn",
+                    "Knight"
+                  ]
+                }
               ]
             },
             "routes": [
               {
-                "output": null,
+                "output": "next",
                 "actor": "Pawn",
                 "template_id": "template/pawn",
                 "state_expr": "next_board"
               },
               {
-                "output": null,
+                "output": "next",
                 "actor": "Knight",
                 "template_id": "template/knight",
                 "state_expr": "next_board"

@@ -28,7 +28,7 @@
         },
         {
           "name": "keyword.declaration.argent",
-          "match": "\\b(as|by|else|from|if|inputs|none|one|outputs)\\b"
+          "match": "\\b(as|by|else|from|if|inputs|none|outputs)\\b"
         },
         {
           "name": "keyword.declaration.argent",

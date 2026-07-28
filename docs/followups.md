@@ -3,27 +3,6 @@
 This file contains small follow-up items. Each item gives its area, context,
 and required work.
 
-## Replace `emits one` with a named shorthand
-
-**Area:** Entry syntax and body lowering.
-
-**Context:** `emits one` declares an unnamed output, but the entry body can read
-its value through `next.value`. The name `next` is synthesized by the compiler
-and is not visible in the entry declaration. This makes a convenient shorthand
-look like an ordinary declared binding.
-
-**Follow-up:** Replace `emits one Type` with a concise named form such as:
-
-```rust
-entry transfer(...) emits next Type {
-    become next <- Type(next_state);
-}
-```
-
-The shorthand still declares exactly one output, but its handle is explicit.
-Use the same named `become` form as an `emits` block. Remove the synthesized
-`next` binding.
-
 ## Require an output-value disposition
 
 **Area:** Entry validation and body analysis.
@@ -198,7 +177,7 @@ spawns asset by asset_id {
         proxy: self.proxy_type,
     }
 }
-emits one Minter {
+emits next: Minter {
     require(!initialized);
     require(checkSig(owner_sig, owner));
 
@@ -216,7 +195,7 @@ emits one Minter {
         amount: amount,
         initialized: true,
     };
-    become Minter(next_controller);
+    become next <- Minter(next_controller);
 }
 ```
 

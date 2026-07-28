@@ -32,7 +32,7 @@ actor Controller owns ControllerState {
             right: self.pair_type,
         }
     }
-    emits one Controller {
+    emits next: Controller {
         PairState first_left = {
             amount: first_left_amount,
         };
@@ -64,13 +64,13 @@ actor Controller owns ControllerState {
             left <- self.pair_type(third_left),
             right <- self.pair_type(third_right),
         };
-        become Controller(next);
+        become next <- Controller(next);
     }
 }
 
 actor Pair owns PairState {
-    entry keep() emits one Pair {
-        become Pair(self.state);
+    entry keep() emits next: Pair {
+        become next <- Pair(self.state);
     }
 }
 

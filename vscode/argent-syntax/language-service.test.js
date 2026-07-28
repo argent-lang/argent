@@ -37,7 +37,7 @@ state PlayerState {
 }
 actor enum PlayerKind { Player; }
 actor League owns PlayerState {
-  entry join(pubkey owner) emits one League {
+  entry join(pubkey owner) emits result: League {
     // The body is intentionally unfinished.
   }
 }
@@ -322,8 +322,8 @@ actor Event owns EventState {
     require(event.value > 0);
   }
 
-  entry keep() emits one Event {
-    require(next.value > 0);
+  entry keep() emits result: Event {
+    require(result.value > 0);
   }
 
   delegate audit() consumes {
@@ -351,7 +351,7 @@ actor Event owns EventState {
     ],
   );
   assert.deepEqual(keep.clauseVariables.map(({ clause, name }) => ({ clause, name })), [
-    { clause: 'emit', name: 'next' },
+    { clause: 'emit', name: 'result' },
   ]);
   assert.deepEqual(audit.clauseVariables.map(({ clause, name }) => ({ clause, name })), [
     { clause: 'consume', name: 'leader' },

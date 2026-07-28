@@ -37,26 +37,18 @@ impl<'a> EntryModel<'a> {
             .enumerate()
             .map(|(index, consume)| EntryInteraction {
                 source: InteractionSource::Consume(consume),
-                handle: Some(&consume.name),
+                handle: &consume.name,
                 index,
                 target: ActorTarget::static_actor(&consume.actor),
             })
             .collect();
         let current_outputs = match &source.emits {
             EmitSpec::None => Vec::new(),
-            EmitSpec::One { actors } => {
-                vec![EntryInteraction {
-                    source: InteractionSource::CurrentOutput { declaration: &source.emits, output: None },
-                    handle: None,
-                    index: 0,
-                    target: ActorTarget::domain(actors, actor_enums),
-                }]
-            }
             EmitSpec::Outputs(outputs) => outputs
                 .iter()
                 .map(|output| EntryInteraction {
-                    source: InteractionSource::CurrentOutput { declaration: &source.emits, output: Some(output) },
-                    handle: Some(&output.name),
+                    source: InteractionSource::CurrentOutput(output),
+                    handle: &output.name,
                     index: output.auth_index,
                     target: ActorTarget::domain(&output.actors, actor_enums),
                 })
@@ -72,7 +64,7 @@ impl<'a> EntryModel<'a> {
                     .enumerate()
                     .map(|(index, input)| EntryInteraction {
                         source: InteractionSource::ObserveInput(input),
-                        handle: Some(&input.name),
+                        handle: &input.name,
                         index,
                         target: ActorTarget::observed(source, observe, input),
                     })
@@ -83,7 +75,7 @@ impl<'a> EntryModel<'a> {
                     .enumerate()
                     .map(|(index, output)| EntryInteraction {
                         source: InteractionSource::ObserveOutput(output),
-                        handle: Some(&output.name),
+                        handle: &output.name,
                         index,
                         target: ActorTarget::observed(source, observe, output),
                     })
@@ -99,7 +91,7 @@ impl<'a> EntryModel<'a> {
                     .iter()
                     .map(|output| EntryInteraction {
                         source: InteractionSource::SpawnOutput(output),
-                        handle: Some(&output.name),
+                        handle: &output.name,
                         index: output.group_index,
                         target: ActorTarget::source_or_static(source, &output.actor),
                     })
@@ -252,7 +244,7 @@ pub(crate) enum CovenantContext<'a> {
 #[derive(Debug)]
 pub(crate) struct EntryInteraction<'a> {
     source: InteractionSource<'a>,
-    handle: Option<&'a str>,
+    handle: &'a str,
     index: usize,
     target: ActorTarget,
 }
@@ -263,8 +255,8 @@ impl<'a> EntryInteraction<'a> {
         self.source
     }
 
-    /// Return the declared handle, or `None` for an implicit output.
-    pub(crate) fn handle(&self) -> Option<&'a str> {
+    /// Return the declared interaction handle.
+    pub(crate) fn handle(&self) -> &'a str {
         self.handle
     }
 
@@ -284,8 +276,8 @@ impl<'a> EntryInteraction<'a> {
 pub(crate) enum InteractionSource<'a> {
     /// A current-covenant input from `consumes`.
     Consume(&'a ConsumeDecl),
-    /// A current-covenant output and its optional named source node.
-    CurrentOutput { declaration: &'a EmitSpec, output: Option<&'a EmitOutput> },
+    /// A current-covenant output.
+    CurrentOutput(&'a EmitOutput),
     /// An input from an `observes` clause.
     ObserveInput(&'a ObservedActorDecl),
     /// An output from an `observes` clause.
@@ -732,9 +724,9 @@ mod tests {
                 covenant: "child".to_string(),
                 outputs: vec![SpawnOutputDecl { name: "child".to_string(), actor: "Child".to_string(), group_index: 0 }],
             }],
-            emits: EmitSpec::One { actors: vec!["Move".to_string()] },
+            emits: EmitSpec::Outputs(vec![EmitOutput { name: "next".to_string(), actors: vec!["Move".to_string()], auth_index: 0 }]),
             body: String::new(),
-            routes: vec![RouteCall { output: None, actor: "target".to_string(), state: "next".to_string() }],
+            routes: vec![RouteCall { output: "next".to_string(), actor: "target".to_string(), state: "next".to_string() }],
             terminal_route_sets: Vec::new(),
         };
         let selectors = BTreeMap::from([(
@@ -763,13 +755,16 @@ mod tests {
             panic!("current input must retain its consume declaration");
         };
         assert!(std::ptr::eq(consume, &entry.consumes[0]));
-        assert_eq!(model.current().inputs()[0].handle(), Some("peer"));
+        assert_eq!(model.current().inputs()[0].handle(), "peer");
         assert_eq!(model.current().inputs()[0].index(), 0);
-        let InteractionSource::CurrentOutput { declaration, output: None } = model.current().outputs()[0].source() else {
+        let InteractionSource::CurrentOutput(output) = model.current().outputs()[0].source() else {
             panic!("current output must retain its emits declaration");
         };
-        assert!(std::ptr::eq(declaration, &entry.emits));
-        assert_eq!(model.current().outputs()[0].handle(), None);
+        let EmitSpec::Outputs(outputs) = &entry.emits else {
+            panic!("test entry must have named outputs");
+        };
+        assert!(std::ptr::eq(output, &outputs[0]));
+        assert_eq!(model.current().outputs()[0].handle(), "next");
         assert_eq!(model.current().outputs()[0].index(), 0);
         assert_eq!(model.current().outputs()[0].target().actors().collect::<Vec<_>>(), ["Pawn", "King"]);
         let observe_group = model.existing_groups().next().expect("observe group");
@@ -778,7 +773,7 @@ mod tests {
             panic!("observe input must retain its source declaration");
         };
         assert!(std::ptr::eq(observed, &entry.observes[0].inputs[0]));
-        assert_eq!(observe_group.inputs()[0].handle(), Some("before"));
+        assert_eq!(observe_group.inputs()[0].handle(), "before");
         assert_eq!(observe_group.inputs()[0].index(), 0);
         assert_eq!(observe_group.inputs()[0].target().static_actors().collect::<Vec<_>>(), ["Remote"]);
 
@@ -788,7 +783,7 @@ mod tests {
             panic!("spawn output must retain its source declaration");
         };
         assert!(std::ptr::eq(output, &entry.spawns[0].outputs[0]));
-        assert_eq!(spawn_group.outputs()[0].handle(), Some("child"));
+        assert_eq!(spawn_group.outputs()[0].handle(), "child");
         assert_eq!(spawn_group.outputs()[0].index(), 0);
         assert_eq!(spawn_group.outputs()[0].target().static_actors().collect::<Vec<_>>(), ["Child"]);
 
@@ -870,24 +865,18 @@ mod tests {
         let EmitSpec::Outputs(outputs) = &entry.emits else {
             panic!("test entry must have named outputs");
         };
-        let InteractionSource::CurrentOutput { declaration: first_declaration, output: Some(first) } =
-            model.current().outputs()[0].source()
-        else {
+        let InteractionSource::CurrentOutput(first) = model.current().outputs()[0].source() else {
             panic!("named output must retain its emit output");
         };
-        let InteractionSource::CurrentOutput { declaration: second_declaration, output: Some(second) } =
-            model.current().outputs()[1].source()
-        else {
+        let InteractionSource::CurrentOutput(second) = model.current().outputs()[1].source() else {
             panic!("named output must retain its emit output");
         };
-        assert!(std::ptr::eq(first_declaration, &entry.emits));
-        assert!(std::ptr::eq(second_declaration, &entry.emits));
         assert!(std::ptr::eq(first, &outputs[0]));
         assert!(std::ptr::eq(second, &outputs[1]));
-        assert_eq!(model.current().outputs()[0].handle(), Some("first"));
+        assert_eq!(model.current().outputs()[0].handle(), "first");
         assert_eq!(model.current().outputs()[0].index(), 0);
         assert_eq!(model.current().outputs()[0].target().actors().collect::<Vec<_>>(), ["Pawn"]);
-        assert_eq!(model.current().outputs()[1].handle(), Some("second"));
+        assert_eq!(model.current().outputs()[1].handle(), "second");
         assert_eq!(model.current().outputs()[1].index(), 1);
         assert_eq!(model.current().outputs()[1].target().actors().collect::<Vec<_>>(), ["Pawn", "King"]);
 

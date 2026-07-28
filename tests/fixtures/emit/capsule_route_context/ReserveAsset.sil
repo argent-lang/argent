@@ -31,7 +31,7 @@ contract ReserveAsset(
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        // :: emits one ReserveAsset
+        // :: output next: ReserveAsset
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
         // :: co-spent with owner_id
@@ -63,7 +63,7 @@ contract ReserveAsset(
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        // :: emits one WalletAsset
+        // :: output next: WalletAsset
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
         // :: co-spent with owner_id

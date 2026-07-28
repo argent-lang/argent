@@ -65,7 +65,7 @@ Compiler features exercised today:
 - typed covenant peer reads through `readInputStateWithTemplate`
 - single-output `become`
 - multi-output atomic `become`
-- read-only output handles such as `next.value`
+- explicitly declared read-only output handles such as `next.value`
 - ordinary `require(...)` checks for output value policy
 - generated hidden template fields
 - generated successor validation through `validateOutputStateWithTemplate`

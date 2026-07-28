@@ -39,7 +39,8 @@ contract Mux(
     entrypoint function choose(int target, byte[] gen__target_prefix, byte[] gen__target_suffix) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // emits one MoveActor
+        // :: output next: MoveActor
+        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
         State next_board = {
             // :: generated fields
@@ -69,7 +70,8 @@ contract Mux(
     entrypoint function archive(byte[] gen__archive_prefix, byte[] gen__archive_suffix) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // emits one Archive
+        // :: output next: Archive
+        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
         Gen__ArchiveState next_archive = {
             // :: generated fields

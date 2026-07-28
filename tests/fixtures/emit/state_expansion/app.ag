@@ -12,7 +12,7 @@ state ForagerState expands AgentCapsule {
 }
 
 actor Forager owns ForagerState {
-    entry hold() emits one Forager {
+    entry hold() emits next: Forager {
         require(energy > 0);
 
         ForagerState next_state = {
@@ -22,7 +22,7 @@ actor Forager owns ForagerState {
             energy: energy - 1,
         };
 
-        become Forager(next_state);
+        become next <- Forager(next_state);
     }
 }
 

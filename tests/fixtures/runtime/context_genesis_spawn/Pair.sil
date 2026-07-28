@@ -17,7 +17,7 @@ contract Pair(
     entrypoint function keep() {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // emits one Pair
+        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Pair
 
         // :: become Pair
         require(

@@ -17,9 +17,9 @@
         {
           "name": "launch",
           "kind": "leader",
-          "emits": { "kind": "one", "actors": ["Controller"] },
+          "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["Controller"] }] },
           "consumes": [],
-          "routes": [{ "output": null, "actor": "Controller", "state": "next" }]
+          "routes": [{ "output": "next", "actor": "Controller", "state": "next" }]
         }
       ]
     },
@@ -31,9 +31,9 @@
         {
           "name": "keep",
           "kind": "leader",
-          "emits": { "kind": "one", "actors": ["Pair"] },
+          "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["Pair"] }] },
           "consumes": [],
-          "routes": [{ "output": null, "actor": "Pair", "state": "self.state" }]
+          "routes": [{ "output": "next", "actor": "Pair", "state": "self.state" }]
         }
       ]
     }

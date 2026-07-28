@@ -222,17 +222,8 @@ fn inspect_entry(
     }
     inputs.extend(entry.route_plan.consumes.iter().map(|input| format!("{}: {}", input.name, input.actor)));
 
-    let outputs = entry
-        .route_plan
-        .outputs
-        .iter()
-        .map(|output| {
-            let name = output.name.as_deref().unwrap_or("next");
-            format!("{name} -> {}", output.actors.join(" | "))
-        })
-        .collect();
-    let routes =
-        entry.routes.iter().map(|route| format!("{} -> {}", route.output.as_deref().unwrap_or("next"), route.actor)).collect();
+    let outputs = entry.route_plan.outputs.iter().map(|output| format!("{} -> {}", output.name, output.actors.join(" | "))).collect();
+    let routes = entry.routes.iter().map(|route| format!("{} -> {}", route.output, route.actor)).collect();
 
     let mut signature_script_bytes = SizeEstimate::exact(ScriptBuilder::canonical_data_size(script));
     for param in &sil_entry.params {
@@ -599,11 +590,11 @@ actor Event owns EventState {
 }
 
 actor Ticket owns TicketState {
-    entry transfer(pubkey next_owner) emits one Ticket {
+    entry transfer(pubkey next_owner) emits next: Ticket {
         TicketState next = {
             owner: next_owner,
         };
-        become Ticket(next);
+        become next <- Ticket(next);
     }
 }
 

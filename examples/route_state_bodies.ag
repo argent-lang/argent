@@ -17,32 +17,32 @@ actor enum MoveActor {
 
 // Lobby carries the packed Board family and opens it when entering Mux.
 actor Lobby owns LobbyState {
-    entry open_board() emits one Mux {
+    entry open_board() emits next: Mux {
         BoardState next_board = {
             ply: nonce,
         };
 
-        become Mux(next_board);
+        become next <- Mux(next_board);
     }
 }
 
 actor Mux owns BoardState {
-    entry choose(MoveActor target) emits one MoveActor {
+    entry choose(MoveActor target) emits next: MoveActor {
         BoardState next_board = {
             ply: ply + 1,
         };
 
-        become target(next_board);
+        become next <- target(next_board);
     }
 
     // Archive needs one packed Board-family commitment, so this transition
     // packs the open table carried by Mux.
-    entry archive() emits one Archive {
+    entry archive() emits next: Archive {
         ArchiveState next_archive = {
             final_ply: ply,
         };
 
-        become Archive(next_archive);
+        become next <- Archive(next_archive);
     }
 }
 
@@ -69,12 +69,12 @@ actor Spectator owns BoardState {
 
 // This downstream route gives Archive a packed Board-family dependency.
 actor Archive owns ArchiveState {
-    entry reopen_as_pawn() emits one Pawn {
+    entry reopen_as_pawn() emits next: Pawn {
         BoardState next_board = {
             ply: final_ply + 1,
         };
 
-        become Pawn(next_board);
+        become next <- Pawn(next_board);
     }
 }
 

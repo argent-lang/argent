@@ -23,7 +23,8 @@ contract Forager(
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // emits one Forager
+        // :: output next: Forager
+        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
         require(energy > 0);
         State next_state = {

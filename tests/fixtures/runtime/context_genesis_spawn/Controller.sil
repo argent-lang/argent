@@ -30,7 +30,7 @@ contract Controller(
     ) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        // :: emits one Controller
+        // :: output next: Controller
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
         // :: genesis covenants

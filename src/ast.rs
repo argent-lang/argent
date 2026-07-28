@@ -146,7 +146,6 @@ pub struct ObservedActorDecl {
 #[derive(Debug, Clone)]
 pub enum EmitSpec {
     None,
-    One { actors: Vec<String> },
     Outputs(Vec<EmitOutput>),
 }
 
@@ -165,7 +164,7 @@ pub struct AppDecl {
 
 #[derive(Debug, Clone)]
 pub struct RouteCall {
-    pub output: Option<String>,
+    pub output: String,
     pub actor: String,
     pub state: String,
 }

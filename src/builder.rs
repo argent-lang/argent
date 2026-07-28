@@ -386,13 +386,13 @@ mod tests {
             }
 
             actor Blob owns BlobState {
-                entry store(byte[] data) emits one Blob {
+                entry store(byte[] data) emits next: Blob {
                     BlobState next = {
                         size: data.length,
                         digest: blake2b(data),
                     };
 
-                    become Blob(next);
+                    become next <- Blob(next);
                 }
             }
 
@@ -438,14 +438,14 @@ mod tests {
             }
 
             actor Issuer owns IssuerState {
-                entry issue(byte[] domain, byte[32] expected) emits one Issuer {
+                entry issue(byte[] domain, byte[32] expected) emits next: Issuer {
                     byte[32] uid = invocation_uid(domain);
                     require(uid == expected);
 
                     IssuerState next = {
                         last_uid: uid,
                     };
-                    become Issuer(next);
+                    become next <- Issuer(next);
                 }
             }
 
@@ -531,7 +531,7 @@ mod tests {
             }
 
             actor Counter owns CounterState {
-                entry bump(sig owner_sig, int delta) emits one Counter {
+                entry bump(sig owner_sig, int delta) emits next: Counter {
                     require(checkSig(owner_sig, owner));
 
                     CounterState next = {
@@ -539,7 +539,7 @@ mod tests {
                         count: count + delta,
                     };
 
-                    become Counter(next);
+                    become next <- Counter(next);
                 }
             }
 
@@ -822,15 +822,15 @@ mod tests {
             }
 
             actor Foreign owns ForeignState {
-                entry hold() emits one Foreign {
-                    become Foreign(self.state);
+                entry hold() emits next: Foreign {
+                    become next <- Foreign(self.state);
                 }
 
-                entry route() emits one Target {
+                entry route() emits next: Target {
                     TargetState next = {
                         units: 0,
                     };
-                    become Target(next);
+                    become next <- Target(next);
                 }
             }
 
@@ -844,7 +844,7 @@ mod tests {
                         next: Foreign,
                     }
                 }
-                emits one Local {
+                emits next: Local {
                     ForeignState next_foreign = remote.inputs.src.state;
                     require remote.outputs become {
                         next <- Foreign(next_foreign),
@@ -854,7 +854,7 @@ mod tests {
                         foreign_id: foreign_id,
                         steps: steps + 1,
                     };
-                    become Local(next_local);
+                    become next <- Local(next_local);
                 }
             }
 
@@ -1601,8 +1601,8 @@ mod tests {
         assert_eq!(entry.route_plan.consumes[0].actor, "Player");
         assert_eq!(entry.route_plan.consumes[0].cov_index, Some(1));
         assert_eq!(
-            entry.route_plan.outputs.iter().map(|output| (output.name.as_deref(), output.auth_index)).collect::<Vec<_>>(),
-            vec![(Some("self_out"), 0), (Some("opponent_out"), 1), (Some("game"), 2)]
+            entry.route_plan.outputs.iter().map(|output| (output.name.as_str(), output.auth_index)).collect::<Vec<_>>(),
+            vec![("self_out", 0), ("opponent_out", 1), ("game", 2)]
         );
         assert_eq!(
             entry
@@ -1951,12 +1951,12 @@ mod tests {
             }
 
             actor Mux owns BoardState {
-                entry choose(MoveActor target) emits one MoveActor {
+                entry choose(MoveActor target) emits next: MoveActor {
                     BoardState next = {
                         ply: ply + 1,
                     };
 
-                    become target(next);
+                    become next <- target(next);
                 }
             }
 
@@ -2152,11 +2152,11 @@ mod tests {
             }
 
             actor Foo owns FooState {
-                entry bump(int amount) emits one Foo {
+                entry bump(int amount) emits next: Foo {
                     State next_state = {
                         count: count + amount,
                     };
-                    become Foo(next_state);
+                    become next <- Foo(next_state);
                 }
             }
 
@@ -3055,9 +3055,9 @@ mod tests {
             }
 
             actor Agent owns AgentCapsule {
-                entry step(AgentCapsule next_state) emits one Agent {
+                entry step(AgentCapsule next_state) emits next: Agent {
                     require(controller_id.co_spent());
-                    become Agent(next_state);
+                    become next <- Agent(next_state);
                 }
             }
 
