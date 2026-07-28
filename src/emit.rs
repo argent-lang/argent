@@ -351,7 +351,7 @@ impl<'a> Model<'a> {
             reject_reserved_identifier("constant", &konst.name)?;
         }
         for function in &self.functions {
-            reject_reserved_identifier("function", &function.name)?;
+            reject_reserved_function_identifier(&function.name)?;
             for param in &function.params {
                 reject_reserved_identifier(&format!("function `{}` parameter", function.name), &param.name)?;
             }
@@ -5854,6 +5854,16 @@ fn to_upper_camel(input: &str) -> String {
         .collect()
 }
 
+fn reject_reserved_function_identifier(name: &str) -> Result<()> {
+    if name == word::UNRESTRICTED {
+        return Err(ArgentError::new(format!(
+            "function identifier `{}` is reserved for output-value declarations",
+            word::UNRESTRICTED
+        )));
+    }
+    reject_reserved_identifier("function", name)
+}
+
 fn reject_reserved_identifier(context: &str, name: &str) -> Result<()> {
     let generated_prefix =
         [RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX].into_iter().find(|prefix| name.starts_with(prefix));
@@ -6959,6 +6969,23 @@ mod tests {
 
         let err = Model::from_program(&program).expect_err("duplicate function declaration must be rejected");
         assert_duplicate_top_level_error(&err, "fn", "helper");
+    }
+
+    #[test]
+    fn rejects_function_named_unrestricted() {
+        let mut program = test_program();
+        program.modules[0].functions.push(FunctionDecl {
+            name: word::UNRESTRICTED.to_string(),
+            params: Vec::new(),
+            return_ty: TypeRef::new("int"),
+            body: "0".to_string(),
+        });
+
+        let err = Model::from_program(&program).expect_err("the output-value declaration must not be shadowed");
+        assert!(
+            err.to_string().contains("function identifier `unrestricted` is reserved for output-value declarations"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
