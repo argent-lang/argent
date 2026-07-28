@@ -3,6 +3,85 @@
 This file contains small follow-up items. Each item gives its area, context,
 and required work.
 
+## Replace `emits one` with a named shorthand
+
+**Area:** Entry syntax and body lowering.
+
+**Context:** `emits one` declares an unnamed output, but the entry body can read
+its value through `next.value`. The name `next` is synthesized by the compiler
+and is not visible in the entry declaration. This makes a convenient shorthand
+look like an ordinary declared binding.
+
+**Follow-up:** Replace `emits one Type` with a concise named form such as:
+
+```rust
+entry transfer(...) emits next Type {
+    become next <- Type(next_state);
+}
+```
+
+The shorthand still declares exactly one output, but its handle is explicit.
+Use the same named `become` form as an `emits` block. Remove the synthesized
+`next` binding.
+
+## Require an output-value disposition
+
+**Area:** Entry validation and body analysis.
+
+**Context:** An entry can validate an emitted actor's state and template while
+placing no restriction on the output's Kaspa value. Omitting a value policy is
+easy to miss during review.
+
+**Follow-up:** Require every emitted output handle to account explicitly for
+its `.value` on every terminal path. A value can be constrained by an enforced
+boolean expression or deliberately accepted with:
+
+```rust
+unrestricted(next.value);
+```
+
+Define precisely which boolean uses count. Merely computing and discarding a
+comparison must not satisfy the rule. Start with direct use in `require(...)`
+and conditions that govern a terminal path; decide separately how annotated
+helper functions can preserve the guarantee. Report the output handle and
+uncovered terminal path in diagnostics.
+
+## Infer the leader of a singleton-app delegate
+
+**Area:** Delegate modeling, covenant-input validation, and artifacts.
+
+**Context:** A delegate currently names its leader as the first `consumes`
+actor. This lets the generated prelude authenticate the leader input's
+template. In an app with only one actor, the only in-app leader template is
+already determined by the delegate actor, so requiring a source-level leader
+handle solely for that proof is redundant.
+
+**Follow-up:** Allow a delegate in a singleton-actor app to omit the leader
+from `consumes`. Infer the same actor as its leader and keep the generated
+template authentication of the concrete leader input. Require an explicit
+handle when the delegate body needs to inspect the leader's state or value.
+Record the inferred leader relationship explicitly in the artifact.
+
+## Allow open observed groups
+
+**Area:** Observe syntax, transaction-shape validation, artifacts, and runtime
+resolution.
+
+**Context:** An `observes` clause currently describes the complete observed
+input and output groups. An observer may need to authenticate and follow a
+known subset while permitting unrelated inputs or outputs in the same
+transaction.
+
+**Follow-up:** Add an explicit open-group marker to observed `inputs` and
+`outputs`. Declared handles remain authenticated and available to the body,
+while the generated checks permit additional group members.
+
+Define where extra members may occur. Restricting them to a declared rest
+position keeps handle indices derivable; allowing them anywhere requires
+explicit indices or an unambiguous matching rule. Record openness and the
+binding rule in the artifact so the runtime and transaction builder resolve
+the same handles.
+
 ## Resolve observed state read types
 
 **Area:** Compiler code generation and Silverscript type checking.
