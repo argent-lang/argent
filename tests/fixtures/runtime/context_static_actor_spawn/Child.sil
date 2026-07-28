@@ -55,7 +55,8 @@ contract Child(
     ) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // emits one Launcher
+        // :: output next: Launcher
+        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
         Gen__LauncherState next = {
             // :: generated fields

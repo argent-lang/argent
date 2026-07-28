@@ -16,7 +16,7 @@ actor Launcher owns LauncherState {
             child: ChildApp::Child,
         }
     }
-    emits one Launcher {
+    emits next: Launcher {
         ChildState source_state = source.inputs.child.state;
         ChildState child_state = {
             amount: source_state.amount + amount,
@@ -25,10 +25,12 @@ actor Launcher owns LauncherState {
             launches: launches + 1,
         };
 
+        unrestricted(children.outputs.child.value);
         require children.outputs become {
             child <- ChildApp::Child(child_state),
         };
-        become Launcher(next);
+        unrestricted(next.value);
+        become next <- Launcher(next);
     }
 }
 

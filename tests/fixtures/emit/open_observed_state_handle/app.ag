@@ -25,7 +25,7 @@ actor Cell owns CellState {
         cell: Cell,
     } {
         AgentCapsule prev_state = remote.inputs.agent.state;
-        require(prev_state.controller_id == self.covenant_id);
+        require(prev_state.controller_id == self.cov_id);
 
         AgentCapsule next_state = {
             controller_id: prev_state.controller_id,
@@ -43,6 +43,7 @@ actor Cell owns CellState {
             tick: tick + 1,
         };
 
+        unrestricted(cell.value);
         become cell <- Cell(next_cell);
     }
 }

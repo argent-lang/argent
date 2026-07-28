@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "66769ca423150857f06099ecfd9aa384437e235249914ed0f92d1e6c36bbc0c0",
+  "id": "292f839b84334db321d45b869a8510eca28ead6cc4324a16fb25239b67bdc979",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -202,7 +202,7 @@
               "consumes": [],
               "outputs": [
                 {
-                  "name": null,
+                  "name": "next",
                   "auth_index": 0,
                   "actors": [
                     "Controller"
@@ -359,14 +359,20 @@
             ],
             "consumes": [],
             "emits": {
-              "kind": "one",
-              "actors": [
-                "Controller"
+              "kind": "outputs",
+              "outputs": [
+                {
+                  "name": "next",
+                  "auth_index": 0,
+                  "actors": [
+                    "Controller"
+                  ]
+                }
               ]
             },
             "routes": [
               {
-                "output": null,
+                "output": "next",
                 "actor": "Controller",
                 "template_id": "template/controller",
                 "state_expr": "next"
@@ -403,7 +409,7 @@
               "consumes": [],
               "outputs": [
                 {
-                  "name": null,
+                  "name": "next",
                   "auth_index": 0,
                   "actors": [
                     "Pair"
@@ -417,14 +423,20 @@
             "witnesses": [],
             "consumes": [],
             "emits": {
-              "kind": "one",
-              "actors": [
-                "Pair"
+              "kind": "outputs",
+              "outputs": [
+                {
+                  "name": "next",
+                  "auth_index": 0,
+                  "actors": [
+                    "Pair"
+                  ]
+                }
               ]
             },
             "routes": [
               {
-                "output": null,
+                "output": "next",
                 "actor": "Pair",
                 "template_id": "template/pair",
                 "state_expr": "self.state"

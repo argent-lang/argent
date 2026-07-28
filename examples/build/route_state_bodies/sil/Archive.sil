@@ -47,7 +47,7 @@ contract Archive(
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // emits one Pawn
+        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Pawn
 
         Gen__PawnState next_board = {
             // :: generated fields

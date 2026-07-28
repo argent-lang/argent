@@ -433,9 +433,6 @@ impl Parser {
     fn parse_emits(&mut self) -> Result<EmitSpec> {
         if self.consume_ident(word::NONE) {
             Ok(EmitSpec::None)
-        } else if self.consume_ident(word::ONE) {
-            let actors = self.parse_actor_union_until_body()?;
-            Ok(EmitSpec::One { actors })
         } else if self.check_symbol('{') {
             self.expect_symbol('{')?;
             let mut outputs = Vec::new();
@@ -450,7 +447,13 @@ impl Parser {
             self.expect_symbol('}')?;
             Ok(EmitSpec::Outputs(outputs))
         } else {
-            Err(self.error(format!("expected emits spec, found {}", self.describe_current())))
+            let name = self.expect_any_ident()?;
+            if name == word::ONE && !self.check_symbol(':') {
+                return Err(self.error("`emits one Type` has been removed; declare a named output with `emits name: Type`"));
+            }
+            self.expect_symbol(':')?;
+            let actors = self.parse_actor_union_until_body()?;
+            Ok(EmitSpec::Outputs(vec![EmitOutput { name, actors, auth_index: 0 }]))
         }
     }
 
@@ -779,6 +782,78 @@ mod tests {
         assert_eq!(entry.consumes.len(), 2);
         assert!(matches!(&entry.emits, crate::ast::EmitSpec::Outputs(outputs) if outputs.len() == 2));
         assert_eq!(entry.routes.len(), 2);
+    }
+
+    #[test]
+    fn parses_named_single_output_shorthand() {
+        let module = parse_module(
+            PathBuf::from("single-output.ag"),
+            r#"
+            state State {}
+
+            actor Actor owns State {
+                entry update() emits result: Actor {
+                    become result <- Actor(self.state);
+                }
+            }
+            "#
+            .to_string(),
+        )
+        .expect("named single-output shorthand parses");
+
+        let entry = &module.actors[0].entries[0];
+        let crate::ast::EmitSpec::Outputs(outputs) = &entry.emits else {
+            panic!("single-output shorthand normalizes to named outputs");
+        };
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].name, "result");
+        assert_eq!(outputs[0].actors, ["Actor"]);
+        assert_eq!(outputs[0].auth_index, 0);
+        assert_eq!(entry.routes[0].output, "result");
+    }
+
+    #[test]
+    fn allows_one_as_named_single_output_handle() {
+        let module = parse_module(
+            PathBuf::from("single-output.ag"),
+            r#"
+            state State {}
+
+            actor Actor owns State {
+                entry update() emits one: Actor {
+                    become one <- Actor(self.state);
+                }
+            }
+            "#
+            .to_string(),
+        )
+        .expect("`one` is an ordinary named output handle");
+
+        let crate::ast::EmitSpec::Outputs(outputs) = &module.actors[0].entries[0].emits else {
+            panic!("single-output shorthand normalizes to named outputs");
+        };
+        assert_eq!(outputs[0].name, "one");
+        assert_eq!(module.actors[0].entries[0].routes[0].output, "one");
+    }
+
+    #[test]
+    fn rejects_removed_emits_one_syntax() {
+        let err = parse_module(
+            PathBuf::from("single-output.ag"),
+            r#"
+            state State {}
+
+            actor Actor owns State {
+                entry update() emits one Actor {
+                    become Actor(self.state);
+                }
+            }
+            "#
+            .to_string(),
+        )
+        .expect_err("removed emits-one syntax must not parse");
+
+        assert!(err.to_string().contains("`emits one Type` has been removed"), "unexpected error: {err}");
     }
 
     #[test]

@@ -31,7 +31,8 @@ contract Mux(
     entrypoint function choose(int target, byte[] gen__target_prefix, byte[] gen__target_suffix) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // emits one MoveActor
+        // :: output next: MoveActor
+        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
         if (target == 1 /*KNIGHT*/) {
             require(selector >= 0);
@@ -64,7 +65,8 @@ contract Mux(
     entrypoint function choose_knight_const(byte[] gen__target_prefix, byte[] gen__target_suffix) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // emits one MoveActor
+        // :: output next: MoveActor
+        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
         State next_board = {
             // :: generated fields
@@ -97,7 +99,7 @@ contract Mux(
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // emits one Pawn
+        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Pawn
 
         State next_board = {
             // :: generated fields
@@ -124,7 +126,7 @@ contract Mux(
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // emits one Knight
+        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Knight
 
         State next_board = {
             // :: generated fields

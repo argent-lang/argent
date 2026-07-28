@@ -17,6 +17,7 @@ actor Badge owns BadgeState {
             balance: next_balance,
         };
 
+        unrestricted(badge.value);
         become badge <- Badge(next);
     }
 }

@@ -52,7 +52,7 @@ contract Local(
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // emits one Local
+        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Local
 
         Gen__ForeignState next_foreign = gen__remote_src_state;
         // :: observed become remote.next -> Foreign

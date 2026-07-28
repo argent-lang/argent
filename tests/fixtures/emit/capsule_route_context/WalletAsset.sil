@@ -31,7 +31,7 @@ contract WalletAsset(
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        // :: emits one WalletAsset
+        // :: output next: WalletAsset
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
         // :: become WalletAsset

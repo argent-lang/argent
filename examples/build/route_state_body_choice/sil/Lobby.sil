@@ -44,7 +44,7 @@ contract Lobby(
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        // :: emits one Mux | Spectator
+        // :: output next: Mux | Spectator
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
         BoardState next_board = {
@@ -61,7 +61,7 @@ contract Lobby(
                 gen__spectator_template
             );
         } else {
-            Gen__MuxState gen__state_mux_gen__mux_state = {
+            Gen__MuxState gen__state_next_gen__mux_state = {
                 // :: generated fields
                 gen__mux_template: gen__mux_template,
                 gen__mux_routes: gen__mux_routes,
@@ -71,7 +71,7 @@ contract Lobby(
             // :: become Mux
             validateOutputStateWithTemplate(
                 gen__next_output_idx,
-                gen__state_mux_gen__mux_state,
+                gen__state_next_gen__mux_state,
                 gen__mux_prefix,
                 gen__mux_suffix,
                 gen__mux_template

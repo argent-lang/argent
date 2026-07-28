@@ -351,7 +351,7 @@ impl<'a> Model<'a> {
             reject_reserved_identifier("constant", &konst.name)?;
         }
         for function in &self.functions {
-            reject_reserved_identifier("function", &function.name)?;
+            reject_reserved_function_identifier(&function.name)?;
             for param in &function.params {
                 reject_reserved_identifier(&format!("function `{}` parameter", function.name), &param.name)?;
             }
@@ -414,9 +414,7 @@ impl<'a> Model<'a> {
                     }
                 }
                 for route in &entry.routes {
-                    if let Some(output) = &route.output {
-                        reject_reserved_identifier(&format!("entry `{}::{}` route output handle", actor.name, entry.name), output)?;
-                    }
+                    reject_reserved_identifier(&format!("entry `{}::{}` route output handle", actor.name, entry.name), &route.output)?;
                 }
             }
         }
@@ -464,14 +462,6 @@ impl<'a> Model<'a> {
 
         match &entry.emits {
             EmitSpec::None => {}
-            EmitSpec::One { actors } => {
-                for target in self.expand_actor_refs(actors) {
-                    self.require_template_actor(
-                        &target,
-                        format!("entry `{}::{}` emits unknown actor `{target}`", actor.name, entry.name),
-                    )?;
-                }
-            }
             EmitSpec::Outputs(outputs) => {
                 let mut names = BTreeSet::new();
                 let mut auth_indices = BTreeSet::new();
@@ -745,36 +735,12 @@ impl<'a> Model<'a> {
                 "entry `{}::{}` has a `become` route to `{}`, but declares `emits none`",
                 actor.name, entry.name, route.actor
             ))),
-            EmitSpec::One { actors } => {
-                if let Some(output) = &route.output {
-                    return Err(ArgentError::new(format!(
-                        "entry `{}::{}` names output `{output}`, but `emits one` uses an unnamed output",
-                        actor.name, entry.name
-                    )));
-                }
-                let allowed = self.expand_actor_refs(actors);
-                let targets = self.route_targets(actor, entry, route)?;
-                if targets.iter().all(|target| allowed.iter().any(|allowed| allowed == target)) {
-                    Ok(())
-                } else {
-                    Err(ArgentError::new(format!(
-                        "entry `{}::{}` routes to `{}`, but `emits one` allows only {}",
-                        actor.name,
-                        entry.name,
-                        route.actor,
-                        actors.join(" | ")
-                    )))
-                }
-            }
             EmitSpec::Outputs(outputs) => {
-                let output_name = route.output.as_ref().ok_or_else(|| {
+                let output = outputs.iter().find(|output| output.name == route.output).ok_or_else(|| {
                     ArgentError::new(format!(
-                        "entry `{}::{}` routes to `{}` without an output handle, but declares named outputs",
-                        actor.name, entry.name, route.actor
+                        "entry `{}::{}` routes through unknown output `{}`",
+                        actor.name, entry.name, route.output
                     ))
-                })?;
-                let output = outputs.iter().find(|output| &output.name == output_name).ok_or_else(|| {
-                    ArgentError::new(format!("entry `{}::{}` routes through unknown output `{output_name}`", actor.name, entry.name))
                 })?;
                 let allowed = self.expand_actor_refs(&output.actors);
                 let targets = self.route_targets(actor, entry, route)?;
@@ -797,28 +763,8 @@ impl<'a> Model<'a> {
     fn validate_route_coverage(&self, actor: &ActorDecl, entry: &EntryDecl) -> Result<()> {
         match &entry.emits {
             EmitSpec::None => Ok(()),
-            EmitSpec::One { .. } => self.validate_single_output_coverage(actor, entry),
             EmitSpec::Outputs(outputs) => self.validate_named_output_coverage(actor, entry, outputs),
         }
-    }
-
-    fn validate_single_output_coverage(&self, actor: &ActorDecl, entry: &EntryDecl) -> Result<()> {
-        if entry.terminal_route_sets.is_empty() {
-            return Err(ArgentError::new(format!(
-                "entry `{}::{}` declares `emits one` but has no terminal `become` route",
-                actor.name, entry.name
-            )));
-        }
-
-        for (path_idx, routes) in entry.terminal_route_sets.iter().enumerate() {
-            if routes.len() != 1 || routes[0].output.is_some() {
-                return Err(ArgentError::new(format!(
-                    "entry `{}::{}` terminal path {} must validate exactly one unnamed output for `emits one`",
-                    actor.name, entry.name, path_idx
-                )));
-            }
-        }
-        Ok(())
     }
 
     fn validate_named_output_coverage(&self, actor: &ActorDecl, entry: &EntryDecl, outputs: &[EmitOutput]) -> Result<()> {
@@ -838,12 +784,7 @@ impl<'a> Model<'a> {
         for (path_idx, routes) in entry.terminal_route_sets.iter().enumerate() {
             let mut seen = BTreeSet::new();
             for route in routes {
-                let output = route.output.as_deref().ok_or_else(|| {
-                    ArgentError::new(format!(
-                        "entry `{}::{}` terminal path {} has an unnamed route but declares named outputs",
-                        actor.name, entry.name, path_idx
-                    ))
-                })?;
+                let output = route.output.as_str();
                 if !declared.contains(output) {
                     continue;
                 }
@@ -1359,15 +1300,6 @@ fn emit_entry(out: &mut String, actor: &ActorDecl, entry: &EntryDecl, model: &Mo
     out.push_str(&format!("        require(OpAuthOutputCount(this.activeInputIndex) == {auth_output_count});\n"));
     match &entry.emits {
         EmitSpec::None => {}
-        EmitSpec::One { actors } => {
-            let output_idx = hidden_next_output_idx_name();
-            push_generated_statement_with_comment(
-                out,
-                8,
-                &format!("int {output_idx} = OpAuthOutputIdx(this.activeInputIndex, 0)"),
-                &format!("emits one {}", actors.join(" | ")),
-            );
-        }
         EmitSpec::Outputs(outputs) => {
             for output in outputs {
                 let output_idx = hidden_output_idx_name(&output.name);
@@ -1390,7 +1322,6 @@ fn emit_entry(out: &mut String, actor: &ActorDecl, entry: &EntryDecl, model: &Mo
 fn emitted_auth_output_count(emits: &EmitSpec) -> usize {
     match emits {
         EmitSpec::None => 0,
-        EmitSpec::One { .. } => 1,
         EmitSpec::Outputs(outputs) => outputs.len(),
     }
 }
@@ -1756,11 +1687,17 @@ struct BodyLowerer<'a, 'm> {
     materialized_selectors: BTreeSet<String>,
     materialized_route_locals: BTreeMap<String, String>,
     input_names: BTreeSet<String>,
-    output_names: BTreeSet<String>,
+    output_values: Vec<OutputValueRef>,
     observed_input_state_refs: Vec<(String, String)>,
     observed_output_fields: Vec<ObservedOutputFieldWitnessSpec>,
     validated_spawns: BTreeSet<String>,
     conditional_depth: usize,
+}
+
+#[derive(Debug)]
+struct OutputValueRef {
+    source: String,
+    lowered: String,
 }
 
 impl<'a, 'm> BodyLowerer<'a, 'm> {
@@ -1823,16 +1760,27 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             }
         }
 
-        let mut output_names = BTreeSet::new();
+        let mut output_values = Vec::new();
         match &entry.emits {
             EmitSpec::None => {}
-            EmitSpec::One { .. } => {
-                output_names.insert("next".to_string());
-            }
             EmitSpec::Outputs(outputs) => {
-                output_names.extend(outputs.iter().map(|output| output.name.clone()));
+                output_values.extend(outputs.iter().map(|output| OutputValueRef {
+                    source: format!("{}.{}", output.name, word::VALUE),
+                    lowered: format!("tx.outputs[{}].value", hidden_output_idx_name(&output.name)),
+                }));
             }
         }
+        // This entry creates spawned outputs, so it owns their value policy.
+        // Observed outputs remain the responsibility of their emitting contracts.
+        for spawn in &entry.spawns {
+            output_values.extend(spawn.outputs.iter().map(|output| OutputValueRef {
+                source: format!("{}.{}.{}.{}", spawn.name, word::OUTPUTS, output.name, word::VALUE),
+                lowered: format!("tx.outputs[{}].value", hidden_spawn_output_idx_name(&spawn.name, &output.name)),
+            }));
+        }
+        // A qualified spawn reference can contain an ordinary emit reference as
+        // a suffix. Lower and recognize the most specific spelling first.
+        output_values.sort_by(|left, right| right.source.len().cmp(&left.source.len()).then_with(|| left.source.cmp(&right.source)));
 
         let observed_input_state_refs = entry
             .observes
@@ -1863,7 +1811,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             materialized_selectors: BTreeSet::new(),
             materialized_route_locals: BTreeMap::new(),
             input_names,
-            output_names,
+            output_values,
             observed_input_state_refs,
             observed_output_fields,
             validated_spawns: BTreeSet::new(),
@@ -1884,7 +1832,27 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                 );
             }
         }
+        self.validate_output_value_refs()?;
         Ok(LoweredEntryBody { sil: out })
+    }
+
+    fn validate_output_value_refs(&self) -> Result<()> {
+        let missing = self
+            .output_values
+            .iter()
+            .filter(|value| count_qualified_ref(&self.tokens, &value.source) == 0)
+            .map(|value| value.source.as_str())
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let missing_values = missing.iter().map(|value| format!("`{value}`")).collect::<Vec<_>>().join(", ");
+        let declarations = missing.iter().map(|value| format!("`{}({value});`", word::UNRESTRICTED)).collect::<Vec<_>>().join(", ");
+        let noun = if missing.len() == 1 { "output value" } else { "output values" };
+        Err(self.error(format!(
+            "entry `{}::{}` must reference {noun} {missing_values}; if intentionally unrestricted, add {declarations}",
+            self.actor.name, self.entry.name,
+        )))
     }
 
     fn lower_statements(&mut self, out: &mut String, indent: usize, end: Option<char>) -> Result<()> {
@@ -1981,6 +1949,11 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             return Ok(());
         }
 
+        if let Some(value) = parse_unrestricted_output_value(&statement) {
+            self.validate_unrestricted_output_value(value)?;
+            return Ok(());
+        }
+
         if let Some(require_expr) = parse_require_statement(&statement) {
             for covenant_id in co_spent_covenant_ids(require_expr, &self.source_types)? {
                 push_indent(out, indent);
@@ -1994,6 +1967,17 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         Ok(())
     }
 
+    fn validate_unrestricted_output_value(&self, value: &str) -> Result<()> {
+        let value = value.trim();
+        if !self.output_values.iter().any(|output| output.source == value) {
+            return Err(self.error(format!(
+                "`{}(...)` expects exactly one current emit or spawn output value; `{value}` is not one",
+                word::UNRESTRICTED,
+            )));
+        }
+        Ok(())
+    }
+
     fn single_route_target_for_state_local(
         &self,
         source_ty: &str,
@@ -2002,13 +1986,23 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         lowered_ty: &str,
     ) -> Result<Option<String>> {
         // A route-neutral state object used only by one concrete route can
-        // receive that target layout at its declaration point. Counting exact
-        // identifier tokens keeps the optimization deliberately local: any
-        // read, rewrite, or second route preserves the route-neutral body.
+        // receive that target layout at its declaration point. Output handles
+        // and their value references are not state-local uses, even when they
+        // have the same source name. Any other read, rewrite, or second route
+        // preserves the route-neutral body.
+        let route_handle_uses = self.entry.routes.iter().filter(|route| route.output == name).count();
+        let output_value_ident_uses = self
+            .output_values
+            .iter()
+            .map(|output| {
+                count_qualified_ref(&self.tokens, &output.source) * output.source.split('.').filter(|segment| *segment == name).count()
+            })
+            .sum::<usize>();
         if self.conditional_depth != 0
             || lowered_ty != source_ty
             || split_state_object_literal(expr).is_none()
-            || self.tokens.iter().filter(|token| matches!(&token.kind, TokenKind::Ident(ident) if ident == name)).count() != 2
+            || self.tokens.iter().filter(|token| matches!(&token.kind, TokenKind::Ident(ident) if ident == name)).count()
+                != 2 + route_handle_uses + output_value_ident_uses
         {
             return Ok(None);
         }
@@ -2134,13 +2128,11 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     }
 
     fn parse_become_route(&mut self) -> Result<RouteCall> {
-        let start = self.current().span.start;
-        let first = self.expect_any_ident()?;
-        let (output, actor) = if self.consume_left_arrow() {
-            (Some(first), self.take_route_actor_expr()?)
-        } else {
-            (None, self.take_route_actor_expr_from(start)?)
-        };
+        let output = self.expect_any_ident()?;
+        if !self.consume_left_arrow() {
+            return Err(self.error("every `become` route must name its output with `output <- Actor(state)`"));
+        }
+        let actor = self.take_route_actor_expr()?;
         self.expect_symbol('(')?;
         let state = self.take_balanced_expr('(', ')')?;
         Ok(RouteCall { output, actor, state })
@@ -2209,20 +2201,13 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         group: &CovenantGroup<'a>,
         routes: Vec<RouteCall>,
     ) -> Result<()> {
-        let outputs_by_name = group
-            .outputs()
-            .iter()
-            .map(|output| (output.handle().expect("external covenant outputs are named"), output))
-            .collect::<BTreeMap<_, _>>();
+        let outputs_by_name = group.outputs().iter().map(|output| (output.handle(), output)).collect::<BTreeMap<_, _>>();
         let group_name = group.name().expect("current covenant is not lowered through an external output clause");
         let group_label = if group.observe().is_some() { "observe" } else { "spawn" };
-        let route_label = if group.observe().is_some() { "observed" } else { "spawned" };
         let mut seen = BTreeSet::new();
 
         for route in routes {
-            let Some(handle) = route.output.as_deref() else {
-                return Err(self.error(format!("{route_label} output route to `{}` is missing an output handle", route.actor)));
-            };
+            let handle = route.output.as_str();
             let Some(output) = outputs_by_name.get(handle).copied() else {
                 return Err(self.error(format!("{group_label} `{group_name}` has no output `{handle}`")));
             };
@@ -2241,7 +2226,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         }
 
         for output in group.outputs() {
-            let handle = output.handle().expect("external covenant outputs are named");
+            let handle = output.handle();
             if !seen.contains(handle) {
                 return Err(self.error(format!("{group_label} `{group_name}` does not validate output `{handle}`")));
             }
@@ -2518,7 +2503,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             return self.lower_selector_route(out, indent, route);
         }
         self.model.actor_state(&route.actor)?;
-        let output_idx = route.output.as_ref().map_or_else(hidden_next_output_idx_name, |output| hidden_output_idx_name(output));
+        let output_idx = hidden_output_idx_name(&route.output);
         let validation = route_validation_kind(self.actor, &route);
 
         if validation == RouteValidationKind::ExactScriptPublicKey {
@@ -2601,7 +2586,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             .get(&route.actor)
             .ok_or_else(|| ArgentError::new(format!("unknown actor handle `{}`", route.actor)))?
             .clone();
-        let output_idx = route.output.as_ref().map_or_else(hidden_next_output_idx_name, |output| hidden_output_idx_name(output));
+        let output_idx = hidden_output_idx_name(&route.output);
         let layout_actor = selector.variants.first().expect("validated actor selector has at least one variant");
         let transition = self
             .model
@@ -2946,8 +2931,18 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     }
 
     fn lower_refs(&self, expr: &str) -> Result<String> {
-        let mut out = expr.replace("self.value", "tx.inputs[this.activeInputIndex].value");
-        out = out.replace("self.covenant_id", "OpInputCovenantId(this.activeInputIndex)");
+        assert_eq!(word::SELF, "self");
+        assert_eq!(word::VALUE, "value");
+        assert_eq!(word::COVENANT_ID, "cov_id");
+        let mut out = replace_exact_identifier(expr, "self.value", "tx.inputs[this.activeInputIndex].value");
+        out = replace_exact_identifier(&out, "self.cov_id", "OpInputCovenantId(this.activeInputIndex)");
+        // TODO: Replace the raw qualified-reference substitutions below with a
+        // token-aware rewriter shared with `count_qualified_ref`. Each source
+        // should match an exact identifier-and-dot token path rooted at the
+        // expression level (in particular, not after another `.`), without
+        // matching longer identifiers or prefix-related fields. Replacements
+        // should be selected from the original token spans in one pass so that
+        // generated text is never reconsidered by a later substitution.
         for spec in state_expansion_witness_specs_for_actor(self.actor, self.model) {
             for field in &self.model.state(&spec.memory_state)?.fields {
                 let local = hidden_state_expansion_field_name(&spec, &field.name);
@@ -2962,11 +2957,11 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         for (source, lowered) in &self.observed_input_state_refs {
             out = out.replace(source, lowered);
         }
+        for output in &self.output_values {
+            out = out.replace(&output.source, &output.lowered);
+        }
         for name in &self.input_names {
             out = out.replace(&format!("{name}.value"), &format!("tx.inputs[{}].value", hidden_input_idx_name(name)));
-        }
-        for name in &self.output_names {
-            out = out.replace(&format!("{name}.value"), &format!("tx.outputs[{}].value", hidden_output_idx_name(name)));
         }
         lower_actor_enum_literals(&out, self.model)
     }
@@ -3208,8 +3203,7 @@ fn push_generated_statement_with_comment(out: &mut String, indent: usize, statem
 }
 
 fn generated_state_name(route: &RouteCall, state_ty: &str) -> String {
-    let base = route.output.as_deref().unwrap_or(route.actor.as_str());
-    format!("{RESERVED_GENERATED_PREFIX}state_{}_{}", to_snake(base), to_snake(state_ty))
+    format!("{RESERVED_GENERATED_PREFIX}state_{}_{}", to_snake(&route.output), to_snake(state_ty))
 }
 
 fn split_state_constructor(expr: &str) -> Option<(&str, &str)> {
@@ -4272,11 +4266,9 @@ fn emit_manifest(program: &Program, model: &Model<'_>) -> String {
                 if route_idx > 0 {
                     out.push_str(", ");
                 }
-                let output =
-                    route.output.as_ref().map(|output| format!("\"{}\"", json_escape(output))).unwrap_or_else(|| "null".to_string());
                 out.push_str(&format!(
-                    "{{ \"output\": {}, \"actor\": \"{}\", \"state\": \"{}\" }}",
-                    output,
+                    "{{ \"output\": \"{}\", \"actor\": \"{}\", \"state\": \"{}\" }}",
+                    json_escape(&route.output),
                     json_escape(&route.actor),
                     json_escape(&compact_expr(&route.state))
                 ));
@@ -5496,7 +5488,7 @@ fn route_output_handles(entry: &EntryModel<'_>) -> Vec<RouteOutputHandleArtifact
         .outputs()
         .iter()
         .map(|output| RouteOutputHandleArtifact {
-            name: output.handle().map(str::to_string),
+            name: output.handle().to_string(),
             auth_index: output.index(),
             actors: output.target().actors().map(str::to_string).collect(),
         })
@@ -5519,28 +5511,18 @@ fn sil_entry_artifact(actor: &ActorDecl, entry_index: usize, entry: &EntryDecl, 
 fn emit_spec_artifact(entry: &EntryModel<'_>) -> EmitArtifact {
     match &entry.source().emits {
         EmitSpec::None => EmitArtifact::None,
-        EmitSpec::One { .. } => {
-            let [output] = entry.current().outputs() else {
-                unreachable!("emits one has one modeled output");
-            };
-            let InteractionSource::CurrentOutput { declaration, output: None } = output.source() else {
-                unreachable!("emits one retains its emit spec");
-            };
-            debug_assert!(matches!(declaration, EmitSpec::One { .. }));
-            EmitArtifact::One { actors: output.target().actors().map(str::to_string).collect() }
-        }
         EmitSpec::Outputs(_) => EmitArtifact::Outputs {
             outputs: entry
                 .current()
                 .outputs()
                 .iter()
                 .map(|interaction| {
-                    let InteractionSource::CurrentOutput { declaration, output: Some(_) } = interaction.source() else {
+                    let InteractionSource::CurrentOutput(output) = interaction.source() else {
                         unreachable!("named emits output retains its source");
                     };
-                    debug_assert!(matches!(declaration, EmitSpec::Outputs(_)));
+                    debug_assert_eq!(interaction.handle(), output.name);
                     EmitOutputArtifact {
-                        name: interaction.handle().expect("named output has a modeled handle").to_string(),
+                        name: interaction.handle().to_string(),
                         auth_index: interaction.index(),
                         actors: interaction.target().actors().map(str::to_string).collect(),
                     }
@@ -5686,9 +5668,53 @@ fn co_spent_covenant_ids(expr: &str, source_types: &BTreeMap<String, String>) ->
 }
 
 fn parse_require_statement(statement: &str) -> Option<&str> {
-    let statement = statement.trim();
-    let inner = statement.strip_prefix(&format!("{}(", word::REQUIRE))?.strip_suffix(')')?;
-    Some(inner)
+    parse_call_statement(statement, word::REQUIRE)
+}
+
+fn parse_unrestricted_output_value(statement: &str) -> Option<&str> {
+    parse_call_statement(statement, word::UNRESTRICTED)
+}
+
+fn parse_call_statement<'a>(statement: &'a str, callee: &str) -> Option<&'a str> {
+    let tail = statement.trim().strip_prefix(callee)?;
+    tail.strip_prefix('(')?.strip_suffix(')').map(str::trim)
+}
+
+/// Replace an exact identifier reference without matching within a longer identifier.
+fn replace_exact_identifier(input: &str, source: &str, replacement: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut cursor = 0;
+    let bytes = input.as_bytes();
+    let identifier_char = |byte: &u8| byte.is_ascii_alphanumeric() || *byte == b'_';
+    for (start, _) in input.match_indices(source) {
+        let end = start + source.len();
+        let continues_previous = start.checked_sub(1).and_then(|previous| bytes.get(previous)).is_some_and(identifier_char);
+        let continues_next = bytes.get(end).is_some_and(identifier_char);
+        if continues_previous || continues_next {
+            continue;
+        }
+        out.push_str(&input[cursor..start]);
+        out.push_str(replacement);
+        cursor = end;
+    }
+    out.push_str(&input[cursor..]);
+    out
+}
+
+fn count_qualified_ref(tokens: &[Token], source: &str) -> usize {
+    let segments = source.split('.').collect::<Vec<_>>();
+    let token_count = segments.len() * 2 - 1;
+    tokens
+        .windows(token_count)
+        .enumerate()
+        .filter(|(start, window)| {
+            (*start == 0 || !matches!(&tokens[*start - 1].kind, TokenKind::Symbol('.')))
+                && segments.iter().enumerate().all(|(idx, segment)| {
+                    matches!(&window[idx * 2].kind, TokenKind::Ident(actual) if actual == segment)
+                        && (idx + 1 == segments.len() || matches!(&window[idx * 2 + 1].kind, TokenKind::Symbol('.')))
+                })
+        })
+        .count()
 }
 
 fn parse_co_spent_call(
@@ -5808,16 +5834,6 @@ fn lower_actor_enum_literals(expr: &str, model: &Model<'_>) -> Result<String> {
 fn emit_emit_spec_json(out: &mut String, emits: &EmitSpec) {
     match emits {
         EmitSpec::None => out.push_str("{ \"kind\": \"none\" }"),
-        EmitSpec::One { actors } => {
-            out.push_str("{ \"kind\": \"one\", \"actors\": [");
-            for (idx, actor) in actors.iter().enumerate() {
-                if idx > 0 {
-                    out.push_str(", ");
-                }
-                out.push_str(&format!("\"{}\"", json_escape(actor)));
-            }
-            out.push_str("] }");
-        }
         EmitSpec::Outputs(outputs) => {
             out.push_str("{ \"kind\": \"outputs\", \"outputs\": [");
             for (output_idx, output) in outputs.iter().enumerate() {
@@ -5864,6 +5880,16 @@ fn to_upper_camel(input: &str) -> String {
             chars.next().map_or_else(String::new, |first| first.to_ascii_uppercase().to_string() + chars.as_str())
         })
         .collect()
+}
+
+fn reject_reserved_function_identifier(name: &str) -> Result<()> {
+    if name == word::UNRESTRICTED {
+        return Err(ArgentError::new(format!(
+            "function identifier `{}` is reserved for output-value declarations",
+            word::UNRESTRICTED
+        )));
+    }
+    reject_reserved_identifier("function", name)
 }
 
 fn reject_reserved_identifier(context: &str, name: &str) -> Result<()> {
@@ -6512,10 +6538,6 @@ fn hidden_input_idx_name(input: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{input}_input_idx")
 }
 
-fn hidden_next_output_idx_name() -> String {
-    format!("{RESERVED_GENERATED_PREFIX}next_output_idx")
-}
-
 fn hidden_output_idx_name(output: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{output}_output_idx")
 }
@@ -6619,7 +6641,7 @@ mod tests {
     fn rejects_route_outside_named_output_union() {
         let mut program = test_program();
         program.modules[0].actors[0].entries[0].routes =
-            vec![RouteCall { output: Some("next".to_string()), actor: "Game".to_string(), state: "next_game".to_string() }];
+            vec![RouteCall { output: "next".to_string(), actor: "Game".to_string(), state: "next_game".to_string() }];
 
         let err = Model::from_program(&program).expect_err("route must be rejected");
         assert!(err.to_string().contains("routes output `next` to `Game`"), "unexpected error: {err}");
@@ -6633,7 +6655,7 @@ mod tests {
             actors: vec!["Player".to_string(), "Game".to_string()],
             auth_index: 0,
         }]);
-        let route = RouteCall { output: Some("next".to_string()), actor: "Game".to_string(), state: "next_game".to_string() };
+        let route = RouteCall { output: "next".to_string(), actor: "Game".to_string(), state: "next_game".to_string() };
         program.modules[0].actors[0].entries[0].routes = vec![route.clone()];
         program.modules[0].actors[0].entries[0].terminal_route_sets = vec![vec![route]];
 
@@ -6655,11 +6677,12 @@ mod tests {
             }
 
             actor Source owns SourceState {
-                entry choose_a() emits one A | B {
+                entry choose_a() emits next: A | B {
+                    unrestricted(next.value);
                     TargetState next = {
                         nonce: nonce,
                     };
-                    become A(next);
+                    become next <- A(next);
                 }
             }
 
@@ -6727,7 +6750,7 @@ mod tests {
             EmitOutput { name: "a".to_string(), actors: vec!["Player".to_string()], auth_index: 0 },
             EmitOutput { name: "b".to_string(), actors: vec!["Player".to_string()], auth_index: 1 },
         ]);
-        let route = RouteCall { output: Some("a".to_string()), actor: "Player".to_string(), state: "next_a".to_string() };
+        let route = RouteCall { output: "a".to_string(), actor: "Player".to_string(), state: "next_a".to_string() };
         program.modules[0].actors[0].entries[0].routes = vec![route.clone()];
         program.modules[0].actors[0].entries[0].terminal_route_sets = vec![vec![route]];
 
@@ -6747,6 +6770,8 @@ mod tests {
                     a: Foo,
                     b: Foo,
                 } {
+                    unrestricted(a.value);
+                    unrestricted(b.value);
                     become a <- Foo(next_a);
                 }
             }
@@ -6776,6 +6801,7 @@ mod tests {
                 entry bump() emits {
                     next: Foo at auth[0],
                 } {
+                    unrestricted(next.value);
                     FooState next_state = {
                         amount: amount + 1,
                     };
@@ -6797,8 +6823,8 @@ mod tests {
     #[test]
     fn rejects_duplicate_named_output_coverage() {
         let mut program = test_program();
-        let first = RouteCall { output: Some("next".to_string()), actor: "Player".to_string(), state: "next_player".to_string() };
-        let second = RouteCall { output: Some("next".to_string()), actor: "Player".to_string(), state: "other_player".to_string() };
+        let first = RouteCall { output: "next".to_string(), actor: "Player".to_string(), state: "next_player".to_string() };
+        let second = RouteCall { output: "next".to_string(), actor: "Player".to_string(), state: "other_player".to_string() };
         program.modules[0].actors[0].entries[0].routes = vec![first.clone(), second.clone()];
         program.modules[0].actors[0].entries[0].terminal_route_sets = vec![vec![first, second]];
 
@@ -6813,7 +6839,7 @@ mod tests {
         program.modules[0].actors[0].entries[0].consumes.push(ConsumeDecl { name: "leader".to_string(), actor: "Player".to_string() });
         program.modules[0].actors[0].entries[0].emits = EmitSpec::None;
         program.modules[0].actors[0].entries[0].routes =
-            vec![RouteCall { output: Some("next".to_string()), actor: "Player".to_string(), state: "next_player".to_string() }];
+            vec![RouteCall { output: "next".to_string(), actor: "Player".to_string(), state: "next_player".to_string() }];
 
         let err = Model::from_program(&program).expect_err("delegate become must be rejected");
         assert!(err.to_string().contains("cannot use `become`"), "unexpected error: {err}");
@@ -6857,15 +6883,17 @@ mod tests {
             }
 
             actor Leader owns LeaderState {
-                entry standalone() emits one Leader {
-                    become Leader(self.state);
+                entry standalone() emits next: Leader {
+                    unrestricted(next.value);
+                    become next <- Leader(self.state);
                 }
 
                 entry coordinated() consumes {
                     worker: Worker,
-                } emits one Leader {
+                } emits next: Leader {
+                    unrestricted(next.value);
                     require(worker.value >= 0);
-                    become Leader(self.state);
+                    become next <- Leader(self.state);
                 }
             }
 
@@ -6878,8 +6906,9 @@ mod tests {
             }
 
             actor Unrelated owns UnrelatedState {
-                entry standalone() emits one Unrelated {
-                    become Unrelated(self.state);
+                entry standalone() emits next: Unrelated {
+                    unrestricted(next.value);
+                    become next <- Unrelated(self.state);
                 }
             }
 
@@ -6968,6 +6997,23 @@ mod tests {
 
         let err = Model::from_program(&program).expect_err("duplicate function declaration must be rejected");
         assert_duplicate_top_level_error(&err, "fn", "helper");
+    }
+
+    #[test]
+    fn rejects_function_named_unrestricted() {
+        let mut program = test_program();
+        program.modules[0].functions.push(FunctionDecl {
+            name: word::UNRESTRICTED.to_string(),
+            params: Vec::new(),
+            return_ty: TypeRef::new("int"),
+            body: "0".to_string(),
+        });
+
+        let err = Model::from_program(&program).expect_err("the output-value declaration must not be shadowed");
+        assert!(
+            err.to_string().contains("function identifier `unrestricted` is reserved for output-value declarations"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -7089,7 +7135,7 @@ mod tests {
         let mut program = test_program();
         program.modules[0].actors[0].entries[0].emits =
             EmitSpec::Outputs(vec![EmitOutput { name: "gen__next".to_string(), actors: vec!["Player".to_string()], auth_index: 0 }]);
-        let route = RouteCall { output: Some("gen__next".to_string()), actor: "Player".to_string(), state: "next_player".to_string() };
+        let route = RouteCall { output: "gen__next".to_string(), actor: "Player".to_string(), state: "next_player".to_string() };
         program.modules[0].actors[0].entries[0].routes = vec![route.clone()];
         program.modules[0].actors[0].entries[0].terminal_route_sets = vec![vec![route]];
 
@@ -7140,9 +7186,9 @@ mod tests {
             state FooState {}
 
             actor Foo owns FooState {
-                entry step() emits one Foo {
+                entry step() emits next: Foo {
                     require(next.value == self.value);
-                    become Foo(self.state);
+                    become next <- Foo(self.state);
                 }
             }
 
@@ -7175,6 +7221,343 @@ mod tests {
     }
 
     #[test]
+    fn rejects_emit_output_without_value_policy() {
+        let err = emit_inline_error(
+            r#"
+            state FooState {}
+
+            actor Foo owns FooState {
+                entry step() emits next: Foo {
+                    become next <- Foo(self.state);
+                }
+            }
+
+            app Test {
+                actor Foo;
+            }
+            "#,
+        );
+
+        let message = err.to_string();
+        assert!(message.contains("must reference output value `next.value`"), "unexpected error: {err}");
+        assert!(message.contains("if intentionally unrestricted, add `unrestricted(next.value);`"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn commented_output_value_does_not_satisfy_the_reference_check() {
+        let err = emit_inline_error(
+            r#"
+            state FooState {}
+
+            actor Foo owns FooState {
+                entry step() emits next: Foo {
+                    require(1 == 1 /* next.value */);
+                    become next <- Foo(self.state);
+                }
+            }
+
+            app Test {
+                actor Foo;
+            }
+            "#,
+        );
+
+        assert!(err.to_string().contains("must reference output value `next.value`"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn output_value_reference_anywhere_in_the_entry_satisfies_the_check() {
+        let source = r#"
+            state FooState {}
+
+            actor Foo owns FooState {
+                entry step() emits next: Foo {
+                    int output_value = next.value;
+                    become next <- Foo(self.state);
+                }
+            }
+
+            app Test {
+                actor Foo;
+            }
+        "#;
+        let path = PathBuf::from("test.ag");
+        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let program = Program { root: path, modules: vec![module] };
+        let model = Model::from_program(&program).expect("model validates");
+        let sil = emit_actor(model.actor("Foo").expect("actor exists"), &model).expect("actor emits");
+
+        assert!(sil.contains("int output_value = tx.outputs[gen__next_output_idx].value;"), "{sil}");
+    }
+
+    #[test]
+    fn unrestricted_output_value_policy_is_compile_time_only() {
+        let source = r#"
+            state FooState {}
+
+            actor Foo owns FooState {
+                entry allow() emits next: Foo {
+                    unrestricted(next.value);
+                    become next <- Foo(self.state);
+                }
+            }
+
+            app Test {
+                actor Foo;
+            }
+        "#;
+        let path = PathBuf::from("test.ag");
+        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let program = Program { root: path, modules: vec![module] };
+        let model = Model::from_program(&program).expect("model validates");
+        let sil = emit_actor(model.actor("Foo").expect("actor exists"), &model).expect("actor emits");
+
+        assert!(!sil.contains(word::UNRESTRICTED), "{sil}");
+    }
+
+    #[test]
+    fn unrestricted_output_value_policy_requires_a_current_output_handle() {
+        let err = emit_inline_error(
+            r#"
+            state FooState {}
+
+            actor Foo owns FooState {
+                entry step() emits next: Foo {
+                    unrestricted(self.value);
+                    become next <- Foo(self.state);
+                }
+            }
+
+            app Test {
+                actor Foo;
+            }
+            "#,
+        );
+
+        assert!(
+            err.to_string()
+                .contains("`unrestricted(...)` expects exactly one current emit or spawn output value; `self.value` is not one"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn spawn_output_value_can_be_constrained_by_qualified_handle() {
+        let source = r#"
+            state LauncherState {}
+            state ChildState {}
+
+            actor Launcher owns LauncherState {
+                entry launch()
+                spawns children by children_id {
+                    outputs {
+                        child: Child,
+                    }
+                }
+                emits next: Launcher {
+                    unrestricted(next.value);
+                    require(children.outputs.child.value > 0);
+                    require children.outputs become {
+                        child <- Child(ChildState {}),
+                    };
+                    become next <- Launcher(self.state);
+                }
+            }
+
+            actor Child owns ChildState {}
+
+            app Test {
+                actor Launcher;
+                actor Child;
+            }
+        "#;
+        let path = PathBuf::from("test.ag");
+        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let program = Program { root: path, modules: vec![module] };
+        let model = Model::from_program(&program).expect("model validates");
+        let sil = emit_actor(model.actor("Launcher").expect("actor exists"), &model).expect("actor emits");
+
+        assert!(sil.contains("require(tx.outputs[gen__children_child_output_idx].value > 0);"), "{sil}");
+    }
+
+    #[test]
+    fn rejects_spawn_output_without_value_policy() {
+        let err = emit_inline_error(
+            r#"
+            state LauncherState {}
+            state ChildState {}
+
+            actor Launcher owns LauncherState {
+                entry launch()
+                spawns children by children_id {
+                    outputs {
+                        child: Child,
+                    }
+                }
+                emits next: Launcher {
+                    unrestricted(next.value);
+                    require children.outputs become {
+                        child <- Child(ChildState {}),
+                    };
+                    become next <- Launcher(self.state);
+                }
+            }
+
+            actor Child owns ChildState {}
+
+            app Test {
+                actor Launcher;
+                actor Child;
+            }
+            "#,
+        );
+
+        assert!(err.to_string().contains("must reference output value `children.outputs.child.value`"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn qualified_spawn_value_does_not_cover_same_named_emit_value() {
+        let err = emit_inline_error(
+            r#"
+            state LauncherState {}
+            state ChildState {}
+
+            actor Launcher owns LauncherState {
+                entry launch()
+                spawns children by children_id {
+                    outputs {
+                        child: Child,
+                    }
+                }
+                emits child: Launcher {
+                    require(children.outputs.child.value > 0);
+                    require children.outputs become {
+                        child <- Child(ChildState {}),
+                    };
+                    become child <- Launcher(self.state);
+                }
+            }
+
+            actor Child owns ChildState {}
+
+            app Test {
+                actor Launcher;
+                actor Child;
+            }
+            "#,
+        );
+
+        let message = err.to_string();
+        assert!(message.contains("must reference output value `child.value`"), "unexpected error: {err}");
+        assert!(!message.contains("`children.outputs.child.value`,"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn observed_output_value_is_the_emitter_contracts_responsibility() {
+        let source = r#"
+            state ObserverState {}
+            state AssetState {}
+
+            actor Observer owns ObserverState {
+                entry follow(cov_id remote_id)
+                observes remote by remote_id {
+                    outputs {
+                        asset: Asset,
+                    }
+                }
+                emits none {
+                    require remote.outputs become {
+                        asset <- Asset(AssetState {}),
+                    };
+                }
+            }
+
+            actor Asset owns AssetState {}
+
+            app Test {
+                actor Observer;
+                actor Asset;
+            }
+        "#;
+        let path = PathBuf::from("test.ag");
+        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let program = Program { root: path, modules: vec![module] };
+        let model = Model::from_program(&program).expect("model validates");
+
+        emit_actor(model.actor("Observer").expect("actor exists"), &model).expect("observed output needs no local value policy");
+    }
+
+    #[test]
+    fn self_cov_id_lowers_to_the_active_input_covenant_id() {
+        let source = r#"
+            state FooState {}
+
+            actor Foo owns FooState {
+                entry step() emits next: Foo {
+                    unrestricted(next.value);
+                    require(self.cov_id == self.cov_id);
+                    become next <- Foo(self.state);
+                }
+            }
+
+            app Test {
+                actor Foo;
+            }
+        "#;
+        let path = PathBuf::from("test.ag");
+        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let program = Program { root: path, modules: vec![module] };
+        let model = Model::from_program(&program).expect("model validates");
+        let sil = emit_actor(model.actor("Foo").expect("actor exists"), &model).expect("actor emits");
+
+        assert!(
+            sil.contains("require(OpInputCovenantId(this.activeInputIndex) == OpInputCovenantId(this.activeInputIndex));"),
+            "{sil}"
+        );
+    }
+
+    #[test]
+    fn self_member_prefixes_remain_state_field_refs() {
+        let source = r#"
+            state FooState {
+                int value_note;
+                int cov_id_note;
+            }
+            state PeerState {}
+
+            actor Foo owns FooState {
+                entry step()
+                consumes {
+                    foo_self: Peer,
+                }
+                emits next: Foo {
+                    unrestricted(next.value);
+                    require(self.value_note == value_note);
+                    require(self.cov_id_note == cov_id_note);
+                    require(foo_self.value >= 0);
+                    become next <- Foo(self.state);
+                }
+            }
+
+            actor Peer owns PeerState {}
+
+            app Test {
+                actor Foo;
+                actor Peer;
+            }
+        "#;
+        let path = PathBuf::from("test.ag");
+        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let program = Program { root: path, modules: vec![module] };
+        let model = Model::from_program(&program).expect("model validates");
+        let sil = emit_actor(model.actor("Foo").expect("actor exists"), &model).expect("actor emits");
+
+        assert!(sil.contains("require(value_note == value_note);"), "{sil}");
+        assert!(sil.contains("require(cov_id_note == cov_id_note);"), "{sil}");
+        assert!(sil.contains("require(tx.inputs[gen__foo_self_input_idx].value >= 0);"), "{sil}");
+    }
+
+    #[test]
     fn self_transition_uses_same_template_shortcut() {
         let module = crate::parser::parse_module(
             PathBuf::from("test.ag"),
@@ -7184,11 +7567,12 @@ mod tests {
             }
 
             actor Foo owns FooState {
-                entry bump(int amount) emits one Foo {
+                entry bump(int amount) emits next: Foo {
+                    unrestricted(next.value);
                     State next_state = {
                         count: count + amount,
                     };
-                    become Foo(next_state);
+                    become next <- Foo(next_state);
                 }
             }
 
@@ -7236,20 +7620,22 @@ mod tests {
             }
 
             actor Source owns SourceState {
-                entry finish() emits one Terminal {
+                entry finish() emits next: Terminal {
+                    unrestricted(next.value);
                     TerminalState next = {
                         count: count + 1,
                     };
-                    become Terminal(next);
+                    become next <- Terminal(next);
                 }
             }
 
             actor Terminal owns TerminalState {
-                entry step() emits one Terminal {
+                entry step() emits next: Terminal {
+                    unrestricted(next.value);
                     TerminalState next = {
                         count: count + 1,
                     };
-                    become Terminal(next);
+                    become next <- Terminal(next);
                 }
             }
 
@@ -7304,9 +7690,9 @@ mod tests {
             }
 
             actor Foo owns FooState {
-                entry step(int amount) emits one Foo {
+                entry step(int amount) emits next: Foo {
                     require(next.value == self.value);
-                    become Foo(self.state);
+                    become next <- Foo(self.state);
                 }
             }
 
@@ -7396,7 +7782,8 @@ mod tests {
         assert_eq!(entry.abi.entry, "step");
         assert!(entry.hidden_params.is_empty(), "exact same-state continuation should not expose template witnesses");
         assert!(entry.witnesses.is_empty(), "exact same-state continuation should not expose route witnesses");
-        assert!(matches!(entry.emits, EmitArtifact::One { .. }));
+        assert!(matches!(&entry.emits, EmitArtifact::Outputs { outputs } if outputs.len() == 1 && outputs[0].name == "next"));
+        assert_eq!(entry.routes[0].output, "next");
         assert_eq!(entry.routes[0].actor, "Foo");
         assert_eq!(entry.routes[0].state_expr, "self.state");
         assert_eq!(
@@ -7404,7 +7791,7 @@ mod tests {
             Some(("Foo", Some(0)))
         );
         assert_eq!(entry.route_plan.outputs[0].auth_index, 0);
-        assert_eq!(entry.route_plan.outputs[0].name, None);
+        assert_eq!(entry.route_plan.outputs[0].name, "next");
 
         let sil_entry = sil_contract.entry(&entry.abi.entry).expect("outer entry should point at Sil ABI entry");
         assert_eq!(sil_entry.selector, None);
@@ -7442,8 +7829,9 @@ mod tests {
             }
 
             actor Holder owns HolderState {
-                entry hold() emits one Holder {
-                    become Holder(self.state);
+                entry hold() emits next: Holder {
+                    unrestricted(next.value);
+                    become next <- Holder(self.state);
                 }
             }
 
@@ -7648,14 +8036,15 @@ mod tests {
             }
 
             actor Forager owns ForagerState {
-                entry step() emits one Forager {
+                entry step() emits next: Forager {
+                    unrestricted(next.value);
                     ForagerState next_state = {
                         strategy: {
                             hunger: strategy.hunger + 1,
                         },
                     };
 
-                    become Forager(next_state);
+                    become next <- Forager(next_state);
                 }
             }
 
@@ -7734,6 +8123,7 @@ mod tests {
                 emits {
                     controller: Minter,
                 } {
+                    unrestricted(controller.value);
                     MinterState next_minter = {
                         kcc20_covid: kcc20_covid,
                         amount: amount - minted_amount,
@@ -7993,6 +8383,7 @@ mod tests {
                     }
                 }
                 emits none {
+                    unrestricted(pair.outputs.next_pair.value);
                     require(1 == 1);
                 }
             }
@@ -8375,12 +8766,13 @@ mod tests {
                 consumes {
                     other: Counter,
                 }
-                emits one Counter {
+                emits next: Counter {
+                    unrestricted(next.value);
                     CounterState next = {
                         count: count + other.count,
                     };
 
-                    become Counter(next);
+                    become next <- Counter(next);
                 }
             }
 
@@ -8447,15 +8839,17 @@ mod tests {
             state TargetState {}
 
             actor Current owns SharedState {
-                entry step() emits one Current {
-                    become Current(self.state);
+                entry step() emits next: Current {
+                    unrestricted(next.value);
+                    become next <- Current(self.state);
                 }
             }
 
             actor Outside owns SharedState {
-                entry step() emits one Target {
+                entry step() emits next: Target {
+                    unrestricted(next.value);
                     TargetState next = {};
-                    become Target(next);
+                    become next <- Target(next);
                 }
             }
 
@@ -8873,56 +9267,64 @@ mod tests {
             }
 
             actor Source owns SourceState {
-                entry start() emits one HubA {
+                entry start() emits next: HubA {
+                    unrestricted(next.value);
                     SharedState next = { amount: amount + 1 };
-                    become HubA(next);
+                    become next <- HubA(next);
                 }
             }
 
             actor HubA owns SharedState {
-                entry advance() emits one A1 {
+                entry advance() emits next: A1 {
+                    unrestricted(next.value);
                     SharedState next = { amount: amount + 1 };
-                    become A1(next);
+                    become next <- A1(next);
                 }
             }
 
             actor A1 owns SharedState {
-                entry advance() emits one A2 {
+                entry advance() emits next: A2 {
+                    unrestricted(next.value);
                     SharedState next = { amount: amount + 1 };
-                    become A2(next);
+                    become next <- A2(next);
                 }
             }
 
             actor A2 owns SharedState {
-                entry cross() emits one HubB {
+                entry cross() emits next: HubB {
+                    unrestricted(next.value);
                     SharedState next = { amount: amount + 1 };
-                    become HubB(next);
+                    become next <- HubB(next);
                 }
             }
 
             actor HubB owns SharedState {
-                entry advance() emits one B1 {
+                entry advance() emits next: B1 {
+                    unrestricted(next.value);
                     SharedState next = { amount: amount + 1 };
-                    become B1(next);
+                    become next <- B1(next);
                 }
 
-                entry rewind() emits one A1 {
+                entry rewind() emits next: A1 {
+                    unrestricted(next.value);
                     SharedState next = { amount: amount + 1 };
-                    become A1(next);
+                    become next <- A1(next);
                 }
             }
 
             actor B1 owns SharedState {
-                entry advance() emits one B2 {
+                entry advance() emits next: B2 {
+                    unrestricted(next.value);
                     SharedState next = { amount: amount + 1 };
-                    become B2(next);
+                    become next <- B2(next);
                 }
             }
 
             actor B2 owns SharedState {
-                entry finish() emits one Tail {
+                entry finish() emits next: Tail {
+                    unrestricted(next.value);
                     TailState next = { amount: amount + 1 };
-                    become Tail(next);
+                    become next <- Tail(next);
                 }
             }
 
@@ -9053,22 +9455,24 @@ mod tests {
             }
 
             actor A owns SharedState {
-                entry leave() emits one Middle {
+                entry leave() emits next: Middle {
+                    unrestricted(next.value);
                     MiddleState next_middle = {
                         amount: amount,
                     };
-                    become Middle(next_middle);
+                    become next <- Middle(next_middle);
                 }
             }
 
             actor B owns SharedState {}
 
             actor Middle owns MiddleState {
-                entry leave() emits one Tail {
+                entry leave() emits next: Tail {
+                    unrestricted(next.value);
                     TailState next_tail = {
                         amount: amount,
                     };
-                    become Tail(next_tail);
+                    become next <- Tail(next_tail);
                 }
             }
 
@@ -9157,29 +9561,32 @@ mod tests {
             }
 
             actor Source owns SourceState {
-                entry send() emits one A {
+                entry send() emits next: A {
+                    unrestricted(next.value);
                     SharedState next = {
                         amount: amount,
                     };
-                    become A(next);
+                    become next <- A(next);
                 }
             }
 
             actor A owns SharedState {
-                entry leave() emits one TailA {
+                entry leave() emits next: TailA {
+                    unrestricted(next.value);
                     TailAState next = {
                         amount: amount,
                     };
-                    become TailA(next);
+                    become next <- TailA(next);
                 }
             }
 
             actor B owns SharedState {
-                entry leave() emits one TailB {
+                entry leave() emits next: TailB {
+                    unrestricted(next.value);
                     TailBState next = {
                         amount: amount,
                     };
-                    become TailB(next);
+                    become next <- TailB(next);
                 }
             }
 
@@ -9307,7 +9714,8 @@ mod tests {
                         mux: Mux,
                     }
                 }
-                emits one Observer {
+                emits next: Observer {
+                    unrestricted(next.value);
                     BoardState board = { turn: 0 };
                     require game.outputs become {
                         mux <- Mux(board),
@@ -9316,28 +9724,31 @@ mod tests {
                         game_id: game_id,
                         steps: steps + 1,
                     };
-                    become Observer(next);
+                    become next <- Observer(next);
                 }
             }
 
             actor Mux owns BoardState {
-                entry move() emits one Pawn {
+                entry move() emits next: Pawn {
+                    unrestricted(next.value);
                     BoardState next = { turn: turn + 1 };
-                    become Pawn(next);
+                    become next <- Pawn(next);
                 }
             }
 
             actor Pawn owns BoardState {
-                entry finish() emits one Mux {
+                entry finish() emits next: Mux {
+                    unrestricted(next.value);
                     BoardState next = { turn: turn + 1 };
-                    become Mux(next);
+                    become next <- Mux(next);
                 }
             }
 
             actor Knight owns BoardState {
-                entry finish() emits one Mux {
+                entry finish() emits next: Mux {
+                    unrestricted(next.value);
                     BoardState next = { turn: turn + 1 };
-                    become Mux(next);
+                    become next <- Mux(next);
                 }
             }
 
@@ -9381,9 +9792,10 @@ mod tests {
             }
 
             actor Foreign owns ForeignState {
-                entry route() emits one Target {
+                entry route() emits next: Target {
+                    unrestricted(next.value);
                     TargetState next = { amount: amount };
-                    become Target(next);
+                    become next <- Target(next);
                 }
             }
 
@@ -9530,9 +9942,10 @@ mod tests {
                         source: Foreign,
                     }
                 }
-                emits one Foreign {
+                emits next: Foreign {
+                    unrestricted(next.value);
                     ForeignState next = remote.inputs.source.state;
-                    become Foreign(next);
+                    become next <- Foreign(next);
                 }
             }
 
@@ -9587,20 +10000,22 @@ mod tests {
             }
 
             actor Source owns SourceState {
-                entry enter_pawn() emits one Pawn {
+                entry enter_pawn() emits next: Pawn {
+                    unrestricted(next.value);
                     BoardState next = {
                         ply: nonce,
                     };
-                    become Pawn(next);
+                    become next <- Pawn(next);
                 }
             }
 
             actor Mux owns BoardState {
-                entry choose(MoveActor target) emits one MoveActor {
+                entry choose(MoveActor target) emits next: MoveActor {
+                    unrestricted(next.value);
                     BoardState next = {
                         ply: ply + 1,
                     };
-                    become target(next);
+                    become next <- target(next);
                 }
             }
 
@@ -9619,22 +10034,24 @@ mod tests {
             actor Consumer owns ConsumerState {
                 entry verify() consumes {
                     pawn: Pawn,
-                } emits one Archive {
+                } emits next: Archive {
+                    unrestricted(next.value);
                     require(pawn.ply >= 0);
 
                     ArchiveState next = {
                         nonce: nonce + 1,
                     };
-                    become Archive(next);
+                    become next <- Archive(next);
                 }
             }
 
             actor Archive owns ArchiveState {
-                entry reopen() emits one Pawn {
+                entry reopen() emits next: Pawn {
+                    unrestricted(next.value);
                     BoardState next = {
                         ply: nonce,
                     };
-                    become Pawn(next);
+                    become next <- Pawn(next);
                 }
             }
 
@@ -9684,11 +10101,12 @@ mod tests {
         let source = toy_chess_source().replace(
             "            actor Mux owns BoardState {\n",
             r#"            actor Mux owns BoardState {
-                entry return_to_player() emits one Player {
+                entry return_to_player() emits next: Player {
+                    unrestricted(next.value);
                     PlayerState next_player = {
                         nonce: ply,
                     };
-                    become Player(next_player);
+                    become next <- Player(next_player);
                 }
 
 "#,
@@ -9736,7 +10154,7 @@ mod tests {
 
         assert!(choice_sil.contains("struct BoardState {"), "{choice_sil}");
         assert!(choice_sil.contains("BoardState next_board = {"), "{choice_sil}");
-        assert!(choice_sil.contains("Gen__MuxState gen__state_mux_gen__mux_state = {"), "{choice_sil}");
+        assert!(choice_sil.contains("Gen__MuxState gen__state_next_gen__mux_state = {"), "{choice_sil}");
         assert!(
             choice_sil
                 .contains("validateOutputStateWithTemplate(\n                gen__next_output_idx,\n                next_board,"),
@@ -9980,45 +10398,50 @@ mod tests {
             }
 
             actor Mux owns BoardState {
-                entry choose(MoveActor target) emits one MoveActor {
+                entry choose(MoveActor target) emits next: MoveActor {
+                    unrestricted(next.value);
                     BoardState next_board = {
                         ply: ply + 1,
                     };
-                    become target(next_board);
+                    become next <- target(next_board);
                 }
 
-                entry finish() emits one Receipt {
+                entry finish() emits next: Receipt {
+                    unrestricted(next.value);
                     ReceiptState receipt = {
                         final_ply: ply,
                     };
-                    become Receipt(receipt);
+                    become next <- Receipt(receipt);
                 }
             }
 
             actor Pawn owns BoardState {
-                entry back_to_mux() emits one Mux {
+                entry back_to_mux() emits next: Mux {
+                    unrestricted(next.value);
                     BoardState next_board = {
                         ply: ply + 1,
                     };
-                    become Mux(next_board);
+                    become next <- Mux(next_board);
                 }
             }
 
             actor Knight owns BoardState {
-                entry back_to_mux() emits one Mux {
+                entry back_to_mux() emits next: Mux {
+                    unrestricted(next.value);
                     BoardState next_board = {
                         ply: ply + 1,
                     };
-                    become Mux(next_board);
+                    become next <- Mux(next_board);
                 }
             }
 
             actor Receipt owns ReceiptState {
-                entry resume() emits one Mux {
+                entry resume() emits next: Mux {
+                    unrestricted(next.value);
                     BoardState next_board = {
                         ply: final_ply + 1,
                     };
-                    become Mux(next_board);
+                    become next <- Mux(next_board);
                 }
             }
 
@@ -10099,13 +10522,14 @@ mod tests {
             }
 
             actor Mux owns BoardState {
-                entry choose_knight_const() emits one MoveActor {
+                entry choose_knight_const() emits next: MoveActor {
+                    unrestricted(next.value);
                     BoardState next_board = {
                         ply: ply + 1,
                     };
 
                     actor_type<BoardState> target = MoveActor::Knight;
-                    become target(next_board);
+                    become next <- target(next_board);
                 }
             }
 
@@ -10194,20 +10618,22 @@ mod tests {
             }
 
             actor Mux owns BoardState {
-                entry choose_first(FirstMove target) emits one FirstMove {
+                entry choose_first(FirstMove target) emits next: FirstMove {
+                    unrestricted(next.value);
                     BoardState next_board = {
                         selector: selector,
                         ply: ply + 1,
                     };
-                    become target(next_board);
+                    become next <- target(next_board);
                 }
 
-                entry choose_second(SecondMove target) emits one SecondMove {
+                entry choose_second(SecondMove target) emits next: SecondMove {
+                    unrestricted(next.value);
                     BoardState next_board = {
                         selector: selector,
                         ply: ply + 1,
                     };
-                    become target(next_board);
+                    become next <- target(next_board);
                 }
             }
 
@@ -10242,20 +10668,22 @@ mod tests {
             }
 
             actor Mux owns BoardState {
-                entry choose(MoveActor target) emits one MoveActor {
+                entry choose(MoveActor target) emits next: MoveActor {
+                    unrestricted(next.value);
                     BoardState next_board = {
                         selector: selector,
                         ply: ply + 1,
                     };
-                    become target(next_board);
+                    become next <- target(next_board);
                 }
 
-                entry visit_bishop() emits one Bishop {
+                entry visit_bishop() emits next: Bishop {
+                    unrestricted(next.value);
                     BoardState next_board = {
                         selector: selector,
                         ply: ply + 1,
                     };
-                    become Bishop(next_board);
+                    become next <- Bishop(next_board);
                 }
             }
 
@@ -10301,11 +10729,12 @@ mod tests {
             }
 
             actor Challenge owns SharedState {
-                entry choose(NextActor target) emits one NextActor {
+                entry choose(NextActor target) emits next: NextActor {
+                    unrestricted(next.value);
                     SharedState next = {
                         amount: amount + 1,
                     };
-                    become target(next);
+                    become next <- target(next);
                 }
             }
 
@@ -10361,22 +10790,24 @@ mod tests {
             }
 
             actor A owns BoardState {
-                entry to_b() emits one B {
+                entry to_b() emits next: B {
+                    unrestricted(next.value);
                     BoardState next = {
                         n: n + 1,
                     };
 
-                    become B(next);
+                    become next <- B(next);
                 }
             }
 
             actor B owns BoardState {
-                entry to_a() emits one A {
+                entry to_a() emits next: A {
+                    unrestricted(next.value);
                     BoardState next = {
                         n: n + 1,
                     };
 
-                    become A(next);
+                    become next <- A(next);
                 }
             }
 
@@ -10415,62 +10846,68 @@ mod tests {
             }
 
             actor A owns BoardState {
-                entry to_b() emits one B {
+                entry to_b() emits next: B {
+                    unrestricted(next.value);
                     BoardState next = {
                         n: n + 1,
                     };
 
-                    become B(next);
+                    become next <- B(next);
                 }
             }
 
             actor B owns BoardState {
-                entry to_c() emits one C {
+                entry to_c() emits next: C {
+                    unrestricted(next.value);
                     BoardState next = {
                         n: n + 1,
                     };
 
-                    become C(next);
+                    become next <- C(next);
                 }
             }
 
             actor C owns BoardState {
-                entry to_a() emits one A {
+                entry to_a() emits next: A {
+                    unrestricted(next.value);
                     BoardState next = {
                         n: n + 1,
                     };
 
-                    become A(next);
+                    become next <- A(next);
                 }
             }
 
             actor D owns BoardState {
-                entry to_e() emits one E {
+                entry to_e() emits next: E {
+                    unrestricted(next.value);
                     BoardState next = {
                         n: n + 1,
                     };
 
-                    become E(next);
+                    become next <- E(next);
                 }
             }
 
             actor E owns BoardState {
-                entry to_f() emits one F {
+                entry to_f() emits next: F {
+                    unrestricted(next.value);
                     BoardState next = {
                         n: n + 1,
                     };
 
-                    become F(next);
+                    become next <- F(next);
                 }
             }
 
             actor F owns BoardState {
-                entry to_d() emits one D {
+                entry to_d() emits next: D {
+                    unrestricted(next.value);
                     BoardState next = {
                         n: n + 1,
                     };
 
-                    become D(next);
+                    become next <- D(next);
                 }
             }
 
@@ -10576,42 +11013,46 @@ mod tests {
             }
 
             actor PlayerA owns PlayerState {
-                entry enter_a() emits one HubA {
+                entry enter_a() emits next: HubA {
+                    unrestricted(next.value);
                     BoardState next = {
                         n: n,
                     };
 
-                    become HubA(next);
+                    become next <- HubA(next);
                 }
             }
 
             actor PlayerB owns PlayerState {
-                entry enter_b() emits one HubB {
+                entry enter_b() emits next: HubB {
+                    unrestricted(next.value);
                     BoardState next = {
                         n: n,
                     };
 
-                    become HubB(next);
+                    become next <- HubB(next);
                 }
             }
 
             actor HubB owns BoardState {
-                entry to_leaf() emits one Leaf {
+                entry to_leaf() emits next: Leaf {
+                    unrestricted(next.value);
                     BoardState next = {
                         n: n + 1,
                     };
 
-                    become Leaf(next);
+                    become next <- Leaf(next);
                 }
             }
 
             actor HubA owns BoardState {
-                entry to_leaf() emits one Leaf {
+                entry to_leaf() emits next: Leaf {
+                    unrestricted(next.value);
                     BoardState next = {
                         n: n + 1,
                     };
 
-                    become Leaf(next);
+                    become next <- Leaf(next);
                 }
             }
 
@@ -10663,62 +11104,68 @@ mod tests {
             }
 
             actor PlayerA owns PlayerState {
-                entry enter_a() emits one HubA {
+                entry enter_a() emits next: HubA {
+                    unrestricted(next.value);
                     BoardState next = {
                         n: n,
                     };
 
-                    become HubA(next);
+                    become next <- HubA(next);
                 }
             }
 
             actor PlayerB owns PlayerState {
-                entry enter_b() emits one HubB {
+                entry enter_b() emits next: HubB {
+                    unrestricted(next.value);
                     BoardState next = {
                         n: n,
                     };
 
-                    become HubB(next);
+                    become next <- HubB(next);
                 }
             }
 
             actor HubB owns BoardState {
-                entry to_leaf_a() emits one LeafA {
+                entry to_leaf_a() emits next: LeafA {
+                    unrestricted(next.value);
                     BoardState next = {
                         n: n + 1,
                     };
 
-                    become LeafA(next);
+                    become next <- LeafA(next);
                 }
             }
 
             actor HubA owns BoardState {
-                entry to_leaf_b() emits one LeafB {
+                entry to_leaf_b() emits next: LeafB {
+                    unrestricted(next.value);
                     BoardState next = {
                         n: n + 1,
                     };
 
-                    become LeafB(next);
+                    become next <- LeafB(next);
                 }
             }
 
             actor LeafA owns BoardState {
-                entry to_a() emits one HubA {
+                entry to_a() emits next: HubA {
+                    unrestricted(next.value);
                     BoardState next = {
                         n: n + 1,
                     };
 
-                    become HubA(next);
+                    become next <- HubA(next);
                 }
             }
 
             actor LeafB owns BoardState {
-                entry to_b() emits one HubB {
+                entry to_b() emits next: HubB {
+                    unrestricted(next.value);
                     BoardState next = {
                         n: n + 1,
                     };
 
-                    become HubB(next);
+                    become next <- HubB(next);
                 }
             }
 
@@ -10943,7 +11390,10 @@ mod tests {
                         pair: self_pair_type,
                     }
                 }
-                emits one Launcher {
+                emits next: Launcher {
+                    unrestricted(stored.outputs.pair.value);
+                    unrestricted(argument.outputs.pair.value);
+                    unrestricted(next.value);
                     PairState stored_pair = { value: 1 };
                     PairState argument_pair = { value: 2 };
                     require stored.outputs become {
@@ -10952,7 +11402,7 @@ mod tests {
                     require argument.outputs become {
                         pair <- self_pair_type(argument_pair),
                     };
-                    become Launcher(self.state);
+                    become next <- Launcher(self.state);
                 }
             }
 
@@ -10996,12 +11446,14 @@ mod tests {
                         pair: self.first_type,
                     }
                 }
-                emits one Launcher {
+                emits next: Launcher {
+                    unrestricted(child.outputs.pair.value);
+                    unrestricted(next.value);
                     PairState pair = { value: 1 };
                     require child.outputs become {
                         pair <- self.first_type(pair),
                     };
-                    become Launcher(self.state);
+                    become next <- Launcher(self.state);
                 }
 
                 entry launch_second()
@@ -11010,12 +11462,14 @@ mod tests {
                         pair: self.second_type,
                     }
                 }
-                emits one Launcher {
+                emits next: Launcher {
+                    unrestricted(child.outputs.pair.value);
+                    unrestricted(next.value);
                     PairState pair = { value: 2 };
                     require child.outputs become {
                         pair <- self.second_type(pair),
                     };
-                    become Launcher(self.state);
+                    become next <- Launcher(self.state);
                 }
             }
 
@@ -11066,7 +11520,10 @@ mod tests {
                         pair: self.pair_type,
                     }
                 }
-                emits one Launcher {
+                emits next: Launcher {
+                    unrestricted(first.outputs.pair.value);
+                    unrestricted(second.outputs.pair.value);
+                    unrestricted(next.value);
                     PairState pair = { value: 1 };
                     require first.outputs become {
                         pair <- self.pair_type(pair),
@@ -11074,7 +11531,7 @@ mod tests {
                     require second.outputs become {
                         pair <- self.pair_type(pair),
                     };
-                    become Launcher(self.state);
+                    become next <- Launcher(self.state);
                 }
             }
 
@@ -11111,13 +11568,15 @@ mod tests {
                         child: Child,
                     }
                 }
-                emits one Launcher {
+                emits next: Launcher {
+                    unrestricted(child_group.outputs.child.value);
+                    unrestricted(next.value);
                     ChildState child_state = { amount: 1 };
                     LauncherState next = { launches: launches + 1 };
                     require child_group.outputs become {
                         child <- Child(child_state),
                     };
-                    become Launcher(next);
+                    become next <- Launcher(next);
                 }
             }
 
@@ -11160,7 +11619,10 @@ mod tests {
                         sibling: Child,
                     }
                 }
-                emits one Launcher {
+                emits next: Launcher {
+                    unrestricted(child_group.outputs.child.value);
+                    unrestricted(child_group.outputs.sibling.value);
+                    unrestricted(next.value);
                     ChildState child_state = { amount: amount };
                     ChildState sibling_state = { amount: amount + 1 };
                     LauncherState next = { launches: launches + 1 };
@@ -11168,16 +11630,17 @@ mod tests {
                         child <- Child(child_state),
                         sibling <- Child(sibling_state),
                     };
-                    become Launcher(next);
+                    become next <- Launcher(next);
                 }
             }
 
             // The spawned actor itself needs Launcher's template for its
             // normal successor, exercising the spawned template closure.
             actor Child owns ChildState {
-                entry return_to_launcher() emits one Launcher {
+                entry return_to_launcher() emits next: Launcher {
+                    unrestricted(next.value);
                     LauncherState next = { launches: 0 };
-                    become Launcher(next);
+                    become next <- Launcher(next);
                 }
             }
 
@@ -11279,13 +11742,15 @@ mod tests {
                         child: Node,
                     }
                 }
-                emits one Node {
+                emits next: Node {
+                    unrestricted(child_group.outputs.child.value);
+                    unrestricted(next.value);
                     NodeState child = { amount: next_amount };
                     NodeState next = { amount: next_amount + 1 };
                     require child_group.outputs become {
                         child <- Node(child),
                     };
-                    become Node(next);
+                    become next <- Node(next);
                 }
             }
 
@@ -11329,34 +11794,39 @@ mod tests {
                         mux: Mux,
                     }
                 }
-                emits one Launcher {
+                emits next: Launcher {
+                    unrestricted(game.outputs.mux.value);
+                    unrestricted(next.value);
                     BoardState board = { turn: 0 };
                     LauncherState next = { launches: launches + 1 };
                     require game.outputs become {
                         mux <- Mux(board),
                     };
-                    become Launcher(next);
+                    become next <- Launcher(next);
                 }
             }
 
             actor Mux owns BoardState {
-                entry move() emits one Pawn {
+                entry move() emits next: Pawn {
+                    unrestricted(next.value);
                     BoardState next = { turn: turn + 1 };
-                    become Pawn(next);
+                    become next <- Pawn(next);
                 }
             }
 
             actor Pawn owns BoardState {
-                entry finish() emits one Mux {
+                entry finish() emits next: Mux {
+                    unrestricted(next.value);
                     BoardState next = { turn: turn + 1 };
-                    become Mux(next);
+                    become next <- Mux(next);
                 }
             }
 
             actor Knight owns BoardState {
-                entry finish() emits one Mux {
+                entry finish() emits next: Mux {
+                    unrestricted(next.value);
                     BoardState next = { turn: turn + 1 };
-                    become Mux(next);
+                    become next <- Mux(next);
                 }
             }
 
@@ -11399,9 +11869,11 @@ mod tests {
                         next_pair: self.pair_type,
                     }
                 }
-                emits one Launcher {
+                emits next: Launcher {
+                    unrestricted(pair.outputs.next_pair.value);
+                    unrestricted(next.value);
                     require(1 == 1);
-                    become Launcher(self.state);
+                    become next <- Launcher(self.state);
                 }
             }
 
@@ -11432,9 +11904,11 @@ mod tests {
                         next_pair: self.pair_type,
                     }
                 }
-                emits one Launcher {
+                emits next: Launcher {
+                    unrestricted(pair.outputs.next_pair.value);
+                    unrestricted(next.value);
                     require(1 == 1);
-                    become Launcher(self.state);
+                    become next <- Launcher(self.state);
                 }
             }
 
@@ -11515,26 +11989,29 @@ mod tests {
             }
 
             actor League owns LeagueState {
-                entry register() emits one Player {
+                entry register() emits next: Player {
+                    unrestricted(next.value);
                     PlayerState next_player = {
                         nonce: nonce,
                     };
-                    become Player(next_player);
+                    become next <- Player(next_player);
                 }
             }
 
             actor Player owns PlayerState {
-                entry enter_mux() emits one Mux {
+                entry enter_mux() emits next: Mux {
+                    unrestricted(next.value);
                     BoardState next_board = {
                         selector: nonce,
                         ply: 0,
                     };
-                    become Mux(next_board);
+                    become next <- Mux(next_board);
                 }
             }
 
             actor Mux owns BoardState {
-                entry choose(MoveActor target) emits one MoveActor {
+                entry choose(MoveActor target) emits next: MoveActor {
+                    unrestricted(next.value);
                     if (target == MoveActor::Knight) {
                         require(selector >= 0);
                     }
@@ -11544,55 +12021,60 @@ mod tests {
                         ply: ply + 1,
                     };
 
-                    become target(next_board);
+                    become next <- target(next_board);
                 }
 
-                entry choose_knight_const() emits one MoveActor {
+                entry choose_knight_const() emits next: MoveActor {
+                    unrestricted(next.value);
                     BoardState next_board = {
                         selector: selector,
                         ply: ply + 1,
                     };
 
                     actor_type<BoardState> target = MoveActor::Knight;
-                    become target(next_board);
+                    become next <- target(next_board);
                 }
 
-                entry choose_pawn() emits one Pawn {
+                entry choose_pawn() emits next: Pawn {
+                    unrestricted(next.value);
                     BoardState next_board = {
                         selector: selector,
                         ply: ply + 1,
                     };
-                    become Pawn(next_board);
+                    become next <- Pawn(next_board);
                 }
 
-                entry choose_knight() emits one Knight {
+                entry choose_knight() emits next: Knight {
+                    unrestricted(next.value);
                     BoardState next_board = {
                         selector: selector,
                         ply: ply + 1,
                     };
-                    become Knight(next_board);
+                    become next <- Knight(next_board);
                 }
             }
 
             actor Pawn owns BoardState {
-                entry back_to_mux() emits one Mux {
+                entry back_to_mux() emits next: Mux {
+                    unrestricted(next.value);
                     BoardState next_board = {
                         selector: selector,
                         ply: ply + 1,
                     };
-                    become Mux(next_board);
+                    become next <- Mux(next_board);
                 }
             }
 
             actor Knight owns BoardState {
-                entry back_to_mux() emits one Mux {
+                entry back_to_mux() emits next: Mux {
+                    unrestricted(next.value);
                     require(selector >= 0);
 
                     BoardState next_board = {
                         selector: selector,
                         ply: ply + 1,
                     };
-                    become Mux(next_board);
+                    become next <- Mux(next_board);
                 }
             }
 

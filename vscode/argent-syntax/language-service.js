@@ -23,7 +23,6 @@ const KEYWORDS = Object.freeze([
   'leader',
   'none',
   'observes',
-  'one',
   'outputs',
   'owns',
   'return',
@@ -100,6 +99,7 @@ const BUILTINS = Object.freeze([
   },
   { name: 'co_spent', signature: 'value.co_spent() -> bool', params: [] },
   { name: 'require', signature: 'require(condition: bool)', params: ['condition'] },
+  { name: 'unrestricted', signature: 'unrestricted(output.value)', params: ['output.value'] },
   {
     name: 'templateHash',
     signature: 'templateHash(templatePrefix: byte[], templateSuffix: byte[]) -> byte[32]',
@@ -490,14 +490,14 @@ function callableClauseVariables(tokens, start, end) {
         continue;
       }
     } else if (ident(tokens[index], 'emits')) {
-      if (ident(tokens[index + 1], 'one')) {
-        add('emit', { kind: 'ident', value: 'next', start: tokens[index + 1].start, end: tokens[index + 1].end });
-      } else if (symbol(tokens[index + 1], '{')) {
+      if (symbol(tokens[index + 1], '{')) {
         const openIndex = index + 1;
         const closeIndex = matchingBraceIndex(tokens, openIndex);
         addNamedBlock('emit', openIndex, closeIndex);
         index = closeIndex >= 0 ? closeIndex + 1 : end;
         continue;
+      } else if (ident(tokens[index + 1]) && symbol(tokens[index + 2], ':')) {
+        add('emit', tokens[index + 1]);
       }
     } else if (ident(tokens[index], 'observes') && ident(tokens[index + 1])) {
       add('observe', tokens[index + 1]);

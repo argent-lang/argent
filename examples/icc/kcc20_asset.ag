@@ -35,6 +35,7 @@ actor KCC20 owns KCC20State {
             amount: amount,
         };
 
+        unrestricted(next.value);
         become next <- KCC20(next_state);
     }
 }
@@ -50,6 +51,8 @@ actor MinterProxy owns MinterProxyState {
         require(controller_id.co_spent());
         require(next_proxy.controller_id == controller_id);
 
+        unrestricted(proxy.value);
+        unrestricted(recipient.value);
         become {
             proxy <- MinterProxy(next_proxy),
             recipient <- KCC20(recipient),

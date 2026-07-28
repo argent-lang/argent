@@ -17,28 +17,30 @@ actor enum MoveActor {
 }
 
 actor League owns LeagueState {
-    entry register() emits one Player {
+    entry register() emits next: Player {
         PlayerState next_player = {
             nonce: nonce + 1,
         };
 
-        become Player(next_player);
+        unrestricted(next.value);
+        become next <- Player(next_player);
     }
 }
 
 actor Player owns PlayerState {
-    entry enter_mux() emits one Mux {
+    entry enter_mux() emits next: Mux {
         BoardState next_board = {
             selector: nonce,
             ply: 0,
         };
 
-        become Mux(next_board);
+        unrestricted(next.value);
+        become next <- Mux(next_board);
     }
 }
 
 actor Mux owns BoardState {
-    entry choose(MoveActor target) emits one MoveActor {
+    entry choose(MoveActor target) emits next: MoveActor {
         if (target == MoveActor::Knight) {
             require(selector >= 0);
         }
@@ -48,51 +50,56 @@ actor Mux owns BoardState {
             ply: ply + 1,
         };
 
-        become target(next_board);
+        unrestricted(next.value);
+        become next <- target(next_board);
     }
 
-    entry choose_knight_const() emits one MoveActor {
+    entry choose_knight_const() emits next: MoveActor {
         BoardState next_board = {
             selector: selector,
             ply: ply + 1,
         };
 
         actor_type<BoardState> target = MoveActor::Knight;
-        become target(next_board);
+        unrestricted(next.value);
+        become next <- target(next_board);
     }
 
-    entry choose_pawn() emits one Pawn {
+    entry choose_pawn() emits next: Pawn {
         BoardState next_board = {
             selector: selector,
             ply: ply + 1,
         };
 
-        become Pawn(next_board);
+        unrestricted(next.value);
+        become next <- Pawn(next_board);
     }
 
-    entry choose_knight() emits one Knight {
+    entry choose_knight() emits next: Knight {
         BoardState next_board = {
             selector: selector,
             ply: ply + 1,
         };
 
-        become Knight(next_board);
+        unrestricted(next.value);
+        become next <- Knight(next_board);
     }
 }
 
 actor Pawn owns BoardState {
-    entry back_to_mux() emits one Mux {
+    entry back_to_mux() emits next: Mux {
         BoardState next_board = {
             selector: selector,
             ply: ply + 1,
         };
 
-        become Mux(next_board);
+        unrestricted(next.value);
+        become next <- Mux(next_board);
     }
 }
 
 actor Knight owns BoardState {
-    entry back_to_mux() emits one Mux {
+    entry back_to_mux() emits next: Mux {
         require(selector >= 0);
 
         BoardState next_board = {
@@ -100,7 +107,8 @@ actor Knight owns BoardState {
             ply: ply + 1,
         };
 
-        become Mux(next_board);
+        unrestricted(next.value);
+        become next <- Mux(next_board);
     }
 }
 

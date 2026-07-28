@@ -134,12 +134,11 @@ impl TerminalParser<'_> {
     }
 
     fn parse_route(&mut self) -> Result<RouteCall> {
-        let first = self.expect_any_ident()?;
-        let (output, actor) = if self.consume_left_arrow() {
-            (Some(first), self.parse_actor_name()?)
-        } else {
-            (None, self.parse_qualified_tail(first)?)
-        };
+        let output = self.expect_any_ident()?;
+        if !self.consume_left_arrow() {
+            return Err(self.error("every `become` route must name its output with `output <- Actor(state)`"));
+        }
+        let actor = self.parse_actor_name()?;
 
         self.expect_symbol('(')?;
         let start = self.current().span.start;
@@ -344,10 +343,10 @@ mod tests {
         .expect("routes parse");
 
         assert_eq!(routes.len(), 2);
-        assert_eq!(routes[0].output.as_deref(), Some("player_a_out"));
+        assert_eq!(routes[0].output, "player_a_out");
         assert_eq!(routes[0].actor, "Player");
         assert_eq!(routes[0].state, "next_player_a");
-        assert_eq!(routes[1].output.as_deref(), Some("player_b_out"));
+        assert_eq!(routes[1].output, "player_b_out");
         assert_eq!(routes[1].actor, "Player");
         assert_eq!(routes[1].state, "next_player_b");
     }
@@ -368,10 +367,10 @@ mod tests {
     }
 
     #[test]
-    fn extracts_implicit_single_output_route() {
+    fn extracts_inline_named_single_output_route() {
         let routes = collect_routes(
             r#"
-            become Done({
+            become next <- Done({
                 final_value: next_value,
             });
             "#,
@@ -379,9 +378,16 @@ mod tests {
         .expect("routes parse");
 
         assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0].output, None);
+        assert_eq!(routes[0].output, "next");
         assert_eq!(routes[0].actor, "Done");
         assert!(routes[0].state.contains("final_value"));
+    }
+
+    #[test]
+    fn rejects_unnamed_single_output_route() {
+        let err = collect_routes("become Done(next);").expect_err("unnamed routes must not parse");
+
+        assert!(err.to_string().contains("must name its output"), "unexpected error: {err}");
     }
 
     #[test]

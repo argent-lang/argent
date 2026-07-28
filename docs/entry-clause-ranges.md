@@ -78,9 +78,6 @@ spawns batch by batch_id {
 }
 ```
 
-Keep `emits one` as a singleton form. A ranged emit must use the named block
-form because the body needs a range handle.
-
 ## Terms
 
 - A **singleton** has cardinality one.

@@ -7,12 +7,13 @@ actor Counter owns CounterState {
     consumes {
         other: Counter,
     }
-    emits one Counter {
+    emits next: Counter {
         CounterState next = {
             count: count + other.count,
         };
 
-        become Counter(next);
+        unrestricted(next.value);
+        become next <- Counter(next);
     }
 
     entry hold() emits none {

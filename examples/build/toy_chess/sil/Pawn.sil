@@ -31,7 +31,7 @@ contract Pawn(
     entrypoint function back_to_mux(byte[] gen__mux_prefix, byte[] gen__mux_suffix) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // emits one Mux
+        int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Mux
 
         State next_board = {
             // :: generated fields

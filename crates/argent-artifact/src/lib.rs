@@ -615,7 +615,6 @@ pub struct ConsumeArtifact {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EmitArtifact {
     None,
-    One { actors: Vec<String> },
     Outputs { outputs: Vec<EmitOutputArtifact> },
 }
 
@@ -644,14 +643,14 @@ pub struct RouteInputArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RouteOutputHandleArtifact {
-    pub name: Option<String>,
+    pub name: String,
     pub auth_index: usize,
     pub actors: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RouteArtifact {
-    pub output: Option<String>,
+    pub output: String,
     pub actor: String,
     pub template_id: String,
     pub state_expr: String,

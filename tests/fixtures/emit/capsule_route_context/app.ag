@@ -14,7 +14,7 @@ state ReserveAssetState expands AssetCapsule {
 }
 
 actor ReserveAsset owns ReserveAssetState {
-    entry settle(int next_balance) emits one ReserveAsset {
+    entry settle(int next_balance) emits next: ReserveAsset {
         require(owner_id.co_spent());
 
         ReserveAssetState next_asset = {
@@ -26,10 +26,11 @@ actor ReserveAsset owns ReserveAssetState {
             balance: next_balance,
         };
 
-        become ReserveAsset(next_asset);
+        unrestricted(next.value);
+        become next <- ReserveAsset(next_asset);
     }
 
-    entry withdraw(int next_balance) emits one WalletAsset {
+    entry withdraw(int next_balance) emits next: WalletAsset {
         require(owner_id.co_spent());
 
         ReserveAssetState next_asset = {
@@ -41,13 +42,15 @@ actor ReserveAsset owns ReserveAssetState {
             balance: next_balance,
         };
 
-        become WalletAsset(next_asset);
+        unrestricted(next.value);
+        become next <- WalletAsset(next_asset);
     }
 }
 
 actor WalletAsset owns ReserveAssetState {
-    entry hold() emits one WalletAsset {
-        become WalletAsset(self.state);
+    entry hold() emits next: WalletAsset {
+        unrestricted(next.value);
+        become next <- WalletAsset(self.state);
     }
 }
 

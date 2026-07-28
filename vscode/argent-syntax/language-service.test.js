@@ -37,7 +37,7 @@ state PlayerState {
 }
 actor enum PlayerKind { Player; }
 actor League owns PlayerState {
-  entry join(pubkey owner) emits one League {
+  entry join(pubkey owner) emits result: League {
     // The body is intentionally unfinished.
   }
 }
@@ -113,6 +113,13 @@ test('offers the Silverscript hash builtins exposed to Argent bodies', () => {
   assert.deepEqual(templateHash.params, ['templatePrefix', 'templateSuffix']);
   assert.match(templateHash.signature, /byte\[32\]/);
   assert.equal(names.has('unique'), false, 'legacy unique helper must not be offered');
+});
+
+test('offers the unrestricted output-value declaration', () => {
+  const unrestricted = BUILTINS.find((builtin) => builtin.name === 'unrestricted');
+  assert.ok(unrestricted);
+  assert.equal(unrestricted.signature, 'unrestricted(output.value)');
+  assert.deepEqual(unrestricted.params, ['output.value']);
 });
 
 test('offers the Silverscript query builtins except automated state-template helpers', () => {
@@ -322,8 +329,8 @@ actor Event owns EventState {
     require(event.value > 0);
   }
 
-  entry keep() emits one Event {
-    require(next.value > 0);
+  entry keep() emits result: Event {
+    require(result.value > 0);
   }
 
   delegate audit() consumes {
@@ -351,7 +358,7 @@ actor Event owns EventState {
     ],
   );
   assert.deepEqual(keep.clauseVariables.map(({ clause, name }) => ({ clause, name })), [
-    { clause: 'emit', name: 'next' },
+    { clause: 'emit', name: 'result' },
   ]);
   assert.deepEqual(audit.clauseVariables.map(({ clause, name }) => ({ clause, name })), [
     { clause: 'consume', name: 'leader' },
