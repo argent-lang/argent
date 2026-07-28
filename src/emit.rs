@@ -2934,8 +2934,15 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         assert_eq!(word::SELF, "self");
         assert_eq!(word::VALUE, "value");
         assert_eq!(word::COVENANT_ID, "cov_id");
-        let mut out = expr.replace("self.value", "tx.inputs[this.activeInputIndex].value");
-        out = out.replace("self.cov_id", "OpInputCovenantId(this.activeInputIndex)");
+        let mut out = replace_exact_identifier(expr, "self.value", "tx.inputs[this.activeInputIndex].value");
+        out = replace_exact_identifier(&out, "self.cov_id", "OpInputCovenantId(this.activeInputIndex)");
+        // TODO: Replace the raw qualified-reference substitutions below with a
+        // token-aware rewriter shared with `count_qualified_ref`. Each source
+        // should match an exact identifier-and-dot token path rooted at the
+        // expression level (in particular, not after another `.`), without
+        // matching longer identifiers or prefix-related fields. Replacements
+        // should be selected from the original token spans in one pass so that
+        // generated text is never reconsidered by a later substitution.
         for spec in state_expansion_witness_specs_for_actor(self.actor, self.model) {
             for field in &self.model.state(&spec.memory_state)?.fields {
                 let local = hidden_state_expansion_field_name(&spec, &field.name);
@@ -5673,6 +5680,27 @@ fn parse_call_statement<'a>(statement: &'a str, callee: &str) -> Option<&'a str>
     tail.strip_prefix('(')?.strip_suffix(')').map(str::trim)
 }
 
+/// Replace an exact identifier reference without matching within a longer identifier.
+fn replace_exact_identifier(input: &str, source: &str, replacement: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut cursor = 0;
+    let bytes = input.as_bytes();
+    let identifier_char = |byte: &u8| byte.is_ascii_alphanumeric() || *byte == b'_';
+    for (start, _) in input.match_indices(source) {
+        let end = start + source.len();
+        let continues_previous = start.checked_sub(1).and_then(|previous| bytes.get(previous)).is_some_and(identifier_char);
+        let continues_next = bytes.get(end).is_some_and(identifier_char);
+        if continues_previous || continues_next {
+            continue;
+        }
+        out.push_str(&input[cursor..start]);
+        out.push_str(replacement);
+        cursor = end;
+    }
+    out.push_str(&input[cursor..]);
+    out
+}
+
 fn count_qualified_ref(tokens: &[Token], source: &str) -> usize {
     let segments = source.split('.').collect::<Vec<_>>();
     let token_count = segments.len() * 2 - 1;
@@ -7486,6 +7514,47 @@ mod tests {
             sil.contains("require(OpInputCovenantId(this.activeInputIndex) == OpInputCovenantId(this.activeInputIndex));"),
             "{sil}"
         );
+    }
+
+    #[test]
+    fn self_member_prefixes_remain_state_field_refs() {
+        let source = r#"
+            state FooState {
+                int value_note;
+                int cov_id_note;
+            }
+            state PeerState {}
+
+            actor Foo owns FooState {
+                entry step()
+                consumes {
+                    foo_self: Peer,
+                }
+                emits next: Foo {
+                    unrestricted(next.value);
+                    require(self.value_note == value_note);
+                    require(self.cov_id_note == cov_id_note);
+                    require(foo_self.value >= 0);
+                    become next <- Foo(self.state);
+                }
+            }
+
+            actor Peer owns PeerState {}
+
+            app Test {
+                actor Foo;
+                actor Peer;
+            }
+        "#;
+        let path = PathBuf::from("test.ag");
+        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let program = Program { root: path, modules: vec![module] };
+        let model = Model::from_program(&program).expect("model validates");
+        let sil = emit_actor(model.actor("Foo").expect("actor exists"), &model).expect("actor emits");
+
+        assert!(sil.contains("require(value_note == value_note);"), "{sil}");
+        assert!(sil.contains("require(cov_id_note == cov_id_note);"), "{sil}");
+        assert!(sil.contains("require(tx.inputs[gen__foo_self_input_idx].value >= 0);"), "{sil}");
     }
 
     #[test]
