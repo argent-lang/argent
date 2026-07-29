@@ -6,8 +6,8 @@ mod tests {
     use crate::{
         artifact::{
             ActorTargetArtifact, CompiledTemplateArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact,
-            ObservedTargetArtifact, RuntimeFieldRoleArtifact, SilAbiVerificationError, SilContractArtifact, TemplatePlanError,
-            TypeArtifact, route_template_proof_receipt_id, route_template_table_receipt_id,
+            ObservedTargetArtifact, SilAbiVerificationError, SilContractArtifact, TemplatePlanError, TypeArtifact,
+            route_template_proof_receipt_id, route_template_table_receipt_id,
         },
         codec::{CodecError, decode_hex, encode_entry_sig_script},
         emit::emit_build_app,
@@ -69,81 +69,6 @@ mod tests {
             suffix_hex: crate::codec::encode_hex(suffix),
             hash_hex: compiled.template_hash_hex.clone(),
         }
-    }
-
-    /// Keep the importing artifact internally valid while changing the foreign
-    /// handle that it claims to have compiled into its fixed route context.
-    fn rewrite_first_imported_template_hash(artifact: &mut Artifact, hash_hex: &str) {
-        let (runtime_state_index, field_index, contract, field_name) = artifact
-            .argent
-            .template_plan
-            .runtime_states
-            .iter()
-            .enumerate()
-            .find_map(|(runtime_state_index, runtime_state)| {
-                runtime_state.field_roles.iter().enumerate().find_map(|(field_index, field)| {
-                    matches!(field.role, RuntimeFieldRoleArtifact::ImportedTemplate { .. })
-                        .then(|| (runtime_state_index, field_index, runtime_state.contract.clone(), field.name.clone()))
-                })
-            })
-            .expect("artifact contains an imported template role");
-        let field_count = artifact.argent.template_plan.runtime_states[runtime_state_index].field_roles.len();
-        let RuntimeFieldRoleArtifact::ImportedTemplate { hash_hex: imported_hash, .. } =
-            &mut artifact.argent.template_plan.runtime_states[runtime_state_index].field_roles[field_index].role
-        else {
-            unreachable!("the selected role is an imported template");
-        };
-        *imported_hash = hash_hex.to_string();
-
-        let sil_contract = artifact.sil_abi.contract(&contract).expect("importing contract exists");
-        let compiled_script = decode_hex(&sil_contract.compiled.script_hex).expect("compiled script decodes");
-        let (sil_prefix, _, _) = sil_contract.compiled.script_parts(&compiled_script).expect("compiled state span is valid");
-        let context_state = crate::artifact::RuntimeStateArtifact {
-            source: sil_contract.runtime_state.source.clone(),
-            fields: sil_contract.runtime_state.fields[..field_count].to_vec(),
-        };
-        let handle = artifact
-            .argent
-            .template_plan
-            .templates
-            .iter_mut()
-            .find(|template| template.actor == contract)
-            .map(|template| &mut template.actor_type_handle.template)
-            .expect("importing actor type handle exists");
-        let handle_prefix = decode_hex(&handle.prefix_hex).expect("handle prefix decodes");
-        let mut context_values = crate::codec::decode_runtime_state_script(&context_state, &handle_prefix[sil_prefix.len()..])
-            .expect("handle context decodes");
-        context_values.insert(field_name, ArtifactValue::Bytes(decode_hex(hash_hex).expect("replacement template hash decodes")));
-        let context_script =
-            crate::codec::encode_runtime_state_script(&context_state, &context_values).expect("updated handle context encodes");
-        let mut updated_prefix = sil_prefix.to_vec();
-        updated_prefix.extend_from_slice(&context_script);
-        let suffix = decode_hex(&handle.suffix_hex).expect("handle suffix decodes");
-        handle.prefix_hex = crate::codec::encode_hex(&updated_prefix);
-        handle.hash_hex = crate::codec::encode_hex(&silverscript_abi::template_hash(&updated_prefix, &suffix));
-    }
-
-    fn first_imported_template_role(artifact: &mut Artifact) -> &mut RuntimeFieldRoleArtifact {
-        artifact
-            .argent
-            .template_plan
-            .runtime_states
-            .iter_mut()
-            .flat_map(|runtime_state| &mut runtime_state.field_roles)
-            .find(|field| matches!(field.role, RuntimeFieldRoleArtifact::ImportedTemplate { .. }))
-            .map(|field| &mut field.role)
-            .expect("artifact contains an imported template role")
-    }
-
-    fn icc_bundle_builder_error(controller: &Artifact, asset: &Artifact) -> BuilderError {
-        let bundle = ArtifactBundle::new(controller)
-            .expect("controller artifact is internally valid")
-            .with_app("kcc20_asset", asset)
-            .expect("asset artifact attaches");
-        let Err(err) = TxBuilder::from_bundle(&bundle) else {
-            panic!("the mutated ICC bundle must be rejected");
-        };
-        err
     }
 
     fn route_family_table_bytes(artifact: &Artifact, family_id: &str) -> Vec<u8> {
@@ -1180,7 +1105,34 @@ mod tests {
             .expect("launcher and child apps compile as one dependency bundle");
         let launcher_artifact = compiled.primary();
         let child_artifact = compiled.app("ChildApp").expect("compiled bundle contains ChildApp");
-        assert!(launcher_artifact.sil_abi.contract("Relay").is_some(), "the in-app predecessor compiles");
+        let relay_contract = launcher_artifact.sil_abi.contract("Relay").expect("the in-app predecessor compiles");
+        let child_template = &child_artifact
+            .argent
+            .template_plan
+            .templates
+            .iter()
+            .find(|template| template.actor == "Child")
+            .expect("Child template is exported")
+            .actor_type_handle
+            .template
+            .hash_hex;
+        assert_eq!(
+            launcher_artifact
+                .sil_abi
+                .contract("Launcher")
+                .expect("launcher contract exists")
+                .compiled
+                .script_hex
+                .matches(child_template)
+                .count(),
+            1,
+            "Launcher pushes the linked template constant onto the stack once"
+        );
+        assert_eq!(
+            relay_contract.compiled.script_hex.matches(child_template).count(),
+            0,
+            "an in-app predecessor does not inherit linked template dependencies"
+        );
         let launch = entry_artifact(launcher_artifact, "Launcher", "launch");
         assert!(matches!(
             &launch.spawns[0].outputs[0].target,
@@ -1214,6 +1166,10 @@ mod tests {
         assert_eq!(
             fs::read_to_string(out_dir.join("sil/Launcher.sil")).expect("generated launcher Sil exists"),
             include_str!("../tests/fixtures/runtime/context_static_linked_spawn/Launcher.sil")
+        );
+        assert_eq!(
+            fs::read_to_string(out_dir.join("sil/Relay.sil")).expect("generated relay Sil exists"),
+            include_str!("../tests/fixtures/runtime/context_static_linked_spawn/Relay.sil")
         );
         assert_eq!(
             fs::read_to_string(out_dir.join("apps/ChildApp/sil/Child.sil")).expect("generated child Sil exists"),
@@ -2325,25 +2281,6 @@ mod tests {
         let proxy_state = minter_proxy_state(controller_covenant_id);
         let recipient_state = kcc20_state(recipient_owner.clone(), minted_amount);
 
-        let mut explicit_observed_template_state = minter_initial.clone();
-        explicit_observed_template_state.insert("gen__kcc20_asset__kcc20_template".to_string(), ArtifactValue::Bytes(vec![0; 32]));
-        let explicit_hidden_state = TxContext::new().actor_output(
-            "Minter",
-            explicit_observed_template_state,
-            CovenantBinding::new(0, controller_covenant_id),
-            minter_value,
-        );
-        let hidden_field_err =
-            builder.build(&explicit_hidden_state).expect_err("observed template fields must be filled by the runtime");
-        assert!(
-            matches!(
-                hidden_field_err,
-                BuilderError::HiddenRuntimeFieldProvided { ref field, .. }
-                    if field == "gen__kcc20_asset__kcc20_template"
-            ),
-            "unexpected error: {hidden_field_err}"
-        );
-
         let minter_utxo = builder
             .covenant_utxo("Minter", minter_initial.clone(), minter_value, 0, false, Some(controller_covenant_id))
             .expect("minter utxo builds");
@@ -2636,75 +2573,6 @@ mod tests {
     }
 
     #[test]
-    fn artifact_bundle_verifies_imported_template_roles() {
-        let controller_artifact = icc_controller_artifact();
-        let asset_artifact = icc_asset_artifact();
-        let first_imported_actor = controller_artifact
-            .argent
-            .template_plan
-            .runtime_states
-            .iter()
-            .flat_map(|state| &state.field_roles)
-            .find_map(|field| match &field.role {
-                RuntimeFieldRoleArtifact::ImportedTemplate { contract, .. } => Some(contract.clone()),
-                _ => None,
-            })
-            .expect("controller has an imported actor template");
-
-        let mut wrong_hash = controller_artifact.clone();
-        rewrite_first_imported_template_hash(&mut wrong_hash, &"11".repeat(32));
-        wrong_hash.id = wrong_hash.computed_id_hex().expect("controller with changed imported hash computes");
-        let wrong_hash_err = icc_bundle_builder_error(&wrong_hash, &asset_artifact);
-        assert!(matches!(
-            wrong_hash_err,
-            BuilderError::ImportedTemplateMismatch { app, dependency, actor, message }
-                if app == "KCC20MintController"
-                    && dependency == "KCC20Asset"
-                    && actor == first_imported_actor
-                    && message.contains("template hash")
-        ));
-
-        let mut wrong_state = controller_artifact.clone();
-        let RuntimeFieldRoleArtifact::ImportedTemplate { state, .. } = first_imported_template_role(&mut wrong_state) else {
-            unreachable!("the selected role is an imported template");
-        };
-        *state = "WrongState".to_string();
-        wrong_state.id = wrong_state.computed_id_hex().expect("controller with changed imported state computes");
-        let wrong_state_err = icc_bundle_builder_error(&wrong_state, &asset_artifact);
-        assert!(matches!(
-            wrong_state_err,
-            BuilderError::ImportedTemplateMismatch { dependency, actor, message, .. }
-                if dependency == "KCC20Asset" && actor == first_imported_actor && message.contains("state `WrongState`")
-        ));
-
-        let mut wrong_actor = controller_artifact.clone();
-        let RuntimeFieldRoleArtifact::ImportedTemplate { contract, .. } = first_imported_template_role(&mut wrong_actor) else {
-            unreachable!("the selected role is an imported template");
-        };
-        *contract = "MissingActor".to_string();
-        wrong_actor.id = wrong_actor.computed_id_hex().expect("controller with changed imported actor computes");
-        let wrong_actor_err = wrong_actor.verify_template_plan().expect_err("imported actor witnesses must match a runtime field");
-        assert!(matches!(
-            wrong_actor_err,
-            TemplatePlanError::MissingWitnessImportedTemplate { actor, .. }
-                if actor == format!("KCC20Asset::{first_imported_actor}")
-        ));
-
-        let mut undeclared_dependency = controller_artifact;
-        undeclared_dependency.dependencies.clear();
-        undeclared_dependency.id =
-            undeclared_dependency.computed_id_hex().expect("controller without its direct dependency receipt computes");
-        let undeclared_err = icc_bundle_builder_error(&undeclared_dependency, &asset_artifact);
-        assert!(matches!(
-            undeclared_err,
-            BuilderError::ImportedTemplateMismatch { dependency, actor, message, .. }
-                if dependency == "KCC20Asset"
-                    && actor == first_imported_actor
-                    && message.contains("not a direct dependency")
-        ));
-    }
-
-    #[test]
     fn observed_self_merge_actor_composes_with_its_defining_app() {
         let fixture = "tests/fixtures/runtime/context_observed_self_merge";
         for controller in ["controller.ag", "controller_app.ag"] {
@@ -2723,18 +2591,6 @@ mod tests {
                 controller_artifact.argent.interfaces.imports[0].fingerprint_hex,
                 asset_artifact.argent.interfaces.exports[0].fingerprint_hex
             );
-            let runtime_state = controller_artifact
-                .argent
-                .template_plan
-                .runtime_states
-                .iter()
-                .find(|state| state.contract == "Ctrl")
-                .expect("controller records its linked template field");
-            assert!(matches!(
-                &runtime_state.field_roles[0].role,
-                RuntimeFieldRoleArtifact::ImportedTemplate { app, contract, state, .. }
-                    if app == "AssetApp" && contract == "Asset" && state == "AssetState"
-            ));
             let ctrl_template = controller_artifact
                 .argent
                 .template_plan
@@ -2743,8 +2599,24 @@ mod tests {
                 .find(|template| template.actor == "Ctrl")
                 .expect("controller template exists");
             assert!(
-                !ctrl_template.actor_type_handle.context_fields.is_empty(),
-                "linked template context is fixed in the controller handle"
+                ctrl_template.actor_type_handle.context_fields.is_empty(),
+                "linked templates are code constants, not actor state context"
+            );
+            let asset_template = &asset_artifact
+                .argent
+                .template_plan
+                .templates
+                .iter()
+                .find(|template| template.actor == "Asset")
+                .expect("dependency template exists")
+                .actor_type_handle
+                .template
+                .hash_hex;
+            let ctrl_contract = controller_artifact.sil_abi.contract("Ctrl").expect("controller contract exists");
+            assert_eq!(
+                ctrl_contract.compiled.script_hex.matches(asset_template).count(),
+                1,
+                "controller pushes the linked Asset template once"
             );
             let observed = &controller_artifact.argent.actors[0].entries[0].observes[0].inputs[0];
             assert!(matches!(

@@ -324,7 +324,6 @@ pub struct RuntimeFieldRolePlanArtifact {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RuntimeFieldRoleArtifact {
     Template { contract: String },
-    ImportedTemplate { app: String, contract: String, state: String, hash_hex: String },
     TemplateTable { contracts: Vec<String> },
     TemplateDigest { id: String },
     TemplateRoot { leaves: Vec<RuntimeRouteLeafArtifact> },
@@ -1014,7 +1013,13 @@ impl TemplatePlanArtifact {
 
         // TODO: Extract runtime-state-to-route-table binding verification into dedicated helpers.
         let mut referenced_route_table_ids = BTreeSet::new();
-        let mut imported_templates = BTreeSet::new();
+        let imported_templates = artifact
+            .argent
+            .interfaces
+            .imports
+            .iter()
+            .map(|interface| (interface.app.as_str(), interface.actor.as_str()))
+            .collect::<BTreeSet<_>>();
         for runtime_state in &self.runtime_states {
             let contract = sil_contracts_by_name
                 .get(runtime_state.contract.as_str())
@@ -1051,17 +1056,6 @@ impl TemplatePlanArtifact {
                     }
                     RuntimeFieldRoleArtifact::TemplateRoot { leaves } => (leaves.clone(), TypeArtifact::FixedBytes { len: 32 }),
                     RuntimeFieldRoleArtifact::Template { .. } => continue,
-                    RuntimeFieldRoleArtifact::ImportedTemplate { app, contract, hash_hex, .. } => {
-                        if sil_field.ty != (TypeArtifact::FixedBytes { len: 32 }) {
-                            return Err(TemplatePlanError::RuntimeStatePlanMismatch {
-                                contract: runtime_state.contract.clone(),
-                                message: format!("imported template field `{}` must be byte[32]", field.name),
-                            });
-                        }
-                        decode_hash_hex(&field.name, hash_hex)?;
-                        imported_templates.insert((app.as_str(), contract.as_str()));
-                        continue;
-                    }
                 };
                 let id = route_template_table_receipt_id(&runtime_state.source, &field.name);
                 let Some(table) = route_tables_by_id.get(id.as_str()) else {
@@ -1445,7 +1439,6 @@ pub fn fixed_runtime_context_value(
     };
     match &field.role {
         RuntimeFieldRoleArtifact::Template { contract } => sil_template_hash_bytes(plan, contract),
-        RuntimeFieldRoleArtifact::ImportedTemplate { hash_hex, .. } => Ok(decode_hash_hex(&field.name, hash_hex)?.to_vec()),
         RuntimeFieldRoleArtifact::TemplateTable { contracts } => {
             let mut table = Vec::with_capacity(contracts.len() * 32);
             for contract in contracts {

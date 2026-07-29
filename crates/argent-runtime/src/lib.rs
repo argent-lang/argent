@@ -296,8 +296,6 @@ pub enum BuilderError {
         found_dependency: String,
         found_artifact_id: String,
     },
-    #[error("artifact bundle app `{app}` has invalid imported template `{dependency}::{actor}`: {message}")]
-    ImportedTemplateMismatch { app: String, dependency: String, actor: String, message: String },
     #[error("artifact bundle app `{app}` is missing {direction} interface for actor `{actor}`")]
     MissingInterface { app: String, direction: &'static str, actor: String },
     #[error(
@@ -668,7 +666,6 @@ impl<'a> TxBuilder<'a> {
     pub fn from_bundle(bundle: &ArtifactBundle<'a>) -> BuilderResult<Self> {
         let builder = Self { bundle: bundle.clone() };
         builder.validate_bundle_dependencies()?;
-        builder.validate_imported_templates()?;
         builder.validate_bundle_interfaces()?;
         Ok(builder)
     }
@@ -692,56 +689,6 @@ impl<'a> TxBuilder<'a> {
                         found_dependency: found.app.clone(),
                         found_artifact_id: found.id.clone(),
                     });
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_imported_templates(&self) -> BuilderResult<()> {
-        for importing_artifact in self.bundle.apps.values() {
-            for runtime_state in &importing_artifact.argent.template_plan.runtime_states {
-                for field in &runtime_state.field_roles {
-                    let RuntimeFieldRoleArtifact::ImportedTemplate { app, contract, state, hash_hex } = &field.role else {
-                        continue;
-                    };
-                    let mismatch = |message| BuilderError::ImportedTemplateMismatch {
-                        app: importing_artifact.app.clone(),
-                        dependency: app.clone(),
-                        actor: contract.clone(),
-                        message,
-                    };
-                    if importing_artifact.dependencies.iter().all(|dependency| dependency.app != *app) {
-                        return Err(mismatch("the app is not a direct dependency".to_string()));
-                    }
-
-                    let dependency_artifact = self.bundle.app(&artifact_app_alias(app))?;
-                    let actor = dependency_artifact
-                        .argent
-                        .actors
-                        .iter()
-                        .find(|actor| actor.name == *contract)
-                        .ok_or_else(|| mismatch("the dependency does not contain this actor".to_string()))?;
-                    if actor.state != *state {
-                        return Err(mismatch(format!("state `{state}` does not match the dependency actor state `{}`", actor.state)));
-                    }
-                    if find_interface(&dependency_artifact.argent.interfaces.exports, &dependency_artifact.app, contract).is_none() {
-                        return Err(mismatch("the dependency does not export this actor".to_string()));
-                    }
-                    let handle = dependency_artifact
-                        .argent
-                        .template_plan
-                        .templates
-                        .iter()
-                        .find(|template| template.actor == *contract)
-                        .map(|template| &template.actor_type_handle)
-                        .ok_or_else(|| mismatch("the dependency does not export an actor type handle".to_string()))?;
-                    if handle.template.hash_hex != *hash_hex {
-                        return Err(mismatch(format!(
-                            "template hash `{hash_hex}` does not match the dependency handle hash `{}`",
-                            handle.template.hash_hex
-                        )));
-                    }
                 }
             }
         }
@@ -1619,19 +1566,6 @@ impl<'a> TxBuilder<'a> {
                         });
                     }
                     match &field_role.role {
-                        RuntimeFieldRoleArtifact::ImportedTemplate { .. } => {
-                            let runtime_plan = self
-                                .runtime_state_plan(artifact, &contract.name)
-                                .expect("generated field roles come from a runtime state plan");
-                            values.insert(
-                                field.name.clone(),
-                                ArtifactValue::Bytes(fixed_runtime_context_value(
-                                    &artifact.argent.template_plan,
-                                    runtime_plan,
-                                    field_role,
-                                )?),
-                            );
-                        }
                         RuntimeFieldRoleArtifact::Template { .. }
                         | RuntimeFieldRoleArtifact::TemplateTable { .. }
                         | RuntimeFieldRoleArtifact::TemplateDigest { .. }

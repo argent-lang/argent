@@ -495,23 +495,9 @@ app CtrlApp {
             "each app-qualified actor must export its own handle"
         );
 
-        let imported_handles = compiled
-            .primary()
-            .argent
-            .template_plan
-            .runtime_states
-            .iter()
-            .find(|state| state.contract == "Ctrl")
-            .expect("controller runtime state exists")
-            .field_roles
-            .iter()
-            .filter_map(|field| match &field.role {
-                artifact::RuntimeFieldRoleArtifact::ImportedTemplate { app, hash_hex, .. } => Some((app.as_str(), hash_hex.as_str())),
-                _ => None,
-            })
-            .collect::<BTreeMap<_, _>>();
-        assert_eq!(imported_handles.get("SoloApp").copied(), Some(solo_actor.actor_type_handle.template.hash_hex.as_str()));
-        assert_eq!(imported_handles.get("CohortApp").copied(), Some(cohort_actor.actor_type_handle.template.hash_hex.as_str()));
+        let ctrl_script = &compiled.primary().sil_abi.contract("Ctrl").expect("controller contract exists").compiled.script_hex;
+        assert_eq!(ctrl_script.matches(&solo_actor.actor_type_handle.template.hash_hex).count(), 1);
+        assert_eq!(ctrl_script.matches(&cohort_actor.actor_type_handle.template.hash_hex).count(), 1);
 
         let solo_sil = std::fs::read_to_string(temp.join("build/apps/SoloApp/sil/Shared.sil")).expect("solo Shared Sil exists");
         let cohort_sil = std::fs::read_to_string(temp.join("build/apps/CohortApp/sil/Shared.sil")).expect("cohort Shared Sil exists");
@@ -676,21 +662,12 @@ app RootApp {
             .find(|template| template.actor == "Middle")
             .map(|template| &template.actor_type_handle)
             .expect("Middle exports a source-state handle that contains its Leaf dependency");
-        let root_import_hash = compiled
-            .primary()
-            .argent
-            .template_plan
-            .runtime_states
-            .iter()
-            .find(|state| state.contract == "Root")
-            .and_then(|state| {
-                state.field_roles.iter().find_map(|field| match &field.role {
-                    artifact::RuntimeFieldRoleArtifact::ImportedTemplate { hash_hex, .. } => Some(hash_hex),
-                    _ => None,
-                })
-            })
-            .expect("Root fixes the exported Middle source-state template");
-        assert_eq!(root_import_hash, &middle_handle.template.hash_hex);
+        let root_script = &compiled.primary().sil_abi.contract("Root").expect("Root contract exists").compiled.script_hex;
+        assert_eq!(
+            root_script.matches(&middle_handle.template.hash_hex).count(),
+            1,
+            "Root embeds the exported Middle source-state template once"
+        );
         let runtime_bundle = compiled.runtime_bundle().expect("all transitive artifacts form one runtime bundle");
         builder::TxBuilder::from_bundle(&runtime_bundle).expect("all direct dependency ids match transitively");
 
@@ -831,21 +808,16 @@ app RootApp {
             .find(|template| template.actor == "Shared")
             .map(|template| template.actor_type_handle.template.hash_hex.as_str())
             .expect("shared actor handle exists");
-        for app in ["LeftApp", "RightApp"] {
-            let imported_hash = compiled
+        for (app, actor) in [("LeftApp", "Left"), ("RightApp", "Right")] {
+            let branch_script = &compiled
                 .app(app)
                 .expect("diamond branch artifact exists")
-                .argent
-                .template_plan
-                .runtime_states
-                .iter()
-                .flat_map(|state| &state.field_roles)
-                .find_map(|field| match &field.role {
-                    artifact::RuntimeFieldRoleArtifact::ImportedTemplate { hash_hex, .. } => Some(hash_hex.as_str()),
-                    _ => None,
-                })
-                .expect("diamond branch records the shared actor handle");
-            assert_eq!(imported_hash, shared_handle);
+                .sil_abi
+                .contract(actor)
+                .expect("diamond branch contract exists")
+                .compiled
+                .script_hex;
+            assert_eq!(branch_script.matches(shared_handle).count(), 1);
         }
         compiled.runtime_bundle().expect("all four diamond artifacts form one runtime bundle");
 

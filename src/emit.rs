@@ -214,7 +214,6 @@ impl<'a> Model<'a> {
                 self.validate_entry(actor, entry)?;
             }
         }
-        self.validate_imported_template_state_fields()?;
         Ok(())
     }
 
@@ -701,26 +700,6 @@ impl<'a> Model<'a> {
         Ok(())
     }
 
-    fn validate_imported_template_state_fields(&self) -> Result<()> {
-        let mut seen = BTreeMap::new();
-        for actor in &self.actors {
-            for spec in imported_template_specs_for_state(&actor.state, self) {
-                let field = hidden_imported_template_name(&spec);
-                let key = (actor.state.as_str(), field.clone());
-                let actor_reference = spec.actor_reference();
-                if let Some(previous) = seen.insert(key, actor_reference.clone())
-                    && previous != actor_reference
-                {
-                    return Err(ArgentError::new(format!(
-                        "imported template field `{field}` for state `{}` refers to both `{previous}` and `{actor_reference}`",
-                        actor.state
-                    )));
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn require_template_actor(&self, actor: &str, message: String) -> Result<()> {
         if !self.app_actors.contains(actor) {
             return Err(ArgentError::new(message));
@@ -1045,6 +1024,7 @@ fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
     out.push_str("\n) {\n");
 
     emit_shared_constants(&mut out, model)?;
+    emit_imported_template_constants(&mut out, &imported_template_specs_for_actor(actor, model));
     emit_state_layouts(&mut out, actor, model)?;
     emit_shared_functions(&mut out, model);
 
@@ -1092,6 +1072,18 @@ fn emit_shared_constants(out: &mut String, model: &Model<'_>) -> Result<()> {
     Ok(())
 }
 
+fn emit_imported_template_constants(out: &mut String, specs: &[ImportedTemplateSpec]) {
+    if specs.is_empty() {
+        return;
+    }
+
+    emit_section_header(out, "Linked templates");
+    for spec in specs {
+        out.push_str(&format!("    byte[32] constant {} = 0x{};\n", hidden_imported_template_const_name(spec), spec.hash_hex));
+    }
+    out.push('\n');
+}
+
 fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model<'_>) -> Result<()> {
     emit_section_header(out, "State layouts");
     let mut emitted = BTreeSet::new();
@@ -1127,12 +1119,6 @@ fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model
         }
         let state = model.storage_state(&state_name)?;
         out.push_str(&format!("    struct {state_name} {{\n"));
-        let mut generated_fields = String::new();
-        emit_imported_template_fields_for_state(&mut generated_fields, state_name.as_str(), model, 8);
-        if !generated_fields.is_empty() {
-            out.push_str("        // :: generated fields\n");
-            out.push_str(&generated_fields);
-        }
         if !state.fields.is_empty() {
             out.push_str("        // :: user declared fields\n");
             for field in &state.fields {
@@ -1215,7 +1201,9 @@ fn emit_entry(out: &mut String, actor: &ActorDecl, entry: &EntryDecl, model: &Mo
     }
     push_entry_signature(out, &entry.name, &sil_params);
 
-    if emit_entry_template_locals(out, actor, &witness_specs, model) {
+    let emitted_imported_templates = emit_entry_imported_template_locals(out, &imported_template_specs_for_entry(actor, entry, model));
+    let emitted_route_templates = emit_entry_template_locals(out, actor, &witness_specs, model);
+    if emitted_imported_templates || emitted_route_templates {
         out.push('\n');
     }
 
@@ -1625,6 +1613,22 @@ fn emit_entry_template_locals(out: &mut String, _actor: &ActorDecl, witness_spec
                 hidden_route_family_table_name_by_id(family_id)
             ));
         }
+    }
+    true
+}
+
+fn emit_entry_imported_template_locals(out: &mut String, specs: &[ImportedTemplateSpec]) -> bool {
+    if specs.is_empty() {
+        return false;
+    }
+
+    out.push_str("        // :: linked templates\n");
+    for spec in specs {
+        out.push_str(&format!(
+            "        byte[32] {} = {};\n",
+            hidden_imported_template_name(spec),
+            hidden_imported_template_const_name(spec)
+        ));
     }
     true
 }
@@ -2449,7 +2453,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     }
 
     fn lower_state_expr_for_dynamic_state(&self, state_name: &str, state_ty: &str, expr: &str, indent: usize) -> Result<String> {
-        let generated_fields = hidden_template_object_fields(self.actor, state_name, RouteFieldKind::None, &[], self.model);
+        let generated_fields = hidden_template_object_fields(self.actor, RouteFieldKind::None, &[], self.model);
         self.lower_state_expr_for_layout(state_name, state_ty, generated_fields, false, expr, indent)
     }
 
@@ -3398,22 +3402,16 @@ struct ObservedActorWitnessSpec {
     source: Option<ClauseActorTypeRef>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct ImportedTemplateSpec {
     app: String,
     actor: String,
-    state: String,
     hash_hex: String,
 }
 
 impl ImportedTemplateSpec {
     fn from_linked(actor: &LinkedActor) -> Self {
-        Self {
-            app: actor.app.clone(),
-            actor: actor.actor.clone(),
-            state: actor.state.clone(),
-            hash_hex: actor.template.hash_hex.clone(),
-        }
+        Self { app: actor.app.clone(), actor: actor.actor.clone(), hash_hex: actor.template.hash_hex.clone() }
     }
 
     fn actor_reference(&self) -> String {
@@ -3814,27 +3812,30 @@ fn template_source_for_actor(state: &str, actor: &str, model: &Model<'_>) -> Tem
         .unwrap_or(TemplateWitnessSource::Field)
 }
 
-fn imported_template_specs_for_state(state: &str, model: &Model<'_>) -> Vec<ImportedTemplateSpec> {
-    let mut specs = BTreeMap::new();
-    for actor in &model.actors {
-        if actor.state != state {
-            continue;
-        }
-        for entry_model in model.actor_model(&actor.name).expect("selected app actor has a model").entries() {
-            for group in entry_model.existing_groups().chain(entry_model.genesis_groups()) {
-                for interaction in group.inputs().iter().chain(group.outputs()) {
-                    for target in interaction.target().static_actors() {
-                        if let Some(StaticActorTarget::CrossApp(linked)) = model.static_actor_target(target) {
-                            specs
-                                .entry((linked.app.clone(), linked.actor.clone()))
-                                .or_insert_with(|| ImportedTemplateSpec::from_linked(linked));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    specs.into_values().collect()
+fn imported_template_specs_for_actor(actor: &ActorDecl, model: &Model<'_>) -> Vec<ImportedTemplateSpec> {
+    actor
+        .entries
+        .iter()
+        .flat_map(|entry| imported_template_specs_for_entry(actor, entry, model))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn imported_template_specs_for_entry(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Vec<ImportedTemplateSpec> {
+    let entry_model = model.entry_model(actor, entry).expect("selected app entry has a model");
+    entry_model
+        .existing_groups()
+        .chain(entry_model.genesis_groups())
+        .flat_map(|group| group.inputs().iter().chain(group.outputs()))
+        .flat_map(|interaction| interaction.target().static_actors())
+        .filter_map(|target| match model.static_actor_target(target) {
+            Some(StaticActorTarget::CrossApp(linked)) => Some(ImportedTemplateSpec::from_linked(linked)),
+            Some(StaticActorTarget::InApp(_)) | None => None,
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn observed_actor_witness_specs_for_observe(
@@ -4725,7 +4726,7 @@ fn route_template_tables_artifact(
                 }
                 RuntimeFieldRoleArtifact::TemplateDigest { .. } => continue,
                 RuntimeFieldRoleArtifact::TemplateRoot { leaves } => (leaves.clone(), TypeArtifact::FixedBytes { len: 32 }),
-                RuntimeFieldRoleArtifact::Template { .. } | RuntimeFieldRoleArtifact::ImportedTemplate { .. } => continue,
+                RuntimeFieldRoleArtifact::Template { .. } => continue,
             };
             let id = route_template_table_receipt_id(&runtime_state.source, &field.name);
             let byte_len = leaves.len() * 32;
@@ -4852,7 +4853,6 @@ fn constructor_args_for_actor<'i>(actor: &ActorDecl, model: &Model<'_>) -> Resul
             }
         }
     }
-    args.extend(imported_template_specs_for_state(&actor.state, model).iter().map(|_| zero_byte_array_expr(32)));
     for field in &state.fields {
         args.push(placeholder_expr_for_type(&field.ty).map_err(|err| {
             ArgentError::new(format!(
@@ -4981,16 +4981,6 @@ fn runtime_state_field_defs_for_actor(
                 ));
             }
         }
-    }
-    for spec in imported_template_specs_for_state(&actor.state, model) {
-        let field_name = hidden_imported_template_name(&spec);
-        let role = RuntimeFieldRoleArtifact::ImportedTemplate {
-            app: spec.app,
-            contract: spec.actor,
-            state: spec.state,
-            hash_hex: spec.hash_hex,
-        };
-        fields.push((field_name, TypeArtifact::from_parts("byte", Some(32)), Some(role)));
     }
     for field in &state.fields {
         fields.push((field.name.clone(), type_artifact(&field.ty, model), None));
@@ -6038,7 +6028,7 @@ enum RouteFieldKind<'a> {
 }
 
 fn hidden_template_init_args_for_actor(actor: &ActorDecl, model: &Model<'_>) -> Vec<String> {
-    let mut args = match route_field_kind_for_actor(&actor.name, model) {
+    match route_field_kind_for_actor(&actor.name, model) {
         RouteFieldKind::None => Vec::new(),
         RouteFieldKind::Direct { actor_templates, family_commitments } => {
             let mut args =
@@ -6062,17 +6052,10 @@ fn hidden_template_init_args_for_actor(actor: &ActorDecl, model: &Model<'_>) -> 
             }
             args
         }
-    };
-    args.extend(
-        imported_template_specs_for_state(&actor.state, model)
-            .iter()
-            .map(|spec| format!("byte[32] {}", hidden_imported_template_init_name(spec))),
-    );
-    args
+    }
 }
 
 fn emit_route_template_table(out: &mut String, actor: &ActorDecl, model: &Model<'_>) {
-    let imported_templates = imported_template_specs_for_state(&actor.state, model);
     match route_field_kind_for_actor(&actor.name, model) {
         RouteFieldKind::None => {}
         RouteFieldKind::Direct { actor_templates, family_commitments } => {
@@ -6111,47 +6094,22 @@ fn emit_route_template_table(out: &mut String, actor: &ActorDecl, model: &Model<
             }
         }
     }
-    for spec in imported_templates {
-        out.push_str(&format!(
-            "    byte[32] {} = {};\n",
-            hidden_imported_template_name(&spec),
-            hidden_imported_template_init_name(&spec)
-        ));
-    }
-}
-
-fn emit_imported_template_fields_for_state(out: &mut String, state: &str, model: &Model<'_>, indent: usize) {
-    let imported_templates = imported_template_specs_for_state(state, model);
-    emit_hidden_template_fields_for_kind(out, RouteFieldKind::None, &imported_templates, indent);
 }
 
 fn emit_hidden_template_fields_for_actor(out: &mut String, actor: &str, model: &Model<'_>, indent: usize) {
-    let imported_templates = imported_template_specs_for_state(&model.actors_by_name[actor].state, model);
-    emit_hidden_template_fields_for_kind(out, route_field_kind_for_actor(actor, model), &imported_templates, indent);
+    emit_hidden_template_fields_for_kind(out, route_field_kind_for_actor(actor, model), indent);
 }
 
-fn emit_hidden_template_fields_for_kind(
-    out: &mut String,
-    fields: RouteFieldKind<'_>,
-    imported_templates: &[ImportedTemplateSpec],
-    indent: usize,
-) {
+fn emit_hidden_template_fields_for_kind(out: &mut String, fields: RouteFieldKind<'_>, indent: usize) {
     let field_indent = " ".repeat(indent);
     match fields {
-        RouteFieldKind::None => {
-            for spec in imported_templates {
-                out.push_str(&format!("{field_indent}byte[32] {};\n", hidden_imported_template_name(spec)));
-            }
-        }
+        RouteFieldKind::None => {}
         RouteFieldKind::Direct { actor_templates, family_commitments } => {
             for actor in actor_templates {
                 out.push_str(&format!("{field_indent}byte[32] {};\n", hidden_template_name(actor)));
             }
             for family in family_commitments {
                 out.push_str(&format!("{field_indent}byte[32] {};\n", hidden_route_family_commitment_name(family)));
-            }
-            for spec in imported_templates {
-                out.push_str(&format!("{field_indent}byte[32] {};\n", hidden_imported_template_name(spec)));
             }
         }
         RouteFieldKind::FamilyTables { actor_templates, family_commitments, families } => {
@@ -6171,9 +6129,6 @@ fn emit_hidden_template_fields_for_kind(
                     hidden_route_family_table_name(family)
                 ));
             }
-            for spec in imported_templates {
-                out.push_str(&format!("{field_indent}byte[32] {};\n", hidden_imported_template_name(spec)));
-            }
         }
     }
 }
@@ -6185,9 +6140,9 @@ fn hidden_template_object_fields_for_state(source_actor: &ActorDecl, target_stat
     );
     if !same_storage {
         // A named state carries payload fields, not any app actor's route cut.
-        return hidden_template_object_fields(source_actor, target_state, RouteFieldKind::None, &[], model);
+        return hidden_template_object_fields(source_actor, RouteFieldKind::None, &[], model);
     }
-    hidden_template_object_fields(source_actor, target_state, route_field_kind_for_actor(&source_actor.name, model), &[], model)
+    hidden_template_object_fields(source_actor, route_field_kind_for_actor(&source_actor.name, model), &[], model)
 }
 
 fn hidden_template_object_fields_for_actor(
@@ -6196,10 +6151,8 @@ fn hidden_template_object_fields_for_actor(
     transition: Option<&CompilerRouteTransition>,
     model: &Model<'_>,
 ) -> Vec<(String, String)> {
-    let target_state = &model.actor(target_actor).expect("output actor was validated before state lowering").state;
     hidden_template_object_fields(
         source_actor,
-        target_state,
         route_field_kind_for_actor(target_actor, model),
         transition.map_or(&[], |transition| transition.families_to_pack.as_slice()),
         model,
@@ -6208,53 +6161,46 @@ fn hidden_template_object_fields_for_actor(
 
 fn hidden_template_object_fields(
     source_actor: &ActorDecl,
-    target_state: &str,
     target_fields: RouteFieldKind<'_>,
     families_to_pack: &[String],
     model: &Model<'_>,
 ) -> Vec<(String, String)> {
-    let mut fields =
-        match target_fields {
-            RouteFieldKind::None => Vec::new(),
-            RouteFieldKind::Direct { actor_templates, family_commitments } => {
-                let mut fields = actor_templates
-                    .into_iter()
-                    .map(|actor| (hidden_template_name(actor), hidden_template_expr_for_actor(&source_actor.state, actor, model)))
-                    .collect::<Vec<_>>();
-                fields.extend(family_commitments.into_iter().map(|family| {
-                    (
-                        hidden_route_family_commitment_name(family),
-                        hidden_route_family_commitment_expr(source_actor, family, families_to_pack, model),
-                    )
-                }));
-                fields
+    match target_fields {
+        RouteFieldKind::None => Vec::new(),
+        RouteFieldKind::Direct { actor_templates, family_commitments } => {
+            let mut fields = actor_templates
+                .into_iter()
+                .map(|actor| (hidden_template_name(actor), hidden_template_name(actor)))
+                .collect::<Vec<_>>();
+            fields.extend(family_commitments.into_iter().map(|family| {
+                (
+                    hidden_route_family_commitment_name(family),
+                    hidden_route_family_commitment_expr(source_actor, family, families_to_pack, model),
+                )
+            }));
+            fields
+        }
+        RouteFieldKind::FamilyTables { actor_templates, family_commitments, families } => {
+            let mut fields = actor_templates
+                .into_iter()
+                .map(|actor| (hidden_template_name(actor), hidden_template_name(actor)))
+                .collect::<Vec<_>>();
+            fields.extend(family_commitments.into_iter().map(|family| {
+                (
+                    hidden_route_family_commitment_name(family),
+                    hidden_route_family_commitment_expr(source_actor, family, families_to_pack, model),
+                )
+            }));
+            for family in families {
+                let table_expr = hidden_route_family_table_name(family);
+                fields.extend(
+                    family.direct_template_actors().iter().map(|actor| (hidden_template_name(actor), hidden_template_name(actor))),
+                );
+                fields.push((hidden_route_family_table_name(family), table_expr));
             }
-            RouteFieldKind::FamilyTables { actor_templates, family_commitments, families } => {
-                let mut fields = actor_templates
-                    .into_iter()
-                    .map(|actor| (hidden_template_name(actor), hidden_template_expr_for_actor(&source_actor.state, actor, model)))
-                    .collect::<Vec<_>>();
-                fields.extend(family_commitments.into_iter().map(|family| {
-                    (
-                        hidden_route_family_commitment_name(family),
-                        hidden_route_family_commitment_expr(source_actor, family, families_to_pack, model),
-                    )
-                }));
-                for family in families {
-                    let table_expr = hidden_route_family_table_name(family);
-                    fields.extend(family.direct_template_actors().iter().map(|actor| {
-                        (hidden_template_name(actor), hidden_template_expr_for_actor(&source_actor.state, actor, model))
-                    }));
-                    fields.push((hidden_route_family_table_name(family), table_expr));
-                }
-                fields
-            }
-        };
-    fields.extend(imported_template_specs_for_state(target_state, model).into_iter().map(|spec| {
-        let field = hidden_imported_template_name(&spec);
-        (field.clone(), field)
-    }));
-    fields
+            fields
+        }
+    }
 }
 
 fn hidden_route_family_commitment_expr(
@@ -6273,14 +6219,6 @@ fn hidden_route_family_commitment_expr(
 
     let preimage = family.table_actors().iter().map(|actor| hidden_template_name(actor)).collect::<Vec<_>>().join(" + ");
     format!("blake2b({preimage})")
-}
-
-fn hidden_template_expr_for_actor(source_state: &str, actor: &str, model: &Model<'_>) -> String {
-    imported_template_specs_for_state(source_state, model)
-        .into_iter()
-        .find(|spec| spec.actor_reference() == actor)
-        .map(|spec| hidden_imported_template_name(&spec))
-        .unwrap_or_else(|| hidden_template_name(actor))
 }
 
 fn template_receipt_id(actor: &str) -> String {
@@ -6449,8 +6387,8 @@ fn hidden_imported_template_name(spec: &ImportedTemplateSpec) -> String {
     hidden_template_name(&spec.actor_reference())
 }
 
-fn hidden_imported_template_init_name(spec: &ImportedTemplateSpec) -> String {
-    hidden_template_init_name(&spec.actor_reference())
+fn hidden_imported_template_const_name(spec: &ImportedTemplateSpec) -> String {
+    format!("{}_const", hidden_imported_template_name(spec))
 }
 
 fn hidden_spawn_actor_prefix_name(spec: &SpawnActorWitnessSpec) -> String {
@@ -6556,9 +6494,7 @@ fn contract_state_type_for_actor(actor: &str, current_actor: &ActorDecl, model: 
         });
     }
 
-    if matches!(route_field_kind_for_actor(actor, model), RouteFieldKind::None)
-        && imported_template_specs_for_state(target_state, model).is_empty()
-    {
+    if matches!(route_field_kind_for_actor(actor, model), RouteFieldKind::None) {
         Ok(target_state.to_string())
     } else {
         Ok(hidden_actor_state_type_name(actor))
@@ -8450,16 +8386,17 @@ mod tests {
         crate::build_file("examples/icc/minter.ag", &out_dir).expect("ICC example builds");
 
         let minter_sil = fs::read_to_string(out_dir.join("sil/Minter.sil")).expect("Minter.sil exists");
-        assert!(minter_sil.contains("contract Minter(\n    byte[32] gen__init_kcc20_asset__kcc20_template,"), "{minter_sil}");
+        assert!(minter_sil.contains("byte[32] constant gen__kcc20_asset__kcc20_template_const = 0x"), "{minter_sil}");
         assert!(minter_sil.contains("entrypoint function mint(\n"), "{minter_sil}");
         assert!(minter_sil.contains("sig owner_sig,"), "{minter_sil}");
         assert!(minter_sil.contains("byte[32] recipient_owner,"), "{minter_sil}");
         assert!(minter_sil.contains("int gen__kcc20_asset__minter_proxy_prefix_len,"), "{minter_sil}");
         assert!(minter_sil.contains("byte[] gen__kcc20_asset__kcc20_suffix"), "{minter_sil}");
         assert!(
-            minter_sil.contains("byte[32] gen__kcc20_asset__minter_proxy_template = gen__init_kcc20_asset__minter_proxy_template;"),
+            minter_sil.contains("byte[32] gen__kcc20_asset__minter_proxy_template = gen__kcc20_asset__minter_proxy_template_const;"),
             "{minter_sil}"
         );
+        assert!(!minter_sil.contains("gen__init_kcc20_asset__"), "{minter_sil}");
         assert!(minter_sil.contains("struct MinterProxyState"), "{minter_sil}");
         assert!(minter_sil.contains("struct KCC20State"), "{minter_sil}");
         assert!(minter_sil.contains("byte[32] gen__asset_cov_id = kcc20_covid; // observe asset"), "{minter_sil}");
