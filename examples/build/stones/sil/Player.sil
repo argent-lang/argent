@@ -95,9 +95,10 @@ contract Player(
     function invocation_uid(byte[] domain) : byte[32] {
         require(domain.length > 0);
 
-        byte[36] outpoint =
+        byte[36] outpoint = byte[36](
             OpOutpointTxId(this.activeInputIndex)
-                + byte[4](OpOutpointIndex(this.activeInputIndex));
+                + byte[4](OpOutpointIndex(this.activeInputIndex))
+        );
 
         return blake2bWithKey(outpoint, domain);
     }

@@ -8005,8 +8005,8 @@ mod tests {
             "examples/tickets.ag",
             "tickets",
             &[
-                ("Issuer", "edcdc16f35a3a5fb4b128879c4d06bb83c83533135aa06b22975334dc0b785b5"),
-                ("Ticket", "701a0a1f8be9e25c8af238ae081dd2a654ed76891e854bc711ac2c293d8c4f40"),
+                ("Issuer", "0947355c8bd78a1f3d8048356c8cd32dff225bd709fb181b8aa30f0cf2dc7f1e"),
+                ("Ticket", "8e1fce8348130f97e7239abaecfa7786a4b2114ac15d136a2a30a80657693f1c"),
             ],
         );
         assert_example_build_artifact("examples/stones/app.ag", "stones", &[]);

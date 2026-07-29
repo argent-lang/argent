@@ -6,7 +6,7 @@ contract Ctrl(
     int init_n
 ) {
     // :: linked templates
-    byte[32] constant gen__asset_app__asset_template_const = 0xb685aea9966653928267134b3bea52fa02e22735b9735e01330e4e12968025c8;
+    byte[32] constant gen__asset_app__asset_template_const = 0xa946f8b5a2d33b35ce603ca9a02b4b6845f3b0561de2ff58c8cdcddf770f6160;
 
     // :: state layouts
     struct AssetState {
