@@ -1098,9 +1098,8 @@ mod tests {
             std::process::id(),
             ARTIFACT_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
-        // Relay routes to Launcher without directly mentioning ChildApp. The
-        // linked Child template must still be available when Relay constructs
-        // the Launcher state.
+        // Relay routes to Launcher without mentioning ChildApp. Launcher must
+        // own the linked Child template; Relay must construct its state without it.
         let compiled = crate::build_file_app_bundle(format!("{fixture}/launcher.ag"), "LauncherApp", &out_dir)
             .expect("launcher and child apps compile as one dependency bundle");
         let launcher_artifact = compiled.primary();
