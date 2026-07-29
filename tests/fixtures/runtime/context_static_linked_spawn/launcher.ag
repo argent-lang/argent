@@ -4,6 +4,10 @@ state LauncherState {
     int launches;
 }
 
+state RelayState {
+    int forwards;
+}
+
 actor Launcher owns LauncherState {
     entry launch(cov_id source_id, int amount)
     observes source by source_id {
@@ -34,6 +38,18 @@ actor Launcher owns LauncherState {
     }
 }
 
+actor Relay owns RelayState {
+    entry forward(int launches) emits next: Launcher {
+        LauncherState next_state = {
+            launches: launches,
+        };
+
+        unrestricted(next.value);
+        become next <- Launcher(next_state);
+    }
+}
+
 app LauncherApp {
     actor Launcher;
+    actor Relay;
 }
