@@ -105,13 +105,22 @@ fn real() -> int {
 
 test('offers the Silverscript hash builtins exposed to Argent bodies', () => {
   const names = new Set(BUILTINS.map((builtin) => builtin.name));
-  for (const expected of ['blake2b', 'blake2bWithKey', 'blake3', 'blake3WithKey', 'templateHash']) {
+  const documented = ['blake2b', 'blake2bWithKey', 'blake3', 'blake3WithKey', 'templateHash'];
+  for (const expected of documented) {
     assert.equal(names.has(expected), true, `missing ${expected}`);
+    assert.match(
+      BUILTINS.find((builtin) => builtin.name === expected).documentation,
+      /^silverscript builtin: /,
+      `missing ${expected} help text`,
+    );
   }
 
   const templateHash = BUILTINS.find((builtin) => builtin.name === 'templateHash');
   assert.deepEqual(templateHash.params, ['templatePrefix', 'templateSuffix']);
   assert.match(templateHash.signature, /byte\[32\]/);
+  assert.match(templateHash.documentation, /exact lengths/);
+  assert.match(BUILTINS.find((builtin) => builtin.name === 'blake2bWithKey').documentation, /at most 64 bytes/);
+  assert.match(BUILTINS.find((builtin) => builtin.name === 'blake3WithKey').documentation, /32-byte Blake3 key/);
   assert.equal(names.has('unique'), false, 'legacy unique helper must not be offered');
 });
 

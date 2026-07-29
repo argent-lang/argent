@@ -64,17 +64,30 @@ function standardModuleRelativePath(moduleName) {
 }
 
 const BUILTINS = Object.freeze([
-  { name: 'blake2b', signature: 'blake2b(data: byte[]) -> byte[32]', params: ['data'] },
+  {
+    name: 'blake2b',
+    signature: 'blake2b(data: byte[]) -> byte[32]',
+    params: ['data'],
+    documentation: 'silverscript builtin: Hash `data` with Blake2b and return 32 bytes.',
+  },
   {
     name: 'blake2bWithKey',
     signature: 'blake2bWithKey(data: byte[], key: byte[]) -> byte[32]',
     params: ['data', 'key'],
+    documentation:
+      'silverscript builtin: Hash `data` with the supplied Blake2b key and return 32 bytes. The key may contain at most 64 bytes.',
   },
-  { name: 'blake3', signature: 'blake3(data: byte[]) -> byte[32]', params: ['data'] },
+  {
+    name: 'blake3',
+    signature: 'blake3(data: byte[]) -> byte[32]',
+    params: ['data'],
+    documentation: 'silverscript builtin: Hash `data` with Blake3 and return 32 bytes.',
+  },
   {
     name: 'blake3WithKey',
     signature: 'blake3WithKey(data: byte[], key: byte[32]) -> byte[32]',
     params: ['data', 'key'],
+    documentation: 'silverscript builtin: Hash `data` with the supplied 32-byte Blake3 key and return 32 bytes.',
   },
   { name: 'sha256', signature: 'sha256(data: byte[]) -> byte[32]', params: ['data'] },
   {
@@ -104,6 +117,8 @@ const BUILTINS = Object.freeze([
     name: 'templateHash',
     signature: 'templateHash(templatePrefix: byte[], templateSuffix: byte[]) -> byte[32]',
     params: ['templatePrefix', 'templateSuffix'],
+    documentation:
+      "silverscript builtin: Hash a redeem script's non-state prefix and suffix while committing to their exact lengths.",
   },
   { name: 'OpSha256', signature: 'OpSha256(data)', params: ['data'] },
   { name: 'OpTxSubnetId', signature: 'OpTxSubnetId()', params: [] },

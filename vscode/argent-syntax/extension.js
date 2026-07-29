@@ -313,6 +313,9 @@ function completionItems(catalog) {
     const item = new vscode.CompletionItem(builtin.name, vscode.CompletionItemKind.Function);
     item.detail = builtin.signature;
     item.insertText = functionSnippet(builtin.name, builtin.params);
+    if (builtin.documentation) {
+      item.documentation = new vscode.MarkdownString(builtin.documentation);
+    }
     item.sortText = `2-${builtin.name}`;
     items.push(item);
   }
@@ -525,7 +528,7 @@ function activate(context) {
         if (builtin) {
           const markdown = new vscode.MarkdownString();
           markdown.appendCodeblock(builtin.signature, 'argent');
-          markdown.appendMarkdown('\n\nArgent builtin');
+          markdown.appendMarkdown(`\n\n${builtin.documentation ?? 'Argent builtin'}`);
           return new vscode.Hover(markdown, word.range);
         }
         if (PRIMITIVE_TYPES.includes(word.value)) {
