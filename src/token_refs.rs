@@ -5,8 +5,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::error::Result;
+use crate::error::{ArgentError, Result};
 use crate::lexer::{Span, Token, TokenKind, lex};
+use crate::naming::is_identifier;
 
 enum RefToken {
     Ident(String),
@@ -32,7 +33,7 @@ impl QualifiedRef {
     fn parse(reference: &str) -> Option<Self> {
         let mut tokens = Vec::new();
         for (idx, segment) in reference.split('.').enumerate() {
-            if segment.is_empty() {
+            if !is_identifier(segment) {
                 return None;
             }
             if idx > 0 {
@@ -80,7 +81,7 @@ struct RefReplacementMatch<'a> {
 }
 
 impl RefReplacements {
-    pub(crate) fn new<R, T>(replacements: impl IntoIterator<Item = (R, T)>) -> Self
+    pub(crate) fn new<R, T>(replacements: impl IntoIterator<Item = (R, T)>) -> Result<Self>
     where
         R: Into<String>,
         T: Into<String>,
@@ -88,16 +89,15 @@ impl RefReplacements {
         let mut by_root = BTreeMap::<_, Vec<_>>::new();
         for (reference, text) in replacements {
             let reference_text = reference.into();
-            let Some(reference) = QualifiedRef::parse(&reference_text) else {
-                continue;
-            };
+            let reference = QualifiedRef::parse(&reference_text)
+                .ok_or_else(|| ArgentError::new(format!("invalid qualified reference `{reference_text}` in replacement plan")))?;
             by_root.entry(reference.root().to_string()).or_default().push(RefReplacement { reference, text: text.into() });
         }
         for candidates in by_root.values_mut() {
             // The first matching candidate must be the most specific path.
             candidates.sort_by(|left, right| right.reference.tokens.len().cmp(&left.reference.tokens.len()));
         }
-        Self { by_root }
+        Ok(Self { by_root })
     }
 
     fn is_empty(&self) -> bool {
@@ -164,7 +164,10 @@ mod tests {
     #[test]
     fn rewrites_only_token_matched_references() {
         let source = r#"self.value + foo.self.value + self.value_note + "self.value" /* self.value */"#;
-        let out = RefReplacements::new([("self.value", "active_value")]).rewrite(source).expect("references rewrite");
+        let out = RefReplacements::new([("self.value", "active_value")])
+            .expect("replacement plan is valid")
+            .rewrite(source)
+            .expect("references rewrite");
 
         assert_eq!(out, r#"active_value + foo.self.value + self.value_note + "self.value" /* self.value */"#);
     }
@@ -173,6 +176,7 @@ mod tests {
     fn selects_the_most_specific_reference_at_each_source_position() {
         let source = "remote.inputs.asset.state + remote.inputs.count";
         let out = RefReplacements::new([("remote.inputs", "group"), ("remote.inputs.asset.state", "asset_state")])
+            .expect("replacement plan is valid")
             .rewrite(source)
             .expect("references rewrite");
 
@@ -182,9 +186,22 @@ mod tests {
     #[test]
     fn does_not_reconsider_replacement_text() {
         let out = RefReplacements::new([("next.value", "self.value"), ("self.value", "active_value")])
+            .expect("replacement plan is valid")
             .rewrite("next.value + self.value")
             .expect("references rewrite");
 
         assert_eq!(out, "self.value + active_value");
+    }
+
+    #[test]
+    fn rejects_invalid_replacement_references() {
+        for reference in ["self..value", "self-value", "self.0"] {
+            let err = match RefReplacements::new([(reference, "active_value")]) {
+                Ok(_) => panic!("invalid replacement plan must fail"),
+                Err(err) => err,
+            };
+
+            assert!(err.to_string().contains(&format!("invalid qualified reference `{reference}`")), "unexpected error: {err}");
+        }
     }
 }

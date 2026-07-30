@@ -1734,7 +1734,7 @@ fn entry_ref_replacements(
     replacements.extend(
         input_names.into_iter().map(|name| (format!("{name}.value"), format!("tx.inputs[{}].value", hidden_input_idx_name(&name)))),
     );
-    Ok(RefReplacements::new(replacements))
+    RefReplacements::new(replacements)
 }
 
 impl<'a, 'm> BodyLowerer<'a, 'm> {
@@ -2956,8 +2956,12 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     }
 
     fn lower_refs(&self, expr: &str) -> Result<String> {
-        let out = self.ref_replacements.rewrite(expr)?;
-        let out = lower_co_spent_calls(&out, &self.source_types)?;
+        // Co-spend lowering must run first: it uses the source lexer, which
+        // rejects the generated identifiers introduced by reference lowering.
+        // TODO: Separate tokenization from source-only identifier validation
+        // so lowering passes can safely inspect generated intermediate text.
+        let out = lower_co_spent_calls(expr, &self.source_types)?;
+        let out = self.ref_replacements.rewrite(&out)?;
         lower_actor_enum_literals(&out, self.model)
     }
 
@@ -8410,6 +8414,33 @@ mod tests {
         assert_eq!(proxy_entry.params[0].ty, TypeArtifact::Struct { name: "State".to_string() });
 
         let _ = fs::remove_dir_all(out_dir);
+    }
+
+    #[test]
+    fn lowers_co_spend_and_output_value_in_the_same_expression() {
+        let source = r#"
+            state CounterState {
+                cov_id guard;
+            }
+
+            actor Counter owns CounterState {
+                entry bump() emits next: Counter {
+                    require(guard.co_spent() && next.value >= 0);
+                    become next <- Counter(self.state);
+                }
+            }
+
+            app Test {
+                actor Counter;
+            }
+        "#;
+        let path = PathBuf::from("test.ag");
+        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let program = Program { root: path, modules: vec![module] };
+        let model = Model::from_program(&program).expect("model validates");
+        let sil = emit_actor(model.actor("Counter").expect("actor exists"), &model).expect("actor emits");
+
+        assert!(sil.contains("require(OpCovInputCount(guard) > 0 && tx.outputs[gen__next_output_idx].value >= 0);"), "{sil}");
     }
 
     #[test]
