@@ -11043,6 +11043,30 @@ mod tests {
     }
 
     #[test]
+    fn for_loop_entry_body_lowers_and_compiles() {
+        inline_artifact(
+            "for-loop-entry-body",
+            r#"
+            state CounterState {
+                int count;
+            }
+
+            actor Counter owns CounterState {
+                entry inspect(int iterations) emits none {
+                    for (i, 0, iterations, 16) {
+                        require((i >= 0) && (i < iterations));
+                    }
+                }
+            }
+
+            app ForLoopEntryBody {
+                actor Counter;
+            }
+            "#,
+        );
+    }
+
+    #[test]
     fn genesis_spawn_lowers_to_pinned_sil_and_artifact_metadata() {
         let (controller_sil, controller_artifact) =
             emit_selected_fixture("tests/fixtures/runtime/context_genesis_spawn/app.ag", "ControllerApp", "Controller");
