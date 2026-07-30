@@ -8,10 +8,19 @@ UTXOs. Actors own typed state, entries consume and emit actors, and `become`
 defines the successor actors created by one atomic transaction. Inter-Covenant
 Communication (ICC) extends the same model across independently compiled apps.
 
-The compiler turns `.ag` source into plain, auditable Silverscript contracts and
-portable artifacts consumed by `argent-runtime`. Together they handle state
-layouts, template commitments, routing, output validation, cross-covenant
-observation, virtual state expansion, and hidden witness material.
+## Compiler foundation
+
+Argent is built on [Silverscript](https://github.com/kaspanet/silverscript),
+the core foundation of this compiler. Silverscript provides the complete
+single-contract language and compiler stack, from typed contract source to
+Kaspa Script, together with the low-level builtins that make Argent's complex
+multi-contract and multi-app work possible.
+
+Argent adds the application layer above that foundation. It turns `.ag` source
+into plain, auditable Silverscript contracts and portable artifacts consumed by
+`argent-runtime`. Together the layers handle state layouts, template
+commitments, routing, output validation, cross-covenant observation, virtual
+state expansion, and hidden witness material.
 
 The design targets programmable UTXO systems with script-composition primitives
 such as `OP_CAT` and `OP_SUBSTR`, transaction introspection, and
@@ -19,22 +28,25 @@ consensus-supported covenant identities (see
 [Kaspa’s KIP-20](https://github.com/kaspanet/kips/blob/master/kip-0020.md) for a
 reference model).
 
-Kaspa is the main and current target: `.ag` programs compile to Silverscript
-and ultimately execute on the native Kaspa Script engine. The language,
-artifact, and runtime layers keep Kaspa-specific assumptions explicit and
-separated where practical.
+Kaspa is the native target: `.ag` programs compile to Silverscript and
+ultimately execute on the native Kaspa Script engine. The language, artifact,
+and runtime layers keep Kaspa-specific assumptions explicit and separated where
+practical.
+
+## Project status
 
 > The project is still under active development and is not yet release-ready.
 Once Silverscript completes its audit and is released, advanced users who can
-review the generated `.sil` contracts will have a viable early path to
-production. This requires understanding Argent's route semantics and compiler
-model well enough to verify that the generated contracts match the intended
-application. Argent itself will still need further audit and hardening before
-general production use.
+review the generated `.sil` contracts will have a viable path to careful early
+production use. This requires understanding Argent's route semantics and
+compiler model well enough to verify that the generated contracts match the
+intended application. Argent itself will still need further audit and hardening
+before general production use.
 
 The main pieces are present: compiler, generated Silverscript, portable
-artifacts, runtime transaction building, multi-actor routes, actor enums,
-closed and open ICC, and virtual-slot state expansion.
+artifacts, runtime transaction building, multi-actor routing, cross-app linking,
+constrained covenant spawning, actor enums, closed and open ICC, and
+virtual-slot state expansion.
 
 ```text
 .ag source
@@ -100,8 +112,10 @@ The report summarizes actor script, state, and template sizes, static opcode
 counts, entry arguments and generated witnesses, route metadata, and
 signature-script size estimates.
 
-Generated `.sil` files compile as ordinary Silverscript. Argent does not use
-Silverscript covenant macros.
+Generated `.sil` files compile as ordinary Silverscript. Within each contract,
+Silverscript provides the types, expressions, functions, arrays, loops, and
+control flow, then performs the final type checking and Kaspa Script
+compilation. Argent does not use Silverscript covenant macros.
 
 ## Language at a glance
 
