@@ -1,7 +1,10 @@
+//! Extracts body routes and verifies that every `become` is terminal.
+
 use crate::ast::{EntryBody, RouteCall};
+use crate::entry_body::EntryBodyCursor;
 use crate::error::{ArgentError, Result};
 use crate::language::word;
-use crate::lexer::{Token, TokenKind};
+use crate::lexer::TokenKind;
 
 #[derive(Debug, Clone)]
 pub struct RouteAnalysis {
@@ -18,16 +21,14 @@ pub fn analyze_routes(body: &str) -> Result<RouteAnalysis> {
 }
 
 pub(crate) fn analyze_entry_routes(body: &EntryBody) -> Result<RouteAnalysis> {
-    let mut parser = TerminalParser { body: body.text(), tokens: body.tokens(), pos: 0 };
+    let mut parser = TerminalParser { cursor: body.cursor() };
     let info = parser.parse_sequence(None)?;
     let routes = info.terminal_route_sets.iter().flatten().cloned().collect();
     Ok(RouteAnalysis { routes, terminal_route_sets: info.terminal_route_sets })
 }
 
 struct TerminalParser<'a> {
-    body: &'a str,
-    tokens: &'a [Token],
-    pos: usize,
+    cursor: EntryBodyCursor<'a>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -61,14 +62,14 @@ impl TerminalResult {
 impl TerminalParser<'_> {
     fn parse_sequence(&mut self, end: Option<char>) -> Result<TerminalResult> {
         let mut result = TerminalResult::empty();
-        while !self.is_eof() && !end.is_some_and(|symbol| self.check_symbol(symbol)) {
+        while !self.cursor.is_eof() && !end.is_some_and(|symbol| self.cursor.check_symbol(symbol)) {
             let stmt = self.parse_statement()?;
             result.info.contains_become |= stmt.info.contains_become;
             result.terminal_route_sets.extend(stmt.terminal_route_sets);
 
             if stmt.info.all_paths_terminal {
-                while self.consume_symbol(';') {}
-                if self.is_eof() || end.is_some_and(|symbol| self.check_symbol(symbol)) {
+                while self.cursor.consume_symbol(';') {}
+                if self.cursor.is_eof() || end.is_some_and(|symbol| self.cursor.check_symbol(symbol)) {
                     result.info.all_paths_terminal = true;
                     break;
                 }
@@ -82,21 +83,22 @@ impl TerminalParser<'_> {
     }
 
     fn parse_statement(&mut self) -> Result<TerminalResult> {
-        if self.consume_ident(word::IF) {
+        if self.cursor.consume_ident(word::IF) {
             self.expect_symbol('(')?;
-            self.skip_balanced('(', ')')?;
+            self.skip_balanced_after_open('(', ')')?;
             let then_info = self.parse_block_or_statement()?;
-            let else_info = if self.consume_ident(word::ELSE) { self.parse_block_or_statement()? } else { TerminalResult::empty() };
+            let else_info =
+                if self.cursor.consume_ident(word::ELSE) { self.parse_block_or_statement()? } else { TerminalResult::empty() };
             let contains_become = then_info.info.contains_become || else_info.info.contains_become;
             let all_paths_terminal = then_info.info.all_paths_terminal && else_info.info.all_paths_terminal;
             let mut terminal_route_sets = then_info.terminal_route_sets;
             terminal_route_sets.extend(else_info.terminal_route_sets);
 
             Ok(TerminalResult { info: TerminalInfo { contains_become, all_paths_terminal }, terminal_route_sets })
-        } else if self.consume_ident(word::BECOME) {
+        } else if self.cursor.consume_ident(word::BECOME) {
             let routes = self.parse_become_tail()?;
             Ok(TerminalInfo::terminal(routes))
-        } else if self.consume_symbol('{') {
+        } else if self.cursor.consume_symbol('{') {
             let result = self.parse_sequence(Some('}'))?;
             self.expect_symbol('}')?;
             Ok(result)
@@ -107,7 +109,7 @@ impl TerminalParser<'_> {
     }
 
     fn parse_block_or_statement(&mut self) -> Result<TerminalResult> {
-        if self.consume_symbol('{') {
+        if self.cursor.consume_symbol('{') {
             let result = self.parse_sequence(Some('}'))?;
             self.expect_symbol('}')?;
             Ok(result)
@@ -117,22 +119,22 @@ impl TerminalParser<'_> {
     }
 
     fn parse_become_tail(&mut self) -> Result<Vec<RouteCall>> {
-        if self.consume_symbol('{') {
+        if self.cursor.consume_symbol('{') {
             let mut routes = Vec::new();
-            while !self.check_symbol('}') && !self.is_eof() {
-                if self.check_ident(word::BECOME) {
+            while !self.cursor.check_symbol('}') && !self.cursor.is_eof() {
+                if self.cursor.check_ident(word::BECOME) {
                     return Err(self.error("nested `become` blocks are not supported yet"));
                 }
                 routes.push(self.parse_route()?);
                 self.expect_list_separator_or_end('}')?;
             }
             self.expect_symbol('}')?;
-            self.consume_symbol(';');
+            self.cursor.consume_symbol(';');
             return Ok(routes);
         }
 
         let route = self.parse_route()?;
-        self.consume_symbol(';');
+        self.cursor.consume_symbol(';');
         Ok(vec![route])
     }
 
@@ -144,29 +146,10 @@ impl TerminalParser<'_> {
         let actor = self.parse_actor_name()?;
 
         self.expect_symbol('(')?;
-        let start = self.current().span.start;
-        let mut depth = 1usize;
-        while !self.is_eof() {
-            let token = self.current().clone();
-            match token.kind {
-                TokenKind::Symbol('(') => {
-                    depth += 1;
-                    self.advance();
-                }
-                TokenKind::Symbol(')') => {
-                    depth -= 1;
-                    if depth == 0 {
-                        let state = self.body[start..token.span.start].trim().to_string();
-                        self.advance();
-                        return Ok(RouteCall { output, actor, state });
-                    }
-                    self.advance();
-                }
-                _ => self.advance(),
-            }
-        }
-
-        Err(self.error("unterminated route state expression"))
+        let state_span =
+            self.cursor.take_balanced_after_open('(', ')').ok_or_else(|| self.error("unterminated route state expression"))?;
+        let state = self.cursor.span_text(state_span).trim().to_string();
+        Ok(RouteCall { output, actor, state })
     }
 
     fn parse_actor_name(&mut self) -> Result<String> {
@@ -175,7 +158,7 @@ impl TerminalParser<'_> {
     }
 
     fn parse_qualified_tail(&mut self, first: String) -> Result<String> {
-        if !self.consume_symbol(':') {
+        if !self.cursor.consume_symbol(':') {
             return Ok(first);
         }
         self.expect_symbol(':')?;
@@ -183,14 +166,14 @@ impl TerminalParser<'_> {
     }
 
     fn consume_left_arrow(&mut self) -> bool {
-        match self.current().kind {
+        match self.cursor.current().kind {
             TokenKind::LeftArrow => {
-                self.advance();
+                self.cursor.advance();
                 true
             }
-            TokenKind::Symbol('<') if matches!(self.peek_kind(1), Some(TokenKind::Symbol('-'))) => {
-                self.advance();
-                self.advance();
+            TokenKind::Symbol('<') if matches!(self.cursor.peek_kind(1), Some(TokenKind::Symbol('-'))) => {
+                self.cursor.advance();
+                self.cursor.advance();
                 true
             }
             _ => false,
@@ -198,9 +181,9 @@ impl TerminalParser<'_> {
     }
 
     fn expect_any_ident(&mut self) -> Result<String> {
-        match self.current().kind.clone() {
+        match self.cursor.current().kind.clone() {
             TokenKind::Ident(name) => {
-                self.advance();
+                self.cursor.advance();
                 Ok(name)
             }
             _ => Err(self.error("expected identifier in `become` route")),
@@ -212,120 +195,54 @@ impl TerminalParser<'_> {
     }
 
     fn skip_until_statement_end(&mut self) -> Result<()> {
-        while !self.is_eof() {
-            match self.current().kind {
+        while !self.cursor.is_eof() {
+            match self.cursor.current().kind {
                 TokenKind::Symbol(';') => {
-                    self.advance();
+                    self.cursor.advance();
                     return Ok(());
                 }
                 TokenKind::Symbol('{') => {
-                    self.advance();
+                    self.cursor.advance();
                     self.skip_balanced_after_open('{', '}')?;
                 }
                 TokenKind::Symbol('(') => {
-                    self.advance();
+                    self.cursor.advance();
                     self.skip_balanced_after_open('(', ')')?;
                 }
                 TokenKind::Symbol('[') => {
-                    self.advance();
+                    self.cursor.advance();
                     self.skip_balanced_after_open('[', ']')?;
                 }
                 TokenKind::Symbol('}') => return Ok(()),
-                _ => self.advance(),
+                _ => self.cursor.advance(),
             }
         }
         Ok(())
     }
 
-    fn skip_balanced(&mut self, open: char, close: char) -> Result<()> {
-        self.skip_balanced_after_open(open, close)
-    }
-
     fn skip_balanced_after_open(&mut self, open: char, close: char) -> Result<()> {
-        let mut depth = 1usize;
-        while !self.is_eof() {
-            match self.current().kind {
-                TokenKind::Symbol(symbol) if symbol == open => {
-                    depth += 1;
-                    self.advance();
-                }
-                TokenKind::Symbol(symbol) if symbol == close => {
-                    depth -= 1;
-                    self.advance();
-                    if depth == 0 {
-                        return Ok(());
-                    }
-                }
-                _ => self.advance(),
-            }
+        if self.cursor.take_balanced_after_open(open, close).is_some() {
+            Ok(())
+        } else {
+            Err(self.error(format!("unterminated `{open}` group")))
         }
-        Err(self.error(format!("unterminated `{open}` group")))
     }
 
     fn expect_symbol(&mut self, expected: char) -> Result<()> {
-        match self.current().kind {
-            TokenKind::Symbol(actual) if actual == expected => {
-                self.advance();
-                Ok(())
-            }
-            _ => Err(self.error(format!("expected `{expected}`"))),
-        }
-    }
-
-    fn consume_ident(&mut self, expected: &str) -> bool {
-        match &self.current().kind {
-            TokenKind::Ident(actual) if actual == expected => {
-                self.advance();
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn check_ident(&self, expected: &str) -> bool {
-        matches!(&self.current().kind, TokenKind::Ident(actual) if actual == expected)
-    }
-
-    fn consume_symbol(&mut self, expected: char) -> bool {
-        match self.current().kind {
-            TokenKind::Symbol(actual) if actual == expected => {
-                self.advance();
-                true
-            }
-            _ => false,
-        }
+        if self.cursor.consume_symbol(expected) { Ok(()) } else { Err(self.error(format!("expected `{expected}`"))) }
     }
 
     fn expect_list_separator_or_end(&mut self, end: char) -> Result<()> {
-        if self.consume_symbol(',') || self.check_symbol(end) { Ok(()) } else { Err(self.error(format!("expected `,` or `{end}`"))) }
-    }
-
-    fn check_symbol(&self, expected: char) -> bool {
-        matches!(self.current().kind, TokenKind::Symbol(actual) if actual == expected)
-    }
-
-    fn current(&self) -> &Token {
-        &self.tokens[self.pos]
-    }
-
-    fn peek_kind(&self, offset: usize) -> Option<&TokenKind> {
-        self.tokens.get(self.pos + offset).map(|token| &token.kind)
-    }
-
-    fn advance(&mut self) {
-        if !self.is_eof() {
-            self.pos += 1;
+        if self.cursor.consume_symbol(',') || self.cursor.check_symbol(end) {
+            Ok(())
+        } else {
+            Err(self.error(format!("expected `,` or `{end}`")))
         }
     }
 
-    fn is_eof(&self) -> bool {
-        matches!(self.current().kind, TokenKind::Eof)
-    }
-
     fn error(&self, message: impl Into<String>) -> ArgentError {
-        let snippet = self.body.get(self.current().span.start..).unwrap_or("");
-        let preview = snippet.lines().next().unwrap_or("").trim().chars().take(80).collect::<String>();
-        ArgentError::new(format!("{} at body byte {} near `{}`", message.into(), self.current().span.start, preview))
+        let preview = self.cursor.remaining_text().lines().next().unwrap_or("").trim().chars().take(80).collect::<String>();
+        ArgentError::new(format!("{} at body byte {} near `{}`", message.into(), self.cursor.byte_offset(), preview))
     }
 }
 

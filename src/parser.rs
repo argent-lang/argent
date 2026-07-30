@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
 use crate::ast::*;
+use crate::entry_routes::analyze_entry_routes;
 use crate::error::{ArgentError, Result};
 use crate::language::word;
 use crate::lexer::{Token, TokenKind, lex_argent_source};
-use crate::routes::analyze_entry_routes;
 
 pub fn parse_module(path: PathBuf, source: String) -> Result<Module> {
     let tokens = lex_argent_source(&source).map_err(|err| err.with_path(path.clone()))?;
