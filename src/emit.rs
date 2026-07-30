@@ -1882,6 +1882,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                 EntryStatement::If { condition, then_branch, else_branch, .. } => {
                     self.lower_if(out, indent, *condition, then_branch, else_branch.as_deref(), true)?;
                 }
+                EntryStatement::For { header, body, .. } => self.lower_for(out, indent, *header, body)?,
                 EntryStatement::Become { routes, .. } => self.lower_become(out, indent, routes)?,
                 EntryStatement::ValidateOutputsBecome { group, routes, .. } => {
                     self.lower_outputs_become(out, indent, group, routes)?;
@@ -1940,6 +1941,23 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             out.push('}');
         }
         out.push('\n');
+        Ok(())
+    }
+
+    fn lower_for(&mut self, out: &mut String, indent: usize, header: Span, body: &EntryStatement) -> Result<()> {
+        let header = self.entry.body.span_text(header).trim();
+        push_indent(out, indent);
+        out.push_str(&format!("for ({}) {{\n", self.lower_expr(header, None, indent)?));
+
+        self.conditional_depth += 1;
+        match body {
+            EntryStatement::Block { statements, .. } => self.lower_statements(out, indent + 4, statements)?,
+            statement => self.lower_statements(out, indent + 4, std::slice::from_ref(statement))?,
+        }
+        self.conditional_depth -= 1;
+
+        push_indent(out, indent);
+        out.push_str("}\n");
         Ok(())
     }
 

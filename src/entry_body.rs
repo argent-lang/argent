@@ -52,6 +52,7 @@ impl Default for EntryBody {
 #[derive(Debug, Clone)]
 pub(crate) enum EntryStatement {
     If { condition: Span, then_branch: Box<EntryStatement>, else_branch: Option<Box<EntryStatement>>, span: Span },
+    For { header: Span, body: Box<EntryStatement>, span: Span },
     Block { statements: Vec<EntryStatement>, span: Span },
     Become { routes: Vec<EntryRoute>, span: Span },
     ValidateOutputsBecome { group: String, routes: Vec<EntryRoute>, span: Span },
@@ -62,6 +63,7 @@ impl EntryStatement {
     pub(crate) fn span(&self) -> Span {
         match self {
             Self::If { span, .. }
+            | Self::For { span, .. }
             | Self::Block { span, .. }
             | Self::Become { span, .. }
             | Self::ValidateOutputsBecome { span, .. }
@@ -198,6 +200,12 @@ impl EntryStatementParser<'_> {
                 if self.cursor.consume_ident(word::ELSE) { Some(Box::new(self.parse_block_or_statement()?)) } else { None };
             let end = else_branch.as_deref().unwrap_or(&then_branch).span().end;
             Ok(EntryStatement::If { condition, then_branch, else_branch, span: Span { start, end } })
+        } else if self.cursor.consume_ident(word::FOR) {
+            self.expect_symbol('(')?;
+            let header = self.cursor.take_balanced_after_open('(', ')').ok_or_else(|| self.error("unterminated `(` group"))?;
+            let body = Box::new(self.parse_block_or_statement()?);
+            let span = Span { start, end: body.span().end };
+            Ok(EntryStatement::For { header, body, span })
         } else if self.cursor.consume_ident(word::BECOME) {
             let routes = self.parse_become_tail()?;
             Ok(EntryStatement::Become { routes, span: self.cursor.consumed_span_from(start) })
@@ -443,6 +451,27 @@ mod tests {
         assert_eq!(body.span_text(*condition), "done");
         assert!(matches!(then_branch.as_ref(), EntryStatement::Block { .. }));
         assert!(matches!(else_branch.as_deref(), Some(EntryStatement::Block { .. })));
+    }
+
+    #[test]
+    fn statements_keep_for_structure_and_the_following_boundary() {
+        let body = EntryBody::new(
+            r#"
+            for (i, 0, count, MAX_COUNT) {
+                check(i);
+            }
+            require(done);
+            "#,
+        )
+        .expect("body lexes");
+
+        let [EntryStatement::For { header, body: loop_body, .. }, EntryStatement::Plain { span: following }] = body.statements()
+        else {
+            panic!("expected one for loop followed by one plain statement");
+        };
+        assert_eq!(body.span_text(*header), "i, 0, count, MAX_COUNT");
+        assert!(matches!(loop_body.as_ref(), EntryStatement::Block { .. }));
+        assert_eq!(body.span_text(*following).trim(), "require(done);");
     }
 
     #[test]

@@ -98,6 +98,13 @@ fn analyze_statement(body: &EntryBody, statement: &EntryStatement) -> Result<Ter
         EntryStatement::Become { routes, .. } => {
             Ok(TerminalInfo::terminal(routes.iter().map(|route| route_call(body, route)).collect()))
         }
+        EntryStatement::For { body: loop_body, .. } => {
+            let result = analyze_statement(body, loop_body)?;
+            if result.info.contains_become {
+                return Err(body_error(body, loop_body.span().start, "`become` cannot be nested in a `for` loop"));
+            }
+            Ok(TerminalResult::empty())
+        }
         EntryStatement::Block { statements, span } => analyze_sequence(body, statements, span.end.saturating_sub(1)),
         EntryStatement::ValidateOutputsBecome { .. } | EntryStatement::Plain { .. } => Ok(TerminalResult::empty()),
     }
@@ -207,6 +214,20 @@ mod tests {
         .expect_err("one-sided conditional become must be rejected");
 
         assert!(err.to_string().contains("explicit `else`"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn rejects_become_nested_in_for_loop() {
+        let err = collect_routes(
+            r#"
+            for (i, 0, count, MAX_COUNT) {
+                become next <- Done(states[i]);
+            }
+            "#,
+        )
+        .expect_err("a loop cannot provide one terminal route for the entry");
+
+        assert!(err.to_string().contains("cannot be nested in a `for` loop"), "unexpected error: {err}");
     }
 
     #[test]
