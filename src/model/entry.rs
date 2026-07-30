@@ -7,7 +7,7 @@ use crate::ast::{
 };
 use crate::error::{ArgentError, Result};
 use crate::language::word;
-use crate::lexer::{Token, TokenKind, lex};
+use crate::lexer::{Token, TokenKind};
 use crate::naming::{is_identifier, to_snake};
 
 use super::{ActorEnumInfo, AppActors};
@@ -424,8 +424,7 @@ fn template_selectors_for_entry(
     // TODO(route clauses): Derive route domains only from entry clauses. Keep
     // body-local selector resolution in body analysis/codegen, then remove
     // this raw-body scan from EntryModel.
-    let tokens = lex(&entry.body)
-        .map_err(|err| ArgentError::new(format!("failed to lex body for `{}::{}`: {}", actor.name, entry.name, err.message)))?;
+    let tokens = entry.body.tokens();
     let mut pos = 0usize;
     while pos + 3 < tokens.len() {
         let is_actor_type = matches!(&tokens[pos].kind, TokenKind::Ident(name) if name == word::ACTOR_TYPE)
@@ -448,7 +447,7 @@ fn template_selectors_for_entry(
                     continue;
                 }
             };
-            let (expr, end_pos) = take_expr_until_semicolon(&entry.body, &tokens, pos + 6, actor, entry)?;
+            let (expr, end_pos) = take_expr_until_semicolon(entry.body.text(), tokens, pos + 6, actor, entry)?;
             let selector = template_selector_from_initializer(&ctx, &name, Some(&state), None, &expr)?;
             insert_template_selector(actor, entry, &mut selectors, selector)?;
             pos = end_pos + 1;
@@ -467,7 +466,7 @@ fn template_selectors_for_entry(
                 TokenKind::Ident(name) => name.clone(),
                 _ => unreachable!("checked actor enum local name"),
             };
-            let (expr, end_pos) = take_expr_until_semicolon(&entry.body, &tokens, pos + 3, actor, entry)?;
+            let (expr, end_pos) = take_expr_until_semicolon(entry.body.text(), tokens, pos + 3, actor, entry)?;
             let mut selector = template_selector_from_initializer(&ctx, &name, None, Some(&actor_enum_name), &expr)?;
             selector.selector_expr = name.clone();
             insert_template_selector(actor, entry, &mut selectors, selector)?;
@@ -704,7 +703,7 @@ fn expand_routes<'a>(routes: impl Iterator<Item = &'a RouteCall>, selectors: &BT
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{EmitOutput, EmitSpec, EntryKind};
+    use crate::ast::{EmitOutput, EmitSpec, EntryBody, EntryKind};
 
     #[test]
     fn models_covenant_groups_and_preserves_source_nodes() {
@@ -725,7 +724,7 @@ mod tests {
                 outputs: vec![SpawnOutputDecl { name: "child".to_string(), actor: "Child".to_string(), group_index: 0 }],
             }],
             emits: EmitSpec::Outputs(vec![EmitOutput { name: "next".to_string(), actors: vec!["Move".to_string()], auth_index: 0 }]),
-            body: String::new(),
+            body: EntryBody::default(),
             routes: vec![RouteCall { output: "next".to_string(), actor: "target".to_string(), state: "next".to_string() }],
             terminal_route_sets: Vec::new(),
         };
@@ -809,7 +808,7 @@ mod tests {
             observes: Vec::new(),
             spawns: Vec::new(),
             emits: EmitSpec::None,
-            body: String::new(),
+            body: EntryBody::default(),
             routes: Vec::new(),
             terminal_route_sets: Vec::new(),
         };
@@ -848,7 +847,7 @@ mod tests {
                 EmitOutput { name: "first".to_string(), actors: vec!["Pawn".to_string()], auth_index: 0 },
                 EmitOutput { name: "second".to_string(), actors: vec!["Move".to_string()], auth_index: 1 },
             ]),
-            body: String::new(),
+            body: EntryBody::default(),
             routes: Vec::new(),
             terminal_route_sets: Vec::new(),
         };

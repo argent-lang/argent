@@ -1,7 +1,7 @@
-use crate::ast::RouteCall;
+use crate::ast::{EntryBody, RouteCall};
 use crate::error::{ArgentError, Result};
 use crate::language::word;
-use crate::lexer::{Token, TokenKind, lex};
+use crate::lexer::{Token, TokenKind};
 
 #[derive(Debug, Clone)]
 pub struct RouteAnalysis {
@@ -14,8 +14,11 @@ pub fn collect_routes(body: &str) -> Result<Vec<RouteCall>> {
 }
 
 pub fn analyze_routes(body: &str) -> Result<RouteAnalysis> {
-    let tokens = lex(body)?;
-    let mut parser = TerminalParser { body, tokens: &tokens, pos: 0 };
+    analyze_entry_routes(&EntryBody::new(body)?)
+}
+
+pub(crate) fn analyze_entry_routes(body: &EntryBody) -> Result<RouteAnalysis> {
+    let mut parser = TerminalParser { body: body.text(), tokens: body.tokens(), pos: 0 };
     let info = parser.parse_sequence(None)?;
     let routes = info.terminal_route_sets.iter().flatten().cloned().collect();
     Ok(RouteAnalysis { routes, terminal_route_sets: info.terminal_route_sets })

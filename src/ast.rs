@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use crate::language::word;
 
+pub use crate::entry_body::EntryBody;
+
 #[derive(Debug, Clone)]
 pub struct Program {
     pub root: PathBuf,
@@ -91,7 +93,7 @@ pub struct EntryDecl {
     pub observes: Vec<ObserveDecl>,
     pub spawns: Vec<SpawnDecl>,
     pub emits: EmitSpec,
-    pub body: String,
+    pub body: EntryBody,
     pub routes: Vec<RouteCall>,
     pub terminal_route_sets: Vec<Vec<RouteCall>>,
 }

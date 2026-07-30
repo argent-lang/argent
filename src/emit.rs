@@ -1681,7 +1681,7 @@ impl<'a> CovenantOutputContext<'a> {
 
 struct BodyLowerer<'a, 'm> {
     body: &'a str,
-    tokens: Vec<Token>,
+    tokens: &'a [Token],
     pos: usize,
     actor: &'a ActorDecl,
     entry: &'a EntryDecl,
@@ -1739,9 +1739,6 @@ fn entry_ref_replacements(
 
 impl<'a, 'm> BodyLowerer<'a, 'm> {
     fn new(actor: &'a ActorDecl, entry: &'a EntryDecl, model: &'m Model<'a>) -> Result<Self> {
-        let tokens = lex(&entry.body)
-            .map_err(|err| ArgentError::new(format!("failed to lex body for `{}::{}`: {}", actor.name, entry.name, err.message)))?;
-
         let mut types = BTreeMap::new();
         let mut source_types = BTreeMap::new();
         let expanded_digest_fields = state_expansion_digest_fields_for_state(&actor.state, model);
@@ -1825,8 +1822,8 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         let observed_output_fields = observed_output_field_witness_specs(actor, entry, model);
 
         Ok(Self {
-            body: &entry.body,
-            tokens,
+            body: entry.body.text(),
+            tokens: entry.body.tokens(),
             pos: 0,
             actor,
             entry,
@@ -1865,7 +1862,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         let missing = self
             .output_values
             .iter()
-            .filter(|value| count_qualified_ref(&self.tokens, &value.source) == 0)
+            .filter(|value| count_qualified_ref(self.tokens, &value.source) == 0)
             .map(|value| value.source.as_str())
             .collect::<Vec<_>>();
         if missing.is_empty() {
@@ -2020,7 +2017,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             .output_values
             .iter()
             .map(|output| {
-                count_qualified_ref(&self.tokens, &output.source) * output.source.split('.').filter(|segment| *segment == name).count()
+                count_qualified_ref(self.tokens, &output.source) * output.source.split('.').filter(|segment| *segment == name).count()
             })
             .sum::<usize>();
         if self.conditional_depth != 0
@@ -12218,7 +12215,7 @@ mod tests {
                                 actors: vec!["Player".to_string()],
                                 auth_index: 0,
                             }]),
-                            body: String::new(),
+                            body: EntryBody::default(),
                             routes: Vec::new(),
                             terminal_route_sets: Vec::new(),
                         }],

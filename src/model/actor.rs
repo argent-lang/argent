@@ -47,7 +47,7 @@ impl<'a> ActorModel<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{EmitSpec, EntryDecl, EntryKind};
+    use crate::ast::{EmitSpec, EntryBody, EntryDecl, EntryKind};
 
     fn entry(name: &str) -> EntryDecl {
         EntryDecl {
@@ -58,7 +58,7 @@ mod tests {
             observes: Vec::new(),
             spawns: Vec::new(),
             emits: EmitSpec::None,
-            body: String::new(),
+            body: EntryBody::default(),
             routes: Vec::new(),
             terminal_route_sets: Vec::new(),
         }

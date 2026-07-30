@@ -4,7 +4,7 @@ use crate::ast::*;
 use crate::error::{ArgentError, Result};
 use crate::language::word;
 use crate::lexer::{Token, TokenKind, lex_argent_source};
-use crate::routes::analyze_routes;
+use crate::routes::analyze_entry_routes;
 
 pub fn parse_module(path: PathBuf, source: String) -> Result<Module> {
     let tokens = lex_argent_source(&source).map_err(|err| err.with_path(path.clone()))?;
@@ -190,8 +190,8 @@ impl Parser {
         let (observes, consumes, spawns) = self.parse_entry_clauses()?;
         self.expect_ident(word::EMITS)?;
         let emits = self.parse_emits()?;
-        let body = self.consume_block_text()?;
-        let route_analysis = analyze_routes(&body).map_err(|err| ArgentError::at(&self.path, err.message))?;
+        let body = EntryBody::new(self.consume_block_text()?)?;
+        let route_analysis = analyze_entry_routes(&body).map_err(|err| ArgentError::at(&self.path, err.message))?;
         Ok(EntryDecl {
             kind: EntryKind::Leader,
             name,
@@ -211,8 +211,8 @@ impl Parser {
         let name = self.expect_any_ident()?;
         let params = self.parse_param_list()?;
         let (observes, consumes, spawns) = self.parse_entry_clauses()?;
-        let body = self.consume_block_text()?;
-        let route_analysis = analyze_routes(&body).map_err(|err| ArgentError::at(&self.path, err.message))?;
+        let body = EntryBody::new(self.consume_block_text()?)?;
+        let route_analysis = analyze_entry_routes(&body).map_err(|err| ArgentError::at(&self.path, err.message))?;
         Ok(EntryDecl {
             kind: EntryKind::Delegate,
             name,

@@ -8,6 +8,7 @@ pub mod ast;
 pub mod builder;
 pub mod codec;
 pub mod emit;
+mod entry_body;
 pub mod error;
 pub mod inspect;
 mod language;
