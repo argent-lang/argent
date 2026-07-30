@@ -99,12 +99,16 @@ fn analyze_statement(body: &EntryBody, statement: &EntryStatement) -> Result<Ter
             Ok(TerminalInfo::terminal(routes.iter().map(|route| route_call(body, route)).collect()))
         }
         EntryStatement::Block { statements, span } => analyze_sequence(body, statements, span.end.saturating_sub(1)),
-        EntryStatement::Plain { .. } => Ok(TerminalResult::empty()),
+        EntryStatement::ValidateOutputsBecome { .. } | EntryStatement::Plain { .. } => Ok(TerminalResult::empty()),
     }
 }
 
 fn route_call(body: &EntryBody, route: &EntryRoute) -> RouteCall {
-    RouteCall { output: route.output.clone(), actor: route.actor.clone(), state: body.span_text(route.state).trim().to_string() }
+    RouteCall {
+        output: route.output.clone(),
+        actor: body.span_text(route.actor).trim().to_string(),
+        state: body.span_text(route.state).trim().to_string(),
+    }
 }
 
 fn body_error(body: &EntryBody, byte_offset: usize, message: &str) -> crate::error::ArgentError {

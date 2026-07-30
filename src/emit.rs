@@ -5,10 +5,10 @@ use std::path::Path;
 use crate::artifact::*;
 use crate::ast::*;
 use crate::codec::encode_hex;
-use crate::entry_body::EntryBodyCursor;
+use crate::entry_body::{EntryRoute, EntryStatement};
 use crate::error::{ArgentError, Result};
 use crate::language::word;
-use crate::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, Token, TokenKind, lex};
+use crate::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, Span, Token, TokenKind, lex};
 use crate::link::{LinkedActor, LinkedContext, link_imported_actors};
 use crate::model::{
     ActorEnumInfo, ActorModel, ActorTarget, AppActors, CompilerRoutePlan, CompilerRoutePlanner, CompilerRouteTransition,
@@ -1681,7 +1681,6 @@ impl<'a> CovenantOutputContext<'a> {
 }
 
 struct BodyLowerer<'a, 'm> {
-    cursor: EntryBodyCursor<'a>,
     actor: &'a ActorDecl,
     entry: &'a EntryDecl,
     model: &'m Model<'a>,
@@ -1695,6 +1694,7 @@ struct BodyLowerer<'a, 'm> {
     observed_output_fields: Vec<ObservedOutputFieldWitnessSpec>,
     validated_spawns: BTreeSet<String>,
     conditional_depth: usize,
+    current_statement: Option<Span>,
 }
 
 #[derive(Debug)]
@@ -1821,7 +1821,6 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         let observed_output_fields = observed_output_field_witness_specs(actor, entry, model);
 
         Ok(Self {
-            cursor: entry.body.cursor(),
             actor,
             entry,
             model,
@@ -1835,12 +1834,14 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             observed_output_fields,
             validated_spawns: BTreeSet::new(),
             conditional_depth: 0,
+            current_statement: None,
         })
     }
 
     fn lower(mut self) -> Result<LoweredEntryBody> {
         let mut out = String::new();
-        self.lower_statements(&mut out, 8, None)?;
+        self.lower_statements(&mut out, 8, self.entry.body.statements())?;
+        self.current_statement = None;
         if out.trim().is_empty() {
             out.push_str("        require(1 == 1);\n");
         }
@@ -1874,55 +1875,67 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         )))
     }
 
-    fn lower_statements(&mut self, out: &mut String, indent: usize, end: Option<char>) -> Result<()> {
-        while !self.cursor.is_eof() && !end.is_some_and(|symbol| self.cursor.check_symbol(symbol)) {
-            if self.cursor.consume_ident(word::IF) {
-                self.lower_if(out, indent)?;
-            } else if self.cursor.consume_ident(word::BECOME) {
-                self.lower_become(out, indent)?;
-            } else if self.check_outputs_become_start() {
-                self.lower_outputs_become(out, indent)?;
-            } else if self.cursor.check_symbol(';') {
-                self.cursor.advance();
-            } else {
-                self.lower_plain_statement(out, indent)?;
+    fn lower_statements(&mut self, out: &mut String, indent: usize, statements: &[EntryStatement]) -> Result<()> {
+        for statement in statements {
+            self.current_statement = Some(statement.span());
+            match statement {
+                EntryStatement::If { condition, then_branch, else_branch, .. } => {
+                    self.lower_if(out, indent, *condition, then_branch, else_branch.as_deref(), true)?;
+                }
+                EntryStatement::Become { routes, .. } => self.lower_become(out, indent, routes)?,
+                EntryStatement::ValidateOutputsBecome { group, routes, .. } => {
+                    self.lower_outputs_become(out, indent, group, routes)?;
+                }
+                EntryStatement::Plain { span } => self.lower_plain_statement(out, indent, *span)?,
+                EntryStatement::Block { statements, .. } => {
+                    push_indent(out, indent);
+                    out.push_str("{\n");
+                    self.lower_statements(out, indent + 4, statements)?;
+                    push_indent(out, indent);
+                    out.push_str("}\n");
+                }
             }
         }
         Ok(())
     }
 
-    fn lower_if(&mut self, out: &mut String, indent: usize) -> Result<()> {
-        self.lower_if_inner(out, indent, true)
-    }
-
-    fn lower_if_inner(&mut self, out: &mut String, indent: usize, push_leading_indent: bool) -> Result<()> {
-        self.expect_symbol('(')?;
-        let condition = self.take_balanced_expr('(', ')')?;
-        self.expect_symbol('{')?;
-
+    fn lower_if(
+        &mut self,
+        out: &mut String,
+        indent: usize,
+        condition: Span,
+        then_branch: &EntryStatement,
+        else_branch: Option<&EntryStatement>,
+        push_leading_indent: bool,
+    ) -> Result<()> {
+        let EntryStatement::Block { statements: then_statements, .. } = then_branch else {
+            return Err(self.error("expected `{`"));
+        };
         if push_leading_indent {
             push_indent(out, indent);
         }
-        out.push_str(&format!("if ({}) {{\n", self.lower_expr(&condition, None, indent)?));
+        let condition = self.entry.body.span_text(condition).trim();
+        out.push_str(&format!("if ({}) {{\n", self.lower_expr(condition, None, indent)?));
         self.conditional_depth += 1;
-        self.lower_statements(out, indent + 4, Some('}'))?;
+        self.lower_statements(out, indent + 4, then_statements)?;
         self.conditional_depth -= 1;
-        self.expect_symbol('}')?;
         push_indent(out, indent);
         out.push('}');
 
-        if self.cursor.consume_ident(word::ELSE) {
-            if self.cursor.consume_ident(word::IF) {
+        if let Some(else_branch) = else_branch {
+            self.current_statement = Some(else_branch.span());
+            if let EntryStatement::If { condition, then_branch, else_branch, .. } = else_branch {
                 out.push_str(" else ");
-                self.lower_if_inner(out, indent, false)?;
+                self.lower_if(out, indent, *condition, then_branch, else_branch.as_deref(), false)?;
                 return Ok(());
             }
-            self.expect_symbol('{')?;
+            let EntryStatement::Block { statements: else_statements, .. } = else_branch else {
+                return Err(self.error("expected `{`"));
+            };
             out.push_str(" else {\n");
             self.conditional_depth += 1;
-            self.lower_statements(out, indent + 4, Some('}'))?;
+            self.lower_statements(out, indent + 4, else_statements)?;
             self.conditional_depth -= 1;
-            self.expect_symbol('}')?;
             push_indent(out, indent);
             out.push('}');
         }
@@ -1930,8 +1943,9 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         Ok(())
     }
 
-    fn lower_plain_statement(&mut self, out: &mut String, indent: usize) -> Result<()> {
-        let statement = self.take_until_semicolon()?;
+    fn lower_plain_statement(&mut self, out: &mut String, indent: usize, span: Span) -> Result<()> {
+        let source = self.entry.body.span_text(span).trim();
+        let statement = source.strip_suffix(';').ok_or_else(|| self.error("unterminated statement"))?.trim().to_string();
         if let Some((source_ty, name, expr)) = parse_typed_local_statement(&statement) {
             if let Some(state) = parse_actor_type(source_ty) {
                 self.lower_actor_type_statement(out, indent, state, name, expr)?;
@@ -2122,95 +2136,38 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         Ok(template_var)
     }
 
-    fn lower_become(&mut self, out: &mut String, indent: usize) -> Result<()> {
-        let routes = self.parse_become_routes()?;
+    fn lower_become(&mut self, out: &mut String, indent: usize, routes: &[EntryRoute]) -> Result<()> {
         for route in routes {
+            let route = self.route_call(route);
             self.lower_route(out, indent, route)?;
         }
         Ok(())
     }
 
-    fn parse_become_routes(&mut self) -> Result<Vec<RouteCall>> {
-        if self.cursor.consume_symbol('{') {
-            let mut routes = Vec::new();
-            while !self.cursor.check_symbol('}') && !self.cursor.is_eof() {
-                routes.push(self.parse_become_route()?);
-                self.expect_list_separator_or_end('}')?;
-            }
-            self.expect_symbol('}')?;
-            self.cursor.consume_symbol(';');
-            return Ok(routes);
+    fn route_call(&self, route: &EntryRoute) -> RouteCall {
+        RouteCall {
+            output: route.output.clone(),
+            actor: self.entry.body.span_text(route.actor).trim().to_string(),
+            state: self.entry.body.span_text(route.state).trim().to_string(),
         }
-
-        let route = self.parse_become_route()?;
-        self.cursor.consume_symbol(';');
-        Ok(vec![route])
     }
 
-    fn parse_become_route(&mut self) -> Result<RouteCall> {
-        let output = self.expect_any_ident()?;
-        if !self.consume_left_arrow() {
-            return Err(self.error("every `become` route must name its output with `output <- Actor(state)`"));
-        }
-        let actor = self.take_route_actor_expr()?;
-        self.expect_symbol('(')?;
-        let state = self.take_balanced_expr('(', ')')?;
-        Ok(RouteCall { output, actor, state })
-    }
-
-    fn take_route_actor_expr(&mut self) -> Result<String> {
-        let start = self.cursor.byte_offset();
-        self.take_route_actor_expr_from(start)
-    }
-
-    fn take_route_actor_expr_from(&mut self, start: usize) -> Result<String> {
-        let mut depth = 0usize;
-        while !self.cursor.is_eof() {
-            let token = self.cursor.current().clone();
-            match token.kind {
-                TokenKind::Symbol('(') if depth == 0 => {
-                    let expr = self.cursor.span_text(self.cursor.span_to_current(start)).trim().to_string();
-                    if expr.is_empty() {
-                        return Err(self.error("become target is empty"));
-                    }
-                    return Ok(expr);
-                }
-                TokenKind::Symbol('{') | TokenKind::Symbol('[') | TokenKind::Symbol('<') => {
-                    depth += 1;
-                    self.cursor.advance();
-                }
-                TokenKind::Symbol('}') | TokenKind::Symbol(']') | TokenKind::Symbol('>') => {
-                    depth = depth.saturating_sub(1);
-                    self.cursor.advance();
-                }
-                _ => self.cursor.advance(),
-            }
-        }
-        Err(self.error("unterminated become target"))
-    }
-
-    fn lower_outputs_become(&mut self, out: &mut String, indent: usize) -> Result<()> {
-        self.expect_ident(word::REQUIRE)?;
-        let group_name = self.expect_any_ident()?;
-        self.expect_symbol('.')?;
-        self.expect_ident(word::OUTPUTS)?;
-        self.expect_ident(word::BECOME)?;
-        let routes = self.parse_become_routes()?;
-
+    fn lower_outputs_become(&mut self, out: &mut String, indent: usize, group_name: &str, routes: &[EntryRoute]) -> Result<()> {
         let entry_model = self.model.entry_model(self.actor, self.entry)?;
         let group = entry_model
             .existing_groups()
             .chain(entry_model.genesis_groups())
-            .find(|group| group.name() == Some(group_name.as_str()))
+            .find(|group| group.name() == Some(group_name))
             .ok_or_else(|| self.error(format!("unknown observe or spawn `{group_name}`")))?;
         if group.spawn().is_some() {
             if self.conditional_depth != 0 {
                 return Err(self.error(format!("spawn `{group_name}` output validation must be unconditional")));
             }
-            if !self.validated_spawns.insert(group_name.clone()) {
+            if !self.validated_spawns.insert(group_name.to_string()) {
                 return Err(self.error(format!("spawn `{group_name}` outputs are validated more than once")));
             }
         }
+        let routes = routes.iter().map(|route| self.route_call(route)).collect();
         self.lower_covenant_outputs_become(out, indent, group, routes)
     }
 
@@ -2957,93 +2914,13 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         lower_actor_enum_literals(&out, self.model)
     }
 
-    fn take_until_semicolon(&mut self) -> Result<String> {
-        let start = self.cursor.byte_offset();
-        let mut depth = 0usize;
-        while !self.cursor.is_eof() {
-            let token = self.cursor.current().clone();
-            match token.kind {
-                TokenKind::Symbol('{') | TokenKind::Symbol('(') | TokenKind::Symbol('[') => {
-                    depth += 1;
-                    self.cursor.advance();
-                }
-                TokenKind::Symbol('}') | TokenKind::Symbol(')') | TokenKind::Symbol(']') => {
-                    depth = depth.saturating_sub(1);
-                    self.cursor.advance();
-                }
-                TokenKind::Symbol(';') if depth == 0 => {
-                    let text = self.cursor.span_text(self.cursor.span_to_current(start)).trim().to_string();
-                    self.cursor.advance();
-                    return Ok(text);
-                }
-                _ => self.cursor.advance(),
-            }
-        }
-        Err(self.error("unterminated statement"))
-    }
-
-    fn take_balanced_expr(&mut self, open: char, close: char) -> Result<String> {
-        let span =
-            self.cursor.take_balanced_after_open(open, close).ok_or_else(|| self.error(format!("unterminated `{open}` group")))?;
-        Ok(self.cursor.span_text(span).trim().to_string())
-    }
-
-    fn expect_any_ident(&mut self) -> Result<String> {
-        match self.cursor.current().kind.clone() {
-            TokenKind::Ident(name) => {
-                self.cursor.advance();
-                Ok(name)
-            }
-            _ => Err(self.error("expected identifier")),
-        }
-    }
-
-    fn expect_ident(&mut self, expected: &str) -> Result<()> {
-        if self.cursor.consume_ident(expected) { Ok(()) } else { Err(self.error(format!("expected `{expected}`"))) }
-    }
-
-    fn expect_symbol(&mut self, expected: char) -> Result<()> {
-        if self.cursor.consume_symbol(expected) { Ok(()) } else { Err(self.error(format!("expected `{expected}`"))) }
-    }
-
-    fn expect_list_separator_or_end(&mut self, end: char) -> Result<()> {
-        if self.cursor.consume_symbol(',') || self.cursor.check_symbol(end) {
-            Ok(())
-        } else {
-            Err(self.error(format!("expected `,` or `{end}`")))
-        }
-    }
-
-    fn consume_left_arrow(&mut self) -> bool {
-        match self.cursor.current().kind {
-            TokenKind::LeftArrow => {
-                self.cursor.advance();
-                true
-            }
-            TokenKind::Symbol('<') if matches!(self.cursor.peek_kind(1), Some(TokenKind::Symbol('-'))) => {
-                self.cursor.advance();
-                self.cursor.advance();
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn check_outputs_become_start(&self) -> bool {
-        matches!(&self.cursor.current().kind, TokenKind::Ident(actual) if actual == word::REQUIRE)
-            && matches!(self.cursor.peek_kind(1), Some(TokenKind::Ident(_)))
-            && matches!(self.cursor.peek_kind(2), Some(TokenKind::Symbol('.')))
-            && matches!(self.cursor.peek_kind(3), Some(TokenKind::Ident(actual)) if actual == word::OUTPUTS)
-            && matches!(self.cursor.peek_kind(4), Some(TokenKind::Ident(actual)) if actual == word::BECOME)
-    }
-
     fn error(&self, message: impl Into<String>) -> ArgentError {
         ArgentError::new(format!(
-            "{} in `{}::{}` at body byte {}",
+            "{} in `{}::{}`{}",
             message.into(),
             self.actor.name,
             self.entry.name,
-            self.cursor.byte_offset()
+            self.current_statement.map(|span| format!(" at body bytes {span}")).unwrap_or_default(),
         ))
     }
 }
@@ -8862,7 +8739,7 @@ mod tests {
 
     #[test]
     fn rejects_semicolons_in_observed_become_route_lists() {
-        let err = emit_inline_error(
+        let err = parse_and_validate(
             r#"
             state ForeignState {
                 int amount;
@@ -8903,7 +8780,8 @@ mod tests {
                 actor Local;
             }
             "#,
-        );
+        )
+        .expect_err("semicolon-separated output routes must not parse");
 
         assert!(err.to_string().contains("expected `,` or `}`"), "unexpected error: {err}");
     }
@@ -11050,12 +10928,118 @@ mod tests {
     }
 
     fn inline_artifact(name: &str, source: &str) -> Artifact {
+        inline_actor_sil_and_artifact(name, source).1
+    }
+
+    fn inline_actor_sil_and_artifact(name: &str, source: &str) -> (BTreeMap<String, String>, Artifact) {
         let path = PathBuf::from(format!("{name}.ag"));
         let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("model validates");
         let actor_sil = actor_sil_for_model(&model);
-        emit_artifact(&program, &model, &actor_sil).expect("artifact emits")
+        let artifact = emit_artifact(&program, &model, &actor_sil).expect("artifact emits");
+        (actor_sil, artifact)
+    }
+
+    #[test]
+    fn standalone_entry_body_block_lowers_and_compiles() {
+        let (actor_sil, _) = inline_actor_sil_and_artifact(
+            "standalone-entry-body-block",
+            r#"
+            state CounterState {
+                int count;
+            }
+
+            actor Counter owns CounterState {
+                entry inspect(int delta) emits none {
+                    {
+                        int candidate = count + delta;
+                        require((candidate >= count) || (delta < 0));
+                    }
+                    require(count >= 0);
+                }
+            }
+
+            app StandaloneEntryBodyBlock {
+                actor Counter;
+            }
+            "#,
+        );
+
+        let sil = actor_sil.get("Counter").expect("Counter emits");
+        assert!(
+            sil.contains(
+                r#"        {
+            int candidate = count + delta;
+            require((candidate >= count) || (delta < 0));
+        }
+        require(count >= 0);"#
+            ),
+            "standalone block must remain a nested Sil block:\n{sil}"
+        );
+    }
+
+    #[test]
+    fn complex_nested_entry_body_lowers_and_compiles() {
+        inline_artifact(
+            "complex-nested-entry-body",
+            r#"
+            state CounterState {
+                int count;
+                int limit;
+            }
+
+            actor Counter owns CounterState {
+                entry advance(int delta, int scale, bool prefer_limit) emits next: Counter {
+                    int base = count + ((delta * scale) + (limit - count));
+                    {
+                        int bounded = base + ((limit - base) * scale);
+                        require((bounded >= count) || ((delta < 0) && !prefer_limit));
+                        {
+                            int mixed = (bounded + (delta * (scale + 1))) % (limit + 1);
+                            require(((mixed >= 0) && (bounded <= limit)) || prefer_limit);
+                        }
+                    }
+
+                    if ((delta > 0) && ((base < limit) || prefer_limit)) {
+                        CounterState next_state = {
+                            count: base + (scale * 2),
+                            limit: limit,
+                        };
+                        require(
+                            (next.value >= self.value)
+                                && ((next_state.count > count) || (delta > scale))
+                        );
+                        become next <- Counter(next_state);
+                    } else if ((delta == 0) || ((scale > limit) && !prefer_limit)) {
+                        CounterState next_state = {
+                            count: count,
+                            limit: limit + (scale - delta),
+                        };
+                        require(
+                            (next.value == self.value)
+                                || ((next.value > self.value) && (next_state.limit >= limit))
+                        );
+                        become next <- Counter(next_state);
+                    } else {
+                        CounterState next_state = {
+                            count: count + ((limit - scale) * (delta + 1)),
+                            limit: limit,
+                        };
+                        require(
+                            ((next.value >= 0) && (self.value >= 0))
+                                || ((next_state.count <= limit) && !prefer_limit)
+                        );
+                        become next <- Counter(next_state);
+                    }
+                }
+            }
+
+            app ComplexNestedEntryBody {
+                actor Counter;
+            }
+            "#,
+        );
     }
 
     #[test]

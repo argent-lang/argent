@@ -37,7 +37,7 @@ impl EntryBody {
         &self.text[span.start..span.end]
     }
 
-    pub(crate) fn cursor(&self) -> EntryBodyCursor<'_> {
+    fn cursor(&self) -> EntryBodyCursor<'_> {
         EntryBodyCursor { body: self, pos: 0 }
     }
 }
@@ -48,34 +48,24 @@ impl Default for EntryBody {
     }
 }
 
-/// The structural statements Argent needs to understand before full Sil parsing.
+/// The structural statements Argent understands without parsing ordinary Sil statements.
 #[derive(Debug, Clone)]
 pub(crate) enum EntryStatement {
-    If {
-        // Kept for the lowering pass that will consume this structure next.
-        #[allow(dead_code)]
-        condition: Span,
-        then_branch: Box<EntryStatement>,
-        else_branch: Option<Box<EntryStatement>>,
-        span: Span,
-    },
-    Block {
-        statements: Vec<EntryStatement>,
-        span: Span,
-    },
-    Become {
-        routes: Vec<EntryRoute>,
-        span: Span,
-    },
-    Plain {
-        span: Span,
-    },
+    If { condition: Span, then_branch: Box<EntryStatement>, else_branch: Option<Box<EntryStatement>>, span: Span },
+    Block { statements: Vec<EntryStatement>, span: Span },
+    Become { routes: Vec<EntryRoute>, span: Span },
+    ValidateOutputsBecome { group: String, routes: Vec<EntryRoute>, span: Span },
+    Plain { span: Span },
 }
 
 impl EntryStatement {
     pub(crate) fn span(&self) -> Span {
         match self {
-            Self::If { span, .. } | Self::Block { span, .. } | Self::Become { span, .. } | Self::Plain { span } => *span,
+            Self::If { span, .. }
+            | Self::Block { span, .. }
+            | Self::Become { span, .. }
+            | Self::ValidateOutputsBecome { span, .. }
+            | Self::Plain { span } => *span,
         }
     }
 }
@@ -84,40 +74,40 @@ impl EntryStatement {
 #[derive(Debug, Clone)]
 pub(crate) struct EntryRoute {
     pub(crate) output: String,
-    pub(crate) actor: String,
+    pub(crate) actor: Span,
     pub(crate) state: Span,
 }
 
 /// Traverses a body's shared tokens while retaining access to their source text.
-pub(crate) struct EntryBodyCursor<'a> {
+struct EntryBodyCursor<'a> {
     body: &'a EntryBody,
     pos: usize,
 }
 
 impl<'a> EntryBodyCursor<'a> {
-    pub(crate) fn current(&self) -> &Token {
+    fn current(&self) -> &Token {
         &self.body.tokens[self.pos]
     }
 
-    pub(crate) fn peek_kind(&self, offset: usize) -> Option<&TokenKind> {
+    fn peek_kind(&self, offset: usize) -> Option<&TokenKind> {
         self.body.tokens.get(self.pos + offset).map(|token| &token.kind)
     }
 
-    pub(crate) fn advance(&mut self) {
+    fn advance(&mut self) {
         if !self.is_eof() {
             self.pos += 1;
         }
     }
 
-    pub(crate) fn is_eof(&self) -> bool {
+    fn is_eof(&self) -> bool {
         matches!(self.current().kind, TokenKind::Eof)
     }
 
-    pub(crate) fn check_ident(&self, expected: &str) -> bool {
+    fn check_ident(&self, expected: &str) -> bool {
         matches!(&self.current().kind, TokenKind::Ident(actual) if actual == expected)
     }
 
-    pub(crate) fn consume_ident(&mut self, expected: &str) -> bool {
+    fn consume_ident(&mut self, expected: &str) -> bool {
         if self.check_ident(expected) {
             self.advance();
             true
@@ -126,11 +116,11 @@ impl<'a> EntryBodyCursor<'a> {
         }
     }
 
-    pub(crate) fn check_symbol(&self, expected: char) -> bool {
+    fn check_symbol(&self, expected: char) -> bool {
         matches!(self.current().kind, TokenKind::Symbol(actual) if actual == expected)
     }
 
-    pub(crate) fn consume_symbol(&mut self, expected: char) -> bool {
+    fn consume_symbol(&mut self, expected: char) -> bool {
         if self.check_symbol(expected) {
             self.advance();
             true
@@ -140,7 +130,7 @@ impl<'a> EntryBodyCursor<'a> {
     }
 
     /// Takes the source span inside a group after its opening token was consumed.
-    pub(crate) fn take_balanced_after_open(&mut self, open: char, close: char) -> Option<Span> {
+    fn take_balanced_after_open(&mut self, open: char, close: char) -> Option<Span> {
         let start = self.current().span.start;
         let mut depth = 1usize;
         while !self.is_eof() {
@@ -164,11 +154,7 @@ impl<'a> EntryBodyCursor<'a> {
         None
     }
 
-    pub(crate) fn span_text(&self, span: Span) -> &'a str {
-        self.body.span_text(span)
-    }
-
-    pub(crate) fn span_to_current(&self, start: usize) -> Span {
+    fn span_to_current(&self, start: usize) -> Span {
         Span { start, end: self.byte_offset() }
     }
 
@@ -177,11 +163,11 @@ impl<'a> EntryBodyCursor<'a> {
         Span { start, end }
     }
 
-    pub(crate) fn byte_offset(&self) -> usize {
+    fn byte_offset(&self) -> usize {
         self.current().span.start
     }
 
-    pub(crate) fn remaining_text(&self) -> &'a str {
+    fn remaining_text(&self) -> &'a str {
         self.body.text.get(self.byte_offset()..).unwrap_or("")
     }
 }
@@ -215,6 +201,9 @@ impl EntryStatementParser<'_> {
         } else if self.cursor.consume_ident(word::BECOME) {
             let routes = self.parse_become_tail()?;
             Ok(EntryStatement::Become { routes, span: self.cursor.consumed_span_from(start) })
+        } else if self.check_outputs_become_start() {
+            let (group, routes) = self.parse_outputs_become()?;
+            Ok(EntryStatement::ValidateOutputsBecome { group, routes, span: self.cursor.consumed_span_from(start) })
         } else if self.cursor.consume_symbol('{') {
             self.parse_block_after_open(start)
         } else {
@@ -259,25 +248,60 @@ impl EntryStatementParser<'_> {
         Ok(vec![route])
     }
 
+    fn parse_outputs_become(&mut self) -> Result<(String, Vec<EntryRoute>)> {
+        self.expect_ident(word::REQUIRE)?;
+        let group = self.expect_any_ident()?;
+        self.expect_symbol('.')?;
+        self.expect_ident(word::OUTPUTS)?;
+        self.expect_ident(word::BECOME)?;
+        Ok((group, self.parse_become_tail()?))
+    }
+
     fn parse_route(&mut self) -> Result<EntryRoute> {
         let output = self.expect_any_ident()?;
         if !self.consume_left_arrow() {
             return Err(self.error("every `become` route must name its output with `output <- Actor(state)`"));
         }
-        let actor = self.parse_actor_name()?;
+        let actor = self.take_route_actor_expr()?;
 
         self.expect_symbol('(')?;
         let state = self.cursor.take_balanced_after_open('(', ')').ok_or_else(|| self.error("unterminated route state expression"))?;
         Ok(EntryRoute { output, actor, state })
     }
 
-    fn parse_actor_name(&mut self) -> Result<String> {
-        let first = self.expect_any_ident()?;
-        if !self.cursor.consume_symbol(':') {
-            return Ok(first);
+    fn take_route_actor_expr(&mut self) -> Result<Span> {
+        let start = self.cursor.byte_offset();
+        let mut depth = 0usize;
+        while !self.cursor.is_eof() {
+            match self.cursor.current().kind {
+                TokenKind::Symbol('(') if depth == 0 => {
+                    if self.cursor.byte_offset() == start {
+                        return Err(self.error("become target is empty"));
+                    }
+                    return Ok(self.cursor.span_to_current(start));
+                }
+                TokenKind::Symbol('{') | TokenKind::Symbol('[') | TokenKind::Symbol('<') => {
+                    depth += 1;
+                    self.cursor.advance();
+                }
+                TokenKind::Symbol('}') | TokenKind::Symbol(']') | TokenKind::Symbol('>') if depth > 0 => {
+                    depth -= 1;
+                    self.cursor.advance();
+                }
+                TokenKind::Symbol(',')
+                | TokenKind::Symbol(';')
+                | TokenKind::Symbol(')')
+                | TokenKind::Symbol('}')
+                | TokenKind::Symbol(']')
+                | TokenKind::Symbol('>')
+                    if depth == 0 =>
+                {
+                    return Err(self.error("expected `(` after become target"));
+                }
+                _ => self.cursor.advance(),
+            }
         }
-        self.expect_symbol(':')?;
-        Ok(format!("{first}::{}", self.expect_any_ident()?))
+        Err(self.error("unterminated become target"))
     }
 
     fn consume_left_arrow(&mut self) -> bool {
@@ -343,12 +367,24 @@ impl EntryStatementParser<'_> {
         if self.cursor.consume_symbol(expected) { Ok(()) } else { Err(self.error(format!("expected `{expected}`"))) }
     }
 
+    fn expect_ident(&mut self, expected: &str) -> Result<()> {
+        if self.cursor.consume_ident(expected) { Ok(()) } else { Err(self.error(format!("expected `{expected}`"))) }
+    }
+
     fn expect_list_separator_or_end(&mut self, end: char) -> Result<()> {
         if self.cursor.consume_symbol(',') || self.cursor.check_symbol(end) {
             Ok(())
         } else {
             Err(self.error(format!("expected `,` or `{end}`")))
         }
+    }
+
+    fn check_outputs_become_start(&self) -> bool {
+        matches!(&self.cursor.current().kind, TokenKind::Ident(actual) if actual == word::REQUIRE)
+            && matches!(self.cursor.peek_kind(1), Some(TokenKind::Ident(_)))
+            && matches!(self.cursor.peek_kind(2), Some(TokenKind::Symbol('.')))
+            && matches!(self.cursor.peek_kind(3), Some(TokenKind::Ident(actual)) if actual == word::OUTPUTS)
+            && matches!(self.cursor.peek_kind(4), Some(TokenKind::Ident(actual)) if actual == word::BECOME)
     }
 
     fn error(&self, message: impl Into<String>) -> crate::error::ArgentError {
@@ -369,7 +405,7 @@ mod tests {
         assert!(cursor.consume_ident("if"));
         assert!(cursor.consume_symbol('('));
         let span = cursor.take_balanced_after_open('(', ')').expect("condition closes");
-        assert_eq!(cursor.span_text(span), "outer(inner)");
+        assert_eq!(body.span_text(span), "outer(inner)");
         assert!(cursor.check_ident("become"));
     }
 
@@ -407,5 +443,46 @@ mod tests {
         assert_eq!(body.span_text(*condition), "done");
         assert!(matches!(then_branch.as_ref(), EntryStatement::Block { .. }));
         assert!(matches!(else_branch.as_deref(), Some(EntryStatement::Block { .. })));
+    }
+
+    #[test]
+    fn statements_keep_output_validation_and_dynamic_route_targets() {
+        let body = EntryBody::new(
+            r#"
+            require children.outputs become {
+                child <- self.child_type(next_child),
+            };
+            become next <- target(next_state);
+            "#,
+        )
+        .expect("body parses");
+
+        let [
+            EntryStatement::ValidateOutputsBecome { group, routes: validation_routes, .. },
+            EntryStatement::Become { routes: become_routes, .. },
+        ] = body.statements()
+        else {
+            panic!("expected output validation followed by become");
+        };
+        assert_eq!(group, "children");
+        assert_eq!(body.span_text(validation_routes[0].actor).trim(), "self.child_type");
+        assert_eq!(body.span_text(validation_routes[0].state).trim(), "next_child");
+        assert_eq!(body.span_text(become_routes[0].actor).trim(), "target");
+        assert_eq!(body.span_text(become_routes[0].state).trim(), "next_state");
+    }
+
+    #[test]
+    fn route_target_does_not_cross_a_route_separator() {
+        let err = EntryBody::new(
+            r#"
+            become {
+                first <- A,
+                second <- B(next),
+            };
+            "#,
+        )
+        .expect_err("a route target without state arguments must not consume the next route");
+
+        assert!(err.to_string().contains("expected `(` after become target"), "unexpected error: {err}");
     }
 }
