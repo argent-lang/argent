@@ -28,9 +28,23 @@ pub struct Span {
 }
 
 pub fn lex(source: &str) -> Result<Vec<Token>> {
-    let mut lexer = Lexer { source, bytes: source.as_bytes(), pos: 0, tokens: Vec::new() };
+    lex_with_policy(source, IdentifierPolicy::Any)
+}
+
+pub fn lex_argent_source(source: &str) -> Result<Vec<Token>> {
+    lex_with_policy(source, IdentifierPolicy::ArgentSource)
+}
+
+fn lex_with_policy(source: &str, identifier_policy: IdentifierPolicy) -> Result<Vec<Token>> {
+    let mut lexer = Lexer { source, bytes: source.as_bytes(), pos: 0, tokens: Vec::new(), identifier_policy };
     lexer.run()?;
     Ok(lexer.tokens)
+}
+
+#[derive(Clone, Copy)]
+enum IdentifierPolicy {
+    Any,
+    ArgentSource,
 }
 
 struct Lexer<'a> {
@@ -38,6 +52,7 @@ struct Lexer<'a> {
     bytes: &'a [u8],
     pos: usize,
     tokens: Vec<Token>,
+    identifier_policy: IdentifierPolicy,
 }
 
 impl Lexer<'_> {
@@ -152,13 +167,17 @@ impl Lexer<'_> {
             self.pos += 1;
         }
         let ident = self.source[start..self.pos].to_string();
-        if ident == word::LEGACY_COVENANT_ID {
-            return Err(self.error_at(start, format!("`{}` was renamed to `{}`", word::LEGACY_COVENANT_ID, word::COVENANT_ID)));
-        }
-        let generated_prefix =
-            [RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX].into_iter().find(|prefix| ident.starts_with(prefix));
-        if let Some(generated_prefix) = generated_prefix {
-            return Err(self.error_at(start, format!("identifier `{ident}` uses reserved generated namespace `{generated_prefix}`")));
+        if matches!(self.identifier_policy, IdentifierPolicy::ArgentSource) {
+            if ident == word::LEGACY_COVENANT_ID {
+                return Err(self.error_at(start, format!("`{}` was renamed to `{}`", word::LEGACY_COVENANT_ID, word::COVENANT_ID)));
+            }
+            let generated_prefix =
+                [RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX].into_iter().find(|prefix| ident.starts_with(prefix));
+            if let Some(generated_prefix) = generated_prefix {
+                return Err(
+                    self.error_at(start, format!("identifier `{ident}` uses reserved generated namespace `{generated_prefix}`"))
+                );
+            }
         }
         self.push(TokenKind::Ident(ident), start, self.pos);
         Ok(())
@@ -201,14 +220,19 @@ mod tests {
     #[test]
     fn rejects_reserved_generated_namespace_identifier() {
         for source in ["state gen__state {}", "state Gen__State {}"] {
-            let err = lex(source).expect_err("reserved generated namespace must be rejected");
+            let err = lex_argent_source(source).expect_err("reserved generated namespace must be rejected");
             assert!(err.to_string().contains("reserved generated namespace"), "unexpected error: {err}");
         }
     }
 
     #[test]
     fn rejects_legacy_covenant_id_keyword() {
-        let err = lex("covid value;").expect_err("the legacy covenant id keyword must be rejected");
+        let err = lex_argent_source("covid value;").expect_err("the legacy covenant id keyword must be rejected");
         assert!(err.to_string().contains("`covid` was renamed to `cov_id`"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn internal_lexing_accepts_generated_identifiers() {
+        lex("tx.outputs[gen__next_output_idx].value").expect("generated lowering text lexes");
     }
 }

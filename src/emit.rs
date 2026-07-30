@@ -2956,10 +2956,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     }
 
     fn lower_refs(&self, expr: &str) -> Result<String> {
-        // Co-spend lowering must run first: it uses the source lexer, which
-        // rejects the generated identifiers introduced by reference lowering.
-        // TODO: Separate tokenization from source-only identifier validation
-        // so lowering passes can safely inspect generated intermediate text.
+        // Lower source-level co-spend calls before general reference rewrites.
         let out = lower_co_spent_calls(expr, &self.source_types)?;
         let out = self.ref_replacements.rewrite(&out)?;
         lower_actor_enum_literals(&out, self.model)
