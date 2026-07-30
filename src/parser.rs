@@ -190,7 +190,7 @@ impl Parser {
         let (observes, consumes, spawns) = self.parse_entry_clauses()?;
         self.expect_ident(word::EMITS)?;
         let emits = self.parse_emits()?;
-        let body = EntryBody::new(self.consume_block_text()?)?;
+        let body = EntryBody::new(self.consume_block_text()?).map_err(|err| err.with_path(self.path.clone()))?;
         let route_analysis = analyze_entry_routes(&body).map_err(|err| ArgentError::at(&self.path, err.message))?;
         Ok(EntryDecl {
             kind: EntryKind::Leader,
@@ -211,7 +211,7 @@ impl Parser {
         let name = self.expect_any_ident()?;
         let params = self.parse_param_list()?;
         let (observes, consumes, spawns) = self.parse_entry_clauses()?;
-        let body = EntryBody::new(self.consume_block_text()?)?;
+        let body = EntryBody::new(self.consume_block_text()?).map_err(|err| err.with_path(self.path.clone()))?;
         let route_analysis = analyze_entry_routes(&body).map_err(|err| ArgentError::at(&self.path, err.message))?;
         Ok(EntryDecl {
             kind: EntryKind::Delegate,
