@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::artifact::*;
 use crate::ast::*;
 use crate::codec::encode_hex;
+use crate::entry_body::EntryBodyCursor;
 use crate::error::{ArgentError, Result};
 use crate::language::word;
 use crate::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, Token, TokenKind, lex};
@@ -1680,9 +1681,7 @@ impl<'a> CovenantOutputContext<'a> {
 }
 
 struct BodyLowerer<'a, 'm> {
-    body: &'a str,
-    tokens: &'a [Token],
-    pos: usize,
+    cursor: EntryBodyCursor<'a>,
     actor: &'a ActorDecl,
     entry: &'a EntryDecl,
     model: &'m Model<'a>,
@@ -1822,9 +1821,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         let observed_output_fields = observed_output_field_witness_specs(actor, entry, model);
 
         Ok(Self {
-            body: entry.body.text(),
-            tokens: entry.body.tokens(),
-            pos: 0,
+            cursor: entry.body.cursor(),
             actor,
             entry,
             model,
@@ -1862,7 +1859,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         let missing = self
             .output_values
             .iter()
-            .filter(|value| count_qualified_ref(self.tokens, &value.source) == 0)
+            .filter(|value| count_qualified_ref(self.entry.body.tokens(), &value.source) == 0)
             .map(|value| value.source.as_str())
             .collect::<Vec<_>>();
         if missing.is_empty() {
@@ -1878,15 +1875,15 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     }
 
     fn lower_statements(&mut self, out: &mut String, indent: usize, end: Option<char>) -> Result<()> {
-        while !self.is_eof() && !end.is_some_and(|symbol| self.check_symbol(symbol)) {
-            if self.consume_ident(word::IF) {
+        while !self.cursor.is_eof() && !end.is_some_and(|symbol| self.cursor.check_symbol(symbol)) {
+            if self.cursor.consume_ident(word::IF) {
                 self.lower_if(out, indent)?;
-            } else if self.consume_ident(word::BECOME) {
+            } else if self.cursor.consume_ident(word::BECOME) {
                 self.lower_become(out, indent)?;
             } else if self.check_outputs_become_start() {
                 self.lower_outputs_become(out, indent)?;
-            } else if self.check_symbol(';') {
-                self.advance();
+            } else if self.cursor.check_symbol(';') {
+                self.cursor.advance();
             } else {
                 self.lower_plain_statement(out, indent)?;
             }
@@ -1914,8 +1911,8 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         push_indent(out, indent);
         out.push('}');
 
-        if self.consume_ident(word::ELSE) {
-            if self.consume_ident(word::IF) {
+        if self.cursor.consume_ident(word::ELSE) {
+            if self.cursor.consume_ident(word::IF) {
                 out.push_str(" else ");
                 self.lower_if_inner(out, indent, false)?;
                 return Ok(());
@@ -2017,13 +2014,14 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             .output_values
             .iter()
             .map(|output| {
-                count_qualified_ref(self.tokens, &output.source) * output.source.split('.').filter(|segment| *segment == name).count()
+                count_qualified_ref(self.entry.body.tokens(), &output.source)
+                    * output.source.split('.').filter(|segment| *segment == name).count()
             })
             .sum::<usize>();
         if self.conditional_depth != 0
             || lowered_ty != source_ty
             || split_state_object_literal(expr).is_none()
-            || self.tokens.iter().filter(|token| matches!(&token.kind, TokenKind::Ident(ident) if ident == name)).count()
+            || self.entry.body.tokens().iter().filter(|token| matches!(&token.kind, TokenKind::Ident(ident) if ident == name)).count()
                 != 2 + route_handle_uses + output_value_ident_uses
         {
             return Ok(None);
@@ -2133,19 +2131,19 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     }
 
     fn parse_become_routes(&mut self) -> Result<Vec<RouteCall>> {
-        if self.consume_symbol('{') {
+        if self.cursor.consume_symbol('{') {
             let mut routes = Vec::new();
-            while !self.check_symbol('}') && !self.is_eof() {
+            while !self.cursor.check_symbol('}') && !self.cursor.is_eof() {
                 routes.push(self.parse_become_route()?);
                 self.expect_list_separator_or_end('}')?;
             }
             self.expect_symbol('}')?;
-            self.consume_symbol(';');
+            self.cursor.consume_symbol(';');
             return Ok(routes);
         }
 
         let route = self.parse_become_route()?;
-        self.consume_symbol(';');
+        self.cursor.consume_symbol(';');
         Ok(vec![route])
     }
 
@@ -2161,17 +2159,17 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     }
 
     fn take_route_actor_expr(&mut self) -> Result<String> {
-        let start = self.current().span.start;
+        let start = self.cursor.byte_offset();
         self.take_route_actor_expr_from(start)
     }
 
     fn take_route_actor_expr_from(&mut self, start: usize) -> Result<String> {
         let mut depth = 0usize;
-        while !self.is_eof() {
-            let token = self.current().clone();
+        while !self.cursor.is_eof() {
+            let token = self.cursor.current().clone();
             match token.kind {
                 TokenKind::Symbol('(') if depth == 0 => {
-                    let expr = self.body[start..token.span.start].trim().to_string();
+                    let expr = self.cursor.span_text(self.cursor.span_to_current(start)).trim().to_string();
                     if expr.is_empty() {
                         return Err(self.error("become target is empty"));
                     }
@@ -2179,13 +2177,13 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                 }
                 TokenKind::Symbol('{') | TokenKind::Symbol('[') | TokenKind::Symbol('<') => {
                     depth += 1;
-                    self.advance();
+                    self.cursor.advance();
                 }
                 TokenKind::Symbol('}') | TokenKind::Symbol(']') | TokenKind::Symbol('>') => {
                     depth = depth.saturating_sub(1);
-                    self.advance();
+                    self.cursor.advance();
                 }
-                _ => self.advance(),
+                _ => self.cursor.advance(),
             }
         }
         Err(self.error("unterminated become target"))
@@ -2960,59 +2958,40 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     }
 
     fn take_until_semicolon(&mut self) -> Result<String> {
-        let start = self.current().span.start;
+        let start = self.cursor.byte_offset();
         let mut depth = 0usize;
-        while !self.is_eof() {
-            let token = self.current().clone();
+        while !self.cursor.is_eof() {
+            let token = self.cursor.current().clone();
             match token.kind {
                 TokenKind::Symbol('{') | TokenKind::Symbol('(') | TokenKind::Symbol('[') => {
                     depth += 1;
-                    self.advance();
+                    self.cursor.advance();
                 }
                 TokenKind::Symbol('}') | TokenKind::Symbol(')') | TokenKind::Symbol(']') => {
                     depth = depth.saturating_sub(1);
-                    self.advance();
+                    self.cursor.advance();
                 }
                 TokenKind::Symbol(';') if depth == 0 => {
-                    let text = self.body[start..token.span.start].trim().to_string();
-                    self.advance();
+                    let text = self.cursor.span_text(self.cursor.span_to_current(start)).trim().to_string();
+                    self.cursor.advance();
                     return Ok(text);
                 }
-                _ => self.advance(),
+                _ => self.cursor.advance(),
             }
         }
         Err(self.error("unterminated statement"))
     }
 
     fn take_balanced_expr(&mut self, open: char, close: char) -> Result<String> {
-        let start = self.current().span.start;
-        let mut depth = 1usize;
-        while !self.is_eof() {
-            let token = self.current().clone();
-            match token.kind {
-                TokenKind::Symbol(symbol) if symbol == open => {
-                    depth += 1;
-                    self.advance();
-                }
-                TokenKind::Symbol(symbol) if symbol == close => {
-                    depth -= 1;
-                    if depth == 0 {
-                        let text = self.body[start..token.span.start].trim().to_string();
-                        self.advance();
-                        return Ok(text);
-                    }
-                    self.advance();
-                }
-                _ => self.advance(),
-            }
-        }
-        Err(self.error(format!("unterminated `{open}` group")))
+        let span =
+            self.cursor.take_balanced_after_open(open, close).ok_or_else(|| self.error(format!("unterminated `{open}` group")))?;
+        Ok(self.cursor.span_text(span).trim().to_string())
     }
 
     fn expect_any_ident(&mut self) -> Result<String> {
-        match self.current().kind.clone() {
+        match self.cursor.current().kind.clone() {
             TokenKind::Ident(name) => {
-                self.advance();
+                self.cursor.advance();
                 Ok(name)
             }
             _ => Err(self.error("expected identifier")),
@@ -3020,92 +2999,42 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     }
 
     fn expect_ident(&mut self, expected: &str) -> Result<()> {
-        match &self.current().kind {
-            TokenKind::Ident(actual) if actual == expected => {
-                self.advance();
-                Ok(())
-            }
-            _ => Err(self.error(format!("expected `{expected}`"))),
-        }
+        if self.cursor.consume_ident(expected) { Ok(()) } else { Err(self.error(format!("expected `{expected}`"))) }
     }
 
     fn expect_symbol(&mut self, expected: char) -> Result<()> {
-        match self.current().kind {
-            TokenKind::Symbol(actual) if actual == expected => {
-                self.advance();
-                Ok(())
-            }
-            _ => Err(self.error(format!("expected `{expected}`"))),
-        }
-    }
-
-    fn consume_ident(&mut self, expected: &str) -> bool {
-        match &self.current().kind {
-            TokenKind::Ident(actual) if actual == expected => {
-                self.advance();
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn consume_symbol(&mut self, expected: char) -> bool {
-        match self.current().kind {
-            TokenKind::Symbol(actual) if actual == expected => {
-                self.advance();
-                true
-            }
-            _ => false,
-        }
+        if self.cursor.consume_symbol(expected) { Ok(()) } else { Err(self.error(format!("expected `{expected}`"))) }
     }
 
     fn expect_list_separator_or_end(&mut self, end: char) -> Result<()> {
-        if self.consume_symbol(',') || self.check_symbol(end) { Ok(()) } else { Err(self.error(format!("expected `,` or `{end}`"))) }
+        if self.cursor.consume_symbol(',') || self.cursor.check_symbol(end) {
+            Ok(())
+        } else {
+            Err(self.error(format!("expected `,` or `{end}`")))
+        }
     }
 
     fn consume_left_arrow(&mut self) -> bool {
-        match self.current().kind {
+        match self.cursor.current().kind {
             TokenKind::LeftArrow => {
-                self.advance();
+                self.cursor.advance();
                 true
             }
-            TokenKind::Symbol('<') if matches!(self.peek_kind(1), Some(TokenKind::Symbol('-'))) => {
-                self.advance();
-                self.advance();
+            TokenKind::Symbol('<') if matches!(self.cursor.peek_kind(1), Some(TokenKind::Symbol('-'))) => {
+                self.cursor.advance();
+                self.cursor.advance();
                 true
             }
             _ => false,
         }
     }
 
-    fn check_symbol(&self, expected: char) -> bool {
-        matches!(self.current().kind, TokenKind::Symbol(actual) if actual == expected)
-    }
-
     fn check_outputs_become_start(&self) -> bool {
-        matches!(&self.current().kind, TokenKind::Ident(actual) if actual == word::REQUIRE)
-            && matches!(self.peek_kind(1), Some(TokenKind::Ident(_)))
-            && matches!(self.peek_kind(2), Some(TokenKind::Symbol('.')))
-            && matches!(self.peek_kind(3), Some(TokenKind::Ident(actual)) if actual == word::OUTPUTS)
-            && matches!(self.peek_kind(4), Some(TokenKind::Ident(actual)) if actual == word::BECOME)
-    }
-
-    fn current(&self) -> &Token {
-        &self.tokens[self.pos]
-    }
-
-    fn peek_kind(&self, offset: usize) -> Option<&TokenKind> {
-        self.tokens.get(self.pos + offset).map(|token| &token.kind)
-    }
-
-    fn advance(&mut self) {
-        if !self.is_eof() {
-            self.pos += 1;
-        }
-    }
-
-    fn is_eof(&self) -> bool {
-        matches!(self.current().kind, TokenKind::Eof)
+        matches!(&self.cursor.current().kind, TokenKind::Ident(actual) if actual == word::REQUIRE)
+            && matches!(self.cursor.peek_kind(1), Some(TokenKind::Ident(_)))
+            && matches!(self.cursor.peek_kind(2), Some(TokenKind::Symbol('.')))
+            && matches!(self.cursor.peek_kind(3), Some(TokenKind::Ident(actual)) if actual == word::OUTPUTS)
+            && matches!(self.cursor.peek_kind(4), Some(TokenKind::Ident(actual)) if actual == word::BECOME)
     }
 
     fn error(&self, message: impl Into<String>) -> ArgentError {
@@ -3114,7 +3043,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             message.into(),
             self.actor.name,
             self.entry.name,
-            self.current().span.start
+            self.cursor.byte_offset()
         ))
     }
 }

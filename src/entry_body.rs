@@ -116,6 +116,10 @@ impl<'a> EntryBodyCursor<'a> {
         &self.body.text[span.start..span.end]
     }
 
+    pub(crate) fn span_to_current(&self, start: usize) -> Span {
+        Span { start, end: self.byte_offset() }
+    }
+
     pub(crate) fn byte_offset(&self) -> usize {
         self.current().span.start
     }
