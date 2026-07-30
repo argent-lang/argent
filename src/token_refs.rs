@@ -8,12 +8,12 @@ use std::collections::BTreeMap;
 use crate::error::Result;
 use crate::lexer::{Span, Token, TokenKind, lex};
 
-enum RefToken<'a> {
-    Ident(&'a str),
+enum RefToken {
+    Ident(String),
     Dot,
 }
 
-impl RefToken<'_> {
+impl RefToken {
     fn matches(&self, token: &TokenKind) -> bool {
         match (self, token) {
             (Self::Ident(reference_ident), TokenKind::Ident(input_ident)) => reference_ident == input_ident,
@@ -24,12 +24,12 @@ impl RefToken<'_> {
 }
 
 /// A dotted identifier path such as `self.value` or `remote.inputs.asset.state`.
-struct QualifiedRef<'a> {
-    tokens: Vec<RefToken<'a>>,
+struct QualifiedRef {
+    tokens: Vec<RefToken>,
 }
 
-impl<'a> QualifiedRef<'a> {
-    fn parse(reference: &'a str) -> Option<Self> {
+impl QualifiedRef {
+    fn parse(reference: &str) -> Option<Self> {
         let mut tokens = Vec::new();
         for (idx, segment) in reference.split('.').enumerate() {
             if segment.is_empty() {
@@ -38,12 +38,12 @@ impl<'a> QualifiedRef<'a> {
             if idx > 0 {
                 tokens.push(RefToken::Dot);
             }
-            tokens.push(RefToken::Ident(segment));
+            tokens.push(RefToken::Ident(segment.to_string()));
         }
         (!tokens.is_empty()).then_some(Self { tokens })
     }
 
-    fn root(&self) -> &'a str {
+    fn root(&self) -> &str {
         let Some(RefToken::Ident(root)) = self.tokens.first() else {
             unreachable!("a parsed qualified reference starts with an identifier");
         };
@@ -63,56 +63,91 @@ impl<'a> QualifiedRef<'a> {
     }
 }
 
+struct RefReplacement {
+    reference: QualifiedRef,
+    text: String,
+}
+
+/// Indexes replacements by root identifier so matching only inspects viable paths.
+pub(crate) struct RefReplacements {
+    by_root: BTreeMap<String, Vec<RefReplacement>>,
+}
+
+struct RefReplacementMatch<'a> {
+    token_len: usize,
+    span: Span,
+    text: &'a str,
+}
+
+impl RefReplacements {
+    pub(crate) fn new<R, T>(replacements: impl IntoIterator<Item = (R, T)>) -> Self
+    where
+        R: Into<String>,
+        T: Into<String>,
+    {
+        let mut by_root = BTreeMap::<_, Vec<_>>::new();
+        for (reference, text) in replacements {
+            let reference_text = reference.into();
+            let Some(reference) = QualifiedRef::parse(&reference_text) else {
+                continue;
+            };
+            by_root.entry(reference.root().to_string()).or_default().push(RefReplacement { reference, text: text.into() });
+        }
+        for candidates in by_root.values_mut() {
+            // The first matching candidate must be the most specific path.
+            candidates.sort_by(|left, right| right.reference.tokens.len().cmp(&left.reference.tokens.len()));
+        }
+        Self { by_root }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.by_root.is_empty()
+    }
+
+    fn match_at(&self, tokens: &[Token], pos: usize) -> Option<RefReplacementMatch<'_>> {
+        let TokenKind::Ident(root) = &tokens.get(pos)?.kind else {
+            return None;
+        };
+        self.by_root.get(root.as_str())?.iter().find_map(|candidate| {
+            candidate.reference.match_at(tokens, pos).map(|(token_len, span)| RefReplacementMatch {
+                token_len,
+                span,
+                text: &candidate.text,
+            })
+        })
+    }
+
+    /// Rewrite dotted references selected from the original input tokens.
+    pub(crate) fn rewrite(&self, input: &str) -> Result<String> {
+        if self.is_empty() {
+            return Ok(input.to_string());
+        }
+
+        let tokens = lex(input)?;
+        let mut out = String::with_capacity(input.len());
+        let mut cursor = 0usize;
+        let mut pos = 0usize;
+        while pos < tokens.len() {
+            let Some(replacement) = self.match_at(&tokens, pos) else {
+                pos += 1;
+                continue;
+            };
+            out.push_str(&input[cursor..replacement.span.start]);
+            out.push_str(replacement.text);
+            cursor = replacement.span.end;
+            pos += replacement.token_len;
+        }
+        out.push_str(&input[cursor..]);
+        Ok(out)
+    }
+}
+
 /// Count rooted occurrences of one dotted reference in an existing token stream.
 pub(crate) fn count_qualified_ref(tokens: &[Token], reference: &str) -> usize {
     let Some(reference) = QualifiedRef::parse(reference) else {
         return 0;
     };
     (0..tokens.len()).filter(|start| reference.match_at(tokens, *start).is_some()).count()
-}
-
-/// Rewrite dotted references selected from the original source tokens.
-pub(crate) fn rewrite_qualified_refs<'a>(input: &str, replacements: impl IntoIterator<Item = (&'a str, &'a str)>) -> Result<String> {
-    // Index paths by their root so each input token checks only candidates that can match it.
-    let mut replacements_by_root = BTreeMap::<_, Vec<_>>::new();
-    for (reference, replacement) in replacements {
-        let Some(reference) = QualifiedRef::parse(reference) else {
-            continue;
-        };
-        replacements_by_root.entry(reference.root()).or_default().push((reference, replacement));
-    }
-    for candidates in replacements_by_root.values_mut() {
-        // The first matching candidate must be the most specific path.
-        candidates.sort_by(|(left, _), (right, _)| right.tokens.len().cmp(&left.tokens.len()));
-    }
-    if replacements_by_root.is_empty() {
-        return Ok(input.to_string());
-    }
-
-    let tokens = lex(input)?;
-    let mut out = String::with_capacity(input.len());
-    let mut cursor = 0usize;
-    let mut pos = 0usize;
-    while pos < tokens.len() {
-        let selected = match &tokens[pos].kind {
-            TokenKind::Ident(root) => replacements_by_root.get(root.as_str()).and_then(|candidates| {
-                candidates
-                    .iter()
-                    .find_map(|(reference, replacement)| reference.match_at(&tokens, pos).map(|(len, span)| (len, span, *replacement)))
-            }),
-            _ => None,
-        };
-        let Some((token_len, span, replacement)) = selected else {
-            pos += 1;
-            continue;
-        };
-        out.push_str(&input[cursor..span.start]);
-        out.push_str(replacement);
-        cursor = span.end;
-        pos += token_len;
-    }
-    out.push_str(&input[cursor..]);
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -129,7 +164,7 @@ mod tests {
     #[test]
     fn rewrites_only_token_matched_references() {
         let source = r#"self.value + foo.self.value + self.value_note + "self.value" /* self.value */"#;
-        let out = rewrite_qualified_refs(source, [("self.value", "active_value")]).expect("references rewrite");
+        let out = RefReplacements::new([("self.value", "active_value")]).rewrite(source).expect("references rewrite");
 
         assert_eq!(out, r#"active_value + foo.self.value + self.value_note + "self.value" /* self.value */"#);
     }
@@ -137,7 +172,8 @@ mod tests {
     #[test]
     fn selects_the_most_specific_reference_at_each_source_position() {
         let source = "remote.inputs.asset.state + remote.inputs.count";
-        let out = rewrite_qualified_refs(source, [("remote.inputs", "group"), ("remote.inputs.asset.state", "asset_state")])
+        let out = RefReplacements::new([("remote.inputs", "group"), ("remote.inputs.asset.state", "asset_state")])
+            .rewrite(source)
             .expect("references rewrite");
 
         assert_eq!(out, "asset_state + group.count");
@@ -145,7 +181,8 @@ mod tests {
 
     #[test]
     fn does_not_reconsider_replacement_text() {
-        let out = rewrite_qualified_refs("next.value + self.value", [("next.value", "self.value"), ("self.value", "active_value")])
+        let out = RefReplacements::new([("next.value", "self.value"), ("self.value", "active_value")])
+            .rewrite("next.value + self.value")
             .expect("references rewrite");
 
         assert_eq!(out, "self.value + active_value");

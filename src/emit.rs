@@ -16,7 +16,7 @@ use crate::model::{
     parse_actor_enum_variant,
 };
 use crate::naming::{is_identifier, to_snake};
-use crate::token_refs::{count_qualified_ref, rewrite_qualified_refs};
+use crate::token_refs::{RefReplacements, count_qualified_ref};
 use silverscript_lang::ast::Expr as SilExpr;
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract};
 
@@ -2961,7 +2961,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         for name in &self.input_names {
             replacements.push((format!("{name}.value"), format!("tx.inputs[{}].value", hidden_input_idx_name(name))));
         }
-        let out = rewrite_qualified_refs(expr, replacements.iter().map(|(source, lowered)| (source.as_str(), lowered.as_str())))?;
+        let out = RefReplacements::new(replacements).rewrite(expr)?;
         let out = lower_co_spent_calls(&out, &self.source_types)?;
         lower_actor_enum_literals(&out, self.model)
     }
