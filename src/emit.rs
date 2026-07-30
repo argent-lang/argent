@@ -11085,6 +11085,37 @@ mod tests {
     }
 
     #[test]
+    fn brace_leading_assignments_lower_and_compile_as_sil_statements() {
+        let (actor_sil, _) = inline_actor_sil_and_artifact(
+            "brace-leading-assignments",
+            r#"
+            state CounterState {
+                int count;
+            }
+
+            actor Counter owns CounterState {
+                entry inspect() emits none {
+                    CounterState snapshot = {
+                        count: count,
+                    };
+                    {count: int copied} = snapshot;
+                    {count: int current} = readInputState(this.activeInputIndex);
+                    require((copied == count) && (current == count));
+                }
+            }
+
+            app BraceLeadingAssignments {
+                actor Counter;
+            }
+            "#,
+        );
+
+        let sil = actor_sil.get("Counter").expect("Counter emits");
+        assert!(sil.contains("{count: int copied} = snapshot;"), "{sil}");
+        assert!(sil.contains("{count: int current} = readInputState(this.activeInputIndex);"), "{sil}");
+    }
+
+    #[test]
     fn genesis_spawn_lowers_to_pinned_sil_and_artifact_metadata() {
         let (controller_sil, controller_artifact) =
             emit_selected_fixture("tests/fixtures/runtime/context_genesis_spawn/app.ag", "ControllerApp", "Controller");

@@ -172,6 +172,31 @@ impl<'a> EntryBodyCursor<'a> {
     fn remaining_text(&self) -> &'a str {
         self.body.text.get(self.byte_offset()..).unwrap_or("")
     }
+
+    /// Distinguishes Sil destructuring assignments from standalone blocks.
+    fn check_braced_assignment_start(&self) -> bool {
+        if !self.check_symbol('{') {
+            return false;
+        }
+        let mut depth = 0usize;
+        for (offset, token) in self.body.tokens[self.pos..].iter().enumerate() {
+            match token.kind {
+                TokenKind::Symbol('{') => depth += 1,
+                TokenKind::Symbol('}') => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return matches!(
+                            self.body.tokens.get(self.pos + offset + 1).map(|token| &token.kind),
+                            Some(TokenKind::Symbol('='))
+                        );
+                    }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+        }
+        false
+    }
 }
 
 struct EntryStatementParser<'a> {
@@ -212,6 +237,9 @@ impl EntryStatementParser<'_> {
         } else if self.check_outputs_become_start() {
             let (group, routes) = self.parse_outputs_become()?;
             Ok(EntryStatement::ValidateOutputsBecome { group, routes, span: self.cursor.consumed_span_from(start) })
+        } else if self.cursor.check_braced_assignment_start() {
+            self.skip_until_statement_end()?;
+            Ok(EntryStatement::Plain { span: self.cursor.consumed_span_from(start) })
         } else if self.cursor.consume_symbol('{') {
             self.parse_block_after_open(start)
         } else {
@@ -472,6 +500,28 @@ mod tests {
         assert_eq!(body.span_text(*header), "i, 0, count, MAX_COUNT");
         assert!(matches!(loop_body.as_ref(), EntryStatement::Block { .. }));
         assert_eq!(body.span_text(*following).trim(), "require(done);");
+    }
+
+    #[test]
+    fn statements_distinguish_brace_assignments_from_standalone_blocks() {
+        let body = EntryBody::new(
+            r#"
+            {left: int first, right: int second} = pair;
+            {count: int current} = readInputState(index);
+            {
+                require(first == current);
+            }
+            "#,
+        )
+        .expect("body lexes");
+
+        let [EntryStatement::Plain { span: destructure }, EntryStatement::Plain { span: state_read }, EntryStatement::Block { .. }] =
+            body.statements()
+        else {
+            panic!("expected two brace assignments followed by one standalone block");
+        };
+        assert_eq!(body.span_text(*destructure).trim(), "{left: int first, right: int second} = pair;");
+        assert_eq!(body.span_text(*state_read).trim(), "{count: int current} = readInputState(index);");
     }
 
     #[test]
