@@ -1691,9 +1691,8 @@ struct BodyLowerer<'a, 'm> {
     selectors: BTreeMap<String, TemplateSelector>,
     materialized_selectors: BTreeSet<String>,
     materialized_route_locals: BTreeMap<String, String>,
-    input_names: BTreeSet<String>,
     output_values: Vec<OutputValueRef>,
-    observed_input_state_refs: Vec<(String, String)>,
+    ref_replacements: RefReplacements,
     observed_output_fields: Vec<ObservedOutputFieldWitnessSpec>,
     validated_spawns: BTreeSet<String>,
     conditional_depth: usize,
@@ -1703,6 +1702,39 @@ struct BodyLowerer<'a, 'm> {
 struct OutputValueRef {
     source: String,
     lowered: String,
+}
+
+/// Builds the fixed dotted-reference lowering plan for one entry body.
+fn entry_ref_replacements(
+    actor: &ActorDecl,
+    model: &Model<'_>,
+    input_names: BTreeSet<String>,
+    output_values: &[OutputValueRef],
+    observed_input_state_refs: Vec<(String, String)>,
+) -> Result<RefReplacements> {
+    assert_eq!(word::SELF, "self");
+    assert_eq!(word::VALUE, "value");
+    assert_eq!(word::COVENANT_ID, "cov_id");
+    let mut replacements = vec![
+        ("self.value".to_string(), "tx.inputs[this.activeInputIndex].value".to_string()),
+        ("self.cov_id".to_string(), "OpInputCovenantId(this.activeInputIndex)".to_string()),
+    ];
+    for spec in state_expansion_witness_specs_for_actor(actor, model) {
+        for field in &model.state(&spec.memory_state)?.fields {
+            let local = hidden_state_expansion_field_name(&spec, &field.name);
+            replacements.push((format!("self.{}.{}", spec.field, field.name), local.clone()));
+            replacements.push((format!("{}.{}", spec.field, field.name), local));
+        }
+    }
+    for field in &model.storage_state(&actor.state)?.fields {
+        replacements.push((format!("self.{}", field.name), field.name.clone()));
+    }
+    replacements.extend(observed_input_state_refs);
+    replacements.extend(output_values.iter().map(|output| (output.source.clone(), output.lowered.clone())));
+    replacements.extend(
+        input_names.into_iter().map(|name| (format!("{name}.value"), format!("tx.inputs[{}].value", hidden_input_idx_name(&name)))),
+    );
+    Ok(RefReplacements::new(replacements))
 }
 
 impl<'a, 'm> BodyLowerer<'a, 'm> {
@@ -1749,10 +1781,12 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             types.insert(consume.name.clone(), ty);
             source_types.insert(consume.name.clone(), state);
         }
+        let mut observed_input_state_refs = Vec::new();
         for observe in &entry.observes {
             for input in &observe.inputs {
                 let source_ref = format!("{}.inputs.{}.state", observe.name, input.name);
                 let lowered_ref = hidden_observed_input_state_name(&observe.name, &input.name);
+                observed_input_state_refs.push((source_ref.clone(), lowered_ref.clone()));
                 let state = if let Some(state) = observed_open_state_for_decl(actor, entry, observe, input, model)? {
                     state.to_string()
                 } else {
@@ -1786,19 +1820,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         // Preserve most-specific-first ordering in value-policy diagnostics.
         output_values.sort_by(|left, right| right.source.len().cmp(&left.source.len()).then_with(|| left.source.cmp(&right.source)));
 
-        let observed_input_state_refs = entry
-            .observes
-            .iter()
-            .flat_map(|observe| {
-                observe.inputs.iter().map(|input| {
-                    (
-                        format!("{}.inputs.{}.state", observe.name, input.name),
-                        hidden_observed_input_state_name(&observe.name, &input.name),
-                    )
-                })
-            })
-            .collect();
-
+        let ref_replacements = entry_ref_replacements(actor, model, input_names, &output_values, observed_input_state_refs)?;
         let selectors = model.template_selectors_for_entry(actor, entry)?;
         let observed_output_fields = observed_output_field_witness_specs(actor, entry, model);
 
@@ -1814,9 +1836,8 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             selectors,
             materialized_selectors: BTreeSet::new(),
             materialized_route_locals: BTreeMap::new(),
-            input_names,
             output_values,
-            observed_input_state_refs,
+            ref_replacements,
             observed_output_fields,
             validated_spawns: BTreeSet::new(),
             conditional_depth: 0,
@@ -2935,33 +2956,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     }
 
     fn lower_refs(&self, expr: &str) -> Result<String> {
-        assert_eq!(word::SELF, "self");
-        assert_eq!(word::VALUE, "value");
-        assert_eq!(word::COVENANT_ID, "cov_id");
-        let mut replacements = vec![
-            ("self.value".to_string(), "tx.inputs[this.activeInputIndex].value".to_string()),
-            ("self.cov_id".to_string(), "OpInputCovenantId(this.activeInputIndex)".to_string()),
-        ];
-        for spec in state_expansion_witness_specs_for_actor(self.actor, self.model) {
-            for field in &self.model.state(&spec.memory_state)?.fields {
-                let local = hidden_state_expansion_field_name(&spec, &field.name);
-                replacements.push((format!("self.{}.{}", spec.field, field.name), local.clone()));
-                replacements.push((format!("{}.{}", spec.field, field.name), local));
-            }
-        }
-        for field in &self.model.storage_state(&self.actor.state)?.fields {
-            replacements.push((format!("self.{}", field.name), field.name.clone()));
-        }
-        for (source, lowered) in &self.observed_input_state_refs {
-            replacements.push((source.clone(), lowered.clone()));
-        }
-        for output in &self.output_values {
-            replacements.push((output.source.clone(), output.lowered.clone()));
-        }
-        for name in &self.input_names {
-            replacements.push((format!("{name}.value"), format!("tx.inputs[{}].value", hidden_input_idx_name(name))));
-        }
-        let out = RefReplacements::new(replacements).rewrite(expr)?;
+        let out = self.ref_replacements.rewrite(expr)?;
         let out = lower_co_spent_calls(&out, &self.source_types)?;
         lower_actor_enum_literals(&out, self.model)
     }
