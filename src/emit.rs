@@ -16,6 +16,7 @@ use crate::model::{
     parse_actor_enum_variant,
 };
 use crate::naming::{is_identifier, to_snake};
+use crate::token_refs::{count_qualified_ref, rewrite_qualified_refs};
 use silverscript_lang::ast::Expr as SilExpr;
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract};
 
@@ -1782,8 +1783,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                 lowered: format!("tx.outputs[{}].value", hidden_spawn_output_idx_name(&spawn.name, &output.name)),
             }));
         }
-        // A qualified spawn reference can contain an ordinary emit reference as
-        // a suffix. Lower and recognize the most specific spelling first.
+        // Preserve most-specific-first ordering in value-policy diagnostics.
         output_values.sort_by(|left, right| right.source.len().cmp(&left.source.len()).then_with(|| left.source.cmp(&right.source)));
 
         let observed_input_state_refs = entry
@@ -2938,35 +2938,31 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         assert_eq!(word::SELF, "self");
         assert_eq!(word::VALUE, "value");
         assert_eq!(word::COVENANT_ID, "cov_id");
-        let mut out = replace_exact_identifier(expr, "self.value", "tx.inputs[this.activeInputIndex].value");
-        out = replace_exact_identifier(&out, "self.cov_id", "OpInputCovenantId(this.activeInputIndex)");
-        // TODO: Replace the raw qualified-reference substitutions below with a
-        // token-aware rewriter shared with `count_qualified_ref`. Each source
-        // should match an exact identifier-and-dot token path rooted at the
-        // expression level (in particular, not after another `.`), without
-        // matching longer identifiers or prefix-related fields. Replacements
-        // should be selected from the original token spans in one pass so that
-        // generated text is never reconsidered by a later substitution.
+        let mut replacements = vec![
+            ("self.value".to_string(), "tx.inputs[this.activeInputIndex].value".to_string()),
+            ("self.cov_id".to_string(), "OpInputCovenantId(this.activeInputIndex)".to_string()),
+        ];
         for spec in state_expansion_witness_specs_for_actor(self.actor, self.model) {
             for field in &self.model.state(&spec.memory_state)?.fields {
                 let local = hidden_state_expansion_field_name(&spec, &field.name);
-                out = out.replace(&format!("self.{}.{}", spec.field, field.name), &local);
-                out = out.replace(&format!("{}.{}", spec.field, field.name), &local);
+                replacements.push((format!("self.{}.{}", spec.field, field.name), local.clone()));
+                replacements.push((format!("{}.{}", spec.field, field.name), local));
             }
         }
         for field in &self.model.storage_state(&self.actor.state)?.fields {
-            out = out.replace(&format!("self.{}", field.name), &field.name);
+            replacements.push((format!("self.{}", field.name), field.name.clone()));
         }
-        out = lower_co_spent_calls(&out, &self.source_types)?;
         for (source, lowered) in &self.observed_input_state_refs {
-            out = out.replace(source, lowered);
+            replacements.push((source.clone(), lowered.clone()));
         }
         for output in &self.output_values {
-            out = out.replace(&output.source, &output.lowered);
+            replacements.push((output.source.clone(), output.lowered.clone()));
         }
         for name in &self.input_names {
-            out = out.replace(&format!("{name}.value"), &format!("tx.inputs[{}].value", hidden_input_idx_name(name)));
+            replacements.push((format!("{name}.value"), format!("tx.inputs[{}].value", hidden_input_idx_name(name))));
         }
+        let out = rewrite_qualified_refs(expr, replacements.iter().map(|(source, lowered)| (source.as_str(), lowered.as_str())))?;
+        let out = lower_co_spent_calls(&out, &self.source_types)?;
         lower_actor_enum_literals(&out, self.model)
     }
 
@@ -5668,43 +5664,6 @@ fn parse_unrestricted_output_value(statement: &str) -> Option<&str> {
 fn parse_call_statement<'a>(statement: &'a str, callee: &str) -> Option<&'a str> {
     let tail = statement.trim().strip_prefix(callee)?;
     tail.strip_prefix('(')?.strip_suffix(')').map(str::trim)
-}
-
-/// Replace an exact identifier reference without matching within a longer identifier.
-fn replace_exact_identifier(input: &str, source: &str, replacement: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut cursor = 0;
-    let bytes = input.as_bytes();
-    let identifier_char = |byte: &u8| byte.is_ascii_alphanumeric() || *byte == b'_';
-    for (start, _) in input.match_indices(source) {
-        let end = start + source.len();
-        let continues_previous = start.checked_sub(1).and_then(|previous| bytes.get(previous)).is_some_and(identifier_char);
-        let continues_next = bytes.get(end).is_some_and(identifier_char);
-        if continues_previous || continues_next {
-            continue;
-        }
-        out.push_str(&input[cursor..start]);
-        out.push_str(replacement);
-        cursor = end;
-    }
-    out.push_str(&input[cursor..]);
-    out
-}
-
-fn count_qualified_ref(tokens: &[Token], source: &str) -> usize {
-    let segments = source.split('.').collect::<Vec<_>>();
-    let token_count = segments.len() * 2 - 1;
-    tokens
-        .windows(token_count)
-        .enumerate()
-        .filter(|(start, window)| {
-            (*start == 0 || !matches!(&tokens[*start - 1].kind, TokenKind::Symbol('.')))
-                && segments.iter().enumerate().all(|(idx, segment)| {
-                    matches!(&window[idx * 2].kind, TokenKind::Ident(actual) if actual == segment)
-                        && (idx + 1 == segments.len() || matches!(&window[idx * 2 + 1].kind, TokenKind::Symbol('.')))
-                })
-        })
-        .count()
 }
 
 fn parse_co_spent_call(
