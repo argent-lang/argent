@@ -1,3 +1,7 @@
+//! Loads Argent modules and plans source-app dependency graphs.
+//!
+//! Filesystem, inline, and standard-library sources become syntax programs here.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -1,3 +1,7 @@
+//! Emits one selected Argent app as Sil, artifact, and manifest files.
+//!
+//! This is the current source-text implementation of the codegen backend.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;

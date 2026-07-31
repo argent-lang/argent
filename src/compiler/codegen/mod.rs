@@ -1,3 +1,7 @@
+//! Generates Sil contracts and portable build products from a validated model.
+//!
+//! The emitter is the current source-text backend for this subsystem.
+
 mod emitter;
 mod sil;
 

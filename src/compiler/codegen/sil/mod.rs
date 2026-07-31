@@ -1,3 +1,7 @@
+//! Sil-specific lowering used by the current code generator.
+//!
+//! Structured body lowering and token-aware source rewrites live here.
+
 mod body;
 mod token_refs;
 

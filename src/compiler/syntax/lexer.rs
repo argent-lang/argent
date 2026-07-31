@@ -1,3 +1,7 @@
+//! Shared tokenization for Argent syntax and token-aware body passes.
+//!
+//! Tokens retain the source spans used by parsing and later lowering.
+
 use super::word;
 use crate::error::{ArgentError, Result};
 

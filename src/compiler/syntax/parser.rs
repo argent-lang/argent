@@ -1,3 +1,7 @@
+//! Parses loaded source modules into Argent syntax declarations.
+//!
+//! Entry bodies are delegated to the shared structural body parser.
+
 use std::path::PathBuf;
 
 use super::body::routes::analyze_entry_routes;

@@ -1,3 +1,7 @@
+//! Human-readable inspection of compiled Argent build directories.
+//!
+//! Reports combine artifact metadata with generated and compiled contracts.
+
 use std::collections::BTreeSet;
 use std::fmt::Write;
 use std::fs;

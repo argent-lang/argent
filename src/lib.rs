@@ -1,3 +1,7 @@
+//! Public compilation and runtime facades for Argent applications.
+//!
+//! Compiler internals remain private behind file and inline build operations.
+
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},

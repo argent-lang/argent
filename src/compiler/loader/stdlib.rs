@@ -1,3 +1,7 @@
+//! Resolves standard Argent modules bundled with the compiler.
+//!
+//! Built-in source uses the same syntax parser as user modules.
+
 use std::path::PathBuf;
 
 use crate::compiler::syntax::Module;

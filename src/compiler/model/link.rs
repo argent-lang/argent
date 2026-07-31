@@ -1,3 +1,7 @@
+//! Links imported app artifacts into the selected application's model.
+//!
+//! Linked interfaces, templates, states, and actor enums become model inputs.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;

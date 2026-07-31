@@ -1,3 +1,7 @@
+//! Argent source declarations and the parser infrastructure that builds them.
+//!
+//! Ordinary Sil code remains opaque except for structure Argent must understand.
+
 use std::path::PathBuf;
 
 pub use self::body::EntryBody;

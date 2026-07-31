@@ -1,3 +1,7 @@
+//! Compiler errors with optional file and source locations.
+//!
+//! Public compilation and inspection operations use the result type defined here.
+
 use std::fmt;
 use std::path::PathBuf;
 
