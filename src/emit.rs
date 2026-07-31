@@ -1686,7 +1686,10 @@ struct BodyLowerer<'a, 'm> {
     model: &'m Model<'a>,
     types: BTreeMap<String, String>,
     source_types: BTreeMap<String, String>,
+    /// Entry-wide selector metadata used by route analysis and lowering.
     selectors: BTreeMap<String, TemplateSelector>,
+    /// Selector bindings currently visible at the lowering cursor.
+    visible_selectors: BTreeSet<String>,
     materialized_selectors: BTreeSet<String>,
     materialized_route_locals: BTreeMap<String, String>,
     output_values: Vec<OutputValueRef>,
@@ -1702,6 +1705,7 @@ struct BodyLowerer<'a, 'm> {
 struct BodyScopeSnapshot {
     types: BTreeMap<String, String>,
     source_types: BTreeMap<String, String>,
+    visible_selectors: BTreeSet<String>,
     materialized_selectors: BTreeSet<String>,
     materialized_route_locals: BTreeMap<String, String>,
 }
@@ -1827,6 +1831,8 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
 
         let ref_replacements = entry_ref_replacements(actor, model, input_names, &output_values, observed_input_state_refs)?;
         let selectors = model.template_selectors_for_entry(actor, entry)?;
+        let visible_selectors =
+            entry.params.iter().filter(|param| selectors.contains_key(&param.name)).map(|param| param.name.clone()).collect();
         let observed_output_fields = observed_output_field_witness_specs(actor, entry, model);
 
         Ok(Self {
@@ -1836,6 +1842,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             types,
             source_types,
             selectors,
+            visible_selectors,
             materialized_selectors: BTreeSet::new(),
             materialized_route_locals: BTreeMap::new(),
             output_values,
@@ -1913,12 +1920,14 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         let outer = BodyScopeSnapshot {
             types: self.types.clone(),
             source_types: self.source_types.clone(),
+            visible_selectors: self.visible_selectors.clone(),
             materialized_selectors: self.materialized_selectors.clone(),
             materialized_route_locals: self.materialized_route_locals.clone(),
         };
         let result = self.lower_statements(out, indent, statements);
         self.types = outer.types;
         self.source_types = outer.source_types;
+        self.visible_selectors = outer.visible_selectors;
         self.materialized_selectors = outer.materialized_selectors;
         self.materialized_route_locals = outer.materialized_route_locals;
         result
@@ -2021,6 +2030,9 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
 
             push_indent(out, indent);
             out.push_str(&format!("{ty} {name} = {lowered};\n"));
+            if self.selectors.get(name).is_some_and(|selector| selector.actor_enum == source_ty) {
+                self.visible_selectors.insert(name.to_string());
+            }
             return Ok(());
         }
 
@@ -2116,6 +2128,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         }
         self.validate_actor_type_initializer(name, expr, &selector)?;
         self.ensure_selector_template(out, indent, name)?;
+        self.visible_selectors.insert(name.to_string());
         Ok(())
     }
 
@@ -2518,8 +2531,11 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     }
 
     fn lower_route(&mut self, out: &mut String, indent: usize, route: RouteCall) -> Result<()> {
-        if self.selectors.contains_key(&route.actor) {
+        if self.visible_selectors.contains(&route.actor) {
             return self.lower_selector_route(out, indent, route);
+        }
+        if self.selectors.contains_key(&route.actor) {
+            return Err(self.error(format!("actor handle `{}` is not visible in this scope", route.actor)));
         }
         self.model.actor_state(&route.actor)?;
         let output_idx = hidden_output_idx_name(&route.output);
