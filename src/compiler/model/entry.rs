@@ -390,7 +390,7 @@ pub(crate) enum CovenantIdSource {
     EntryArgument { index: usize },
 }
 
-pub(crate) fn clause_reference(expr: &str) -> Result<Option<ClauseReference>> {
+fn clause_reference(expr: &str) -> Result<Option<ClauseReference>> {
     let tokens = lex(expr).map_err(|err| ArgentError::new(format!("failed to lex clause reference `{expr}`: {}", err.message)))?;
     match tokens.as_slice() {
         [

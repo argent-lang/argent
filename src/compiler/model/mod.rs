@@ -11,7 +11,9 @@ use crate::routing::{CommitmentNode, RouteGraph, RoutePlan as PlannerRoutePlan, 
 use self::link::LinkedActor;
 
 mod actor;
+mod build;
 mod entry;
+mod layout;
 pub(crate) mod link;
 
 #[cfg(test)]
@@ -24,6 +26,7 @@ pub(crate) use entry::{
     observed_open_bindings, observed_open_state_for_decl, parse_actor_enum_selector, parse_actor_enum_variant,
     resolve_observe_covenant_id_source, source_actor_type_state_for_expr, spawn_target_state,
 };
+pub(crate) use layout::packed_field_len;
 
 /// The selected application's compiler-wide source and routing model.
 #[derive(Debug)]
