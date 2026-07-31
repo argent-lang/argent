@@ -468,7 +468,9 @@ pub(crate) fn source_actor_type_state_for_expr(
     Ok(clause_actor_type_ref(expr, actor, entry, model)?.map(|source| source.state().to_string()))
 }
 
-/// Resolve the source state of a static or actor-type-selected spawn target.
+// Spawn targets may be an explicitly dynamic actor_type value or any fixed
+// actor resolved by the selected app. Linked templates remain imported
+// capabilities and do not enter the selected app's route graph.
 pub(crate) fn spawn_target_state(
     target: &ActorTarget,
     expr: &str,
