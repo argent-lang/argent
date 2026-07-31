@@ -144,12 +144,12 @@ fn emit_section_header_raw(out: &mut String, title: &str) {
 fn emit_shared_constants(out: &mut String, model: &Model<'_>) -> Result<()> {
     if !model.consts.is_empty() {
         emit_section_header(out, "Shared constants");
-        for konst in &model.consts {
+        for ct in &model.consts {
             out.push_str(&format!(
                 "    {} constant {} = {};\n",
-                lower_type_ref(&konst.ty, model),
-                konst.name,
-                lower_actor_enum_literals(&konst.value, model)?
+                lower_type_ref(&ct.ty, model),
+                ct.name,
+                lower_actor_enum_literals(&ct.value, model)?
             ));
         }
         out.push('\n');

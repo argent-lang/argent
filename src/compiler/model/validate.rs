@@ -160,8 +160,8 @@ impl Model<'_> {
 
     fn validate_reserved_identifiers(&self) -> Result<()> {
         reject_reserved_identifier(word::APP, &self.app_name)?;
-        for konst in &self.consts {
-            reject_reserved_identifier("constant", &konst.name)?;
+        for ct in &self.consts {
+            reject_reserved_identifier("constant", &ct.name)?;
         }
         for function in &self.functions {
             reject_reserved_function_identifier(&function.name)?;

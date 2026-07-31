@@ -147,9 +147,9 @@ fn collect_consts(program: &Program) -> Result<Vec<&ConstDecl>> {
     let mut seen = BTreeMap::new();
     let mut consts = Vec::new();
     for module in &program.modules {
-        for konst in &module.consts {
-            reject_duplicate_top_level(word::CONST, &konst.name, &module.path, &mut seen)?;
-            consts.push(konst);
+        for ct in &module.consts {
+            reject_duplicate_top_level(word::CONST, &ct.name, &module.path, &mut seen)?;
+            consts.push(ct);
         }
     }
     Ok(consts)
