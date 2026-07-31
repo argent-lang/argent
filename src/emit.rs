@@ -1831,8 +1831,17 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
 
         let ref_replacements = entry_ref_replacements(actor, model, input_names, &output_values, observed_input_state_refs)?;
         let selectors = model.template_selectors_for_entry(actor, entry)?;
-        let visible_selectors =
-            entry.params.iter().filter(|param| selectors.contains_key(&param.name)).map(|param| param.name.clone()).collect();
+        // A same-named body local may also contribute entry-wide selector
+        // metadata; only an actor-enum parameter defines a visible parameter
+        // binding.
+        let visible_selectors = entry
+            .params
+            .iter()
+            .filter(|param| {
+                param.ty.array.is_none() && selectors.get(&param.name).is_some_and(|selector| selector.actor_enum == param.ty.name)
+            })
+            .map(|param| param.name.clone())
+            .collect();
         let observed_output_fields = observed_output_field_witness_specs(actor, entry, model);
 
         Ok(Self {
