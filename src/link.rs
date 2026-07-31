@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::artifact::*;
-use crate::ast::*;
+use crate::compiler::syntax::*;
 use crate::error::{ArgentError, Result};
 use crate::stdlib::is_standard_module;
 

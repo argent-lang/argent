@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::ast::ActorDecl;
+use crate::compiler::syntax::ActorDecl;
 use crate::error::{ArgentError, Result};
 
 use super::{ActorEnumInfo, EntryModel};
@@ -47,7 +47,7 @@ impl<'a> ActorModel<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{EmitSpec, EntryBody, EntryDecl, EntryKind};
+    use crate::compiler::syntax::{EmitSpec, EntryBody, EntryDecl, EntryKind};
 
     fn entry(name: &str) -> EntryDecl {
         EntryDecl {

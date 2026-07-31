@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::ast::{Import, Program};
+use crate::compiler::syntax::parser::parse_module;
+use crate::compiler::syntax::{Import, Program};
 use crate::error::{ArgentError, Result};
-use crate::parser::parse_module;
 use crate::stdlib::{is_standard_module, load_standard_module};
 
 pub fn load_program(root: impl AsRef<Path>) -> Result<Program> {
@@ -51,7 +51,7 @@ pub(crate) fn plan_app_graph(program: Program, app: &str) -> Result<Vec<(SourceA
 struct Loader {
     visited: BTreeSet<PathBuf>,
     visited_standard: BTreeSet<String>,
-    modules: Vec<crate::ast::Module>,
+    modules: Vec<crate::compiler::syntax::Module>,
 }
 
 impl Loader {
@@ -182,7 +182,7 @@ impl AppGraphPlanner {
     }
 }
 
-fn app_dependencies(program: &Program, selected_app: &crate::ast::AppDecl) -> Result<BTreeSet<SourceApp>> {
+fn app_dependencies(program: &Program, selected_app: &crate::compiler::syntax::AppDecl) -> Result<BTreeSet<SourceApp>> {
     let mut dependencies = BTreeSet::<SourceApp>::new();
     let mut app_sources = BTreeMap::<String, PathBuf>::new();
     let referenced_apps = qualified_app_references(program, selected_app);
@@ -217,7 +217,7 @@ fn app_dependencies(program: &Program, selected_app: &crate::ast::AppDecl) -> Re
     Ok(dependencies)
 }
 
-fn qualified_app_references(program: &Program, selected_app: &crate::ast::AppDecl) -> BTreeSet<String> {
+fn qualified_app_references(program: &Program, selected_app: &crate::compiler::syntax::AppDecl) -> BTreeSet<String> {
     let actors =
         program.modules.iter().flat_map(|module| &module.actors).map(|actor| (actor.name.as_str(), actor)).collect::<BTreeMap<_, _>>();
     let mut apps = BTreeSet::new();
@@ -267,7 +267,7 @@ fn insert_app_dependency(
     Ok(())
 }
 
-fn root_app<'a>(program: &'a Program, source_app: &SourceApp) -> Result<&'a crate::ast::AppDecl> {
+fn root_app<'a>(program: &'a Program, source_app: &SourceApp) -> Result<&'a crate::compiler::syntax::AppDecl> {
     let root = program
         .modules
         .iter()

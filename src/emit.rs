@@ -3,12 +3,12 @@ use std::fs;
 use std::path::Path;
 
 use crate::artifact::*;
-use crate::ast::*;
 use crate::codec::encode_hex;
-use crate::entry_body::{EntryBinding, EntryRoute, EntryStatement};
+use crate::compiler::syntax::body::{EntryBinding, EntryRoute, EntryStatement};
+use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, Span, Token, TokenKind, lex};
+use crate::compiler::syntax::words::word;
+use crate::compiler::syntax::*;
 use crate::error::{ArgentError, Result};
-use crate::language::word;
-use crate::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, Span, Token, TokenKind, lex};
 use crate::link::{LinkedActor, LinkedContext, link_imported_actors};
 use crate::model::{
     ActorEnumInfo, ActorModel, ActorTarget, AppActors, CompilerRoutePlan, CompilerRoutePlanner, CompilerRouteTransition,
@@ -6456,7 +6456,7 @@ mod tests {
     #[test]
     fn planning_uses_declared_emit_domain_not_body_routes() {
         let path = PathBuf::from("declared-emit-domain.ag");
-        let module = crate::parser::parse_module(
+        let module = crate::compiler::syntax::parser::parse_module(
             path.clone(),
             r#"
             state SourceState {
@@ -6551,7 +6551,7 @@ mod tests {
 
     #[test]
     fn rejects_source_with_missing_named_output_coverage() {
-        let module = crate::parser::parse_module(
+        let module = crate::compiler::syntax::parser::parse_module(
             PathBuf::from("test.ag"),
             r#"
             state FooState {}
@@ -6710,7 +6710,7 @@ mod tests {
             }
         "#;
         let path = PathBuf::from("test.ag");
-        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("model validates");
 
@@ -6948,7 +6948,7 @@ mod tests {
 
     #[test]
     fn allows_legacy_template_like_user_field_after_namespace_move() {
-        let module = crate::parser::parse_module(
+        let module = crate::compiler::syntax::parser::parse_module(
             PathBuf::from("test.ag"),
             r#"
             state FooState {
@@ -6971,7 +6971,7 @@ mod tests {
 
     #[test]
     fn emits_reserved_generated_namespace_names() {
-        let module = crate::parser::parse_module(
+        let module = crate::compiler::syntax::parser::parse_module(
             PathBuf::from("test.ag"),
             r#"
             state FooState {}
@@ -7073,7 +7073,7 @@ mod tests {
             }
         "#;
         let path = PathBuf::from("test.ag");
-        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("model validates");
         let sil = emit_actor(model.actor("Foo").expect("actor exists"), &model).expect("actor emits");
@@ -7098,7 +7098,7 @@ mod tests {
             }
         "#;
         let path = PathBuf::from("test.ag");
-        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("model validates");
         let sil = emit_actor(model.actor("Foo").expect("actor exists"), &model).expect("actor emits");
@@ -7163,7 +7163,7 @@ mod tests {
             }
         "#;
         let path = PathBuf::from("test.ag");
-        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("model validates");
         let sil = emit_actor(model.actor("Launcher").expect("actor exists"), &model).expect("actor emits");
@@ -7271,7 +7271,7 @@ mod tests {
             }
         "#;
         let path = PathBuf::from("test.ag");
-        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("model validates");
 
@@ -7296,7 +7296,7 @@ mod tests {
             }
         "#;
         let path = PathBuf::from("test.ag");
-        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("model validates");
         let sil = emit_actor(model.actor("Foo").expect("actor exists"), &model).expect("actor emits");
@@ -7338,7 +7338,7 @@ mod tests {
             }
         "#;
         let path = PathBuf::from("test.ag");
-        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("model validates");
         let sil = emit_actor(model.actor("Foo").expect("actor exists"), &model).expect("actor emits");
@@ -7350,7 +7350,7 @@ mod tests {
 
     #[test]
     fn self_transition_uses_same_template_shortcut() {
-        let module = crate::parser::parse_module(
+        let module = crate::compiler::syntax::parser::parse_module(
             PathBuf::from("test.ag"),
             r#"
             state FooState {
@@ -7399,7 +7399,7 @@ mod tests {
     #[test]
     fn terminal_state_does_not_carry_its_own_template() {
         let path = PathBuf::from("terminal-route.ag");
-        let module = crate::parser::parse_module(
+        let module = crate::compiler::syntax::parser::parse_module(
             path.clone(),
             r#"
             state SourceState {
@@ -7472,7 +7472,7 @@ mod tests {
 
     #[test]
     fn emits_portable_artifact_schema() {
-        let module = crate::parser::parse_module(
+        let module = crate::compiler::syntax::parser::parse_module(
             PathBuf::from("test.ag"),
             r#"
             state FooState {
@@ -7811,7 +7811,7 @@ mod tests {
 
     #[test]
     fn state_expansion_slots_require_typed_payload_constructors() {
-        let module = crate::parser::parse_module(
+        let module = crate::compiler::syntax::parser::parse_module(
             PathBuf::from("test.ag"),
             r#"
             state AgentCapsule {
@@ -8332,7 +8332,7 @@ mod tests {
             }
         "#;
         let path = PathBuf::from("test.ag");
-        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("model validates");
         let sil = emit_actor(model.actor("Counter").expect("actor exists"), &model).expect("actor emits");
@@ -8344,7 +8344,7 @@ mod tests {
     fn rejects_co_spent_on_non_cov_id_value() {
         let out_dir = std::env::temp_dir().join(format!("argent-co-spent-type-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&out_dir);
-        let module = crate::parser::parse_module(
+        let module = crate::compiler::syntax::parser::parse_module(
             PathBuf::from("test.ag"),
             r#"
             state FooState {
@@ -8571,7 +8571,7 @@ mod tests {
     #[test]
     fn selected_app_actor_count_controls_self_consume_template_authentication() {
         let path = PathBuf::from("multi_actor_self_consume.ag");
-        let module = crate::parser::parse_module(
+        let module = crate::compiler::syntax::parser::parse_module(
             path.clone(),
             r#"
             state CounterState {
@@ -8648,7 +8648,7 @@ mod tests {
     #[test]
     fn unselected_actors_do_not_shape_selected_app_state() {
         let path = PathBuf::from("app_state_isolation.ag");
-        let module = crate::parser::parse_module(
+        let module = crate::compiler::syntax::parser::parse_module(
             path.clone(),
             r#"
             state SharedState {
@@ -9166,7 +9166,7 @@ mod tests {
             }
         "#;
         let path = PathBuf::from("deep-forest.ag");
-        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("deep-forest app parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("deep-forest app parses");
         let program = Program { root: path, modules: vec![module] };
 
         // The useful family branches live four levels below the forest root.
@@ -9259,7 +9259,7 @@ mod tests {
     #[test]
     fn shared_state_actors_retain_distinct_transitive_cuts() {
         let path = PathBuf::from("actor-route-cuts.ag");
-        let module = crate::parser::parse_module(
+        let module = crate::compiler::syntax::parser::parse_module(
             path.clone(),
             r#"
             state SharedState {
@@ -9432,7 +9432,7 @@ mod tests {
         "#;
 
         let path = PathBuf::from("foreign-actor-cuts.ag");
-        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("model validates");
         let source_sil = emit_actor(model.actor("Source").expect("Source exists"), &model).expect("Source Sil emits");
@@ -9456,7 +9456,7 @@ mod tests {
     #[test]
     fn actor_route_field_kind_distinguishes_local_tables_from_foreign_commitments() {
         let path = PathBuf::from("actor-route-field-kinds.ag");
-        let module = crate::parser::parse_module(path.clone(), toy_chess_source()).expect("toy chess source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), toy_chess_source()).expect("toy chess source parses");
         let program = Program { root: path, modules: vec![module] };
 
         let model = Model::from_program(&program).expect("toy chess model validates");
@@ -9495,7 +9495,7 @@ mod tests {
     #[test]
     fn family_table_witnesses_follow_cut_transitions() {
         let path = PathBuf::from("transition-family-witnesses.ag");
-        let module = crate::parser::parse_module(path.clone(), toy_chess_source()).expect("toy chess source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), toy_chess_source()).expect("toy chess source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("toy chess model validates");
 
@@ -9886,7 +9886,7 @@ mod tests {
             }
         "#;
         let path = PathBuf::from("selected-family-gate.ag");
-        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("model validates");
 
@@ -9933,7 +9933,7 @@ mod tests {
 "#,
         );
         let path = PathBuf::from("family-pack-transition.ag");
-        let module = crate::parser::parse_module(path.clone(), source.clone()).expect("source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.clone()).expect("source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("model validates");
 
@@ -9955,7 +9955,8 @@ mod tests {
     fn route_neutral_state_locals_convert_at_actor_routes() {
         let straight_path = PathBuf::from("examples/route_state_bodies.ag");
         let straight_source = fs::read_to_string(&straight_path).expect("route state body example exists");
-        let straight_module = crate::parser::parse_module(straight_path.clone(), straight_source.clone()).expect("example parses");
+        let straight_module =
+            crate::compiler::syntax::parser::parse_module(straight_path.clone(), straight_source.clone()).expect("example parses");
         let straight_program = Program { root: straight_path, modules: vec![straight_module] };
         let straight_model = Model::from_program(&straight_program).expect("example model validates");
         let straight_sil = actor_sil_for_model(&straight_model);
@@ -9971,7 +9972,7 @@ mod tests {
 
         let choice_path = PathBuf::from("examples/route_state_body_choice.ag");
         let choice_source = fs::read_to_string(&choice_path).expect("route state body choice example exists");
-        let choice_module = crate::parser::parse_module(choice_path.clone(), choice_source).expect("example parses");
+        let choice_module = crate::compiler::syntax::parser::parse_module(choice_path.clone(), choice_source).expect("example parses");
         let choice_program = Program { root: choice_path, modules: vec![choice_module] };
         let choice_model = Model::from_program(&choice_program).expect("example model validates");
         let choice_sil = emit_actor(choice_model.actor("Lobby").expect("Lobby exists"), &choice_model).expect("Lobby Sil emits");
@@ -10141,7 +10142,7 @@ mod tests {
     #[test]
     fn toy_chess_sil_uses_one_level_route_family_shape() {
         let path = PathBuf::from("toy-chess-shape.ag");
-        let module = crate::parser::parse_module(path.clone(), toy_chess_source()).expect("toy chess source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), toy_chess_source()).expect("toy chess source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("toy chess model validates");
         let actor_sil = actor_sil_for_model(&model);
@@ -10206,7 +10207,7 @@ mod tests {
     #[test]
     fn route_family_state_keeps_downstream_templates() {
         let path = PathBuf::from("route-family-with-downstream-actor.ag");
-        let module = crate::parser::parse_module(
+        let module = crate::compiler::syntax::parser::parse_module(
             path.clone(),
             r#"
             state BoardState {
@@ -10299,7 +10300,7 @@ mod tests {
             "actor enum MoveActor {\n                Knight;\n                Pawn;\n            }",
         );
         let path = PathBuf::from("toy-chess-selector-order.ag");
-        let module = crate::parser::parse_module(path.clone(), source).expect("toy chess source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source).expect("toy chess source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("reordered selector enum defines route table order");
         let actor_sil = actor_sil_for_model(&model);
@@ -10334,7 +10335,7 @@ mod tests {
     #[test]
     fn gate_less_family_appends_rep_after_selector_variants() {
         let path = PathBuf::from("fixed-selector-table.ag");
-        let module = crate::parser::parse_module(
+        let module = crate::compiler::syntax::parser::parse_module(
             path.clone(),
             r#"
             state BoardState {
@@ -10472,7 +10473,7 @@ mod tests {
             }
         "#;
         let path = PathBuf::from("conflicting-selector-order.ag");
-        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
         let program = Program { root: path, modules: vec![module] };
 
         let err = Model::from_program(&program).expect_err("conflicting actor enum orders must be rejected");
@@ -10524,7 +10525,7 @@ mod tests {
             }
         "#;
         let path = PathBuf::from("selector-prefix.ag");
-        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
         let program = Program { root: path, modules: vec![module] };
 
         let model = Model::from_program(&program).expect("selector variants may prefix other family actors");
@@ -10598,7 +10599,7 @@ mod tests {
             }
             "#;
         let path = PathBuf::from("bad-actor-enum.ag");
-        let module = crate::parser::parse_module(path.clone(), artifact_source.to_string()).expect("source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), artifact_source.to_string()).expect("source parses");
         let program = Program { root: path, modules: vec![module] };
 
         let err = Model::from_program(&program).expect_err("mixed actor enum state must be rejected");
@@ -11035,7 +11036,7 @@ mod tests {
 
     fn inline_actor_sil_and_artifact(name: &str, source: &str) -> (BTreeMap<String, String>, Artifact) {
         let path = PathBuf::from(format!("{name}.ag"));
-        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("model validates");
         let actor_sil = actor_sil_for_model(&model);
@@ -11542,7 +11543,7 @@ mod tests {
             }
         "#;
         let path = PathBuf::from("test.ag");
-        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("model validates");
         let sil = emit_actor(model.actor("Launcher").expect("launcher exists"), &model).expect("Launcher emits");
@@ -11927,7 +11928,7 @@ mod tests {
     fn emit_fixture(case: &str, actor: &str) -> (String, Artifact) {
         let path = PathBuf::from("tests/fixtures/emit").join(case).join("app.ag");
         let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(&path)).expect("fixture source exists");
-        let module = crate::parser::parse_module(path.clone(), source).expect("fixture source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source).expect("fixture source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("fixture model validates");
         let actor = model.actor(actor).expect("fixture actor exists");
@@ -11940,7 +11941,7 @@ mod tests {
     fn emit_selected_fixture(path: &str, app: &str, actor: &str) -> (String, Artifact) {
         let path = PathBuf::from(path);
         let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(&path)).expect("fixture source exists");
-        let module = crate::parser::parse_module(path.clone(), source).expect("fixture source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source).expect("fixture source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program_app(&program, app).expect("selected fixture model validates");
         let actor = model.actor(actor).expect("selected fixture actor exists");
@@ -11952,7 +11953,7 @@ mod tests {
 
     fn emit_inline_error(source: &str) -> ArgentError {
         let path = PathBuf::from("test.ag");
-        let module = crate::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
         let program = Program { root: path, modules: vec![module] };
         let model = Model::from_program(&program).expect("model validates");
         for actor in &model.actors {
@@ -11965,7 +11966,7 @@ mod tests {
 
     fn parse_and_validate(source: &str) -> Result<()> {
         let path = PathBuf::from("test.ag");
-        let module = crate::parser::parse_module(path.clone(), source.to_string())?;
+        let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string())?;
         let program = Program { root: path, modules: vec![module] };
         Model::from_program(&program).map(|_| ())
     }
@@ -12093,7 +12094,7 @@ mod tests {
 
     #[test]
     fn artifact_codec_matches_silverscript_sigscript_builder() {
-        let module = crate::parser::parse_module(
+        let module = crate::compiler::syntax::parser::parse_module(
             PathBuf::from("test.ag"),
             r#"
             state FooState {

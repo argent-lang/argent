@@ -2,12 +2,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::ast::{
+use crate::compiler::syntax::lexer::{Token, TokenKind};
+use crate::compiler::syntax::words::word;
+use crate::compiler::syntax::{
     ActorDecl, ConsumeDecl, EmitOutput, EmitSpec, EntryDecl, ObserveDecl, ObservedActorDecl, RouteCall, SpawnDecl, SpawnOutputDecl,
 };
 use crate::error::{ArgentError, Result};
-use crate::language::word;
-use crate::lexer::{Token, TokenKind};
 use crate::naming::{is_identifier, to_snake};
 
 use super::{ActorEnumInfo, AppActors};
@@ -703,7 +703,7 @@ fn expand_routes<'a>(routes: impl Iterator<Item = &'a RouteCall>, selectors: &BT
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{EmitOutput, EmitSpec, EntryBody, EntryKind};
+    use crate::compiler::syntax::{EmitOutput, EmitSpec, EntryBody, EntryKind};
 
     #[test]
     fn models_covenant_groups_and_preserves_source_nodes() {

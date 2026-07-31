@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::artifact::{AppDependencyArtifact, EntryRefArtifact};
-use crate::ast::{ActorDecl, ConstDecl, EntryDecl, FunctionDecl, RouteCall, StateDecl, TypeRef};
+use crate::compiler::syntax::{ActorDecl, ConstDecl, EntryDecl, FunctionDecl, RouteCall, StateDecl, TypeRef};
 use crate::error::{ArgentError, Result};
 use crate::link::LinkedActor;
 use crate::naming::to_snake;

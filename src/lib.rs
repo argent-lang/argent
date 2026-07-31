@@ -3,22 +3,19 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use compiler::syntax as ast;
+
 pub mod artifact;
-pub mod ast;
 pub mod builder;
 pub mod codec;
+mod compiler;
 pub mod emit;
-mod entry_body;
-pub mod entry_routes;
 pub mod error;
 pub mod inspect;
-mod language;
-pub mod lexer;
 mod link;
 pub mod loader;
 mod model;
 mod naming;
-pub mod parser;
 pub mod routing;
 mod stdlib;
 mod token_refs;

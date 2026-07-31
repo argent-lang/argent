@@ -1,8 +1,13 @@
 use std::path::PathBuf;
 
-use crate::language::word;
+use self::words::word;
 
-pub use crate::entry_body::EntryBody;
+pub use self::body::EntryBody;
+
+pub mod body;
+pub mod lexer;
+pub mod parser;
+pub(crate) mod words;
 
 #[derive(Debug, Clone)]
 pub struct Program {
