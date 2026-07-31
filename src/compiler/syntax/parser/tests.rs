@@ -61,6 +61,7 @@ fn parses_type_first_function_entry_and_delegate_parameters() {
     assert_eq!(module.functions[0].params[0].ty, TypeRef::array("byte", 32));
     assert_eq!(module.functions[0].params[1].name, "amount");
     assert_eq!(module.functions[0].params[1].ty, TypeRef::new("int"));
+    assert_eq!(module.functions[0].return_ty, Some(TypeRef::new("int")));
 
     let actor = &module.actors[0];
     assert_eq!(actor.entries[0].params[0].name, "amount");
@@ -69,6 +70,27 @@ fn parses_type_first_function_entry_and_delegate_parameters() {
     assert_eq!(actor.entries[0].params[1].ty, TypeRef::actor_type("State"));
     assert_eq!(actor.entries[1].params[0].name, "owner_sig");
     assert_eq!(actor.entries[1].params[0].ty, TypeRef::new("sig"));
+}
+
+#[test]
+fn parses_helper_functions_without_return_types() {
+    let module = parse_module(
+        PathBuf::from("helpers.ag"),
+        r#"
+            fn authorize(int value) {
+                require(value > 0);
+            }
+
+            fn identity(int value) -> int {
+                return value;
+            }
+            "#
+        .to_string(),
+    )
+    .expect("void and value-returning helpers parse");
+
+    assert_eq!(module.functions[0].return_ty, None);
+    assert_eq!(module.functions[1].return_ty, Some(TypeRef::new("int")));
 }
 
 #[test]

@@ -351,14 +351,14 @@ fn rejects_duplicate_function_declarations() {
     program.modules[0].functions.push(FunctionDecl {
         name: "helper".to_string(),
         params: Vec::new(),
-        return_ty: TypeRef::new("int"),
+        return_ty: Some(TypeRef::new("int")),
         body: "1".to_string(),
     });
     let mut duplicate = empty_module("second.ag");
     duplicate.functions.push(FunctionDecl {
         name: "helper".to_string(),
         params: Vec::new(),
-        return_ty: TypeRef::new("int"),
+        return_ty: Some(TypeRef::new("int")),
         body: "2".to_string(),
     });
     program.modules.push(duplicate);
@@ -373,7 +373,7 @@ fn rejects_function_named_unrestricted() {
     program.modules[0].functions.push(FunctionDecl {
         name: word::UNRESTRICTED.to_string(),
         params: Vec::new(),
-        return_ty: TypeRef::new("int"),
+        return_ty: Some(TypeRef::new("int")),
         body: "0".to_string(),
     });
 

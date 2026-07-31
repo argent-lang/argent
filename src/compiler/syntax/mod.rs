@@ -74,7 +74,7 @@ pub struct StateDigestExpansionDecl {
 pub struct FunctionDecl {
     pub name: String,
     pub params: Vec<ParamDecl>,
-    pub return_ty: TypeRef,
+    pub return_ty: Option<TypeRef>,
     pub body: String,
 }
 

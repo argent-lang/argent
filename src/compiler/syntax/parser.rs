@@ -141,8 +141,7 @@ impl Parser {
         self.expect_ident(word::FN)?;
         let name = self.expect_any_ident()?;
         let params = self.parse_param_list()?;
-        self.expect_arrow()?;
-        let return_ty = self.parse_type()?;
+        let return_ty = if self.consume_arrow() { Some(self.parse_type()?) } else { None };
         let body = self.consume_block_text()?;
         Ok(FunctionDecl { name, params, return_ty, body })
     }
@@ -593,13 +592,12 @@ impl Parser {
         matches!(self.current().kind, TokenKind::Symbol(actual) if actual == expected)
     }
 
-    fn expect_arrow(&mut self) -> Result<()> {
-        match self.current().kind {
-            TokenKind::Arrow => {
-                self.advance();
-                Ok(())
-            }
-            _ => Err(self.error(format!("expected `->`, found {}", self.describe_current()))),
+    fn consume_arrow(&mut self) -> bool {
+        if matches!(self.current().kind, TokenKind::Arrow) {
+            self.advance();
+            true
+        } else {
+            false
         }
     }
 
