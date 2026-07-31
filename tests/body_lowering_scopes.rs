@@ -80,6 +80,48 @@ app SelectorScope {
 }
 "#;
 
+const SCOPED_SELECTOR_SOURCE: &str = r#"
+state BoardState {
+    int count;
+}
+
+actor enum NextActor {
+    Alpha;
+    Beta;
+}
+
+actor Router owns BoardState {
+    entry choose(bool choose) emits next: NextActor {
+        unrestricted(next.value);
+        BoardState next_state = {
+            count: count + 1,
+        };
+
+        __SELECTOR_SCOPE__
+
+        become next <- target(next_state);
+    }
+}
+
+actor Alpha owns BoardState {
+    entry inspect() emits none {
+        require(count >= 0);
+    }
+}
+
+actor Beta owns BoardState {
+    entry inspect() emits none {
+        require(count >= 0);
+    }
+}
+
+app ScopedSelector {
+    actor Router;
+    actor Alpha;
+    actor Beta;
+}
+"#;
+
 #[test]
 fn state_local_scope_survives_a_standalone_block() {
     execute_scope_flows(
@@ -240,6 +282,57 @@ fn selector_materialization_is_independent_between_if_branches() {
             .build(&context)
             .unwrap_or_else(|err| panic!("selector scope flow target={target}, first_branch={first_branch} failed: {err}"));
     }
+}
+
+#[test]
+fn selector_binding_does_not_escape_a_standalone_block() {
+    assert_selector_scope_rejected(
+        "selector-standalone-block",
+        r#"
+        {
+            actor_type<BoardState> target = NextActor::Alpha;
+        }
+        "#,
+    );
+}
+
+#[test]
+fn selector_binding_does_not_escape_an_if_branch() {
+    assert_selector_scope_rejected(
+        "selector-if-branch",
+        r#"
+        if (choose) {
+            actor_type<BoardState> target = NextActor::Alpha;
+        }
+        "#,
+    );
+}
+
+#[test]
+fn selector_binding_does_not_escape_a_for_body() {
+    assert_selector_scope_rejected(
+        "selector-for-body",
+        r#"
+        for (i, 0, 1, 1) {
+            actor_type<BoardState> target = NextActor::Alpha;
+        }
+        "#,
+    );
+}
+
+fn assert_selector_scope_rejected(name: &str, selector_scope: &str) {
+    let source = SCOPED_SELECTOR_SOURCE.replace("__SELECTOR_SCOPE__", selector_scope);
+    let out_dir = std::env::temp_dir().join(format!("argent-{name}-scope-test-{}", std::process::id()));
+    if out_dir.exists() {
+        fs::remove_dir_all(&out_dir).expect("old scope test output is removed");
+    }
+
+    let err = argent::build_inline(PathBuf::from(format!("{name}.ag")), &source, &out_dir)
+        .expect_err("selector binding must not escape its lexical scope");
+    if out_dir.exists() {
+        fs::remove_dir_all(&out_dir).expect("scope test output is removed");
+    }
+    assert!(err.to_string().contains("actor handle `target` is not visible in this scope"), "unexpected selector scope error: {err}");
 }
 
 fn execute_scope_flows(name: &str, body: &str, flows: &[(bool, i64)]) {
