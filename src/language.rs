@@ -19,6 +19,7 @@ pub(crate) mod word {
     pub const ENUM: &str = "enum";
     pub const EXPANDS: &str = "expands";
     pub const FN: &str = "fn";
+    pub const FOR: &str = "for";
     pub const FROM: &str = "from";
     pub const IF: &str = "if";
     pub const IMPORT: &str = "import";

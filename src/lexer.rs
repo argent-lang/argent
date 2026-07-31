@@ -27,6 +27,12 @@ pub struct Span {
     pub end: usize,
 }
 
+impl std::fmt::Display for Span {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}..{}", self.start, self.end)
+    }
+}
+
 pub fn lex(source: &str) -> Result<Vec<Token>> {
     lex_with_policy(source, IdentifierPolicy::Any)
 }

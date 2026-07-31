@@ -155,11 +155,7 @@ contract StonesSettle(
             require(tx.outputs[gen__player_a_out_output_idx].value == tx.inputs[gen__player_a_in_input_idx].value);
             require(tx.outputs[gen__player_b_out_output_idx].value == tx.inputs[gen__player_b_in_input_idx].value + tx.inputs[this.activeInputIndex].value);
         }
-        Gen__PlayerState next_player_a = {
-            // :: generated fields
-            gen__player_template: gen__player_template,
-            gen__stones_game_template: gen__stones_game_template,
-            gen__stones_settle_template: gen__stones_settle_template,
+        PlayerState next_player_a = {
             // :: user declared fields
             owner: player_a_in.owner,
             player_id: player_a_in.player_id,
@@ -168,11 +164,7 @@ contract StonesSettle(
             wins: player_a_wins,
             losses: player_a_losses,
         };
-        Gen__PlayerState next_player_b = {
-            // :: generated fields
-            gen__player_template: gen__player_template,
-            gen__stones_game_template: gen__stones_game_template,
-            gen__stones_settle_template: gen__stones_settle_template,
+        PlayerState next_player_b = {
             // :: user declared fields
             owner: player_b_in.owner,
             player_id: player_b_in.player_id,
@@ -181,19 +173,45 @@ contract StonesSettle(
             wins: player_b_wins,
             losses: player_b_losses,
         };
+        Gen__PlayerState gen__state_player_a_out_gen__player_state = {
+            // :: generated fields
+            gen__player_template: gen__player_template,
+            gen__stones_game_template: gen__stones_game_template,
+            gen__stones_settle_template: gen__stones_settle_template,
+            // :: user declared fields
+            owner: next_player_a.owner,
+            player_id: next_player_a.player_id,
+            open_games: next_player_a.open_games,
+            games: next_player_a.games,
+            wins: next_player_a.wins,
+            losses: next_player_a.losses,
+        };
         // :: become Player
         validateOutputStateWithInputTemplate(
             gen__player_a_out_output_idx,
-            next_player_a,
+            gen__state_player_a_out_gen__player_state,
             gen__player_a_in_input_idx,
             gen__player_prefix_len,
             gen__player_suffix_len,
             gen__player_template
         );
+        Gen__PlayerState gen__state_player_b_out_gen__player_state = {
+            // :: generated fields
+            gen__player_template: gen__player_template,
+            gen__stones_game_template: gen__stones_game_template,
+            gen__stones_settle_template: gen__stones_settle_template,
+            // :: user declared fields
+            owner: next_player_b.owner,
+            player_id: next_player_b.player_id,
+            open_games: next_player_b.open_games,
+            games: next_player_b.games,
+            wins: next_player_b.wins,
+            losses: next_player_b.losses,
+        };
         // :: become Player
         validateOutputStateWithInputTemplate(
             gen__player_b_out_output_idx,
-            next_player_b,
+            gen__state_player_b_out_gen__player_state,
             gen__player_a_in_input_idx,
             gen__player_prefix_len,
             gen__player_suffix_len,

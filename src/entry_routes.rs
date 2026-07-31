@@ -1,10 +1,8 @@
 //! Extracts body routes and verifies that every `become` is terminal.
 
 use crate::ast::{EntryBody, RouteCall};
-use crate::entry_body::EntryBodyCursor;
-use crate::error::{ArgentError, Result};
-use crate::language::word;
-use crate::lexer::TokenKind;
+use crate::entry_body::{EntryRoute, EntryStatement};
+use crate::error::Result;
 
 #[derive(Debug, Clone)]
 pub struct RouteAnalysis {
@@ -21,14 +19,9 @@ pub fn analyze_routes(body: &str) -> Result<RouteAnalysis> {
 }
 
 pub(crate) fn analyze_entry_routes(body: &EntryBody) -> Result<RouteAnalysis> {
-    let mut parser = TerminalParser { cursor: body.cursor() };
-    let info = parser.parse_sequence(None)?;
+    let info = analyze_sequence(body, body.statements(), body.text().len())?;
     let routes = info.terminal_route_sets.iter().flatten().cloned().collect();
     Ok(RouteAnalysis { routes, terminal_route_sets: info.terminal_route_sets })
-}
-
-struct TerminalParser<'a> {
-    cursor: EntryBodyCursor<'a>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -59,191 +52,75 @@ impl TerminalResult {
     }
 }
 
-impl TerminalParser<'_> {
-    fn parse_sequence(&mut self, end: Option<char>) -> Result<TerminalResult> {
-        let mut result = TerminalResult::empty();
-        while !self.cursor.is_eof() && !end.is_some_and(|symbol| self.cursor.check_symbol(symbol)) {
-            let stmt = self.parse_statement()?;
-            result.info.contains_become |= stmt.info.contains_become;
-            result.terminal_route_sets.extend(stmt.terminal_route_sets);
+fn analyze_sequence(body: &EntryBody, statements: &[EntryStatement], end_offset: usize) -> Result<TerminalResult> {
+    let mut result = TerminalResult::empty();
+    for (index, statement) in statements.iter().enumerate() {
+        let statement_result = analyze_statement(body, statement)?;
+        result.info.contains_become |= statement_result.info.contains_become;
+        result.terminal_route_sets.extend(statement_result.terminal_route_sets);
 
-            if stmt.info.all_paths_terminal {
-                while self.cursor.consume_symbol(';') {}
-                if self.cursor.is_eof() || end.is_some_and(|symbol| self.cursor.check_symbol(symbol)) {
-                    result.info.all_paths_terminal = true;
-                    break;
-                }
-                return Err(self.error("`become` must be terminal; move following code into an explicit `else` branch"));
+        if statement_result.info.all_paths_terminal {
+            if let Some(next) = statements.get(index + 1) {
+                return Err(body_error(
+                    body,
+                    next.span().start,
+                    "`become` must be terminal; move following code into an explicit `else` branch",
+                ));
             }
-            if stmt.info.contains_become {
-                return Err(self.error("conditional `become` must be terminal on every branch; add an explicit `else` branch"));
-            }
+            result.info.all_paths_terminal = true;
+            break;
         }
-        Ok(result)
+        if statement_result.info.contains_become {
+            let next_offset = statements.get(index + 1).map_or(end_offset, |next| next.span().start);
+            return Err(body_error(
+                body,
+                next_offset,
+                "conditional `become` must be terminal on every branch; add an explicit `else` branch",
+            ));
+        }
     }
+    Ok(result)
+}
 
-    fn parse_statement(&mut self) -> Result<TerminalResult> {
-        if self.cursor.consume_ident(word::IF) {
-            self.expect_symbol('(')?;
-            self.skip_balanced_after_open('(', ')')?;
-            let then_info = self.parse_block_or_statement()?;
-            let else_info =
-                if self.cursor.consume_ident(word::ELSE) { self.parse_block_or_statement()? } else { TerminalResult::empty() };
-            let contains_become = then_info.info.contains_become || else_info.info.contains_become;
-            let all_paths_terminal = then_info.info.all_paths_terminal && else_info.info.all_paths_terminal;
-            let mut terminal_route_sets = then_info.terminal_route_sets;
-            terminal_route_sets.extend(else_info.terminal_route_sets);
+fn analyze_statement(body: &EntryBody, statement: &EntryStatement) -> Result<TerminalResult> {
+    match statement {
+        EntryStatement::If { condition: _, then_branch, else_branch, .. } => {
+            let then_result = analyze_statement(body, then_branch)?;
+            let else_result =
+                if let Some(else_branch) = else_branch { analyze_statement(body, else_branch)? } else { TerminalResult::empty() };
+            let contains_become = then_result.info.contains_become || else_result.info.contains_become;
+            let all_paths_terminal = then_result.info.all_paths_terminal && else_result.info.all_paths_terminal;
+            let mut terminal_route_sets = then_result.terminal_route_sets;
+            terminal_route_sets.extend(else_result.terminal_route_sets);
 
             Ok(TerminalResult { info: TerminalInfo { contains_become, all_paths_terminal }, terminal_route_sets })
-        } else if self.cursor.consume_ident(word::BECOME) {
-            let routes = self.parse_become_tail()?;
-            Ok(TerminalInfo::terminal(routes))
-        } else if self.cursor.consume_symbol('{') {
-            let result = self.parse_sequence(Some('}'))?;
-            self.expect_symbol('}')?;
-            Ok(result)
-        } else {
-            self.skip_statement()?;
+        }
+        EntryStatement::Become { routes, .. } => {
+            Ok(TerminalInfo::terminal(routes.iter().map(|route| route_call(body, route)).collect()))
+        }
+        EntryStatement::For { body: loop_body, .. } => {
+            let result = analyze_statement(body, loop_body)?;
+            if result.info.contains_become {
+                return Err(body_error(body, loop_body.span().start, "`become` cannot be nested in a `for` loop"));
+            }
             Ok(TerminalResult::empty())
         }
+        EntryStatement::Block { statements, span } => analyze_sequence(body, statements, span.end.saturating_sub(1)),
+        EntryStatement::ValidateOutputsBecome { .. } | EntryStatement::Plain { .. } => Ok(TerminalResult::empty()),
     }
+}
 
-    fn parse_block_or_statement(&mut self) -> Result<TerminalResult> {
-        if self.cursor.consume_symbol('{') {
-            let result = self.parse_sequence(Some('}'))?;
-            self.expect_symbol('}')?;
-            Ok(result)
-        } else {
-            self.parse_statement()
-        }
+fn route_call(body: &EntryBody, route: &EntryRoute) -> RouteCall {
+    RouteCall {
+        output: route.output.clone(),
+        actor: body.span_text(route.actor).trim().to_string(),
+        state: body.span_text(route.state).trim().to_string(),
     }
+}
 
-    fn parse_become_tail(&mut self) -> Result<Vec<RouteCall>> {
-        if self.cursor.consume_symbol('{') {
-            let mut routes = Vec::new();
-            while !self.cursor.check_symbol('}') && !self.cursor.is_eof() {
-                if self.cursor.check_ident(word::BECOME) {
-                    return Err(self.error("nested `become` blocks are not supported yet"));
-                }
-                routes.push(self.parse_route()?);
-                self.expect_list_separator_or_end('}')?;
-            }
-            self.expect_symbol('}')?;
-            self.cursor.consume_symbol(';');
-            return Ok(routes);
-        }
-
-        let route = self.parse_route()?;
-        self.cursor.consume_symbol(';');
-        Ok(vec![route])
-    }
-
-    fn parse_route(&mut self) -> Result<RouteCall> {
-        let output = self.expect_any_ident()?;
-        if !self.consume_left_arrow() {
-            return Err(self.error("every `become` route must name its output with `output <- Actor(state)`"));
-        }
-        let actor = self.parse_actor_name()?;
-
-        self.expect_symbol('(')?;
-        let state_span =
-            self.cursor.take_balanced_after_open('(', ')').ok_or_else(|| self.error("unterminated route state expression"))?;
-        let state = self.cursor.span_text(state_span).trim().to_string();
-        Ok(RouteCall { output, actor, state })
-    }
-
-    fn parse_actor_name(&mut self) -> Result<String> {
-        let first = self.expect_any_ident()?;
-        self.parse_qualified_tail(first)
-    }
-
-    fn parse_qualified_tail(&mut self, first: String) -> Result<String> {
-        if !self.cursor.consume_symbol(':') {
-            return Ok(first);
-        }
-        self.expect_symbol(':')?;
-        Ok(format!("{first}::{}", self.expect_any_ident()?))
-    }
-
-    fn consume_left_arrow(&mut self) -> bool {
-        match self.cursor.current().kind {
-            TokenKind::LeftArrow => {
-                self.cursor.advance();
-                true
-            }
-            TokenKind::Symbol('<') if matches!(self.cursor.peek_kind(1), Some(TokenKind::Symbol('-'))) => {
-                self.cursor.advance();
-                self.cursor.advance();
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn expect_any_ident(&mut self) -> Result<String> {
-        match self.cursor.current().kind.clone() {
-            TokenKind::Ident(name) => {
-                self.cursor.advance();
-                Ok(name)
-            }
-            _ => Err(self.error("expected identifier in `become` route")),
-        }
-    }
-
-    fn skip_statement(&mut self) -> Result<()> {
-        self.skip_until_statement_end()
-    }
-
-    fn skip_until_statement_end(&mut self) -> Result<()> {
-        while !self.cursor.is_eof() {
-            match self.cursor.current().kind {
-                TokenKind::Symbol(';') => {
-                    self.cursor.advance();
-                    return Ok(());
-                }
-                TokenKind::Symbol('{') => {
-                    self.cursor.advance();
-                    self.skip_balanced_after_open('{', '}')?;
-                }
-                TokenKind::Symbol('(') => {
-                    self.cursor.advance();
-                    self.skip_balanced_after_open('(', ')')?;
-                }
-                TokenKind::Symbol('[') => {
-                    self.cursor.advance();
-                    self.skip_balanced_after_open('[', ']')?;
-                }
-                TokenKind::Symbol('}') => return Ok(()),
-                _ => self.cursor.advance(),
-            }
-        }
-        Ok(())
-    }
-
-    fn skip_balanced_after_open(&mut self, open: char, close: char) -> Result<()> {
-        if self.cursor.take_balanced_after_open(open, close).is_some() {
-            Ok(())
-        } else {
-            Err(self.error(format!("unterminated `{open}` group")))
-        }
-    }
-
-    fn expect_symbol(&mut self, expected: char) -> Result<()> {
-        if self.cursor.consume_symbol(expected) { Ok(()) } else { Err(self.error(format!("expected `{expected}`"))) }
-    }
-
-    fn expect_list_separator_or_end(&mut self, end: char) -> Result<()> {
-        if self.cursor.consume_symbol(',') || self.cursor.check_symbol(end) {
-            Ok(())
-        } else {
-            Err(self.error(format!("expected `,` or `{end}`")))
-        }
-    }
-
-    fn error(&self, message: impl Into<String>) -> ArgentError {
-        let preview = self.cursor.remaining_text().lines().next().unwrap_or("").trim().chars().take(80).collect::<String>();
-        ArgentError::new(format!("{} at body byte {} near `{}`", message.into(), self.cursor.byte_offset(), preview))
-    }
+fn body_error(body: &EntryBody, byte_offset: usize, message: &str) -> crate::error::ArgentError {
+    let preview = body.text()[byte_offset..].lines().next().unwrap_or("").trim().chars().take(80).collect::<String>();
+    crate::error::ArgentError::new(format!("{message} at body byte {byte_offset} near `{preview}`"))
 }
 
 #[cfg(test)]
@@ -337,6 +214,20 @@ mod tests {
         .expect_err("one-sided conditional become must be rejected");
 
         assert!(err.to_string().contains("explicit `else`"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn rejects_become_nested_in_for_loop() {
+        let err = collect_routes(
+            r#"
+            for (i, 0, count, MAX_COUNT) {
+                become next <- Done(states[i]);
+            }
+            "#,
+        )
+        .expect_err("a loop cannot provide one terminal route for the entry");
+
+        assert!(err.to_string().contains("cannot be nested in a `for` loop"), "unexpected error: {err}");
     }
 
     #[test]

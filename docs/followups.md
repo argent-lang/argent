@@ -39,27 +39,35 @@ explicit indices or an unambiguous matching rule. Record openness and the
 binding rule in the artifact so the runtime and transaction builder resolve
 the same handles.
 
-## Resolve observed state read types
+## Authenticate actors with no runtime state
 
-**Area:** Compiler code generation and Silverscript type checking.
+**Area:** Actor-type handles and compiler code generation.
 
-**Context:** Argent assigns each `readInputStateWithTemplate` result to the
-declared state type. Two valid observation shapes do not compile:
+**Context:** `readInputStateWithTemplate` authenticates a template while it
+decodes state fields. It is not the right operation when an actor's complete
+physical state, including compiler-owned fields, is empty. In that case the
+redeem script is fixed, so its P2SH hash identifies the complete actor script.
 
-- An observed actor has an empty state.
-- Two observed actors have different state names but the same Sil field
-  layout.
+Silverscript can construct the locking script from a runtime hash with
+`new ScriptPubKeyP2SH(hash)`.
 
-In the second case, Silverscript reports more than one matching struct layout
-even though the generated assignment names the target type. These failures also
-occur for actors in one app. They are not specific to app linking.
+**Follow-up:** Represent an empty-state actor-type handle by its redeem-script
+hash. Authenticate its inputs and outputs by comparing their script public keys
+instead of generating an empty state read or validation.
 
-**Follow-up:** Define how an empty-state observation authenticates the input
-template without a state value to decode. Make Silverscript use the declared
-assignment type before it tries to match a struct by field layout.
+The default handle for such an actor must be `blake2b(redeem_script)`, with the
+complete script hashed as one unit. It is not Silverscript's template hash over
+the length-delimited template prefix and suffix. With no state boundary to
+preserve, the exact redeem script is the actor identity.
 
-Add compiler tests for both shapes. Add a runtime test that proves the observed
-input template is still authenticated.
+For a static actor reference, embed the expected script public key as a contract
+constant. For a runtime actor-type handle, construct it with
+`new ScriptPubKeyP2SH(handle)`. Keep using the typed state-template operations
+when the effective physical state is non-empty, even if the authored state has
+no fields.
+
+Add pinned generated-Sil and runtime coverage for static and runtime-selected
+empty-state actors, including rejection of an incorrect actor-type handle.
 
 ## Decode observed application transactions
 

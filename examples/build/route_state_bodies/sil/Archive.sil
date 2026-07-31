@@ -49,18 +49,22 @@ contract Archive(
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Pawn
 
-        Gen__PawnState next_board = {
+        BoardState next_board = {
+            // :: user declared fields
+            ply: final_ply + 1,
+        };
+        Gen__PawnState gen__state_next_gen__pawn_state = {
             // :: generated fields
             gen__archive_template: gen__archive_template,
             gen__mux_template: gen__mux_template,
             gen__mux_routes: gen__mux_routes,
             // :: user declared fields
-            ply: final_ply + 1,
+            ply: next_board.ply,
         };
         // :: become Pawn
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            next_board,
+            gen__state_next_gen__pawn_state,
             gen__pawn_prefix,
             gen__pawn_suffix,
             gen__pawn_template
