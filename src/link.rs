@@ -3,9 +3,9 @@ use std::fs;
 use std::path::Path;
 
 use crate::artifact::*;
+use crate::compiler::load::stdlib::is_standard_module;
 use crate::compiler::syntax::*;
 use crate::error::{ArgentError, Result};
-use crate::stdlib::is_standard_module;
 
 #[derive(Debug, Clone)]
 pub(crate) struct LinkedActor {

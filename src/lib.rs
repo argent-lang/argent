@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use compiler::syntax as ast;
+use compiler::{load as loader, syntax as ast};
 
 pub mod artifact;
 pub mod builder;
@@ -13,11 +13,9 @@ pub mod emit;
 pub mod error;
 pub mod inspect;
 mod link;
-pub mod loader;
 mod model;
 mod naming;
 pub mod routing;
-mod stdlib;
 mod token_refs;
 
 pub use error::{ArgentError, Result};

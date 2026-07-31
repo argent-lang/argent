@@ -12,7 +12,7 @@ pub fn is_standard_module(path: &str) -> bool {
 
 pub fn load_standard_module(path: &str) -> Result<Module> {
     let source = match path {
-        CORE_MODULE => include_str!("../std/core.ag"),
+        CORE_MODULE => include_str!("../../../std/core.ag"),
         _ => return Err(ArgentError::new(format!("unknown Argent standard module `{path}`"))),
     };
     parse_module(PathBuf::from(path), source.to_string())
