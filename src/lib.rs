@@ -15,7 +15,6 @@ pub mod codec;
 mod compiler;
 pub mod error;
 pub mod inspect;
-mod naming;
 pub mod routing;
 
 pub use error::{ArgentError, Result};

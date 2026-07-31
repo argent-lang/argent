@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::compiler::naming::{is_identifier, to_snake};
 use crate::compiler::syntax::lexer::{Token, TokenKind, lex};
 use crate::compiler::syntax::word;
 use crate::compiler::syntax::{
@@ -9,7 +10,6 @@ use crate::compiler::syntax::{
     TypeRef,
 };
 use crate::error::{ArgentError, Result};
-use crate::naming::{is_identifier, to_snake};
 
 use super::{ActorEnumInfo, AppActors, Model};
 

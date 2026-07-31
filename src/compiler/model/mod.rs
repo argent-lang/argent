@@ -3,9 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::artifact::{AppDependencyArtifact, EntryRefArtifact};
+use crate::compiler::naming::to_snake;
 use crate::compiler::syntax::{ActorDecl, ConstDecl, EntryDecl, FunctionDecl, RouteCall, StateDecl, TypeRef};
 use crate::error::{ArgentError, Result};
-use crate::naming::to_snake;
 use crate::routing::{CommitmentNode, RouteGraph, RoutePlan as PlannerRoutePlan, SelectorRequirement, route_plan};
 
 use self::link::LinkedActor;

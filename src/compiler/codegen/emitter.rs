@@ -15,11 +15,11 @@ use crate::compiler::model::{
     observed_open_state_for_decl, packed_field_len, resolve_observe_covenant_id_source, source_actor_type_state_for_expr,
     spawn_target_state,
 };
+use crate::compiler::naming::{is_identifier, to_snake};
 use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, TokenKind, lex};
 use crate::compiler::syntax::word;
 use crate::compiler::syntax::*;
 use crate::error::{ArgentError, Result};
-use crate::naming::{is_identifier, to_snake};
 use silverscript_lang::ast::Expr as SilExpr;
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract};
 

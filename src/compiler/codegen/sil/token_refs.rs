@@ -5,9 +5,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::compiler::naming::is_identifier;
 use crate::compiler::syntax::lexer::{Span, Token, TokenKind, lex};
 use crate::error::{ArgentError, Result};
-use crate::naming::is_identifier;
 
 enum RefToken {
     Ident(String),

@@ -2,13 +2,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::compiler::naming::to_snake;
 use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX};
 use crate::compiler::syntax::word;
 use crate::compiler::syntax::{
     ActorDecl, ArrayDim, EmitOutput, EmitSpec, EntryDecl, EntryKind, ObserveDecl, ObservedActorDecl, RouteCall,
 };
 use crate::error::{ArgentError, Result};
-use crate::naming::to_snake;
 
 use super::{
     InteractionSource, Model, observed_open_bindings, observed_open_state_for_decl, packed_field_len,
