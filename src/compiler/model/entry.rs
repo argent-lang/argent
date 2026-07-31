@@ -646,91 +646,23 @@ fn template_selectors_for_entry(
         insert_template_selector(actor, entry, &mut selectors, selector)?;
     }
 
-    // TODO(route clauses): Derive route domains only from entry clauses. Keep
-    // body-local selector resolution in body analysis/codegen, then remove
-    // this raw-body scan from EntryModel.
-    let tokens = entry.body.tokens();
-    let mut pos = 0usize;
-    while pos + 3 < tokens.len() {
-        let is_actor_type = matches!(&tokens[pos].kind, TokenKind::Ident(name) if name == word::ACTOR_TYPE)
-            && matches!(tokens[pos + 1].kind, TokenKind::Symbol('<'))
-            && matches!(tokens[pos + 3].kind, TokenKind::Symbol('>'))
-            && matches!(tokens.get(pos + 4).map(|token| &token.kind), Some(TokenKind::Ident(_)))
-            && matches!(tokens.get(pos + 5).map(|token| &token.kind), Some(TokenKind::Symbol('=')));
-        if is_actor_type {
-            let state = match &tokens[pos + 2].kind {
-                TokenKind::Ident(state) => state.clone(),
-                _ => {
-                    pos += 1;
-                    continue;
-                }
-            };
-            let name = match &tokens[pos + 4].kind {
-                TokenKind::Ident(name) => name.clone(),
-                _ => {
-                    pos += 1;
-                    continue;
-                }
-            };
-            let (expr, end_pos) = take_expr_until_semicolon(entry.body.text(), tokens, pos + 6, actor, entry)?;
-            let selector = template_selector_from_initializer(&ctx, &name, Some(&state), None, &expr)?;
+    // Route planning needs every possible selector domain. Lexical visibility
+    // remains the responsibility of body lowering at each route use.
+    for (binding, initializer) in entry.body.initialized_local_declarations() {
+        let expr = entry.body.span_text(initializer).trim();
+        if let Some(state) = binding.actor_type_state.as_deref() {
+            let selector = template_selector_from_initializer(&ctx, &binding.name, Some(state), None, expr)?;
             insert_template_selector(actor, entry, &mut selectors, selector)?;
-            pos = end_pos + 1;
             continue;
         }
 
-        let is_actor_enum_local = matches!(&tokens[pos].kind, TokenKind::Ident(source_ty) if actor_enums.contains_key(source_ty))
-            && matches!(tokens.get(pos + 1).map(|token| &token.kind), Some(TokenKind::Ident(_)))
-            && matches!(tokens.get(pos + 2).map(|token| &token.kind), Some(TokenKind::Symbol('=')));
-        if is_actor_enum_local {
-            let actor_enum_name = match &tokens[pos].kind {
-                TokenKind::Ident(actor_enum_name) => actor_enum_name.clone(),
-                _ => unreachable!("checked actor enum local type"),
-            };
-            let name = match &tokens[pos + 1].kind {
-                TokenKind::Ident(name) => name.clone(),
-                _ => unreachable!("checked actor enum local name"),
-            };
-            let (expr, end_pos) = take_expr_until_semicolon(entry.body.text(), tokens, pos + 3, actor, entry)?;
-            let mut selector = template_selector_from_initializer(&ctx, &name, None, Some(&actor_enum_name), &expr)?;
-            selector.selector_expr = name.clone();
+        if actor_enums.contains_key(&binding.source_type) {
+            let mut selector = template_selector_from_initializer(&ctx, &binding.name, None, Some(&binding.source_type), expr)?;
+            selector.selector_expr = binding.name.clone();
             insert_template_selector(actor, entry, &mut selectors, selector)?;
-            pos = end_pos + 1;
-            continue;
         }
-
-        pos += 1;
     }
     Ok(selectors)
-}
-
-fn take_expr_until_semicolon(
-    body: &str,
-    tokens: &[Token],
-    start_pos: usize,
-    actor: &ActorDecl,
-    entry: &EntryDecl,
-) -> Result<(String, usize)> {
-    let start = tokens
-        .get(start_pos)
-        .ok_or_else(|| ArgentError::new(format!("entry `{}::{}` has an incomplete actor enum selector", actor.name, entry.name)))?
-        .span
-        .start;
-    let mut depth = 0usize;
-    let mut scan = start_pos;
-    while scan < tokens.len() {
-        match tokens[scan].kind {
-            TokenKind::Symbol('{') | TokenKind::Symbol('(') | TokenKind::Symbol('[') => depth += 1,
-            TokenKind::Symbol('}') | TokenKind::Symbol(')') | TokenKind::Symbol(']') => depth = depth.saturating_sub(1),
-            TokenKind::Symbol(';') if depth == 0 => {
-                return Ok((body[start..tokens[scan].span.start].trim().to_string(), scan));
-            }
-            TokenKind::Eof => break,
-            _ => {}
-        }
-        scan += 1;
-    }
-    Err(ArgentError::new(format!("entry `{}::{}` has an unterminated actor enum selector", actor.name, entry.name)))
 }
 
 fn insert_template_selector(

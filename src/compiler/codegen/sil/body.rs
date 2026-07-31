@@ -368,7 +368,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                 EntryStatement::ValidateOutputsBecome { group, routes, .. } => {
                     self.lower_outputs_become(out, indent, group, routes)?;
                 }
-                EntryStatement::Plain { bindings, span } => self.lower_plain_statement(out, indent, bindings, *span)?,
+                EntryStatement::Plain { bindings, span, .. } => self.lower_plain_statement(out, indent, bindings, *span)?,
                 EntryStatement::Block { statements, .. } => {
                     push_indent(out, indent);
                     out.push_str("{\n");
@@ -467,7 +467,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             && let Some((declaration_type, name, expr)) = parse_typed_local_statement(&statement)
         {
             let source_ty = &declared_binding.source_type;
-            if let Some(state) = parse_actor_type(source_ty) {
+            if let Some(state) = declared_binding.actor_type_state.as_deref() {
                 self.lower_actor_type_statement(out, indent, state, name, expr)?;
                 return Ok(());
             }
@@ -1462,11 +1462,6 @@ fn parse_typed_local_statement(statement: &str) -> Option<(&str, &str, &str)> {
         return None;
     }
     Some((source_ty, name, expr.trim()))
-}
-
-fn parse_actor_type(ty: &str) -> Option<&str> {
-    let ty = ty.trim();
-    ty.strip_prefix(word::ACTOR_TYPE)?.strip_prefix('<')?.strip_suffix('>').map(str::trim).filter(|state| is_identifier(state))
 }
 
 fn split_top_level_assignment(input: &str) -> Option<(&str, &str)> {

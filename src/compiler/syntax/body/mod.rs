@@ -38,6 +38,15 @@ impl EntryBody {
         &self.statements
     }
 
+    /// Return directly declared initialized locals in source order, including nested scopes.
+    pub(crate) fn initialized_local_declarations(&self) -> Vec<(&EntryBinding, Span)> {
+        let mut locals = Vec::new();
+        for statement in &self.statements {
+            statement.collect_initialized_locals(&mut locals);
+        }
+        locals
+    }
+
     pub(crate) fn span_text(&self, span: Span) -> &str {
         &self.text[span.start..span.end]
     }
@@ -61,7 +70,7 @@ pub(crate) enum EntryStatement {
     Block { statements: Vec<EntryStatement>, span: Span },
     Become { routes: Vec<EntryRoute>, span: Span },
     ValidateOutputsBecome { group: String, routes: Vec<EntryRoute>, span: Span },
-    Plain { bindings: Vec<EntryBinding>, span: Span },
+    Plain { bindings: Vec<EntryBinding>, declaration_initializer: Option<Span>, span: Span },
 }
 
 impl EntryStatement {
@@ -75,6 +84,27 @@ impl EntryStatement {
             | Self::Plain { span, .. } => *span,
         }
     }
+
+    fn collect_initialized_locals<'a>(&'a self, locals: &mut Vec<(&'a EntryBinding, Span)>) {
+        match self {
+            Self::If { then_branch, else_branch, .. } => {
+                then_branch.collect_initialized_locals(locals);
+                if let Some(else_branch) = else_branch {
+                    else_branch.collect_initialized_locals(locals);
+                }
+            }
+            Self::For { body, .. } => body.collect_initialized_locals(locals),
+            Self::Block { statements, .. } => {
+                for statement in statements {
+                    statement.collect_initialized_locals(locals);
+                }
+            }
+            Self::Plain { bindings, declaration_initializer: Some(initializer), .. } if bindings.len() == 1 => {
+                locals.push((&bindings[0], *initializer));
+            }
+            Self::Become { .. } | Self::ValidateOutputsBecome { .. } | Self::Plain { .. } => {}
+        }
+    }
 }
 
 /// One lexically scoped value introduced by ordinary Sil syntax.
@@ -82,6 +112,8 @@ impl EntryStatement {
 pub(crate) struct EntryBinding {
     pub(crate) name: String,
     pub(crate) source_type: String,
+    /// Inner state when the declared type is a scalar `actor_type<State>`.
+    pub(crate) actor_type_state: Option<String>,
 }
 
 /// One parsed route in a `become` statement.
@@ -244,7 +276,7 @@ impl EntryStatementParser<'_> {
         } else if self.cursor.consume_ident(word::FOR) {
             self.expect_symbol('(')?;
             let binding = match self.cursor.current().kind.clone() {
-                TokenKind::Ident(name) => EntryBinding { name, source_type: "int".to_string() },
+                TokenKind::Ident(name) => EntryBinding { name, source_type: "int".to_string(), actor_type_state: None },
                 _ => return Err(self.error("expected loop binding identifier")),
             };
             let header = self.cursor.take_balanced_after_open('(', ')').ok_or_else(|| self.error("unterminated `(` group"))?;
@@ -270,8 +302,8 @@ impl EntryStatementParser<'_> {
 
     fn plain_statement(&self, token_start: usize, byte_start: usize) -> EntryStatement {
         let span = self.cursor.consumed_span_from(byte_start);
-        let bindings = PlainBindingParser::new(self.cursor.body, &self.cursor.body.tokens[token_start..self.cursor.pos]).parse();
-        EntryStatement::Plain { bindings, span }
+        let parsed = PlainBindingParser::new(self.cursor.body, &self.cursor.body.tokens[token_start..self.cursor.pos]).parse();
+        EntryStatement::Plain { bindings: parsed.bindings, declaration_initializer: parsed.declaration_initializer, span }
     }
 
     fn parse_block_or_statement(&mut self) -> Result<EntryStatement> {
@@ -463,12 +495,23 @@ struct PlainBindingParser<'a> {
     pos: usize,
 }
 
+#[derive(Default)]
+struct ParsedPlainBindings {
+    bindings: Vec<EntryBinding>,
+    declaration_initializer: Option<Span>,
+}
+
+struct ParsedBindingType {
+    source: String,
+    actor_type_state: Option<String>,
+}
+
 impl<'a> PlainBindingParser<'a> {
     fn new(body: &'a EntryBody, tokens: &'a [Token]) -> Self {
         Self { body, tokens, pos: 0 }
     }
 
-    fn parse(mut self) -> Vec<EntryBinding> {
+    fn parse(mut self) -> ParsedPlainBindings {
         if self.consume_symbol('{') {
             return self.parse_struct_bindings().unwrap_or_default();
         }
@@ -478,7 +521,7 @@ impl<'a> PlainBindingParser<'a> {
         self.parse_leading_bindings().unwrap_or_default()
     }
 
-    fn parse_struct_bindings(&mut self) -> Option<Vec<EntryBinding>> {
+    fn parse_struct_bindings(&mut self) -> Option<ParsedPlainBindings> {
         let mut bindings = Vec::new();
         loop {
             self.take_ident()?;
@@ -492,10 +535,11 @@ impl<'a> PlainBindingParser<'a> {
                 break;
             }
         }
-        self.consume_symbol('=').then_some(bindings)
+        self.consume_symbol('=').then_some(())?;
+        Some(ParsedPlainBindings { bindings, declaration_initializer: None })
     }
 
-    fn parse_parenthesized_bindings(&mut self) -> Option<Vec<EntryBinding>> {
+    fn parse_parenthesized_bindings(&mut self) -> Option<ParsedPlainBindings> {
         let mut bindings = vec![self.parse_typed_binding()?];
         while self.consume_symbol(',') {
             if self.check_symbol(')') {
@@ -504,49 +548,72 @@ impl<'a> PlainBindingParser<'a> {
             bindings.push(self.parse_typed_binding()?);
         }
         self.consume_symbol(')').then_some(())?;
-        self.consume_symbol('=').then_some(bindings)
+        self.consume_symbol('=').then_some(())?;
+        Some(ParsedPlainBindings { bindings, declaration_initializer: None })
     }
 
-    fn parse_leading_bindings(&mut self) -> Option<Vec<EntryBinding>> {
+    fn parse_leading_bindings(&mut self) -> Option<ParsedPlainBindings> {
         if self.check_ident("return") {
             return None;
         }
         let first = self.parse_variable_binding()?;
         if self.consume_symbol(',') {
             let second = self.parse_typed_binding()?;
-            return self.consume_symbol('=').then_some(vec![first, second]);
+            self.consume_symbol('=').then_some(())?;
+            return Some(ParsedPlainBindings { bindings: vec![first, second], declaration_initializer: None });
         }
-        (self.check_symbol('=') || self.check_symbol(';')).then_some(vec![first])
+        let declaration_initializer = if self.consume_symbol('=') {
+            self.remaining_initializer_span()
+        } else {
+            self.check_symbol(';').then_some(())?;
+            None
+        };
+        Some(ParsedPlainBindings { bindings: vec![first], declaration_initializer })
     }
 
     fn parse_variable_binding(&mut self) -> Option<EntryBinding> {
-        let source_type = self.parse_type()?;
+        let ty = self.parse_type()?;
         while self.consume_ident("constant") {}
         let name = self.take_ident()?;
-        Some(EntryBinding { name, source_type })
+        Some(EntryBinding { name, source_type: ty.source, actor_type_state: ty.actor_type_state })
     }
 
     fn parse_typed_binding(&mut self) -> Option<EntryBinding> {
-        let source_type = self.parse_type()?;
+        let ty = self.parse_type()?;
         let name = self.take_ident()?;
-        Some(EntryBinding { name, source_type })
+        Some(EntryBinding { name, source_type: ty.source, actor_type_state: ty.actor_type_state })
     }
 
-    fn parse_type(&mut self) -> Option<String> {
+    fn parse_type(&mut self) -> Option<ParsedBindingType> {
         let start = self.current()?.span.start;
         let base = self.take_ident()?;
-        if base == word::ACTOR_TYPE && self.consume_symbol('<') {
-            self.take_ident()?;
+        let actor_type_state = if base == word::ACTOR_TYPE && self.consume_symbol('<') {
+            let state = self.take_ident()?;
             self.consume_symbol('>').then_some(())?;
-        }
+            Some(state)
+        } else {
+            None
+        };
+        let mut has_array_dimension = false;
         while self.consume_symbol('[') {
+            has_array_dimension = true;
             while !self.check_symbol(']') {
                 self.advance()?;
             }
             self.consume_symbol(']').then_some(())?;
         }
         let end = self.tokens.get(self.pos.checked_sub(1)?)?.span.end;
-        Some(self.body.text[start..end].to_string())
+        Some(ParsedBindingType {
+            source: self.body.text[start..end].to_string(),
+            actor_type_state: actor_type_state.filter(|_| !has_array_dimension),
+        })
+    }
+
+    fn remaining_initializer_span(&self) -> Option<Span> {
+        let first = self.tokens.get(self.pos)?;
+        let last =
+            self.tokens[self.pos..].iter().rev().find(|token| !matches!(token.kind, TokenKind::Symbol(';') | TokenKind::Eof))?;
+        (first.span.start < last.span.end).then_some(Span { start: first.span.start, end: last.span.end })
     }
 
     fn current(&self) -> Option<&Token> {

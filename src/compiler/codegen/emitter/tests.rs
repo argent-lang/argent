@@ -3956,6 +3956,69 @@ fn gate_less_family_appends_rep_after_selector_variants() {
 }
 
 #[test]
+fn actor_enum_local_drives_selector_domain_and_route_expansion() {
+    let path = PathBuf::from("local-actor-enum-selector.ag");
+    let module = crate::compiler::syntax::parser::parse_module(
+        path.clone(),
+        r#"
+            state BoardState {
+                int ply;
+            }
+
+            actor enum MoveActor {
+                Pawn;
+                Knight;
+            }
+
+            actor Mux owns BoardState {
+                entry choose(int index) emits next: MoveActor {
+                    unrestricted(next.value);
+                    MoveActor target = MoveActor[index];
+                    BoardState next_state = {
+                        ply: ply + 1,
+                    };
+                    become next <- target(next_state);
+                }
+            }
+
+            actor Pawn owns BoardState {
+                entry idle() emits none {
+                    require(ply >= 0);
+                }
+            }
+
+            actor Knight owns BoardState {
+                entry idle() emits none {
+                    require(ply >= 0);
+                }
+            }
+
+            app LocalSelector {
+                actor Mux;
+                actor Pawn;
+                actor Knight;
+            }
+            "#
+        .to_string(),
+    )
+    .expect("source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let model = Model::from_program(&program).expect("local actor enum defines a selector domain");
+    let actor_sil = actor_sil_for_model(&model);
+    let artifact = emit_artifact(&program, &model, &actor_sil).expect("generated Sil compiles");
+
+    let mux = artifact.argent.actors.iter().find(|actor| actor.name == "Mux").expect("Mux actor exists");
+    let choose = mux.entries.iter().find(|entry| entry.name == "choose").expect("choose entry exists");
+    assert_eq!(choose.template_selectors.iter().map(|selector| selector.name.as_str()).collect::<Vec<_>>(), vec!["target"]);
+    assert_eq!(choose.routes.iter().map(|route| route.actor.as_str()).collect::<Vec<_>>(), vec!["Pawn", "Knight"]);
+
+    let mux_sil = actor_sil.get("Mux").expect("Mux Sil is emitted");
+    assert!(mux_sil.contains("int target = index;"), "{mux_sil}");
+    assert!(mux_sil.contains("int gen__target_selector = target;"), "{mux_sil}");
+    artifact.verify_template_plan().expect("local selector route plan verifies");
+}
+
+#[test]
 fn actor_enums_over_same_route_table_must_use_one_order() {
     let source = r#"
             state BoardState {

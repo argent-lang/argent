@@ -1,7 +1,7 @@
 use super::{EntryBinding, EntryBody, EntryStatement, lex};
 
 fn binding(name: &str, source_type: &str) -> EntryBinding {
-    EntryBinding { name: name.to_string(), source_type: source_type.to_string() }
+    EntryBinding { name: name.to_string(), source_type: source_type.to_string(), actor_type_state: None }
 }
 
 #[test]
@@ -108,6 +108,35 @@ fn plain_statements_record_sil_bindings() {
         };
         assert_eq!(bindings, &expected);
     }
+}
+
+#[test]
+fn initialized_locals_keep_structured_selector_syntax() {
+    let body = EntryBody::new(
+        r#"
+            MoveActor target = MoveActor[index + offset];
+            if (fixed) {
+                actor_type<BoardState> selected = MoveActor::Knight;
+            }
+            actor_type<BoardState>[] candidates = available;
+            int unset;
+            (int left, int right) = pair();
+            (MoveActor wrapped) = identity(MoveActor::Knight);
+            {item: MoveActor unpacked} = holder;
+            "#,
+    )
+    .expect("body parses");
+
+    let locals = body.initialized_local_declarations();
+    assert_eq!(locals.iter().map(|(binding, _)| binding.name.as_str()).collect::<Vec<_>>(), vec!["target", "selected", "candidates"]);
+    assert_eq!(locals[0].0.source_type, "MoveActor");
+    assert_eq!(locals[0].0.actor_type_state, None);
+    assert_eq!(body.span_text(locals[0].1), "MoveActor[index + offset]");
+    assert_eq!(locals[1].0.source_type, "actor_type<BoardState>");
+    assert_eq!(locals[1].0.actor_type_state.as_deref(), Some("BoardState"));
+    assert_eq!(body.span_text(locals[1].1), "MoveActor::Knight");
+    assert_eq!(locals[2].0.source_type, "actor_type<BoardState>[]");
+    assert_eq!(locals[2].0.actor_type_state, None);
 }
 
 #[test]
