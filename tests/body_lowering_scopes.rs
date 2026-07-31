@@ -320,15 +320,34 @@ fn selector_binding_does_not_escape_a_for_body() {
     );
 }
 
+#[test]
+fn nested_actor_type_does_not_replace_a_same_named_integer_parameter() {
+    let source = SCOPED_SELECTOR_SOURCE.replace("entry choose(bool choose)", "entry choose(int target, bool choose)").replace(
+        "__SELECTOR_SCOPE__",
+        r#"
+            if (choose) {
+                actor_type<BoardState> target = NextActor::Alpha;
+            }
+            "#,
+    );
+    assert_selector_source_rejected("selector-int-parameter-collision", &source);
+}
+
 fn assert_selector_scope_rejected(name: &str, selector_scope: &str) {
     let source = SCOPED_SELECTOR_SOURCE.replace("__SELECTOR_SCOPE__", selector_scope);
+    assert_selector_source_rejected(name, &source);
+}
+
+fn assert_selector_source_rejected(name: &str, source: &str) {
     let out_dir = std::env::temp_dir().join(format!("argent-{name}-scope-test-{}", std::process::id()));
     if out_dir.exists() {
         fs::remove_dir_all(&out_dir).expect("old scope test output is removed");
     }
 
-    let err = argent::build_inline(PathBuf::from(format!("{name}.ag")), &source, &out_dir)
-        .expect_err("selector binding must not escape its lexical scope");
+    let err = match argent::build_inline(PathBuf::from(format!("{name}.ag")), source, &out_dir) {
+        Ok(_) => panic!("selector binding must not escape its lexical scope"),
+        Err(err) => err,
+    };
     if out_dir.exists() {
         fs::remove_dir_all(&out_dir).expect("scope test output is removed");
     }
