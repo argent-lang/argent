@@ -10,8 +10,8 @@ mod tests {
             route_template_proof_receipt_id, route_template_table_receipt_id,
         },
         codec::{CodecError, decode_hex, encode_entry_sig_script},
+        compiler::codegen::emit_build_app,
         compiler::load::load_program,
-        emit::emit_build_app,
     };
     use std::{
         cell::Cell,

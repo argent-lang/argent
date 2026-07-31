@@ -222,24 +222,6 @@ impl TypeRef {
     }
 }
 
-impl Program {
-    pub fn states(&self) -> impl Iterator<Item = &StateDecl> {
-        self.modules.iter().flat_map(|module| module.states.iter())
-    }
-
-    pub fn actors(&self) -> impl Iterator<Item = &ActorDecl> {
-        self.modules.iter().flat_map(|module| module.actors.iter())
-    }
-
-    pub fn actor_enums(&self) -> impl Iterator<Item = &ActorEnumDecl> {
-        self.modules.iter().flat_map(|module| module.actor_enums.iter())
-    }
-
-    pub fn apps(&self) -> impl Iterator<Item = &AppDecl> {
-        self.modules.iter().flat_map(|module| module.apps.iter())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::TypeRef;

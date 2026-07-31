@@ -9,12 +9,10 @@ pub mod artifact;
 pub mod builder;
 pub mod codec;
 mod compiler;
-pub mod emit;
 pub mod error;
 pub mod inspect;
 mod naming;
 pub mod routing;
-mod token_refs;
 
 pub use error::{ArgentError, Result};
 
@@ -80,7 +78,7 @@ pub fn build_inline(
 ) -> Result<artifact::Artifact> {
     let source_label = source_label.as_ref().to_path_buf();
     let program = inline_program(source_label, source.into())?;
-    emit::emit_build(&program, out_dir.as_ref())?;
+    compiler::codegen::emit_build(&program, out_dir.as_ref())?;
     read_artifact(out_dir.as_ref())
 }
 
@@ -97,7 +95,7 @@ pub fn build_file(input: impl AsRef<Path>, out_dir: impl AsRef<Path>) -> Result<
         let app_name = app.name.clone();
         return Ok(build_app_graph(loader::plan_app_graph(program, &app_name)?, &app_name, out_dir)?.into_primary());
     }
-    emit::emit_build(&program, out_dir)?;
+    compiler::codegen::emit_build(&program, out_dir)?;
     read_artifact(out_dir)
 }
 
@@ -142,7 +140,7 @@ fn build_app_graph(
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
         let app_out = if index + 1 == apps.len() { out_dir.to_path_buf() } else { dependency_dir.join(&source_app.app) };
-        emit::emit_build_app_linked(program, &source_app.app, &linked, &app_out)?;
+        compiler::codegen::emit_build_app_linked(program, &source_app.app, &linked, &app_out)?;
         let artifact = read_artifact(&app_out)?;
         if artifacts.insert(source_app.app.clone(), artifact).is_some() {
             return Err(ArgentError::new(format!(
