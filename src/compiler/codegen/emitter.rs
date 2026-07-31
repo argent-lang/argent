@@ -6,14 +6,12 @@ use crate::artifact::*;
 use crate::codec::encode_hex;
 use crate::compiler::model::link::LinkedActor;
 use crate::compiler::model::{
-    ActorTarget, ClauseActorTypeRef, CompilerRouteTransition, CovenantGroup, CovenantIdSource, EntryInteraction, EntryModel,
-    InteractionSource, Model, RouteFamily, RouteRootLeaf, StaticActorTarget, TemplateSelector, actor_enum_variant_const_expr,
-    clause_actor_type_ref, observed_is_dynamic_binding, observed_open_bindings, observed_open_state_for_decl, packed_field_len,
-    parse_actor_enum_selector, parse_actor_enum_variant, resolve_observe_covenant_id_source, source_actor_type_state_for_expr,
+    ClauseActorTypeRef, CompilerRouteTransition, CovenantGroup, CovenantIdSource, EntryModel, InteractionSource, Model, RouteFamily,
+    RouteRootLeaf, StaticActorTarget, actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding,
+    observed_open_state_for_decl, packed_field_len, resolve_observe_covenant_id_source, source_actor_type_state_for_expr,
     spawn_target_state,
 };
-use crate::compiler::syntax::body::{EntryBinding, EntryRoute, EntryStatement};
-use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, Span, Token, TokenKind, lex};
+use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, TokenKind, lex};
 use crate::compiler::syntax::words::word;
 use crate::compiler::syntax::*;
 use crate::error::{ArgentError, Result};
@@ -21,15 +19,9 @@ use crate::naming::{is_identifier, to_snake};
 use silverscript_lang::ast::Expr as SilExpr;
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract};
 
-use self::sil::{lower_entry_body, lower_entry_expr};
-
-// Keep Sil-specific files at their long-term location while the current
-// monolithic generator still owns their shared implementation details.
-#[path = "sil/mod.rs"]
-mod sil;
+use super::sil::{lower_entry_body, lower_entry_expr};
 
 #[cfg(test)]
-#[path = "tests.rs"]
 mod tests;
 
 pub fn emit_build(program: &Program, out_dir: impl AsRef<Path>) -> Result<()> {
@@ -590,7 +582,7 @@ fn emit_observed_inputs(out: &mut String, actor: &ActorDecl, entry: &EntryDecl, 
     Ok(())
 }
 
-fn state_payload_digest_expr(state_name: &str, value_expr: &str, model: &Model<'_>) -> Result<String> {
+pub(super) fn state_payload_digest_expr(state_name: &str, value_expr: &str, model: &Model<'_>) -> Result<String> {
     Ok(format!("blake2b({})", state_payload_bytes_expr(state_name, value_expr, model)?))
 }
 
@@ -598,7 +590,7 @@ fn state_payload_bytes_expr(state_name: &str, value_expr: &str, model: &Model<'_
     state_packed_bytes_expr(state_name, model, |field, _, _| packed_field_expr(&field.ty, &format!("{value_expr}.{}", field.name)))
 }
 
-fn state_packed_bytes_expr<F>(state_name: &str, model: &Model<'_>, mut field_expr: F) -> Result<String>
+pub(super) fn state_packed_bytes_expr<F>(state_name: &str, model: &Model<'_>, mut field_expr: F) -> Result<String>
 where
     F: FnMut(&FieldDecl, usize, usize) -> Result<String>,
 {
@@ -617,7 +609,7 @@ fn state_packed_len(state_name: &str, model: &Model<'_>) -> Result<usize> {
     model.state(state_name)?.fields.iter().try_fold(0usize, |sum, field| packed_field_len(&field.ty).map(|len| sum + len))
 }
 
-fn packed_field_expr(ty: &TypeRef, expr: &str) -> Result<String> {
+pub(super) fn packed_field_expr(ty: &TypeRef, expr: &str) -> Result<String> {
     if ty.is_actor_type() {
         return Ok(format!("byte[]({expr})"));
     }
@@ -708,7 +700,7 @@ fn emit_entry_imported_template_locals(out: &mut String, specs: &[ImportedTempla
 
 const GENERATED_SIL_LINE_LIMIT: usize = 100;
 
-fn push_indent(out: &mut String, indent: usize) {
+pub(super) fn push_indent(out: &mut String, indent: usize) {
     out.push_str(&" ".repeat(indent));
 }
 
@@ -732,7 +724,7 @@ fn push_entry_signature(out: &mut String, name: &str, params: &[String]) {
     out.push_str("    ) {\n");
 }
 
-fn push_generated_call(out: &mut String, indent: usize, prefix: &str, function: &str, args: &[String]) {
+pub(super) fn push_generated_call(out: &mut String, indent: usize, prefix: &str, function: &str, args: &[String]) {
     let ind = " ".repeat(indent);
     let single = format!("{ind}{prefix}{function}({});", args.join(", "));
     if single.len() <= GENERATED_SIL_LINE_LIMIT {
@@ -754,7 +746,7 @@ fn push_generated_call(out: &mut String, indent: usize, prefix: &str, function: 
     out.push_str(&format!("{ind});\n"));
 }
 
-fn push_generated_binary_require(out: &mut String, indent: usize, lhs: &str, op: &str, rhs: &str) {
+pub(super) fn push_generated_binary_require(out: &mut String, indent: usize, lhs: &str, op: &str, rhs: &str) {
     let ind = " ".repeat(indent);
     let single = format!("{ind}require({lhs} {op} {rhs});");
     if single.len() <= GENERATED_SIL_LINE_LIMIT {
@@ -815,37 +807,37 @@ struct TemplateSelectorWitnessSpec {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct ObservedActorWitnessSpec {
-    observe: String,
-    side: ObservedActorSideArtifact,
-    handle: String,
-    actor: String,
-    source: Option<ClauseActorTypeRef>,
+pub(super) struct ObservedActorWitnessSpec {
+    pub(super) observe: String,
+    pub(super) side: ObservedActorSideArtifact,
+    pub(super) handle: String,
+    pub(super) actor: String,
+    pub(super) source: Option<ClauseActorTypeRef>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct ImportedTemplateSpec {
-    app: String,
-    actor: String,
-    hash_hex: String,
+pub(super) struct ImportedTemplateSpec {
+    pub(super) app: String,
+    pub(super) actor: String,
+    pub(super) hash_hex: String,
 }
 
 impl ImportedTemplateSpec {
-    fn from_linked(actor: &LinkedActor) -> Self {
+    pub(super) fn from_linked(actor: &LinkedActor) -> Self {
         Self { app: actor.app.clone(), actor: actor.actor.clone(), hash_hex: actor.template.hash_hex.clone() }
     }
 
-    fn actor_reference(&self) -> String {
+    pub(super) fn actor_reference(&self) -> String {
         format!("{}::{}", self.app, self.actor)
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct SpawnActorWitnessSpec {
-    spawn: String,
-    handle: String,
-    actor: String,
-    source: Option<ClauseActorTypeRef>,
+pub(super) struct SpawnActorWitnessSpec {
+    pub(super) spawn: String,
+    pub(super) handle: String,
+    pub(super) actor: String,
+    pub(super) source: Option<ClauseActorTypeRef>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -865,18 +857,18 @@ struct ActorTypeSourceWitnessSpec {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct StateExpansionWitnessSpec {
-    state: String,
-    field: String,
-    memory_state: String,
+pub(super) struct StateExpansionWitnessSpec {
+    pub(super) state: String,
+    pub(super) field: String,
+    pub(super) memory_state: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct ObservedOutputFieldWitnessSpec {
-    observe: String,
-    handle: String,
-    state: String,
-    field: String,
+pub(super) struct ObservedOutputFieldWitnessSpec {
+    pub(super) observe: String,
+    pub(super) handle: String,
+    pub(super) state: String,
+    pub(super) field: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -892,13 +884,13 @@ struct EntryWitnessSpecs {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RouteValidationKind {
+pub(super) enum RouteValidationKind {
     ExactScriptPublicKey,
     SameTemplate,
     ForeignTemplate,
 }
 
-fn route_validation_kind(actor: &ActorDecl, route: &RouteCall) -> RouteValidationKind {
+pub(super) fn route_validation_kind(actor: &ActorDecl, route: &RouteCall) -> RouteValidationKind {
     if route.actor == actor.name && compact_expr(&route.state) == "self.state" {
         return RouteValidationKind::ExactScriptPublicKey;
     }
@@ -1083,7 +1075,7 @@ fn actor_type_source_witness_subject(provider: &ActorTypeSourceWitnessProvider) 
     }
 }
 
-fn observed_output_field_witness_specs(
+pub(super) fn observed_output_field_witness_specs(
     actor: &ActorDecl,
     entry: &EntryDecl,
     model: &Model<'_>,
@@ -1163,7 +1155,7 @@ fn template_witness_specs_for_actor(
     }
 }
 
-fn state_expansion_witness_specs_for_actor(actor: &ActorDecl, model: &Model<'_>) -> Vec<StateExpansionWitnessSpec> {
+pub(super) fn state_expansion_witness_specs_for_actor(actor: &ActorDecl, model: &Model<'_>) -> Vec<StateExpansionWitnessSpec> {
     model
         .state(&actor.state)
         .ok()
@@ -1182,7 +1174,7 @@ fn state_expansion_witness_specs_for_actor(actor: &ActorDecl, model: &Model<'_>)
         .unwrap_or_default()
 }
 
-fn state_expansion_digest_fields_for_state(state_name: &str, model: &Model<'_>) -> BTreeSet<String> {
+pub(super) fn state_expansion_digest_fields_for_state(state_name: &str, model: &Model<'_>) -> BTreeSet<String> {
     model
         .state(state_name)
         .ok()
@@ -1335,7 +1327,7 @@ fn observed_witness_key(
 }
 
 /// Resolve a fixed observed target without admitting it to local routing.
-fn static_observed_actor_target<'m>(
+pub(super) fn static_observed_actor_target<'m>(
     actor: &ActorDecl,
     entry: &EntryDecl,
     observe: &ObserveDecl,
@@ -1349,13 +1341,18 @@ fn static_observed_actor_target<'m>(
 }
 
 /// Return the first entry input that authenticated a selected-app actor template.
-fn template_input_index_for_actor(actor: &ActorDecl, entry: &EntryDecl, target: &str, model: &Model<'_>) -> Result<Option<String>> {
+pub(super) fn template_input_index_for_actor(
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    target: &str,
+    model: &Model<'_>,
+) -> Result<Option<String>> {
     let target = model.static_actor_target(target).expect("template input target is a fixed actor");
     template_input_index_for_target(actor, entry, target, model)
 }
 
 /// Return the first entry input that authenticated a fixed actor template.
-fn template_input_index_for_target(
+pub(super) fn template_input_index_for_target(
     actor: &ActorDecl,
     entry: &EntryDecl,
     target: StaticActorTarget<'_>,
@@ -1384,7 +1381,7 @@ fn template_input_index_for_target(
     Ok(None)
 }
 
-fn observed_is_source_actor_type(
+pub(super) fn observed_is_source_actor_type(
     actor: &ActorDecl,
     entry: &EntryDecl,
     observed: &ObservedActorDecl,
@@ -1416,7 +1413,7 @@ fn observed_actor_template_expr_for_entry(
     Ok(hidden_observed_actor_template_name(spec))
 }
 
-fn observed_input_spec(
+pub(super) fn observed_input_spec(
     actor: &ActorDecl,
     entry: &EntryDecl,
     observe: &ObserveDecl,
@@ -1426,7 +1423,7 @@ fn observed_input_spec(
     observed_actor_spec(actor, entry, observe, ObservedActorSideArtifact::Input, input, model)
 }
 
-fn observed_output_spec(
+pub(super) fn observed_output_spec(
     actor: &ActorDecl,
     entry: &EntryDecl,
     observe: &ObserveDecl,
@@ -1458,7 +1455,7 @@ fn observed_actor_spec(
     })
 }
 
-fn observed_reuses_input_template(observe: &ObserveDecl, output: &ObservedActorDecl) -> bool {
+pub(super) fn observed_reuses_input_template(observe: &ObserveDecl, output: &ObservedActorDecl) -> bool {
     observe.inputs.iter().any(|input| input.actor == output.actor)
 }
 
@@ -1473,7 +1470,7 @@ fn first_observed_output_for_actor<'a>(observe: &'a ObserveDecl, actor: &str) ->
     observe.outputs.iter().find(|output| output.actor == actor)
 }
 
-fn first_observed_input_for_actor<'a>(observe: &'a ObserveDecl, actor: &str) -> Option<&'a ObservedActorDecl> {
+pub(super) fn first_observed_input_for_actor<'a>(observe: &'a ObserveDecl, actor: &str) -> Option<&'a ObservedActorDecl> {
     observe.inputs.iter().find(|input| input.actor == actor)
 }
 
@@ -2753,7 +2750,7 @@ fn route_artifact(route: &RouteCall) -> RouteArtifact {
     }
 }
 
-fn lower_type_ref(ty: &TypeRef, model: &Model<'_>) -> String {
+pub(super) fn lower_type_ref(ty: &TypeRef, model: &Model<'_>) -> String {
     if model.is_actor_enum_type(ty) {
         "int".to_string()
     } else if ty.name == word::COVENANT_ID && ty.array.is_none() {
@@ -2763,7 +2760,7 @@ fn lower_type_ref(ty: &TypeRef, model: &Model<'_>) -> String {
     }
 }
 
-fn lower_entry_param_type(actor: &ActorDecl, ty: &TypeRef, model: &Model<'_>) -> String {
+pub(super) fn lower_entry_param_type(actor: &ActorDecl, ty: &TypeRef, model: &Model<'_>) -> String {
     if ty.array.is_none()
         && (ty.name == actor.state
             || matches!(
@@ -2779,7 +2776,7 @@ fn lower_entry_param_type(actor: &ActorDecl, ty: &TypeRef, model: &Model<'_>) ->
     }
 }
 
-fn source_type_ref(ty: &TypeRef) -> String {
+pub(super) fn source_type_ref(ty: &TypeRef) -> String {
     if let Some(state) = &ty.actor_state { format!("{}<{state}>", word::ACTOR_TYPE) } else { ty.to_sil() }
 }
 
@@ -2818,7 +2815,7 @@ fn entry_param_type_artifact(actor: &ActorDecl, ty: &TypeRef, model: &Model<'_>)
     }
 }
 
-fn lower_actor_enum_literals(expr: &str, model: &Model<'_>) -> Result<String> {
+pub(super) fn lower_actor_enum_literals(expr: &str, model: &Model<'_>) -> Result<String> {
     if !expr.contains("::") {
         return Ok(expr.to_string());
     }
@@ -2925,7 +2922,7 @@ fn hidden_template_init_name(actor: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}init_{}_template", hidden_actor_suffix(actor))
 }
 
-fn hidden_template_name(actor: &str) -> String {
+pub(super) fn hidden_template_name(actor: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{}_template", hidden_actor_suffix(actor))
 }
 
@@ -2954,7 +2951,7 @@ fn hidden_route_family_table_init_name(family: &RouteFamily) -> String {
     format!("{RESERVED_GENERATED_PREFIX}init_{}_routes", route_family_suffix_by_id(&family.id))
 }
 
-fn hidden_route_family_table_name(family: &RouteFamily) -> String {
+pub(super) fn hidden_route_family_table_name(family: &RouteFamily) -> String {
     hidden_route_family_table_name_by_id(&family.id)
 }
 
@@ -3040,7 +3037,7 @@ fn route_field_kind_from_leaves<'a>(
 }
 
 #[derive(PartialEq, Eq)]
-enum RouteFieldKind<'a> {
+pub(super) enum RouteFieldKind<'a> {
     None,
     Direct { actor_templates: Vec<&'a str>, family_commitments: Vec<&'a RouteFamily> },
     FamilyTables { actor_templates: Vec<&'a str>, family_commitments: Vec<&'a RouteFamily>, families: Vec<&'a RouteFamily> },
@@ -3152,7 +3149,11 @@ fn emit_hidden_template_fields_for_kind(out: &mut String, fields: RouteFieldKind
     }
 }
 
-fn hidden_template_object_fields_for_state(source_actor: &ActorDecl, target_state: &str, model: &Model<'_>) -> Vec<(String, String)> {
+pub(super) fn hidden_template_object_fields_for_state(
+    source_actor: &ActorDecl,
+    target_state: &str,
+    model: &Model<'_>,
+) -> Vec<(String, String)> {
     let same_storage = matches!(
         (model.storage_state_name(&source_actor.state), model.storage_state_name(target_state)),
         (Ok(source_storage), Ok(target_storage)) if source_storage == target_storage
@@ -3164,7 +3165,7 @@ fn hidden_template_object_fields_for_state(source_actor: &ActorDecl, target_stat
     hidden_template_object_fields(source_actor, route_field_kind_for_actor(&source_actor.name, model), &[], model)
 }
 
-fn hidden_template_object_fields_for_actor(
+pub(super) fn hidden_template_object_fields_for_actor(
     source_actor: &ActorDecl,
     target_actor: &str,
     transition: Option<&CompilerRouteTransition>,
@@ -3178,7 +3179,7 @@ fn hidden_template_object_fields_for_actor(
     )
 }
 
-fn hidden_template_object_fields(
+pub(super) fn hidden_template_object_fields(
     source_actor: &ActorDecl,
     target_fields: RouteFieldKind<'_>,
     families_to_pack: &[String],
@@ -3328,35 +3329,35 @@ fn hidden_param_purpose_id(purpose: HiddenParamPurposeArtifact) -> &'static str 
     }
 }
 
-fn hidden_witness_prefix_name(actor: &str) -> String {
+pub(super) fn hidden_witness_prefix_name(actor: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{}_prefix", hidden_actor_suffix(actor))
 }
 
-fn hidden_witness_suffix_name(actor: &str) -> String {
+pub(super) fn hidden_witness_suffix_name(actor: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{}_suffix", hidden_actor_suffix(actor))
 }
 
-fn hidden_witness_prefix_len_name(actor: &str) -> String {
+pub(super) fn hidden_witness_prefix_len_name(actor: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{}_prefix_len", hidden_actor_suffix(actor))
 }
 
-fn hidden_witness_suffix_len_name(actor: &str) -> String {
+pub(super) fn hidden_witness_suffix_len_name(actor: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{}_suffix_len", hidden_actor_suffix(actor))
 }
 
-fn hidden_template_selector_prefix_name(selector: &str) -> String {
+pub(super) fn hidden_template_selector_prefix_name(selector: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{selector}_prefix")
 }
 
-fn hidden_template_selector_suffix_name(selector: &str) -> String {
+pub(super) fn hidden_template_selector_suffix_name(selector: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{selector}_suffix")
 }
 
-fn hidden_template_selector_index_name(selector: &str) -> String {
+pub(super) fn hidden_template_selector_index_name(selector: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{selector}_selector")
 }
 
-fn hidden_template_selector_template_name(selector: &str) -> String {
+pub(super) fn hidden_template_selector_template_name(selector: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{selector}_template")
 }
 
@@ -3376,39 +3377,39 @@ fn actor_expr_suffix(actor: &str) -> String {
     to_snake(&compact_expr(actor).replace(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_', "_"))
 }
 
-fn hidden_observed_actor_prefix_name(spec: &ObservedActorWitnessSpec) -> String {
+pub(super) fn hidden_observed_actor_prefix_name(spec: &ObservedActorWitnessSpec) -> String {
     if let Some(source) = &spec.source {
         return hidden_actor_type_source_prefix_name(source);
     }
     format!("{RESERVED_GENERATED_PREFIX}{}_{}_prefix", spec.observe, observed_actor_spec_suffix(spec))
 }
 
-fn hidden_observed_actor_suffix_name(spec: &ObservedActorWitnessSpec) -> String {
+pub(super) fn hidden_observed_actor_suffix_name(spec: &ObservedActorWitnessSpec) -> String {
     if let Some(source) = &spec.source {
         return hidden_actor_type_source_suffix_name(source);
     }
     format!("{RESERVED_GENERATED_PREFIX}{}_{}_suffix", spec.observe, observed_actor_spec_suffix(spec))
 }
 
-fn hidden_observed_actor_prefix_len_name(spec: &ObservedActorWitnessSpec) -> String {
+pub(super) fn hidden_observed_actor_prefix_len_name(spec: &ObservedActorWitnessSpec) -> String {
     if let Some(source) = &spec.source {
         return hidden_actor_type_source_prefix_len_name(source);
     }
     format!("{RESERVED_GENERATED_PREFIX}{}_{}_prefix_len", spec.observe, observed_actor_spec_suffix(spec))
 }
 
-fn hidden_observed_actor_suffix_len_name(spec: &ObservedActorWitnessSpec) -> String {
+pub(super) fn hidden_observed_actor_suffix_len_name(spec: &ObservedActorWitnessSpec) -> String {
     if let Some(source) = &spec.source {
         return hidden_actor_type_source_suffix_len_name(source);
     }
     format!("{RESERVED_GENERATED_PREFIX}{}_{}_suffix_len", spec.observe, observed_actor_spec_suffix(spec))
 }
 
-fn hidden_observed_actor_template_name(spec: &ObservedActorWitnessSpec) -> String {
+pub(super) fn hidden_observed_actor_template_name(spec: &ObservedActorWitnessSpec) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{}_{}_template", spec.observe, observed_actor_spec_suffix(spec))
 }
 
-fn hidden_imported_template_name(spec: &ImportedTemplateSpec) -> String {
+pub(super) fn hidden_imported_template_name(spec: &ImportedTemplateSpec) -> String {
     hidden_template_name(&spec.actor_reference())
 }
 
@@ -3416,14 +3417,14 @@ fn hidden_imported_template_const_name(spec: &ImportedTemplateSpec) -> String {
     format!("{}_const", hidden_imported_template_name(spec))
 }
 
-fn hidden_spawn_actor_prefix_name(spec: &SpawnActorWitnessSpec) -> String {
+pub(super) fn hidden_spawn_actor_prefix_name(spec: &SpawnActorWitnessSpec) -> String {
     spec.source.as_ref().map_or_else(
         || format!("{RESERVED_GENERATED_PREFIX}spawn_{}_prefix", spawn_actor_spec_suffix(spec)),
         hidden_actor_type_source_prefix_name,
     )
 }
 
-fn hidden_spawn_actor_suffix_name(spec: &SpawnActorWitnessSpec) -> String {
+pub(super) fn hidden_spawn_actor_suffix_name(spec: &SpawnActorWitnessSpec) -> String {
     spec.source.as_ref().map_or_else(
         || format!("{RESERVED_GENERATED_PREFIX}spawn_{}_suffix", spawn_actor_spec_suffix(spec)),
         hidden_actor_type_source_suffix_name,
@@ -3461,11 +3462,11 @@ fn hidden_state_expansion_preimage_name(spec: &StateExpansionWitnessSpec) -> Str
     format!("{RESERVED_GENERATED_PREFIX}{}_{}_preimage", to_snake(&spec.field), to_snake(&spec.memory_state))
 }
 
-fn hidden_state_expansion_field_name(spec: &StateExpansionWitnessSpec, field: &str) -> String {
+pub(super) fn hidden_state_expansion_field_name(spec: &StateExpansionWitnessSpec, field: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{}_{}", to_snake(&spec.field), to_snake(field))
 }
 
-fn hidden_observed_output_field_name(spec: &ObservedOutputFieldWitnessSpec) -> String {
+pub(super) fn hidden_observed_output_field_name(spec: &ObservedOutputFieldWitnessSpec) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{}_{}_next_{}", spec.observe, spec.handle, to_snake(&spec.field))
 }
 
@@ -3473,15 +3474,15 @@ fn hidden_observe_cov_id_name(observe: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{observe}_cov_id")
 }
 
-fn hidden_observed_input_idx_name(observe: &str, handle: &str) -> String {
+pub(super) fn hidden_observed_input_idx_name(observe: &str, handle: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{observe}_{handle}_input_idx")
 }
 
-fn hidden_observed_output_idx_name(observe: &str, handle: &str) -> String {
+pub(super) fn hidden_observed_output_idx_name(observe: &str, handle: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{observe}_{handle}_output_idx")
 }
 
-fn hidden_spawn_output_idx_name(spawn: &str, handle: &str) -> String {
+pub(super) fn hidden_spawn_output_idx_name(spawn: &str, handle: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{spawn}_{handle}_output_idx")
 }
 
@@ -3489,7 +3490,7 @@ fn hidden_spawn_preimage_name(spawn: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{spawn}_genesis_preimage")
 }
 
-fn hidden_observed_input_state_name(observe: &str, handle: &str) -> String {
+pub(super) fn hidden_observed_input_state_name(observe: &str, handle: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{observe}_{handle}_state")
 }
 
@@ -3504,11 +3505,11 @@ fn hidden_cov_id_name() -> String {
     format!("{RESERVED_GENERATED_PREFIX}cov_id")
 }
 
-fn hidden_input_idx_name(input: &str) -> String {
+pub(super) fn hidden_input_idx_name(input: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{input}_input_idx")
 }
 
-fn hidden_output_idx_name(output: &str) -> String {
+pub(super) fn hidden_output_idx_name(output: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{output}_output_idx")
 }
 
@@ -3516,7 +3517,7 @@ fn hidden_output_idx_name(output: &str) -> String {
 ///
 /// Named state structs remain route-neutral; generated route context uses an
 /// actor-qualified struct unless the target shares the current actor's layout.
-fn contract_state_type_for_actor(actor: &str, current_actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
+pub(super) fn contract_state_type_for_actor(actor: &str, current_actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
     let target_state = model.actor(actor)?.state.as_str();
     if target_state == current_actor.state {
         return Ok(if route_field_kind_for_actor(actor, model) == route_field_kind_for_actor(&current_actor.name, model) {
@@ -3533,7 +3534,7 @@ fn contract_state_type_for_actor(actor: &str, current_actor: &ActorDecl, model: 
     }
 }
 
-fn contract_state_type_for_observed_actor(
+pub(super) fn contract_state_type_for_observed_actor(
     actor: &ActorDecl,
     entry: &EntryDecl,
     observe: &ObserveDecl,

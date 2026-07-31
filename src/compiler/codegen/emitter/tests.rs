@@ -1213,7 +1213,7 @@ fn argent_states_preserve_lossy_source_types() {
 fn state_expansion_uses_base_storage_layout() {
     let (sil, artifact) = emit_fixture("state_expansion", "Forager");
 
-    assert_eq!(sil, include_str!("../../../tests/fixtures/emit/state_expansion/Forager.sil"));
+    assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/state_expansion/Forager.sil"));
 
     let expansion = artifact.argent.state_expansions.first().expect("state expansion is recorded");
     assert_eq!(expansion.state, "ForagerState");
@@ -1247,8 +1247,8 @@ fn expanded_actor_records_sil_and_capsule_template_cuts() {
     let (sil, artifact) = emit_fixture("capsule_route_context", "ReserveAsset");
     let (wallet_sil, _) = emit_fixture("capsule_route_context", "WalletAsset");
 
-    assert_eq!(sil, include_str!("../../../tests/fixtures/emit/capsule_route_context/ReserveAsset.sil"));
-    assert_eq!(wallet_sil, include_str!("../../../tests/fixtures/emit/capsule_route_context/WalletAsset.sil"));
+    assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/capsule_route_context/ReserveAsset.sil"));
+    assert_eq!(wallet_sil, include_str!("../../../../tests/fixtures/emit/capsule_route_context/WalletAsset.sil"));
     assert!(sil.contains("byte[32] gen__wallet_asset_template"), "{sil}");
 
     let contract = artifact.sil_abi.contract("ReserveAsset").expect("ReserveAsset Sil ABI exists");
@@ -2010,7 +2010,7 @@ fn rejects_duplicate_observed_handles() {
 fn in_app_observed_templates_use_shared_actor_witnesses() {
     let (sil, artifact) = emit_fixture("observed_template_witnesses", "Local");
 
-    assert_eq!(sil, include_str!("../../../tests/fixtures/emit/observed_template_witnesses/Local.sil"));
+    assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/observed_template_witnesses/Local.sil"));
 
     assert_eq!(
         runtime_state_plan(&artifact, "Local")
@@ -2041,9 +2041,9 @@ fn in_app_observe_preserves_observed_route_context() {
     let (foreign_sil, _) = emit_fixture("in_app_observe_routes", "Foreign");
     let (target_sil, _) = emit_fixture("in_app_observe_routes", "Target");
 
-    assert_eq!(local_sil, include_str!("../../../tests/fixtures/emit/in_app_observe_routes/Local.sil"));
-    assert_eq!(foreign_sil, include_str!("../../../tests/fixtures/emit/in_app_observe_routes/Foreign.sil"));
-    assert_eq!(target_sil, include_str!("../../../tests/fixtures/emit/in_app_observe_routes/Target.sil"));
+    assert_eq!(local_sil, include_str!("../../../../tests/fixtures/emit/in_app_observe_routes/Local.sil"));
+    assert_eq!(foreign_sil, include_str!("../../../../tests/fixtures/emit/in_app_observe_routes/Foreign.sil"));
+    assert_eq!(target_sil, include_str!("../../../../tests/fixtures/emit/in_app_observe_routes/Target.sil"));
 
     assert_eq!(
         runtime_state_plan(&artifact, "Foreign")
@@ -2083,7 +2083,7 @@ fn in_app_observe_preserves_observed_route_context() {
 fn consumed_route_reuses_input_template() {
     let (sil, artifact) = emit_fixture("input_template_route_reuse", "Controller");
 
-    assert_eq!(sil, include_str!("../../../tests/fixtures/emit/input_template_route_reuse/Controller.sil"));
+    assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/input_template_route_reuse/Controller.sil"));
 
     let controller = artifact.argent.actors.iter().find(|actor| actor.name == "Controller").expect("Controller actor exists");
     let step = controller.entries.iter().find(|entry| entry.name == "step").expect("step entry exists");
@@ -2104,7 +2104,7 @@ fn consumed_route_reuses_input_template() {
 fn single_actor_self_consume_is_pinned() {
     let (sil, artifact) = emit_fixture("single_actor_self_consume", "Counter");
 
-    assert_eq!(sil, include_str!("../../../tests/fixtures/emit/single_actor_self_consume/Counter.sil"));
+    assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/single_actor_self_consume/Counter.sil"));
     assert!(sil.contains("State other = readInputState(gen__other_input_idx);"), "{sil}");
     assert!(!sil.contains("readInputStateWithTemplate"), "{sil}");
 
@@ -2253,7 +2253,7 @@ fn unselected_actors_do_not_shape_selected_app_state() {
 fn open_observed_actor_binding_lowers_to_runtime_template_handle() {
     let (sil, artifact) = emit_fixture("open_observed_actor_binding", "Cell");
 
-    assert_eq!(sil, include_str!("../../../tests/fixtures/emit/open_observed_actor_binding/Cell.sil"));
+    assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/open_observed_actor_binding/Cell.sil"));
 
     assert!(runtime_state_plan(&artifact, "Cell").is_none(), "{:#?}", artifact.argent.template_plan.runtime_states);
 
@@ -2276,7 +2276,7 @@ fn open_observed_actor_binding_lowers_to_runtime_template_handle() {
 fn open_observed_state_handle_lowers_to_source_actor_type() {
     let (sil, artifact) = emit_fixture("open_observed_state_handle", "Cell");
 
-    assert_eq!(sil, include_str!("../../../tests/fixtures/emit/open_observed_state_handle/Cell.sil"));
+    assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/open_observed_state_handle/Cell.sil"));
 
     assert!(runtime_state_plan(&artifact, "Cell").is_none(), "{:#?}", artifact.argent.template_plan.runtime_states);
 
@@ -4750,7 +4750,7 @@ fn brace_leading_assignments_lower_and_compile_as_sil_statements() {
 fn genesis_spawn_lowers_to_pinned_sil_and_artifact_metadata() {
     let (controller_sil, controller_artifact) =
         emit_selected_fixture("tests/fixtures/runtime/context_genesis_spawn/app.ag", "ControllerApp", "Controller");
-    assert_eq!(controller_sil, include_str!("../../../tests/fixtures/runtime/context_genesis_spawn/Controller.sil"));
+    assert_eq!(controller_sil, include_str!("../../../../tests/fixtures/runtime/context_genesis_spawn/Controller.sil"));
     let launch =
         controller_artifact.argent.actors[0].entries.iter().find(|entry| entry.name == "launch").expect("launch entry exists");
     assert_eq!(launch.spawns.len(), 1);
@@ -4792,14 +4792,14 @@ fn genesis_spawn_lowers_to_pinned_sil_and_artifact_metadata() {
     );
 
     let (pair_sil, _) = emit_selected_fixture("tests/fixtures/runtime/context_genesis_spawn/app.ag", "PairApp", "Pair");
-    assert_eq!(pair_sil, include_str!("../../../tests/fixtures/runtime/context_genesis_spawn/Pair.sil"));
+    assert_eq!(pair_sil, include_str!("../../../../tests/fixtures/runtime/context_genesis_spawn/Pair.sil"));
 }
 
 #[test]
 fn multiple_genesis_spawns_lower_to_pinned_sil_and_artifact_metadata() {
     let source = "tests/fixtures/runtime/context_multiple_genesis_spawns/app.ag";
     let (controller_sil, controller_artifact) = emit_selected_fixture(source, "ControllerApp", "Controller");
-    assert_eq!(controller_sil, include_str!("../../../tests/fixtures/runtime/context_multiple_genesis_spawns/Controller.sil"));
+    assert_eq!(controller_sil, include_str!("../../../../tests/fixtures/runtime/context_multiple_genesis_spawns/Controller.sil"));
     let launch =
         controller_artifact.argent.actors[0].entries.iter().find(|entry| entry.name == "launch").expect("launch entry exists");
     assert_eq!(
@@ -4834,14 +4834,14 @@ fn multiple_genesis_spawns_lower_to_pinned_sil_and_artifact_metadata() {
     controller_artifact.verify_template_plan().expect("multiple-spawn metadata verifies");
 
     let (pair_sil, _) = emit_selected_fixture(source, "PairApp", "Pair");
-    assert_eq!(pair_sil, include_str!("../../../tests/fixtures/runtime/context_multiple_genesis_spawns/Pair.sil"));
+    assert_eq!(pair_sil, include_str!("../../../../tests/fixtures/runtime/context_multiple_genesis_spawns/Pair.sil"));
 }
 
 #[test]
 fn observed_and_spawned_source_actor_share_pinned_witnesses() {
     let source = "tests/fixtures/runtime/context_shared_actor_witness/app.ag";
     let (controller_sil, controller_artifact) = emit_selected_fixture(source, "SharedActorWitness", "Controller");
-    assert_eq!(controller_sil, include_str!("../../../tests/fixtures/runtime/context_shared_actor_witness/Controller.sil"));
+    assert_eq!(controller_sil, include_str!("../../../../tests/fixtures/runtime/context_shared_actor_witness/Controller.sil"));
 
     let advance =
         controller_artifact.argent.actors[0].entries.iter().find(|entry| entry.name == "advance").expect("advance entry exists");
@@ -4894,9 +4894,9 @@ fn observed_and_spawned_source_actor_share_pinned_witnesses() {
     );
 
     let (anchor_sil, _) = emit_selected_fixture(source, "SharedActorWitness", "Anchor");
-    assert_eq!(anchor_sil, include_str!("../../../tests/fixtures/runtime/context_shared_actor_witness/Anchor.sil"));
+    assert_eq!(anchor_sil, include_str!("../../../../tests/fixtures/runtime/context_shared_actor_witness/Anchor.sil"));
     let (pair_sil, _) = emit_selected_fixture(source, "SharedActorWitness", "Pair");
-    assert_eq!(pair_sil, include_str!("../../../tests/fixtures/runtime/context_shared_actor_witness/Pair.sil"));
+    assert_eq!(pair_sil, include_str!("../../../../tests/fixtures/runtime/context_shared_actor_witness/Pair.sil"));
 }
 
 #[test]
@@ -5228,8 +5228,8 @@ fn fixed_actor_spawn_reuses_consumed_template_in_pinned_sil() {
     let (launcher_sil, launcher_artifact) = emit_selected_fixture(source, "StaticActorSpawn", "Launcher");
     let (child_sil, _) = emit_selected_fixture(source, "StaticActorSpawn", "Child");
 
-    assert_eq!(launcher_sil, include_str!("../../../tests/fixtures/runtime/context_static_actor_spawn/Launcher.sil"));
-    assert_eq!(child_sil, include_str!("../../../tests/fixtures/runtime/context_static_actor_spawn/Child.sil"));
+    assert_eq!(launcher_sil, include_str!("../../../../tests/fixtures/runtime/context_static_actor_spawn/Launcher.sil"));
+    assert_eq!(child_sil, include_str!("../../../../tests/fixtures/runtime/context_static_actor_spawn/Child.sil"));
     let launch = launcher_artifact.argent.actors[0].entries.iter().find(|entry| entry.name == "launch").expect("launch entry exists");
     assert_eq!(
         launch.hidden_params.iter().map(|param| (param.name.as_str(), &param.subject, param.purpose)).collect::<Vec<_>>(),

@@ -1,8 +1,22 @@
 //! Lowers structured Argent entry bodies into generated Sil source.
 
-// Body lowering uses the surrounding Sil generator's shared witness plans,
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::compiler::model::{
+    ActorTarget, CompilerRouteTransition, CovenantGroup, EntryInteraction, InteractionSource, Model, RouteFamily, StaticActorTarget,
+    TemplateSelector, actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding, observed_open_bindings,
+    observed_open_state_for_decl, parse_actor_enum_selector, parse_actor_enum_variant, spawn_target_state,
+};
+use crate::compiler::syntax::body::{EntryBinding, EntryRoute, EntryStatement};
+use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, Span, Token, TokenKind, lex};
+use crate::compiler::syntax::words::word;
+use crate::compiler::syntax::*;
+use crate::error::{ArgentError, Result};
+use crate::naming::{is_identifier, to_snake};
+
+// Body lowering uses the surrounding Sil emitter's shared witness plans,
 // layout helpers, and generated names.
-use super::super::*;
+use super::super::emitter::*;
 use super::token_refs::{RefReplacements, count_qualified_ref};
 
 pub(in crate::compiler::codegen) struct LoweredEntryBody {
