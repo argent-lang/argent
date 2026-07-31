@@ -158,7 +158,6 @@ fn inline_program(source_label: PathBuf, source: String) -> Result<ast::Program>
 }
 
 #[cfg(test)]
-#[path = "compiler/tests.rs"]
 mod tests;
 
 fn read_artifact(out_dir: &Path) -> Result<artifact::Artifact> {
