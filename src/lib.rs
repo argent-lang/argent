@@ -12,8 +12,6 @@ mod compiler;
 pub mod emit;
 pub mod error;
 pub mod inspect;
-mod link;
-mod model;
 mod naming;
 pub mod routing;
 mod token_refs;

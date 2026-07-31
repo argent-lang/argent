@@ -4,18 +4,18 @@ use std::path::Path;
 
 use crate::artifact::*;
 use crate::codec::encode_hex;
-use crate::compiler::syntax::body::{EntryBinding, EntryRoute, EntryStatement};
-use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, Span, Token, TokenKind, lex};
-use crate::compiler::syntax::words::word;
-use crate::compiler::syntax::*;
-use crate::error::{ArgentError, Result};
-use crate::link::{LinkedActor, LinkedContext, link_imported_actors};
-use crate::model::{
+use crate::compiler::model::link::{LinkedActor, LinkedContext, link_imported_actors};
+use crate::compiler::model::{
     ActorEnumInfo, ActorModel, ActorTarget, AppActors, CompilerRoutePlan, CompilerRoutePlanner, CompilerRouteTransition,
     CovenantGroup, EntryInteraction, EntryModel, InteractionSource, Model, RouteFamily, RouteRootLeaf, StaticActorTarget,
     TemplateSelector, actor_enum_variant_const_expr, default_route_planner, infer_direct_routes, parse_actor_enum_selector,
     parse_actor_enum_variant,
 };
+use crate::compiler::syntax::body::{EntryBinding, EntryRoute, EntryStatement};
+use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, Span, Token, TokenKind, lex};
+use crate::compiler::syntax::words::word;
+use crate::compiler::syntax::*;
+use crate::error::{ArgentError, Result};
 use crate::naming::{is_identifier, to_snake};
 use crate::token_refs::{RefReplacements, count_qualified_ref};
 use silverscript_lang::ast::Expr as SilExpr;

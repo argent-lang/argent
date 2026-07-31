@@ -5,12 +5,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::artifact::{AppDependencyArtifact, EntryRefArtifact};
 use crate::compiler::syntax::{ActorDecl, ConstDecl, EntryDecl, FunctionDecl, RouteCall, StateDecl, TypeRef};
 use crate::error::{ArgentError, Result};
-use crate::link::LinkedActor;
 use crate::naming::to_snake;
 use crate::routing::{CommitmentNode, RouteGraph, RoutePlan as PlannerRoutePlan, SelectorRequirement, route_plan};
 
+use self::link::LinkedActor;
+
 mod actor;
 mod entry;
+pub(crate) mod link;
+
+#[cfg(test)]
+mod tests;
 
 pub(crate) use actor::ActorModel;
 pub(crate) use entry::{
@@ -500,57 +505,4 @@ fn compiler_route_leaf(plan: &PlannerRoutePlan, node: &CommitmentNode) -> Result
 
 fn route_template_family_receipt_id(state: &str, rep_actor: &str) -> String {
     format!("route_family/{state}/{}", to_snake(rep_actor))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn compiler_route_leaves_preserve_packed_and_opened_commitment_nodes() {
-        let mut graph = RouteGraph::default();
-        graph.add_actor("Knight");
-        graph.add_emit("Player", "Mux");
-        graph.add_emit("Mux", "Knight");
-        graph.add_emit("Mux", "Pawn");
-        graph.add_emit("Pawn", "Mux");
-        graph.add_emit("Mux", "Settle");
-        let domains = BTreeMap::from([
-            ("BoardState".to_string(), ["Knight", "Mux", "Pawn"].into_iter().map(str::to_string).collect()),
-            ("PlayerState".to_string(), vec!["Player".to_string()]),
-            ("SettleState".to_string(), vec!["Settle".to_string()]),
-        ]);
-
-        let plan = route_plan(&graph, &domains, &[]).expect("route plan is valid");
-        let leaves = compiler_route_leaves(&plan).expect("commitment nodes lower to compiler leaves");
-
-        assert_eq!(
-            leaves["Player"],
-            [
-                RouteRootLeaf::Family("route_family/BoardState/mux".to_string()),
-                RouteRootLeaf::Actor("Mux".to_string()),
-                RouteRootLeaf::Actor("Settle".to_string()),
-            ]
-        );
-        assert_eq!(
-            leaves["Mux"],
-            [
-                RouteRootLeaf::Actor("Knight".to_string()),
-                RouteRootLeaf::Actor("Pawn".to_string()),
-                RouteRootLeaf::Actor("Mux".to_string()),
-                RouteRootLeaf::Actor("Settle".to_string()),
-            ]
-        );
-        assert!(leaves["Settle"].is_empty());
-
-        let family_id = "route_family/BoardState/mux".to_string();
-        assert_eq!(
-            compiler_route_transition(&plan, "Player", "Mux").expect("Player can open the Mux family"),
-            CompilerRouteTransition { families_to_open: vec![family_id.clone()], families_to_pack: Vec::new() }
-        );
-        assert_eq!(
-            compiler_route_transition(&plan, "Mux", "Player").expect("Mux can pack its family for Player"),
-            CompilerRouteTransition { families_to_open: Vec::new(), families_to_pack: vec![family_id] }
-        );
-    }
 }
