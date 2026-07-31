@@ -41,17 +41,21 @@ contract League(
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Player
 
-        Gen__PlayerState next_player = {
+        PlayerState next_player = {
+            // :: user declared fields
+            nonce: nonce + 1,
+        };
+        Gen__PlayerState gen__state_next_gen__player_state = {
             // :: generated fields
             gen__mux_template: gen__mux_template,
             gen__mux_routes_digest: gen__mux_routes_digest,
             // :: user declared fields
-            nonce: nonce + 1,
+            nonce: next_player.nonce,
         };
         // :: become Player
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            next_player,
+            gen__state_next_gen__player_state,
             gen__player_prefix,
             gen__player_suffix,
             gen__player_template

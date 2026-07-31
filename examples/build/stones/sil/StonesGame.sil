@@ -190,20 +190,26 @@ contract StonesGame(
         require(checkSig(move_sig, move_pk));
         require(tx.outputs[gen__settle_output_idx].value == tx.inputs[this.activeInputIndex].value);
         int winner = other_side(turn);
-        Gen__StonesSettleState ticket = {
-            // :: generated fields
-            gen__player_template: gen__player_template,
-            gen__stones_game_template: gen__stones_game_template,
-            gen__stones_settle_template: gen__stones_settle_template,
+        SettleState ticket = {
             // :: user declared fields
             player_a: player_a,
             player_b: player_b,
             status: win_status(winner),
         };
+        Gen__StonesSettleState gen__state_settle_gen__stones_settle_state = {
+            // :: generated fields
+            gen__player_template: gen__player_template,
+            gen__stones_game_template: gen__stones_game_template,
+            gen__stones_settle_template: gen__stones_settle_template,
+            // :: user declared fields
+            player_a: ticket.player_a,
+            player_b: ticket.player_b,
+            status: ticket.status,
+        };
         // :: become StonesSettle
         validateOutputStateWithTemplate(
             gen__settle_output_idx,
-            ticket,
+            gen__state_settle_gen__stones_settle_state,
             gen__stones_settle_prefix,
             gen__stones_settle_suffix,
             gen__stones_settle_template

@@ -122,6 +122,57 @@ app ScopedSelector {
 }
 "#;
 
+const SELECTOR_SHADOW_SOURCE: &str = r#"
+state BoardState {
+    int count;
+}
+
+state PairState {
+    int item;
+}
+
+actor enum NextActor {
+    Alpha;
+    Beta;
+}
+
+fn identity(int value) -> int {
+    return value;
+}
+
+actor Router owns BoardState {
+    entry choose(NextActor target, byte[] data) emits next: NextActor {
+        unrestricted(next.value);
+        BoardState next_state = {
+            count: count + 1,
+        };
+        PairState pair = {
+            item: count,
+        };
+
+        __SHADOW__
+    }
+}
+
+actor Alpha owns BoardState {
+    entry inspect() emits none {
+        require(count >= 0);
+    }
+}
+
+actor Beta owns BoardState {
+    entry inspect() emits none {
+        require(count >= 0);
+    }
+}
+
+app SelectorShadow {
+    actor Router;
+    actor Alpha;
+    actor Beta;
+}
+"#;
+
 #[test]
 fn state_local_scope_survives_a_standalone_block() {
     execute_scope_flows(
@@ -330,15 +381,102 @@ fn nested_actor_type_does_not_replace_a_same_named_integer_parameter() {
             }
             "#,
     );
-    assert_selector_source_rejected("selector-int-parameter-collision", &source);
+    assert_selector_source_rejected(
+        "selector-int-parameter-collision",
+        &source,
+        "actor handle `target` is shadowed by a non-selector binding in this scope",
+    );
+}
+
+#[test]
+fn typed_local_shadows_an_outer_selector() {
+    assert_selector_shadow_rejected(
+        "selector-typed-local-shadow",
+        r#"
+        {
+            int target = 0;
+            become next <- target(next_state);
+        }
+        "#,
+    );
+}
+
+#[test]
+fn destructured_local_shadows_an_outer_selector() {
+    assert_selector_shadow_rejected(
+        "selector-destructured-local-shadow",
+        r#"
+        {
+            {item: int target} = pair;
+            become next <- target(next_state);
+        }
+        "#,
+    );
+}
+
+#[test]
+fn tuple_local_shadows_an_outer_selector() {
+    assert_selector_shadow_rejected(
+        "selector-tuple-local-shadow",
+        r#"
+        {
+            (byte[] target, byte[] remainder) = data.split(1);
+            become next <- target(next_state);
+        }
+        "#,
+    );
+}
+
+#[test]
+fn unparenthesized_tuple_local_shadows_an_outer_selector() {
+    assert_selector_shadow_rejected(
+        "selector-unparenthesized-tuple-local-shadow",
+        r#"
+        {
+            byte[] target, byte[] remainder = data.split(1);
+            become next <- target(next_state);
+        }
+        "#,
+    );
+}
+
+#[test]
+fn function_result_local_shadows_an_outer_selector() {
+    assert_selector_shadow_rejected(
+        "selector-function-result-local-shadow",
+        r#"
+        {
+            (int target) = identity(0);
+            become next <- target(next_state);
+        }
+        "#,
+    );
+}
+
+#[test]
+fn outer_selector_is_restored_after_a_same_named_loop_binding() {
+    let source = SCOPED_SELECTOR_SOURCE.replace("entry choose(bool choose)", "entry choose(NextActor target)").replace(
+        "__SELECTOR_SCOPE__",
+        r#"
+        for (target, 0, 1, 1) {
+            require(target >= 0);
+        }
+        "#,
+    );
+    compile_app("selector-loop-binding-scope", &source);
+}
+
+fn assert_selector_shadow_rejected(name: &str, shadow: &str) {
+    let source = SELECTOR_SHADOW_SOURCE.replace("__SHADOW__", shadow);
+    assert_selector_source_rejected(name, &source, "actor handle `target` is shadowed by a non-selector binding in this scope");
 }
 
 fn assert_selector_scope_rejected(name: &str, selector_scope: &str) {
     let source = SCOPED_SELECTOR_SOURCE.replace("__SELECTOR_SCOPE__", selector_scope);
-    assert_selector_source_rejected(name, &source);
+    assert_selector_source_rejected(name, &source, "actor handle `target` is not visible in this scope");
 }
 
-fn assert_selector_source_rejected(name: &str, source: &str) {
+fn assert_selector_source_rejected(name: &str, source: &str, expected: &str) {
     let out_dir = std::env::temp_dir().join(format!("argent-{name}-scope-test-{}", std::process::id()));
     if out_dir.exists() {
         fs::remove_dir_all(&out_dir).expect("old scope test output is removed");
@@ -351,7 +489,7 @@ fn assert_selector_source_rejected(name: &str, source: &str) {
     if out_dir.exists() {
         fs::remove_dir_all(&out_dir).expect("scope test output is removed");
     }
-    assert!(err.to_string().contains("actor handle `target` is not visible in this scope"), "unexpected selector scope error: {err}");
+    assert!(err.to_string().contains(expected), "unexpected selector scope error: {err}");
 }
 
 fn execute_scope_flows(name: &str, body: &str, flows: &[(bool, i64)]) {

@@ -52,11 +52,11 @@ impl Default for EntryBody {
 #[derive(Debug, Clone)]
 pub(crate) enum EntryStatement {
     If { condition: Span, then_branch: Box<EntryStatement>, else_branch: Option<Box<EntryStatement>>, span: Span },
-    For { header: Span, body: Box<EntryStatement>, span: Span },
+    For { binding: EntryBinding, header: Span, body: Box<EntryStatement>, span: Span },
     Block { statements: Vec<EntryStatement>, span: Span },
     Become { routes: Vec<EntryRoute>, span: Span },
     ValidateOutputsBecome { group: String, routes: Vec<EntryRoute>, span: Span },
-    Plain { span: Span },
+    Plain { bindings: Vec<EntryBinding>, span: Span },
 }
 
 impl EntryStatement {
@@ -67,9 +67,16 @@ impl EntryStatement {
             | Self::Block { span, .. }
             | Self::Become { span, .. }
             | Self::ValidateOutputsBecome { span, .. }
-            | Self::Plain { span } => *span,
+            | Self::Plain { span, .. } => *span,
         }
     }
+}
+
+/// One lexically scoped value introduced by ordinary Sil syntax.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EntryBinding {
+    pub(crate) name: String,
+    pub(crate) source_type: String,
 }
 
 /// One parsed route in a `become` statement.
@@ -219,6 +226,7 @@ impl EntryStatementParser<'_> {
     }
 
     fn parse_statement(&mut self) -> Result<EntryStatement> {
+        let token_start = self.cursor.pos;
         let start = self.cursor.byte_offset();
         if self.cursor.consume_ident(word::IF) {
             self.expect_symbol('(')?;
@@ -230,10 +238,14 @@ impl EntryStatementParser<'_> {
             Ok(EntryStatement::If { condition, then_branch, else_branch, span: Span { start, end } })
         } else if self.cursor.consume_ident(word::FOR) {
             self.expect_symbol('(')?;
+            let binding = match self.cursor.current().kind.clone() {
+                TokenKind::Ident(name) => EntryBinding { name, source_type: "int".to_string() },
+                _ => return Err(self.error("expected loop binding identifier")),
+            };
             let header = self.cursor.take_balanced_after_open('(', ')').ok_or_else(|| self.error("unterminated `(` group"))?;
             let body = Box::new(self.parse_block_or_statement()?);
             let span = Span { start, end: body.span().end };
-            Ok(EntryStatement::For { header, body, span })
+            Ok(EntryStatement::For { binding, header, body, span })
         } else if self.cursor.consume_ident(word::BECOME) {
             let routes = self.parse_become_tail()?;
             Ok(EntryStatement::Become { routes, span: self.cursor.consumed_span_from(start) })
@@ -242,13 +254,19 @@ impl EntryStatementParser<'_> {
             Ok(EntryStatement::ValidateOutputsBecome { group, routes, span: self.cursor.consumed_span_from(start) })
         } else if self.cursor.check_braced_assignment_start() {
             self.skip_until_statement_end()?;
-            Ok(EntryStatement::Plain { span: self.cursor.consumed_span_from(start) })
+            Ok(self.plain_statement(token_start, start))
         } else if self.cursor.consume_symbol('{') {
             self.parse_block_after_open(start)
         } else {
             self.skip_until_statement_end()?;
-            Ok(EntryStatement::Plain { span: self.cursor.consumed_span_from(start) })
+            Ok(self.plain_statement(token_start, start))
         }
+    }
+
+    fn plain_statement(&self, token_start: usize, byte_start: usize) -> EntryStatement {
+        let span = self.cursor.consumed_span_from(byte_start);
+        let bindings = PlainBindingParser::new(self.cursor.body, &self.cursor.body.tokens[token_start..self.cursor.pos]).parse();
+        EntryStatement::Plain { bindings, span }
     }
 
     fn parse_block_or_statement(&mut self) -> Result<EntryStatement> {
@@ -432,9 +450,153 @@ impl EntryStatementParser<'_> {
     }
 }
 
+/// Recognizes the binding surfaces of ordinary Sil statements while leaving
+/// their expressions and semantics to Silverscript.
+struct PlainBindingParser<'a> {
+    body: &'a EntryBody,
+    tokens: &'a [Token],
+    pos: usize,
+}
+
+impl<'a> PlainBindingParser<'a> {
+    fn new(body: &'a EntryBody, tokens: &'a [Token]) -> Self {
+        Self { body, tokens, pos: 0 }
+    }
+
+    fn parse(mut self) -> Vec<EntryBinding> {
+        if self.consume_symbol('{') {
+            return self.parse_struct_bindings().unwrap_or_default();
+        }
+        if self.consume_symbol('(') {
+            return self.parse_parenthesized_bindings().unwrap_or_default();
+        }
+        self.parse_leading_bindings().unwrap_or_default()
+    }
+
+    fn parse_struct_bindings(&mut self) -> Option<Vec<EntryBinding>> {
+        let mut bindings = Vec::new();
+        loop {
+            self.take_ident()?;
+            self.consume_symbol(':').then_some(())?;
+            bindings.push(self.parse_typed_binding()?);
+            if self.consume_symbol('}') {
+                break;
+            }
+            self.consume_symbol(',').then_some(())?;
+            if self.consume_symbol('}') {
+                break;
+            }
+        }
+        self.consume_symbol('=').then_some(bindings)
+    }
+
+    fn parse_parenthesized_bindings(&mut self) -> Option<Vec<EntryBinding>> {
+        let mut bindings = vec![self.parse_typed_binding()?];
+        while self.consume_symbol(',') {
+            if self.check_symbol(')') {
+                break;
+            }
+            bindings.push(self.parse_typed_binding()?);
+        }
+        self.consume_symbol(')').then_some(())?;
+        self.consume_symbol('=').then_some(bindings)
+    }
+
+    fn parse_leading_bindings(&mut self) -> Option<Vec<EntryBinding>> {
+        if self.check_ident("return") {
+            return None;
+        }
+        let first = self.parse_variable_binding()?;
+        if self.consume_symbol(',') {
+            let second = self.parse_typed_binding()?;
+            return self.consume_symbol('=').then_some(vec![first, second]);
+        }
+        (self.check_symbol('=') || self.check_symbol(';')).then_some(vec![first])
+    }
+
+    fn parse_variable_binding(&mut self) -> Option<EntryBinding> {
+        let source_type = self.parse_type()?;
+        while self.consume_ident("constant") {}
+        let name = self.take_ident()?;
+        Some(EntryBinding { name, source_type })
+    }
+
+    fn parse_typed_binding(&mut self) -> Option<EntryBinding> {
+        let source_type = self.parse_type()?;
+        let name = self.take_ident()?;
+        Some(EntryBinding { name, source_type })
+    }
+
+    fn parse_type(&mut self) -> Option<String> {
+        let start = self.current()?.span.start;
+        let base = self.take_ident()?;
+        if base == word::ACTOR_TYPE && self.consume_symbol('<') {
+            self.take_ident()?;
+            self.consume_symbol('>').then_some(())?;
+        }
+        while self.consume_symbol('[') {
+            while !self.check_symbol(']') {
+                self.advance()?;
+            }
+            self.consume_symbol(']').then_some(())?;
+        }
+        let end = self.tokens.get(self.pos.checked_sub(1)?)?.span.end;
+        Some(self.body.text[start..end].to_string())
+    }
+
+    fn current(&self) -> Option<&Token> {
+        self.tokens.get(self.pos)
+    }
+
+    fn advance(&mut self) -> Option<()> {
+        self.current()?;
+        self.pos += 1;
+        Some(())
+    }
+
+    fn check_ident(&self, expected: &str) -> bool {
+        matches!(self.current().map(|token| &token.kind), Some(TokenKind::Ident(actual)) if actual == expected)
+    }
+
+    fn consume_ident(&mut self, expected: &str) -> bool {
+        if self.check_ident(expected) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn take_ident(&mut self) -> Option<String> {
+        let TokenKind::Ident(name) = &self.current()?.kind else {
+            return None;
+        };
+        let name = name.clone();
+        self.pos += 1;
+        Some(name)
+    }
+
+    fn check_symbol(&self, expected: char) -> bool {
+        matches!(self.current().map(|token| &token.kind), Some(TokenKind::Symbol(actual)) if *actual == expected)
+    }
+
+    fn consume_symbol(&mut self, expected: char) -> bool {
+        if self.check_symbol(expected) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{EntryBody, EntryStatement, lex};
+    use super::{EntryBinding, EntryBody, EntryStatement, lex};
+
+    fn binding(name: &str, source_type: &str) -> EntryBinding {
+        EntryBinding { name: name.to_string(), source_type: source_type.to_string() }
+    }
 
     #[test]
     fn cursor_takes_nested_balanced_source() {
@@ -473,7 +635,7 @@ mod tests {
         )
         .expect("body lexes");
 
-        let [EntryStatement::Plain { span: plain }, EntryStatement::If { condition, then_branch, else_branch, .. }] =
+        let [EntryStatement::Plain { span: plain, .. }, EntryStatement::If { condition, then_branch, else_branch, .. }] =
             body.statements()
         else {
             panic!("expected one plain statement followed by an if");
@@ -496,13 +658,52 @@ mod tests {
         )
         .expect("body lexes");
 
-        let [EntryStatement::For { header, body: loop_body, .. }, EntryStatement::Plain { span: following }] = body.statements()
+        let [
+            EntryStatement::For { binding: loop_binding, header, body: loop_body, .. },
+            EntryStatement::Plain { span: following, .. },
+        ] = body.statements()
         else {
             panic!("expected one for loop followed by one plain statement");
         };
+        assert_eq!(loop_binding, &binding("i", "int"));
         assert_eq!(body.span_text(*header), "i, 0, count, MAX_COUNT");
         assert!(matches!(loop_body.as_ref(), EntryStatement::Block { .. }));
         assert_eq!(body.span_text(*following).trim(), "require(done);");
+    }
+
+    #[test]
+    fn plain_statements_record_sil_bindings() {
+        let body = EntryBody::new(
+            r#"
+            int value = 1;
+            byte[32] constant hash = digest;
+            (int left, bool right,) = pair();
+            int first, int second = pair();
+            {item: int unpacked, hash: byte[32] unpacked_hash,} = state;
+            require(value == first);
+            value = second;
+            return value;
+            "#,
+        )
+        .expect("body parses");
+
+        let expected = [
+            vec![binding("value", "int")],
+            vec![binding("hash", "byte[32]")],
+            vec![binding("left", "int"), binding("right", "bool")],
+            vec![binding("first", "int"), binding("second", "int")],
+            vec![binding("unpacked", "int"), binding("unpacked_hash", "byte[32]")],
+            vec![],
+            vec![],
+            vec![],
+        ];
+        assert_eq!(body.statements().len(), expected.len());
+        for (statement, expected) in body.statements().iter().zip(expected) {
+            let EntryStatement::Plain { bindings, .. } = statement else {
+                panic!("expected a plain statement");
+            };
+            assert_eq!(bindings, &expected);
+        }
     }
 
     #[test]
@@ -518,8 +719,11 @@ mod tests {
         )
         .expect("body lexes");
 
-        let [EntryStatement::Plain { span: destructure }, EntryStatement::Plain { span: state_read }, EntryStatement::Block { .. }] =
-            body.statements()
+        let [
+            EntryStatement::Plain { span: destructure, .. },
+            EntryStatement::Plain { span: state_read, .. },
+            EntryStatement::Block { .. },
+        ] = body.statements()
         else {
             panic!("expected two brace assignments followed by one standalone block");
         };

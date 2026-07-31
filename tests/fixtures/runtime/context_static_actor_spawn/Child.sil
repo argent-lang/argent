@@ -58,17 +58,21 @@ contract Child(
         // :: output next: Launcher
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
-        Gen__LauncherState next = {
+        LauncherState next = {
+            // :: user declared fields
+            launches: 0,
+        };
+        Gen__LauncherState gen__state_next_gen__launcher_state = {
             // :: generated fields
             gen__child_template: gen__child_template,
             gen__launcher_template: gen__launcher_template,
             // :: user declared fields
-            launches: 0,
+            launches: next.launches,
         };
         // :: become Launcher
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            next,
+            gen__state_next_gen__launcher_state,
             gen__launcher_prefix,
             gen__launcher_suffix,
             gen__launcher_template

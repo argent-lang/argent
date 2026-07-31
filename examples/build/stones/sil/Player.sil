@@ -184,11 +184,7 @@ contract Player(
             wins: opponent.wins,
             losses: opponent.losses,
         };
-        Gen__StonesGameState next_game = {
-            // :: generated fields
-            gen__player_template: gen__player_template,
-            gen__stones_game_template: gen__stones_game_template,
-            gen__stones_settle_template: gen__stones_settle_template,
+        GameState next_game = {
             // :: user declared fields
             player_a: self_ref,
             player_b: opponent_ref,
@@ -203,10 +199,22 @@ contract Player(
         validateOutputState(gen__self_out_output_idx, next_self);
         // :: become Player
         validateOutputState(gen__opponent_out_output_idx, next_opponent);
+        Gen__StonesGameState gen__state_game_gen__stones_game_state = {
+            // :: generated fields
+            gen__player_template: gen__player_template,
+            gen__stones_game_template: gen__stones_game_template,
+            gen__stones_settle_template: gen__stones_settle_template,
+            // :: user declared fields
+            player_a: next_game.player_a,
+            player_b: next_game.player_b,
+            pile: next_game.pile,
+            max_take: next_game.max_take,
+            turn: next_game.turn,
+        };
         // :: become StonesGame
         validateOutputStateWithTemplate(
             gen__game_output_idx,
-            next_game,
+            gen__state_game_gen__stones_game_state,
             gen__stones_game_prefix,
             gen__stones_game_suffix,
             gen__stones_game_template

@@ -47,18 +47,23 @@ contract Player(
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Mux
 
-        Gen__MuxState next_board = {
-            // :: generated fields
-            gen__mux_template: gen__mux_template,
-            gen__mux_routes: gen__mux_routes,
+        BoardState next_board = {
             // :: user declared fields
             selector: nonce,
             ply: 0,
         };
+        Gen__MuxState gen__state_next_gen__mux_state = {
+            // :: generated fields
+            gen__mux_template: gen__mux_template,
+            gen__mux_routes: gen__mux_routes,
+            // :: user declared fields
+            selector: next_board.selector,
+            ply: next_board.ply,
+        };
         // :: become Mux
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            next_board,
+            gen__state_next_gen__mux_state,
             gen__mux_prefix,
             gen__mux_suffix,
             gen__mux_template
