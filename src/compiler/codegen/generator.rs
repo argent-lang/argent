@@ -6,10 +6,11 @@ use crate::artifact::*;
 use crate::codec::encode_hex;
 use crate::compiler::model::link::{LinkedActor, LinkedContext, link_imported_actors};
 use crate::compiler::model::{
-    ActorEnumInfo, ActorModel, ActorTarget, AppActors, CompilerRoutePlan, CompilerRoutePlanner, CompilerRouteTransition,
-    CovenantGroup, EntryInteraction, EntryModel, InteractionSource, Model, RouteFamily, RouteRootLeaf, StaticActorTarget,
-    TemplateSelector, actor_enum_variant_const_expr, default_route_planner, infer_direct_routes, parse_actor_enum_selector,
-    parse_actor_enum_variant,
+    ActorEnumInfo, ActorModel, ActorTarget, AppActors, ClauseActorTypeRef, CompilerRoutePlan, CompilerRoutePlanner,
+    CompilerRouteTransition, CovenantGroup, CovenantIdSource, EntryInteraction, EntryModel, InteractionSource, Model, RouteFamily,
+    RouteRootLeaf, StaticActorTarget, TemplateSelector, actor_enum_variant_const_expr, clause_actor_type_ref, default_route_planner,
+    infer_direct_routes, observed_is_dynamic_binding, observed_open_bindings, observed_open_state_for_decl, parse_actor_enum_selector,
+    parse_actor_enum_variant, resolve_observe_covenant_id_source, source_actor_type_state_for_expr, spawn_target_state,
 };
 use crate::compiler::syntax::body::{EntryBinding, EntryRoute, EntryStatement};
 use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, Span, Token, TokenKind, lex};
@@ -627,7 +628,7 @@ impl<'a> Model<'a> {
                     actor.name, entry.name, observe.name
                 )));
             }
-            observe_covenant_id_source(actor, entry, self, observe)?;
+            resolve_observe_covenant_id_source(actor, entry, self, observe)?;
             self.validate_observed_open_bindings(actor, entry, observe)?;
             self.validate_observed_actor_types(actor, entry, observe, "input", &observe.inputs)?;
             self.validate_observed_actor_types(actor, entry, observe, "output", &observe.outputs)?;
@@ -2270,32 +2271,6 @@ fn observed_witness_key(
     Ok(format!("actor:{}", observed.actor))
 }
 
-fn observed_open_bindings(observe: &ObserveDecl) -> BTreeMap<&str, &str> {
-    observe.inputs.iter().filter_map(|input| input.open_state.as_deref().map(|state| (input.actor.as_str(), state))).collect()
-}
-
-fn observed_dynamic_binding_state<'a>(observe: &'a ObserveDecl, observed: &'a ObservedActorDecl) -> Option<&'a str> {
-    observed.open_state.as_deref().or_else(|| observed_open_bindings(observe).get(observed.actor.as_str()).copied())
-}
-
-fn observed_open_state_for_decl(
-    actor: &ActorDecl,
-    entry: &EntryDecl,
-    observe: &ObserveDecl,
-    observed: &ObservedActorDecl,
-    model: &Model<'_>,
-) -> Result<Option<String>> {
-    if let Some(state) = observed_dynamic_binding_state(observe, observed) {
-        model.state(state)?;
-        return Ok(Some(state.to_string()));
-    }
-    source_actor_type_state_for_expr(&observed.actor, actor, entry, model)
-}
-
-fn observed_is_dynamic_binding(observe: &ObserveDecl, observed: &ObservedActorDecl) -> bool {
-    observed_dynamic_binding_state(observe, observed).is_some()
-}
-
 /// Resolve a fixed observed target without admitting it to local routing.
 fn static_observed_actor_target<'m>(
     actor: &ActorDecl,
@@ -2353,120 +2328,6 @@ fn observed_is_source_actor_type(
     model: &Model<'_>,
 ) -> Result<bool> {
     Ok(source_actor_type_state_for_expr(&observed.actor, actor, entry, model)?.is_some())
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum ClauseReference {
-    StateField(String),
-    Bare(String),
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum ClauseActorTypeRef {
-    StateField { field: String, state: String },
-    EntryArgument { name: String, state: String },
-}
-
-impl ClauseActorTypeRef {
-    fn state(&self) -> &str {
-        match self {
-            Self::StateField { state, .. } | Self::EntryArgument { state, .. } => state,
-        }
-    }
-
-    fn witness_suffix(&self) -> String {
-        match self {
-            Self::StateField { field, .. } => format!("self_{field}"),
-            Self::EntryArgument { name, .. } => format!("arg_{name}"),
-        }
-    }
-}
-
-fn clause_reference(expr: &str) -> Result<Option<ClauseReference>> {
-    let tokens = lex(expr).map_err(|err| ArgentError::new(format!("failed to lex clause reference `{expr}`: {}", err.message)))?;
-    match tokens.as_slice() {
-        [
-            Token { kind: TokenKind::Ident(self_name), .. },
-            Token { kind: TokenKind::Symbol('.'), .. },
-            Token { kind: TokenKind::Ident(field), .. },
-            Token { kind: TokenKind::Eof, .. },
-        ] if self_name == word::SELF => Ok(Some(ClauseReference::StateField(field.clone()))),
-        [Token { kind: TokenKind::Ident(name), .. }, Token { kind: TokenKind::Eof, .. }] => {
-            Ok(Some(ClauseReference::Bare(name.clone())))
-        }
-        _ => Ok(None),
-    }
-}
-
-fn clause_actor_type_ref(expr: &str, actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Result<Option<ClauseActorTypeRef>> {
-    let state = model.storage_state(&actor.state)?;
-    let (source, ty) = match clause_reference(expr)? {
-        Some(ClauseReference::StateField(field_name)) => {
-            let field = state.fields.iter().find(|field| field.name == field_name).ok_or_else(|| {
-                ArgentError::new(format!(
-                    "entry `{}::{}` references unknown state field `{}.{field_name}`",
-                    actor.name,
-                    entry.name,
-                    word::SELF
-                ))
-            })?;
-            (ClauseReference::StateField(field_name), &field.ty)
-        }
-        Some(ClauseReference::Bare(name)) => {
-            if let Some(param) = entry.params.iter().find(|param| param.name == name) {
-                (ClauseReference::Bare(name), &param.ty)
-            } else if state.fields.iter().any(|field| field.name == name) {
-                return Err(ArgentError::new(format!(
-                    "entry `{}::{}` state field `{name}` must be referenced as `{}.{name}` in entry clauses",
-                    actor.name,
-                    entry.name,
-                    word::SELF
-                )));
-            } else {
-                return Ok(None);
-            }
-        }
-        None => return Ok(None),
-    };
-
-    let Some(actor_state) = ty.actor_state.as_ref() else {
-        return Err(ArgentError::new(format!(
-            "entry `{}::{}` clause reference `{}` has type `{}`; expected `{}<State>`",
-            actor.name,
-            entry.name,
-            expr.trim(),
-            source_type_ref(ty),
-            word::ACTOR_TYPE
-        )));
-    };
-    model.state(actor_state)?;
-    Ok(Some(match source {
-        ClauseReference::StateField(field) => ClauseActorTypeRef::StateField { field, state: actor_state.clone() },
-        ClauseReference::Bare(name) => ClauseActorTypeRef::EntryArgument { name, state: actor_state.clone() },
-    }))
-}
-
-fn source_actor_type_state_for_expr(expr: &str, actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Result<Option<String>> {
-    Ok(clause_actor_type_ref(expr, actor, entry, model)?.map(|source| source.state().to_string()))
-}
-
-// Spawn targets may be an explicitly dynamic actor_type value or any fixed
-// actor resolved by the selected app. Linked templates remain imported
-// capabilities and do not enter the selected app's route graph.
-fn spawn_target_state(
-    target: &ActorTarget,
-    expr: &str,
-    actor: &ActorDecl,
-    entry: &EntryDecl,
-    model: &Model<'_>,
-) -> Result<Option<String>> {
-    if let Some(target) = model.resolve_static_actor_target(target) {
-        return Ok(Some(target.state().to_string()));
-    }
-    if let Some(state) = source_actor_type_state_for_expr(expr, actor, entry, model)? {
-        return Ok(Some(state));
-    }
-    Ok(None)
 }
 
 fn observed_actor_template_expr_for_entry(
@@ -3700,69 +3561,10 @@ fn observe_covenant_id_source(
     model: &Model<'_>,
     observe: &ObserveDecl,
 ) -> Result<CovenantIdSourceArtifact> {
-    match clause_reference(&observe.covenant_expr)? {
-        Some(ClauseReference::StateField(field_name)) => {
-            let field = model.storage_state(&actor.state)?.fields.iter().find(|field| field.name == field_name).ok_or_else(|| {
-                ArgentError::new(format!(
-                    "entry `{}::{}` observe `{}` references unknown state field `{}.{field_name}`",
-                    actor.name,
-                    entry.name,
-                    observe.name,
-                    word::SELF
-                ))
-            })?;
-            require_covenant_id_source_type(actor, entry, observe, &format!("{}.{field_name}", word::SELF), &field.ty)?;
-            Ok(CovenantIdSourceArtifact::StateField { field: field_name })
-        }
-        Some(ClauseReference::Bare(argument_name)) => {
-            if let Some((index, param)) = entry.params.iter().enumerate().find(|(_, param)| param.name == argument_name) {
-                require_covenant_id_source_type(actor, entry, observe, &argument_name, &param.ty)?;
-                return Ok(CovenantIdSourceArtifact::EntryArgument { index });
-            }
-            if model.storage_state(&actor.state)?.fields.iter().any(|field| field.name == argument_name) {
-                return Err(ArgentError::new(format!(
-                    "entry `{}::{}` observe `{}` state field `{argument_name}` must be referenced as `{}.{argument_name}`",
-                    actor.name,
-                    entry.name,
-                    observe.name,
-                    word::SELF
-                )));
-            }
-            Err(unsupported_observe_covenant_id_source(actor, entry, observe))
-        }
-        None => Err(unsupported_observe_covenant_id_source(actor, entry, observe)),
-    }
-}
-
-fn require_covenant_id_source_type(
-    actor: &ActorDecl,
-    entry: &EntryDecl,
-    observe: &ObserveDecl,
-    source: &str,
-    ty: &TypeRef,
-) -> Result<()> {
-    if ty.name == word::COVENANT_ID && ty.array.is_none() && ty.actor_state.is_none() {
-        return Ok(());
-    }
-    Err(ArgentError::new(format!(
-        "entry `{}::{}` observe `{}` covenant id source `{source}` has type `{}`; expected `{}`",
-        actor.name,
-        entry.name,
-        observe.name,
-        source_type_ref(ty),
-        word::COVENANT_ID
-    )))
-}
-
-fn unsupported_observe_covenant_id_source(actor: &ActorDecl, entry: &EntryDecl, observe: &ObserveDecl) -> ArgentError {
-    ArgentError::new(format!(
-        "entry `{}::{}` observe `{}` covenant id source must be a `{}.<field>` state field or entry argument of type `{}`",
-        actor.name,
-        entry.name,
-        observe.name,
-        word::SELF,
-        word::COVENANT_ID
-    ))
+    Ok(match resolve_observe_covenant_id_source(actor, entry, model, observe)? {
+        CovenantIdSource::StateField { field } => CovenantIdSourceArtifact::StateField { field },
+        CovenantIdSource::EntryArgument { index } => CovenantIdSourceArtifact::EntryArgument { index },
+    })
 }
 
 fn observed_actor_artifact(
@@ -4512,7 +4314,7 @@ fn hidden_template_selector_template_name(selector: &str) -> String {
 }
 
 fn observed_actor_spec_suffix(spec: &ObservedActorWitnessSpec) -> String {
-    spec.source.as_ref().map_or_else(|| actor_expr_suffix(&spec.actor), ClauseActorTypeRef::witness_suffix)
+    spec.source.as_ref().map_or_else(|| actor_expr_suffix(&spec.actor), clause_actor_type_witness_suffix)
 }
 
 fn actor_expr_suffix(actor: &str) -> String {
@@ -4582,23 +4384,30 @@ fn hidden_spawn_actor_suffix_name(spec: &SpawnActorWitnessSpec) -> String {
 }
 
 fn spawn_actor_spec_suffix(spec: &SpawnActorWitnessSpec) -> String {
-    spec.source.as_ref().map_or_else(|| actor_expr_suffix(&spec.actor), ClauseActorTypeRef::witness_suffix)
+    spec.source.as_ref().map_or_else(|| actor_expr_suffix(&spec.actor), clause_actor_type_witness_suffix)
 }
 
 fn hidden_actor_type_source_prefix_name(source: &ClauseActorTypeRef) -> String {
-    format!("{RESERVED_GENERATED_PREFIX}actor_type_{}_prefix", source.witness_suffix())
+    format!("{RESERVED_GENERATED_PREFIX}actor_type_{}_prefix", clause_actor_type_witness_suffix(source))
 }
 
 fn hidden_actor_type_source_suffix_name(source: &ClauseActorTypeRef) -> String {
-    format!("{RESERVED_GENERATED_PREFIX}actor_type_{}_suffix", source.witness_suffix())
+    format!("{RESERVED_GENERATED_PREFIX}actor_type_{}_suffix", clause_actor_type_witness_suffix(source))
 }
 
 fn hidden_actor_type_source_prefix_len_name(source: &ClauseActorTypeRef) -> String {
-    format!("{RESERVED_GENERATED_PREFIX}actor_type_{}_prefix_len", source.witness_suffix())
+    format!("{RESERVED_GENERATED_PREFIX}actor_type_{}_prefix_len", clause_actor_type_witness_suffix(source))
 }
 
 fn hidden_actor_type_source_suffix_len_name(source: &ClauseActorTypeRef) -> String {
-    format!("{RESERVED_GENERATED_PREFIX}actor_type_{}_suffix_len", source.witness_suffix())
+    format!("{RESERVED_GENERATED_PREFIX}actor_type_{}_suffix_len", clause_actor_type_witness_suffix(source))
+}
+
+fn clause_actor_type_witness_suffix(source: &ClauseActorTypeRef) -> String {
+    match source {
+        ClauseActorTypeRef::StateField { field, .. } => format!("self_{field}"),
+        ClauseActorTypeRef::EntryArgument { name, .. } => format!("arg_{name}"),
+    }
 }
 
 fn hidden_state_expansion_preimage_name(spec: &StateExpansionWitnessSpec) -> String {

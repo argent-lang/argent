@@ -2,15 +2,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::compiler::syntax::lexer::{Token, TokenKind};
+use crate::compiler::syntax::lexer::{Token, TokenKind, lex};
 use crate::compiler::syntax::words::word;
 use crate::compiler::syntax::{
     ActorDecl, ConsumeDecl, EmitOutput, EmitSpec, EntryDecl, ObserveDecl, ObservedActorDecl, RouteCall, SpawnDecl, SpawnOutputDecl,
+    TypeRef,
 };
 use crate::error::{ArgentError, Result};
 use crate::naming::{is_identifier, to_snake};
 
-use super::{ActorEnumInfo, AppActors};
+use super::{ActorEnumInfo, AppActors, Model};
 
 #[cfg(test)]
 mod tests;
@@ -357,6 +358,225 @@ impl ActorTarget {
     pub(crate) fn is_source(&self) -> bool {
         matches!(self, Self::Source(_))
     }
+}
+
+/// A simple entry-clause reference resolved without lowering its expression.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum ClauseReference {
+    StateField(String),
+    Bare(String),
+}
+
+/// An actor-type source and the state selected by its declared type.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum ClauseActorTypeRef {
+    StateField { field: String, state: String },
+    EntryArgument { name: String, state: String },
+}
+
+impl ClauseActorTypeRef {
+    /// Return the actor state declared by this source value.
+    pub(crate) fn state(&self) -> &str {
+        match self {
+            Self::StateField { state, .. } | Self::EntryArgument { state, .. } => state,
+        }
+    }
+}
+
+/// A source value supplying an observed covenant ID.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CovenantIdSource {
+    StateField { field: String },
+    EntryArgument { index: usize },
+}
+
+pub(crate) fn clause_reference(expr: &str) -> Result<Option<ClauseReference>> {
+    let tokens = lex(expr).map_err(|err| ArgentError::new(format!("failed to lex clause reference `{expr}`: {}", err.message)))?;
+    match tokens.as_slice() {
+        [
+            Token { kind: TokenKind::Ident(self_name), .. },
+            Token { kind: TokenKind::Symbol('.'), .. },
+            Token { kind: TokenKind::Ident(field), .. },
+            Token { kind: TokenKind::Eof, .. },
+        ] if self_name == word::SELF => Ok(Some(ClauseReference::StateField(field.clone()))),
+        [Token { kind: TokenKind::Ident(name), .. }, Token { kind: TokenKind::Eof, .. }] => {
+            Ok(Some(ClauseReference::Bare(name.clone())))
+        }
+        _ => Ok(None),
+    }
+}
+
+pub(crate) fn clause_actor_type_ref(
+    expr: &str,
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    model: &Model<'_>,
+) -> Result<Option<ClauseActorTypeRef>> {
+    let state = model.storage_state(&actor.state)?;
+    let (source, ty) = match clause_reference(expr)? {
+        Some(ClauseReference::StateField(field_name)) => {
+            let field = state.fields.iter().find(|field| field.name == field_name).ok_or_else(|| {
+                ArgentError::new(format!(
+                    "entry `{}::{}` references unknown state field `{}.{field_name}`",
+                    actor.name,
+                    entry.name,
+                    word::SELF
+                ))
+            })?;
+            (ClauseReference::StateField(field_name), &field.ty)
+        }
+        Some(ClauseReference::Bare(name)) => {
+            if let Some(param) = entry.params.iter().find(|param| param.name == name) {
+                (ClauseReference::Bare(name), &param.ty)
+            } else if state.fields.iter().any(|field| field.name == name) {
+                return Err(ArgentError::new(format!(
+                    "entry `{}::{}` state field `{name}` must be referenced as `{}.{name}` in entry clauses",
+                    actor.name,
+                    entry.name,
+                    word::SELF
+                )));
+            } else {
+                return Ok(None);
+            }
+        }
+        None => return Ok(None),
+    };
+
+    let Some(actor_state) = ty.actor_state.as_ref() else {
+        return Err(ArgentError::new(format!(
+            "entry `{}::{}` clause reference `{}` has type `{}`; expected `{}<State>`",
+            actor.name,
+            entry.name,
+            expr.trim(),
+            ty.to_source(),
+            word::ACTOR_TYPE
+        )));
+    };
+    model.state(actor_state)?;
+    Ok(Some(match source {
+        ClauseReference::StateField(field) => ClauseActorTypeRef::StateField { field, state: actor_state.clone() },
+        ClauseReference::Bare(name) => ClauseActorTypeRef::EntryArgument { name, state: actor_state.clone() },
+    }))
+}
+
+pub(crate) fn source_actor_type_state_for_expr(
+    expr: &str,
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    model: &Model<'_>,
+) -> Result<Option<String>> {
+    Ok(clause_actor_type_ref(expr, actor, entry, model)?.map(|source| source.state().to_string()))
+}
+
+/// Resolve the source state of a static or actor-type-selected spawn target.
+pub(crate) fn spawn_target_state(
+    target: &ActorTarget,
+    expr: &str,
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    model: &Model<'_>,
+) -> Result<Option<String>> {
+    if let Some(target) = model.resolve_static_actor_target(target) {
+        return Ok(Some(target.state().to_string()));
+    }
+    source_actor_type_state_for_expr(expr, actor, entry, model)
+}
+
+pub(crate) fn observed_open_bindings(observe: &ObserveDecl) -> BTreeMap<&str, &str> {
+    observe.inputs.iter().filter_map(|input| input.open_state.as_deref().map(|state| (input.actor.as_str(), state))).collect()
+}
+
+pub(crate) fn observed_dynamic_binding_state<'a>(observe: &'a ObserveDecl, observed: &'a ObservedActorDecl) -> Option<&'a str> {
+    observed.open_state.as_deref().or_else(|| observed_open_bindings(observe).get(observed.actor.as_str()).copied())
+}
+
+pub(crate) fn observed_open_state_for_decl(
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    observe: &ObserveDecl,
+    observed: &ObservedActorDecl,
+    model: &Model<'_>,
+) -> Result<Option<String>> {
+    if let Some(state) = observed_dynamic_binding_state(observe, observed) {
+        model.state(state)?;
+        return Ok(Some(state.to_string()));
+    }
+    source_actor_type_state_for_expr(&observed.actor, actor, entry, model)
+}
+
+pub(crate) fn observed_is_dynamic_binding(observe: &ObserveDecl, observed: &ObservedActorDecl) -> bool {
+    observed_dynamic_binding_state(observe, observed).is_some()
+}
+
+pub(crate) fn resolve_observe_covenant_id_source(
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    model: &Model<'_>,
+    observe: &ObserveDecl,
+) -> Result<CovenantIdSource> {
+    match clause_reference(&observe.covenant_expr)? {
+        Some(ClauseReference::StateField(field_name)) => {
+            let field = model.storage_state(&actor.state)?.fields.iter().find(|field| field.name == field_name).ok_or_else(|| {
+                ArgentError::new(format!(
+                    "entry `{}::{}` observe `{}` references unknown state field `{}.{field_name}`",
+                    actor.name,
+                    entry.name,
+                    observe.name,
+                    word::SELF
+                ))
+            })?;
+            require_covenant_id_source_type(actor, entry, observe, &format!("{}.{field_name}", word::SELF), &field.ty)?;
+            Ok(CovenantIdSource::StateField { field: field_name })
+        }
+        Some(ClauseReference::Bare(argument_name)) => {
+            if let Some((index, param)) = entry.params.iter().enumerate().find(|(_, param)| param.name == argument_name) {
+                require_covenant_id_source_type(actor, entry, observe, &argument_name, &param.ty)?;
+                return Ok(CovenantIdSource::EntryArgument { index });
+            }
+            if model.storage_state(&actor.state)?.fields.iter().any(|field| field.name == argument_name) {
+                return Err(ArgentError::new(format!(
+                    "entry `{}::{}` observe `{}` state field `{argument_name}` must be referenced as `{}.{argument_name}`",
+                    actor.name,
+                    entry.name,
+                    observe.name,
+                    word::SELF
+                )));
+            }
+            Err(unsupported_observe_covenant_id_source(actor, entry, observe))
+        }
+        None => Err(unsupported_observe_covenant_id_source(actor, entry, observe)),
+    }
+}
+
+fn require_covenant_id_source_type(
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    observe: &ObserveDecl,
+    source: &str,
+    ty: &TypeRef,
+) -> Result<()> {
+    if ty.name == word::COVENANT_ID && ty.array.is_none() && ty.actor_state.is_none() {
+        return Ok(());
+    }
+    Err(ArgentError::new(format!(
+        "entry `{}::{}` observe `{}` covenant id source `{source}` has type `{}`; expected `{}`",
+        actor.name,
+        entry.name,
+        observe.name,
+        ty.to_source(),
+        word::COVENANT_ID
+    )))
+}
+
+fn unsupported_observe_covenant_id_source(actor: &ActorDecl, entry: &EntryDecl, observe: &ObserveDecl) -> ArgentError {
+    ArgentError::new(format!(
+        "entry `{}::{}` observe `{}` covenant id source must be a `{}.<field>` state field or entry argument of type `{}`",
+        actor.name,
+        entry.name,
+        observe.name,
+        word::SELF,
+        word::COVENANT_ID
+    ))
 }
 
 fn is_actor_reference(value: &str) -> bool {

@@ -220,6 +220,19 @@ impl TypeRef {
             None => self.name.clone(),
         }
     }
+
+    /// Render the type as written in Argent source.
+    pub fn to_source(&self) -> String {
+        if let Some(state) = &self.actor_state {
+            format!("{}<{state}>", word::ACTOR_TYPE)
+        } else {
+            match self.array {
+                Some(ArrayDim::Dynamic) => format!("{}[]", self.name),
+                Some(ArrayDim::Fixed(len)) => format!("{}[{len}]", self.name),
+                None => self.name.clone(),
+            }
+        }
+    }
 }
 
 #[cfg(test)]

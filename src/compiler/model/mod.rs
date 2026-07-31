@@ -19,8 +19,10 @@ mod tests;
 
 pub(crate) use actor::ActorModel;
 pub(crate) use entry::{
-    ActorTarget, ActorTemplateUses, CovenantGroup, EntryInteraction, EntryModel, InteractionSource, TemplateSelector,
-    actor_enum_variant_const_expr, parse_actor_enum_selector, parse_actor_enum_variant,
+    ActorTarget, ActorTemplateUses, ClauseActorTypeRef, CovenantGroup, CovenantIdSource, EntryInteraction, EntryModel,
+    InteractionSource, TemplateSelector, actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding,
+    observed_open_bindings, observed_open_state_for_decl, parse_actor_enum_selector, parse_actor_enum_variant,
+    resolve_observe_covenant_id_source, source_actor_type_state_for_expr, spawn_target_state,
 };
 
 /// The selected application's compiler-wide source and routing model.
