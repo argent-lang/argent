@@ -41,12 +41,12 @@ fn statements_keep_structure_and_source_spans() {
     )
     .expect("body lexes");
 
-    let [EntryStatement::Plain { span: plain, .. }, EntryStatement::If { condition, then_branch, else_branch, .. }] =
+    let [EntryStatement::Local { span: local, .. }, EntryStatement::If { condition, then_branch, else_branch, .. }] =
         body.statements()
     else {
-        panic!("expected one plain statement followed by an if");
+        panic!("expected one local declaration followed by an if");
     };
-    assert_eq!(body.span_text(*plain).trim(), "int next = value;");
+    assert_eq!(body.span_text(*local).trim(), "int next = value;");
     assert_eq!(body.span_text(*condition), "done");
     assert!(matches!(then_branch.as_ref(), EntryStatement::Block { .. }));
     assert!(matches!(else_branch.as_deref(), Some(EntryStatement::Block { .. })));
@@ -76,7 +76,7 @@ fn statements_keep_for_structure_and_the_following_boundary() {
 }
 
 #[test]
-fn plain_statements_record_sil_bindings() {
+fn statements_record_sil_bindings() {
     let body = EntryBody::new(
         r#"
             int value = 1;
@@ -103,15 +103,23 @@ fn plain_statements_record_sil_bindings() {
     ];
     assert_eq!(body.statements().len(), expected.len());
     for (statement, expected) in body.statements().iter().zip(expected) {
-        let EntryStatement::Plain { bindings, .. } = statement else {
-            panic!("expected a plain statement");
+        let bindings = match statement {
+            EntryStatement::Local { declaration, .. } => std::slice::from_ref(&declaration.binding),
+            EntryStatement::Plain { bindings, .. } => bindings,
+            _ => panic!("expected a local declaration or plain statement"),
         };
-        assert_eq!(bindings, &expected);
+        assert_eq!(bindings, expected.as_slice());
     }
+
+    let EntryStatement::Local { declaration, .. } = &body.statements()[1] else {
+        panic!("expected the constant declaration to be structured");
+    };
+    assert_eq!(body.span_text(declaration.declared_type), "byte[32] constant");
+    assert_eq!(body.span_text(declaration.initializer), "digest");
 }
 
 #[test]
-fn initialized_locals_keep_structured_selector_syntax() {
+fn local_declarations_keep_structured_selector_syntax() {
     let body = EntryBody::new(
         r#"
             MoveActor target = MoveActor[index + offset];
@@ -127,16 +135,16 @@ fn initialized_locals_keep_structured_selector_syntax() {
     )
     .expect("body parses");
 
-    let locals = body.initialized_local_declarations();
-    assert_eq!(locals.iter().map(|(binding, _)| binding.name.as_str()).collect::<Vec<_>>(), vec!["target", "selected", "candidates"]);
-    assert_eq!(locals[0].0.source_type, "MoveActor");
-    assert_eq!(locals[0].0.actor_type_state, None);
-    assert_eq!(body.span_text(locals[0].1), "MoveActor[index + offset]");
-    assert_eq!(locals[1].0.source_type, "actor_type<BoardState>");
-    assert_eq!(locals[1].0.actor_type_state.as_deref(), Some("BoardState"));
-    assert_eq!(body.span_text(locals[1].1), "MoveActor::Knight");
-    assert_eq!(locals[2].0.source_type, "actor_type<BoardState>[]");
-    assert_eq!(locals[2].0.actor_type_state, None);
+    let locals = body.local_declarations();
+    assert_eq!(locals.iter().map(|local| local.binding.name.as_str()).collect::<Vec<_>>(), vec!["target", "selected", "candidates"]);
+    assert_eq!(locals[0].binding.source_type, "MoveActor");
+    assert_eq!(locals[0].binding.actor_type_state, None);
+    assert_eq!(body.span_text(locals[0].initializer), "MoveActor[index + offset]");
+    assert_eq!(locals[1].binding.source_type, "actor_type<BoardState>");
+    assert_eq!(locals[1].binding.actor_type_state.as_deref(), Some("BoardState"));
+    assert_eq!(body.span_text(locals[1].initializer), "MoveActor::Knight");
+    assert_eq!(locals[2].binding.source_type, "actor_type<BoardState>[]");
+    assert_eq!(locals[2].binding.actor_type_state, None);
 }
 
 #[test]

@@ -7,8 +7,8 @@ use crate::compiler::model::{
     TemplateSelector, actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding, observed_open_bindings,
     observed_open_state_for_decl, parse_actor_enum_selector, parse_actor_enum_variant, spawn_target_state,
 };
-use crate::compiler::naming::{is_identifier, to_snake};
-use crate::compiler::syntax::body::{EntryBinding, EntryRoute, EntryStatement};
+use crate::compiler::naming::to_snake;
+use crate::compiler::syntax::body::{EntryBinding, EntryLocalDecl, EntryRoute, EntryStatement};
 use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, Span, Token, TokenKind, lex};
 use crate::compiler::syntax::word;
 use crate::compiler::syntax::*;
@@ -368,6 +368,9 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                 EntryStatement::ValidateOutputsBecome { group, routes, .. } => {
                     self.lower_outputs_become(out, indent, group, routes)?;
                 }
+                EntryStatement::Local { declaration, span } => {
+                    self.lower_local_declaration(out, indent, declaration, *span)?;
+                }
                 EntryStatement::Plain { bindings, span, .. } => self.lower_plain_statement(out, indent, bindings, *span)?,
                 EntryStatement::Block { statements, .. } => {
                     push_indent(out, indent);
@@ -460,38 +463,42 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         Ok(())
     }
 
+    fn lower_local_declaration(&mut self, out: &mut String, indent: usize, declaration: &EntryLocalDecl, span: Span) -> Result<()> {
+        let source = self.entry.body.span_text(span).trim();
+        source.strip_suffix(';').ok_or_else(|| self.error("unterminated statement"))?;
+
+        let source_ty = declaration.binding.source_type.as_str();
+        let name = declaration.binding.name.as_str();
+        let expr = self.entry.body.span_text(declaration.initializer).trim().to_string();
+        if let Some(state) = declaration.binding.actor_type_state.as_deref() {
+            self.lower_actor_type_statement(out, indent, state, name, &expr)?;
+            return Ok(());
+        }
+        let lowered_ty = if self.model.has_state(source_ty) {
+            self.bindings.lowered_type(expr.trim()).map(str::to_string).unwrap_or_else(|| self.lower_local_type(source_ty))
+        } else {
+            self.lower_local_type(source_ty)
+        };
+        let declared_type = self.entry.body.span_text(declaration.declared_type).trim();
+        let type_suffix = declared_type.strip_prefix(source_ty).expect("declared type starts with its parsed source type");
+        let emitted_type = format!("{lowered_ty}{type_suffix}");
+        let lowered = self.lower_typed_local_initializer(source_ty, &lowered_ty, &expr, indent)?;
+
+        push_indent(out, indent);
+        out.push_str(&format!("{emitted_type} {name} = {lowered};\n"));
+        let mut binding = BodyBinding::typed(source_ty, lowered_ty);
+        if let Some(selector) = self.selector_catalog.get(name)
+            && selector.actor_enum == source_ty
+        {
+            binding = binding.with_selector(selector.clone());
+        }
+        self.bindings.declare(name, binding);
+        Ok(())
+    }
+
     fn lower_plain_statement(&mut self, out: &mut String, indent: usize, bindings: &[EntryBinding], span: Span) -> Result<()> {
         let source = self.entry.body.span_text(span).trim();
         let statement = source.strip_suffix(';').ok_or_else(|| self.error("unterminated statement"))?.trim().to_string();
-        if let [declared_binding] = bindings
-            && let Some((declaration_type, name, expr)) = parse_typed_local_statement(&statement)
-        {
-            let source_ty = &declared_binding.source_type;
-            if let Some(state) = declared_binding.actor_type_state.as_deref() {
-                self.lower_actor_type_statement(out, indent, state, name, expr)?;
-                return Ok(());
-            }
-            let lowered_ty = if self.model.has_state(source_ty) {
-                self.bindings.lowered_type(expr.trim()).map(str::to_string).unwrap_or_else(|| self.lower_local_type(source_ty))
-            } else {
-                self.lower_local_type(source_ty)
-            };
-            let type_suffix =
-                declaration_type.strip_prefix(source_ty).expect("binding parser and typed-local parser agree on the leading type");
-            let emitted_type = format!("{lowered_ty}{type_suffix}");
-            let lowered = self.lower_typed_local_initializer(source_ty, &lowered_ty, expr, indent)?;
-
-            push_indent(out, indent);
-            out.push_str(&format!("{emitted_type} {name} = {lowered};\n"));
-            let mut binding = BodyBinding::typed(source_ty, lowered_ty);
-            if let Some(selector) = self.selector_catalog.get(name)
-                && selector.actor_enum == source_ty.as_str()
-            {
-                binding = binding.with_selector(selector.clone());
-            }
-            self.bindings.declare(name, binding);
-            return Ok(());
-        }
 
         if let Some(value) = parse_unrestricted_output_value(&statement) {
             self.validate_unrestricted_output_value(value)?;
@@ -1450,55 +1457,6 @@ fn split_state_object_literal(expr: &str) -> Option<&str> {
 fn parse_digest_call(expr: &str) -> Option<&str> {
     let expr = expr.trim();
     expr.strip_prefix("digest(")?.strip_suffix(')').map(str::trim)
-}
-
-fn parse_typed_local_statement(statement: &str) -> Option<(&str, &str, &str)> {
-    let (left, expr) = split_top_level_assignment(statement)?;
-    let left = left.trim();
-    let split_idx = left.char_indices().rev().find_map(|(idx, ch)| ch.is_whitespace().then_some(idx))?;
-    let source_ty = left[..split_idx].trim();
-    let name = left[split_idx..].trim();
-    if source_ty.is_empty() || !is_identifier(name) {
-        return None;
-    }
-    Some((source_ty, name, expr.trim()))
-}
-
-fn split_top_level_assignment(input: &str) -> Option<(&str, &str)> {
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    for (idx, ch) in input.char_indices() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match ch {
-            '"' => in_string = true,
-            '{' | '(' | '[' => depth += 1,
-            '}' | ')' | ']' => depth = depth.saturating_sub(1),
-            '=' if depth == 0 => {
-                let prev = input[..idx].chars().next_back();
-                let next = input[idx + ch.len_utf8()..].chars().next();
-                if matches!(prev, Some('=' | '!' | '<' | '>')) || matches!(next, Some('=')) {
-                    continue;
-                }
-                let left = input[..idx].trim();
-                let right = input[idx + ch.len_utf8()..].trim();
-                if !left.is_empty() && !right.is_empty() {
-                    return Some((left, right));
-                }
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 fn parse_state_fields(body: &str) -> Vec<(String, String)> {

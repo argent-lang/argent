@@ -38,11 +38,11 @@ impl EntryBody {
         &self.statements
     }
 
-    /// Return directly declared initialized locals in source order, including nested scopes.
-    pub(crate) fn initialized_local_declarations(&self) -> Vec<(&EntryBinding, Span)> {
+    /// Return initialized local declarations in source order, including nested scopes.
+    pub(crate) fn local_declarations(&self) -> Vec<&EntryLocalDecl> {
         let mut locals = Vec::new();
         for statement in &self.statements {
-            statement.collect_initialized_locals(&mut locals);
+            statement.collect_local_declarations(&mut locals);
         }
         locals
     }
@@ -65,12 +65,41 @@ impl Default for EntryBody {
 /// The structural statements Argent understands without parsing ordinary Sil statements.
 #[derive(Debug, Clone)]
 pub(crate) enum EntryStatement {
-    If { condition: Span, then_branch: Box<EntryStatement>, else_branch: Option<Box<EntryStatement>>, span: Span },
-    For { binding: EntryBinding, header: Span, body: Box<EntryStatement>, span: Span },
-    Block { statements: Vec<EntryStatement>, span: Span },
-    Become { routes: Vec<EntryRoute>, span: Span },
-    ValidateOutputsBecome { group: String, routes: Vec<EntryRoute>, span: Span },
-    Plain { bindings: Vec<EntryBinding>, declaration_initializer: Option<Span>, span: Span },
+    If {
+        condition: Span,
+        then_branch: Box<EntryStatement>,
+        else_branch: Option<Box<EntryStatement>>,
+        span: Span,
+    },
+    For {
+        binding: EntryBinding,
+        header: Span,
+        body: Box<EntryStatement>,
+        span: Span,
+    },
+    Block {
+        statements: Vec<EntryStatement>,
+        span: Span,
+    },
+    Become {
+        routes: Vec<EntryRoute>,
+        span: Span,
+    },
+    ValidateOutputsBecome {
+        group: String,
+        routes: Vec<EntryRoute>,
+        span: Span,
+    },
+    /// A directly declared local variable with an initializer.
+    Local {
+        declaration: EntryLocalDecl,
+        span: Span,
+    },
+    /// An ordinary Sil statement kept opaque except for the bindings it introduces.
+    Plain {
+        bindings: Vec<EntryBinding>,
+        span: Span,
+    },
 }
 
 impl EntryStatement {
@@ -81,30 +110,38 @@ impl EntryStatement {
             | Self::Block { span, .. }
             | Self::Become { span, .. }
             | Self::ValidateOutputsBecome { span, .. }
+            | Self::Local { span, .. }
             | Self::Plain { span, .. } => *span,
         }
     }
 
-    fn collect_initialized_locals<'a>(&'a self, locals: &mut Vec<(&'a EntryBinding, Span)>) {
+    fn collect_local_declarations<'a>(&'a self, locals: &mut Vec<&'a EntryLocalDecl>) {
         match self {
             Self::If { then_branch, else_branch, .. } => {
-                then_branch.collect_initialized_locals(locals);
+                then_branch.collect_local_declarations(locals);
                 if let Some(else_branch) = else_branch {
-                    else_branch.collect_initialized_locals(locals);
+                    else_branch.collect_local_declarations(locals);
                 }
             }
-            Self::For { body, .. } => body.collect_initialized_locals(locals),
+            Self::For { body, .. } => body.collect_local_declarations(locals),
             Self::Block { statements, .. } => {
                 for statement in statements {
-                    statement.collect_initialized_locals(locals);
+                    statement.collect_local_declarations(locals);
                 }
             }
-            Self::Plain { bindings, declaration_initializer: Some(initializer), .. } if bindings.len() == 1 => {
-                locals.push((&bindings[0], *initializer));
-            }
+            Self::Local { declaration, .. } => locals.push(declaration),
             Self::Become { .. } | Self::ValidateOutputsBecome { .. } | Self::Plain { .. } => {}
         }
     }
+}
+
+/// One directly declared local variable whose initializer Argent may lower.
+#[derive(Debug, Clone)]
+pub(crate) struct EntryLocalDecl {
+    pub(crate) binding: EntryBinding,
+    /// The source type and any following declaration qualifiers.
+    pub(crate) declared_type: Span,
+    pub(crate) initializer: Span,
 }
 
 /// One lexically scoped value introduced by ordinary Sil syntax.
@@ -303,7 +340,10 @@ impl EntryStatementParser<'_> {
     fn plain_statement(&self, token_start: usize, byte_start: usize) -> EntryStatement {
         let span = self.cursor.consumed_span_from(byte_start);
         let parsed = PlainBindingParser::new(self.cursor.body, &self.cursor.body.tokens[token_start..self.cursor.pos]).parse();
-        EntryStatement::Plain { bindings: parsed.bindings, declaration_initializer: parsed.declaration_initializer, span }
+        match parsed {
+            ParsedPlain::Local(declaration) => EntryStatement::Local { declaration, span },
+            ParsedPlain::Bindings(bindings) => EntryStatement::Plain { bindings, span },
+        }
     }
 
     fn parse_block_or_statement(&mut self) -> Result<EntryStatement> {
@@ -495,10 +535,15 @@ struct PlainBindingParser<'a> {
     pos: usize,
 }
 
-#[derive(Default)]
-struct ParsedPlainBindings {
-    bindings: Vec<EntryBinding>,
-    declaration_initializer: Option<Span>,
+enum ParsedPlain {
+    Local(EntryLocalDecl),
+    Bindings(Vec<EntryBinding>),
+}
+
+impl Default for ParsedPlain {
+    fn default() -> Self {
+        Self::Bindings(Vec::new())
+    }
 }
 
 struct ParsedBindingType {
@@ -506,12 +551,17 @@ struct ParsedBindingType {
     actor_type_state: Option<String>,
 }
 
+struct ParsedVariableBinding {
+    binding: EntryBinding,
+    declared_type: Span,
+}
+
 impl<'a> PlainBindingParser<'a> {
     fn new(body: &'a EntryBody, tokens: &'a [Token]) -> Self {
         Self { body, tokens, pos: 0 }
     }
 
-    fn parse(mut self) -> ParsedPlainBindings {
+    fn parse(mut self) -> ParsedPlain {
         if self.consume_symbol('{') {
             return self.parse_struct_bindings().unwrap_or_default();
         }
@@ -521,7 +571,7 @@ impl<'a> PlainBindingParser<'a> {
         self.parse_leading_bindings().unwrap_or_default()
     }
 
-    fn parse_struct_bindings(&mut self) -> Option<ParsedPlainBindings> {
+    fn parse_struct_bindings(&mut self) -> Option<ParsedPlain> {
         let mut bindings = Vec::new();
         loop {
             self.take_ident()?;
@@ -536,10 +586,10 @@ impl<'a> PlainBindingParser<'a> {
             }
         }
         self.consume_symbol('=').then_some(())?;
-        Some(ParsedPlainBindings { bindings, declaration_initializer: None })
+        Some(ParsedPlain::Bindings(bindings))
     }
 
-    fn parse_parenthesized_bindings(&mut self) -> Option<ParsedPlainBindings> {
+    fn parse_parenthesized_bindings(&mut self) -> Option<ParsedPlain> {
         let mut bindings = vec![self.parse_typed_binding()?];
         while self.consume_symbol(',') {
             if self.check_symbol(')') {
@@ -549,10 +599,10 @@ impl<'a> PlainBindingParser<'a> {
         }
         self.consume_symbol(')').then_some(())?;
         self.consume_symbol('=').then_some(())?;
-        Some(ParsedPlainBindings { bindings, declaration_initializer: None })
+        Some(ParsedPlain::Bindings(bindings))
     }
 
-    fn parse_leading_bindings(&mut self) -> Option<ParsedPlainBindings> {
+    fn parse_leading_bindings(&mut self) -> Option<ParsedPlain> {
         if self.check_ident("return") {
             return None;
         }
@@ -560,22 +610,27 @@ impl<'a> PlainBindingParser<'a> {
         if self.consume_symbol(',') {
             let second = self.parse_typed_binding()?;
             self.consume_symbol('=').then_some(())?;
-            return Some(ParsedPlainBindings { bindings: vec![first, second], declaration_initializer: None });
+            return Some(ParsedPlain::Bindings(vec![first.binding, second]));
         }
-        let declaration_initializer = if self.consume_symbol('=') {
-            self.remaining_initializer_span()
-        } else {
-            self.check_symbol(';').then_some(())?;
-            None
-        };
-        Some(ParsedPlainBindings { bindings: vec![first], declaration_initializer })
+        if self.consume_symbol('=') {
+            return self.remaining_initializer_span().map(|initializer| {
+                ParsedPlain::Local(EntryLocalDecl { binding: first.binding, declared_type: first.declared_type, initializer })
+            });
+        }
+        self.check_symbol(';').then_some(())?;
+        Some(ParsedPlain::Bindings(vec![first.binding]))
     }
 
-    fn parse_variable_binding(&mut self) -> Option<EntryBinding> {
+    fn parse_variable_binding(&mut self) -> Option<ParsedVariableBinding> {
+        let declared_type_start = self.current()?.span.start;
         let ty = self.parse_type()?;
         while self.consume_ident("constant") {}
+        let declared_type_end = self.tokens.get(self.pos.checked_sub(1)?)?.span.end;
         let name = self.take_ident()?;
-        Some(EntryBinding { name, source_type: ty.source, actor_type_state: ty.actor_type_state })
+        Some(ParsedVariableBinding {
+            binding: EntryBinding { name, source_type: ty.source, actor_type_state: ty.actor_type_state },
+            declared_type: Span { start: declared_type_start, end: declared_type_end },
+        })
     }
 
     fn parse_typed_binding(&mut self) -> Option<EntryBinding> {

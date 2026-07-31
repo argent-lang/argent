@@ -108,7 +108,9 @@ fn analyze_statement(body: &EntryBody, statement: &EntryStatement) -> Result<Ter
             Ok(TerminalResult::empty())
         }
         EntryStatement::Block { statements, span } => analyze_sequence(body, statements, span.end.saturating_sub(1)),
-        EntryStatement::ValidateOutputsBecome { .. } | EntryStatement::Plain { .. } => Ok(TerminalResult::empty()),
+        EntryStatement::ValidateOutputsBecome { .. } | EntryStatement::Local { .. } | EntryStatement::Plain { .. } => {
+            Ok(TerminalResult::empty())
+        }
     }
 }
 

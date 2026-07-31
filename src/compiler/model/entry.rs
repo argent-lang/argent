@@ -648,8 +648,9 @@ fn template_selectors_for_entry(
 
     // Route planning needs every possible selector domain. Lexical visibility
     // remains the responsibility of body lowering at each route use.
-    for (binding, initializer) in entry.body.initialized_local_declarations() {
-        let expr = entry.body.span_text(initializer).trim();
+    for declaration in entry.body.local_declarations() {
+        let binding = &declaration.binding;
+        let expr = entry.body.span_text(declaration.initializer).trim();
         if let Some(state) = binding.actor_type_state.as_deref() {
             let selector = template_selector_from_initializer(&ctx, &binding.name, Some(state), None, expr)?;
             insert_template_selector(actor, entry, &mut selectors, selector)?;
