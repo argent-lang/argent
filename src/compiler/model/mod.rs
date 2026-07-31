@@ -15,6 +15,7 @@ mod build;
 mod entry;
 mod layout;
 pub(crate) mod link;
+mod validate;
 
 #[cfg(test)]
 mod tests;
