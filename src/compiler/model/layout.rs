@@ -1,6 +1,6 @@
 //! Fixed-width state layout facts shared by validation and code generation.
 
-use crate::compiler::syntax::words::word;
+use crate::compiler::syntax::word;
 use crate::compiler::syntax::{ArrayDim, TypeRef};
 use crate::error::{ArgentError, Result};
 

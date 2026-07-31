@@ -1,4 +1,4 @@
-use super::words::word;
+use super::word;
 use crate::error::{ArgentError, Result};
 
 pub const RESERVED_GENERATED_PREFIX: &str = "gen__";

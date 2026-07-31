@@ -9,7 +9,7 @@ use crate::compiler::model::{
 };
 use crate::compiler::syntax::body::{EntryBinding, EntryRoute, EntryStatement};
 use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, Span, Token, TokenKind, lex};
-use crate::compiler::syntax::words::word;
+use crate::compiler::syntax::word;
 use crate::compiler::syntax::*;
 use crate::error::{ArgentError, Result};
 use crate::naming::{is_identifier, to_snake};

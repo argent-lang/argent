@@ -1,7 +1,7 @@
 //! Canonical source text and tokens for an Argent entry body.
 
 use super::lexer::{Span, Token, TokenKind, lex};
-use super::words::word;
+use super::word;
 use crate::error::Result;
 
 pub mod routes;

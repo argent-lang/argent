@@ -1,13 +1,11 @@
 use std::path::PathBuf;
 
-use self::words::word;
-
 pub use self::body::EntryBody;
 
 pub mod body;
 pub mod lexer;
 pub mod parser;
-pub(crate) mod words;
+pub(crate) mod word;
 
 #[derive(Debug, Clone)]
 pub struct Program {

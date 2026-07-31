@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::compiler::syntax::lexer::{Token, TokenKind, lex};
-use crate::compiler::syntax::words::word;
+use crate::compiler::syntax::word;
 use crate::compiler::syntax::{
     ActorDecl, ConsumeDecl, EmitOutput, EmitSpec, EntryDecl, ObserveDecl, ObservedActorDecl, RouteCall, SpawnDecl, SpawnOutputDecl,
     TypeRef,

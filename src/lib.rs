@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use compiler::{loader, syntax as ast};
+use compiler::{loader, syntax};
 
 pub mod artifact;
 pub mod builder;
@@ -120,7 +120,7 @@ pub fn build_file_app_bundle(input: impl AsRef<Path>, app_name: &str, out_dir: i
 }
 
 fn build_app_graph(
-    apps: Vec<(loader::SourceApp, Vec<loader::SourceApp>, ast::Program)>,
+    apps: Vec<(loader::SourceApp, Vec<loader::SourceApp>, syntax::Program)>,
     app_name: &str,
     out_dir: &Path,
 ) -> Result<CompiledAppBundle> {
@@ -153,7 +153,7 @@ fn build_app_graph(
     Ok(CompiledAppBundle { primary_app: app_name.to_string(), artifacts })
 }
 
-fn inline_program(source_label: PathBuf, source: String) -> Result<ast::Program> {
+fn inline_program(source_label: PathBuf, source: String) -> Result<syntax::Program> {
     loader::load_inline_program(source_label, source)
 }
 

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use super::body::routes::analyze_entry_routes;
 use super::lexer::{Token, TokenKind, lex_argent_source};
-use super::words::word;
+use super::word;
 use super::*;
 use crate::error::{ArgentError, Result};
 

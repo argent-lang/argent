@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::artifact::{AppDependencyArtifact, Artifact, EntryRefArtifact};
-use crate::compiler::syntax::words::word;
+use crate::compiler::syntax::word;
 use crate::compiler::syntax::*;
 use crate::error::{ArgentError, Result};
 

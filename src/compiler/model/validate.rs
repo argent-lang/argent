@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX};
-use crate::compiler::syntax::words::word;
+use crate::compiler::syntax::word;
 use crate::compiler::syntax::{
     ActorDecl, ArrayDim, EmitOutput, EmitSpec, EntryDecl, EntryKind, ObserveDecl, ObservedActorDecl, RouteCall,
 };
