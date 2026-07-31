@@ -1,3 +1,7 @@
+//! Command-line entry point for building and inspecting Argent applications.
+//!
+//! CLI commands delegate to the public library operations.
+
 use std::env;
 use std::path::PathBuf;
 

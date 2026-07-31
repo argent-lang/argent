@@ -2,15 +2,19 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::ast::{
+use crate::compiler::naming::{is_identifier, to_snake};
+use crate::compiler::syntax::lexer::{Token, TokenKind, lex};
+use crate::compiler::syntax::word;
+use crate::compiler::syntax::{
     ActorDecl, ConsumeDecl, EmitOutput, EmitSpec, EntryDecl, ObserveDecl, ObservedActorDecl, RouteCall, SpawnDecl, SpawnOutputDecl,
+    TypeRef,
 };
 use crate::error::{ArgentError, Result};
-use crate::language::word;
-use crate::lexer::{Token, TokenKind};
-use crate::naming::{is_identifier, to_snake};
 
-use super::{ActorEnumInfo, AppActors};
+use super::{ActorEnumInfo, AppActors, Model};
+
+#[cfg(test)]
+mod tests;
 
 /// The normalized interactions and selector-expanded routes for one entry.
 #[derive(Debug)]
@@ -356,6 +360,227 @@ impl ActorTarget {
     }
 }
 
+/// A simple entry-clause reference resolved without lowering its expression.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum ClauseReference {
+    StateField(String),
+    Bare(String),
+}
+
+/// An actor-type source and the state selected by its declared type.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum ClauseActorTypeRef {
+    StateField { field: String, state: String },
+    EntryArgument { name: String, state: String },
+}
+
+impl ClauseActorTypeRef {
+    /// Return the actor state declared by this source value.
+    pub(crate) fn state(&self) -> &str {
+        match self {
+            Self::StateField { state, .. } | Self::EntryArgument { state, .. } => state,
+        }
+    }
+}
+
+/// A source value supplying an observed covenant ID.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CovenantIdSource {
+    StateField { field: String },
+    EntryArgument { index: usize },
+}
+
+fn clause_reference(expr: &str) -> Result<Option<ClauseReference>> {
+    let tokens = lex(expr).map_err(|err| ArgentError::new(format!("failed to lex clause reference `{expr}`: {}", err.message)))?;
+    match tokens.as_slice() {
+        [
+            Token { kind: TokenKind::Ident(self_name), .. },
+            Token { kind: TokenKind::Symbol('.'), .. },
+            Token { kind: TokenKind::Ident(field), .. },
+            Token { kind: TokenKind::Eof, .. },
+        ] if self_name == word::SELF => Ok(Some(ClauseReference::StateField(field.clone()))),
+        [Token { kind: TokenKind::Ident(name), .. }, Token { kind: TokenKind::Eof, .. }] => {
+            Ok(Some(ClauseReference::Bare(name.clone())))
+        }
+        _ => Ok(None),
+    }
+}
+
+pub(crate) fn clause_actor_type_ref(
+    expr: &str,
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    model: &Model<'_>,
+) -> Result<Option<ClauseActorTypeRef>> {
+    let state = model.storage_state(&actor.state)?;
+    let (source, ty) = match clause_reference(expr)? {
+        Some(ClauseReference::StateField(field_name)) => {
+            let field = state.fields.iter().find(|field| field.name == field_name).ok_or_else(|| {
+                ArgentError::new(format!(
+                    "entry `{}::{}` references unknown state field `{}.{field_name}`",
+                    actor.name,
+                    entry.name,
+                    word::SELF
+                ))
+            })?;
+            (ClauseReference::StateField(field_name), &field.ty)
+        }
+        Some(ClauseReference::Bare(name)) => {
+            if let Some(param) = entry.params.iter().find(|param| param.name == name) {
+                (ClauseReference::Bare(name), &param.ty)
+            } else if state.fields.iter().any(|field| field.name == name) {
+                return Err(ArgentError::new(format!(
+                    "entry `{}::{}` state field `{name}` must be referenced as `{}.{name}` in entry clauses",
+                    actor.name,
+                    entry.name,
+                    word::SELF
+                )));
+            } else {
+                return Ok(None);
+            }
+        }
+        None => return Ok(None),
+    };
+
+    let Some(actor_state) = ty.actor_state.as_ref() else {
+        return Err(ArgentError::new(format!(
+            "entry `{}::{}` clause reference `{}` has type `{}`; expected `{}<State>`",
+            actor.name,
+            entry.name,
+            expr.trim(),
+            ty.to_source(),
+            word::ACTOR_TYPE
+        )));
+    };
+    model.state(actor_state)?;
+    Ok(Some(match source {
+        ClauseReference::StateField(field) => ClauseActorTypeRef::StateField { field, state: actor_state.clone() },
+        ClauseReference::Bare(name) => ClauseActorTypeRef::EntryArgument { name, state: actor_state.clone() },
+    }))
+}
+
+pub(crate) fn source_actor_type_state_for_expr(
+    expr: &str,
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    model: &Model<'_>,
+) -> Result<Option<String>> {
+    Ok(clause_actor_type_ref(expr, actor, entry, model)?.map(|source| source.state().to_string()))
+}
+
+// Spawn targets may be an explicitly dynamic actor_type value or any fixed
+// actor resolved by the selected app. Linked templates remain imported
+// capabilities and do not enter the selected app's route graph.
+pub(crate) fn spawn_target_state(
+    target: &ActorTarget,
+    expr: &str,
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    model: &Model<'_>,
+) -> Result<Option<String>> {
+    if let Some(target) = model.resolve_static_actor_target(target) {
+        return Ok(Some(target.state().to_string()));
+    }
+    source_actor_type_state_for_expr(expr, actor, entry, model)
+}
+
+pub(crate) fn observed_open_bindings(observe: &ObserveDecl) -> BTreeMap<&str, &str> {
+    observe.inputs.iter().filter_map(|input| input.open_state.as_deref().map(|state| (input.actor.as_str(), state))).collect()
+}
+
+pub(crate) fn observed_dynamic_binding_state<'a>(observe: &'a ObserveDecl, observed: &'a ObservedActorDecl) -> Option<&'a str> {
+    observed.open_state.as_deref().or_else(|| observed_open_bindings(observe).get(observed.actor.as_str()).copied())
+}
+
+pub(crate) fn observed_open_state_for_decl(
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    observe: &ObserveDecl,
+    observed: &ObservedActorDecl,
+    model: &Model<'_>,
+) -> Result<Option<String>> {
+    if let Some(state) = observed_dynamic_binding_state(observe, observed) {
+        model.state(state)?;
+        return Ok(Some(state.to_string()));
+    }
+    source_actor_type_state_for_expr(&observed.actor, actor, entry, model)
+}
+
+pub(crate) fn observed_is_dynamic_binding(observe: &ObserveDecl, observed: &ObservedActorDecl) -> bool {
+    observed_dynamic_binding_state(observe, observed).is_some()
+}
+
+pub(crate) fn resolve_observe_covenant_id_source(
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    model: &Model<'_>,
+    observe: &ObserveDecl,
+) -> Result<CovenantIdSource> {
+    match clause_reference(&observe.covenant_expr)? {
+        Some(ClauseReference::StateField(field_name)) => {
+            let field = model.storage_state(&actor.state)?.fields.iter().find(|field| field.name == field_name).ok_or_else(|| {
+                ArgentError::new(format!(
+                    "entry `{}::{}` observe `{}` references unknown state field `{}.{field_name}`",
+                    actor.name,
+                    entry.name,
+                    observe.name,
+                    word::SELF
+                ))
+            })?;
+            require_covenant_id_source_type(actor, entry, observe, &format!("{}.{field_name}", word::SELF), &field.ty)?;
+            Ok(CovenantIdSource::StateField { field: field_name })
+        }
+        Some(ClauseReference::Bare(argument_name)) => {
+            if let Some((index, param)) = entry.params.iter().enumerate().find(|(_, param)| param.name == argument_name) {
+                require_covenant_id_source_type(actor, entry, observe, &argument_name, &param.ty)?;
+                return Ok(CovenantIdSource::EntryArgument { index });
+            }
+            if model.storage_state(&actor.state)?.fields.iter().any(|field| field.name == argument_name) {
+                return Err(ArgentError::new(format!(
+                    "entry `{}::{}` observe `{}` state field `{argument_name}` must be referenced as `{}.{argument_name}`",
+                    actor.name,
+                    entry.name,
+                    observe.name,
+                    word::SELF
+                )));
+            }
+            Err(unsupported_observe_covenant_id_source(actor, entry, observe))
+        }
+        None => Err(unsupported_observe_covenant_id_source(actor, entry, observe)),
+    }
+}
+
+fn require_covenant_id_source_type(
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    observe: &ObserveDecl,
+    source: &str,
+    ty: &TypeRef,
+) -> Result<()> {
+    if ty.name == word::COVENANT_ID && ty.array.is_none() && ty.actor_state.is_none() {
+        return Ok(());
+    }
+    Err(ArgentError::new(format!(
+        "entry `{}::{}` observe `{}` covenant id source `{source}` has type `{}`; expected `{}`",
+        actor.name,
+        entry.name,
+        observe.name,
+        ty.to_source(),
+        word::COVENANT_ID
+    )))
+}
+
+fn unsupported_observe_covenant_id_source(actor: &ActorDecl, entry: &EntryDecl, observe: &ObserveDecl) -> ArgentError {
+    ArgentError::new(format!(
+        "entry `{}::{}` observe `{}` covenant id source must be a `{}.<field>` state field or entry argument of type `{}`",
+        actor.name,
+        entry.name,
+        observe.name,
+        word::SELF,
+        word::COVENANT_ID
+    ))
+}
+
 fn is_actor_reference(value: &str) -> bool {
     is_identifier(value) || value.split_once("::").is_some_and(|(app, actor)| is_identifier(app) && is_identifier(actor))
 }
@@ -698,190 +923,4 @@ fn expand_routes<'a>(routes: impl Iterator<Item = &'a RouteCall>, selectors: &BT
         }
     }
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ast::{EmitOutput, EmitSpec, EntryBody, EntryKind};
-
-    #[test]
-    fn models_covenant_groups_and_preserves_source_nodes() {
-        let entry = EntryDecl {
-            kind: EntryKind::Leader,
-            name: "step".to_string(),
-            params: Vec::new(),
-            consumes: vec![ConsumeDecl { name: "peer".to_string(), actor: "Peer".to_string() }],
-            observes: vec![ObserveDecl {
-                name: "remote".to_string(),
-                covenant_expr: "self.remote_id".to_string(),
-                inputs: vec![ObservedActorDecl { name: "before".to_string(), actor: "Remote".to_string(), open_state: None }],
-                outputs: vec![ObservedActorDecl { name: "after".to_string(), actor: "Remote".to_string(), open_state: None }],
-            }],
-            spawns: vec![SpawnDecl {
-                name: "launch".to_string(),
-                covenant: "child".to_string(),
-                outputs: vec![SpawnOutputDecl { name: "child".to_string(), actor: "Child".to_string(), group_index: 0 }],
-            }],
-            emits: EmitSpec::Outputs(vec![EmitOutput { name: "next".to_string(), actors: vec!["Move".to_string()], auth_index: 0 }]),
-            body: EntryBody::default(),
-            routes: vec![RouteCall { output: "next".to_string(), actor: "target".to_string(), state: "next".to_string() }],
-            terminal_route_sets: Vec::new(),
-        };
-        let selectors = BTreeMap::from([(
-            "target".to_string(),
-            TemplateSelector {
-                name: "target".to_string(),
-                actor_enum: "Move".to_string(),
-                state: "Game".to_string(),
-                variants: vec!["Pawn".to_string(), "King".to_string()],
-                selector_expr: "selector".to_string(),
-                fixed_actor: Some("King".to_string()),
-            },
-        )]);
-        let actor_enums = BTreeMap::from([(
-            "Move".to_string(),
-            ActorEnumInfo {
-                name: "Move".to_string(),
-                state: "Game".to_string(),
-                variants: vec!["Pawn".to_string(), "King".to_string()],
-            },
-        )]);
-
-        let model = EntryModel::new(&entry, &actor_enums, selectors);
-
-        let InteractionSource::Consume(consume) = model.current().inputs()[0].source() else {
-            panic!("current input must retain its consume declaration");
-        };
-        assert!(std::ptr::eq(consume, &entry.consumes[0]));
-        assert_eq!(model.current().inputs()[0].handle(), "peer");
-        assert_eq!(model.current().inputs()[0].index(), 0);
-        let InteractionSource::CurrentOutput(output) = model.current().outputs()[0].source() else {
-            panic!("current output must retain its emits declaration");
-        };
-        let EmitSpec::Outputs(outputs) = &entry.emits else {
-            panic!("test entry must have named outputs");
-        };
-        assert!(std::ptr::eq(output, &outputs[0]));
-        assert_eq!(model.current().outputs()[0].handle(), "next");
-        assert_eq!(model.current().outputs()[0].index(), 0);
-        assert_eq!(model.current().outputs()[0].target().actors().collect::<Vec<_>>(), ["Pawn", "King"]);
-        let observe_group = model.existing_groups().next().expect("observe group");
-        assert!(std::ptr::eq(observe_group.observe().expect("observe source"), &entry.observes[0]));
-        let InteractionSource::ObserveInput(observed) = observe_group.inputs()[0].source() else {
-            panic!("observe input must retain its source declaration");
-        };
-        assert!(std::ptr::eq(observed, &entry.observes[0].inputs[0]));
-        assert_eq!(observe_group.inputs()[0].handle(), "before");
-        assert_eq!(observe_group.inputs()[0].index(), 0);
-        assert_eq!(observe_group.inputs()[0].target().static_actors().collect::<Vec<_>>(), ["Remote"]);
-
-        let spawn_group = model.genesis_groups().next().expect("spawn group");
-        assert!(std::ptr::eq(spawn_group.spawn().expect("spawn source"), &entry.spawns[0]));
-        let InteractionSource::SpawnOutput(output) = spawn_group.outputs()[0].source() else {
-            panic!("spawn output must retain its source declaration");
-        };
-        assert!(std::ptr::eq(output, &entry.spawns[0].outputs[0]));
-        assert_eq!(spawn_group.outputs()[0].handle(), "child");
-        assert_eq!(spawn_group.outputs()[0].index(), 0);
-        assert_eq!(spawn_group.outputs()[0].target().static_actors().collect::<Vec<_>>(), ["Child"]);
-
-        assert_eq!(model.expanded_routes()[0].actor, "King");
-        let app_actors =
-            AppActors::new(["Source", "Peer", "Remote", "Child", "Pawn", "King"].into_iter().map(str::to_string).collect());
-        assert_eq!(
-            model.actor_template_uses("Source", &app_actors),
-            ActorTemplateUses {
-                reads: ["Peer", "Remote"].into_iter().map(str::to_string).collect(),
-                writes: ["Remote", "Child"].into_iter().map(str::to_string).collect(),
-            }
-        );
-    }
-
-    #[test]
-    fn actor_targets_keep_source_expressions_out_of_static_planning() {
-        let entry = EntryDecl {
-            kind: EntryKind::Leader,
-            name: "step".to_string(),
-            params: Vec::new(),
-            consumes: Vec::new(),
-            observes: Vec::new(),
-            spawns: Vec::new(),
-            emits: EmitSpec::None,
-            body: EntryBody::default(),
-            routes: Vec::new(),
-            terminal_route_sets: Vec::new(),
-        };
-        let observe = ObserveDecl {
-            name: "remote".to_string(),
-            covenant_expr: "self.remote_id".to_string(),
-            inputs: vec![ObservedActorDecl {
-                name: "before".to_string(),
-                actor: "Foreign".to_string(),
-                open_state: Some("ForeignState".to_string()),
-            }],
-            outputs: Vec::new(),
-        };
-
-        let source = ActorTarget::source_or_static(&entry, "self.foreign_type");
-        assert_eq!(source.actors().collect::<Vec<_>>(), ["self.foreign_type"]);
-        assert!(source.static_actors().next().is_none());
-
-        let open = ActorTarget::observed(&entry, &observe, &observe.inputs[0]);
-        assert_eq!(open.actors().collect::<Vec<_>>(), ["Foreign"]);
-        assert!(open.static_actors().next().is_none());
-
-        assert_eq!(ActorTarget::static_actor("Foreign").static_actors().collect::<Vec<_>>(), ["Foreign"]);
-    }
-
-    #[test]
-    fn models_named_and_empty_emit_domains() {
-        let entry = EntryDecl {
-            kind: EntryKind::Leader,
-            name: "step".to_string(),
-            params: Vec::new(),
-            consumes: Vec::new(),
-            observes: Vec::new(),
-            spawns: Vec::new(),
-            emits: EmitSpec::Outputs(vec![
-                EmitOutput { name: "first".to_string(), actors: vec!["Pawn".to_string()], auth_index: 0 },
-                EmitOutput { name: "second".to_string(), actors: vec!["Move".to_string()], auth_index: 1 },
-            ]),
-            body: EntryBody::default(),
-            routes: Vec::new(),
-            terminal_route_sets: Vec::new(),
-        };
-        let actor_enums = BTreeMap::from([(
-            "Move".to_string(),
-            ActorEnumInfo {
-                name: "Move".to_string(),
-                state: "Game".to_string(),
-                variants: vec!["Pawn".to_string(), "King".to_string()],
-            },
-        )]);
-
-        let model = EntryModel::new(&entry, &actor_enums, BTreeMap::new());
-        let EmitSpec::Outputs(outputs) = &entry.emits else {
-            panic!("test entry must have named outputs");
-        };
-        let InteractionSource::CurrentOutput(first) = model.current().outputs()[0].source() else {
-            panic!("named output must retain its emit output");
-        };
-        let InteractionSource::CurrentOutput(second) = model.current().outputs()[1].source() else {
-            panic!("named output must retain its emit output");
-        };
-        assert!(std::ptr::eq(first, &outputs[0]));
-        assert!(std::ptr::eq(second, &outputs[1]));
-        assert_eq!(model.current().outputs()[0].handle(), "first");
-        assert_eq!(model.current().outputs()[0].index(), 0);
-        assert_eq!(model.current().outputs()[0].target().actors().collect::<Vec<_>>(), ["Pawn"]);
-        assert_eq!(model.current().outputs()[1].handle(), "second");
-        assert_eq!(model.current().outputs()[1].index(), 1);
-        assert_eq!(model.current().outputs()[1].target().actors().collect::<Vec<_>>(), ["Pawn", "King"]);
-
-        let mut empty_entry = entry.clone();
-        empty_entry.emits = EmitSpec::None;
-        let empty_model = EntryModel::new(&empty_entry, &actor_enums, BTreeMap::new());
-        assert!(empty_model.current().outputs().is_empty());
-    }
 }

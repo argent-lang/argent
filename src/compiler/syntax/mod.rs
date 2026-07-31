@@ -1,8 +1,15 @@
+//! Argent source declarations and the parser infrastructure that builds them.
+//!
+//! Ordinary Sil code remains opaque except for structure Argent must understand.
+
 use std::path::PathBuf;
 
-use crate::language::word;
+pub use self::body::EntryBody;
 
-pub use crate::entry_body::EntryBody;
+pub mod body;
+pub mod lexer;
+pub mod parser;
+pub(crate) mod word;
 
 #[derive(Debug, Clone)]
 pub struct Program {
@@ -215,23 +222,18 @@ impl TypeRef {
             None => self.name.clone(),
         }
     }
-}
 
-impl Program {
-    pub fn states(&self) -> impl Iterator<Item = &StateDecl> {
-        self.modules.iter().flat_map(|module| module.states.iter())
-    }
-
-    pub fn actors(&self) -> impl Iterator<Item = &ActorDecl> {
-        self.modules.iter().flat_map(|module| module.actors.iter())
-    }
-
-    pub fn actor_enums(&self) -> impl Iterator<Item = &ActorEnumDecl> {
-        self.modules.iter().flat_map(|module| module.actor_enums.iter())
-    }
-
-    pub fn apps(&self) -> impl Iterator<Item = &AppDecl> {
-        self.modules.iter().flat_map(|module| module.apps.iter())
+    /// Render the type as written in Argent source.
+    pub fn to_source(&self) -> String {
+        if let Some(state) = &self.actor_state {
+            format!("{}<{state}>", word::ACTOR_TYPE)
+        } else {
+            match self.array {
+                Some(ArrayDim::Dynamic) => format!("{}[]", self.name),
+                Some(ArrayDim::Fixed(len)) => format!("{}[{len}]", self.name),
+                None => self.name.clone(),
+            }
+        }
     }
 }
 
