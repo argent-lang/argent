@@ -46,6 +46,11 @@ if [ "$regen_examples" = true ]; then
     cargo run -- build examples/open_icc/core.ag --out examples/build/open_icc_core
 fi
 
-cargo test --workspace
+if command -v cargo-nextest >/dev/null 2>&1; then
+    cargo nextest run --workspace
+    cargo test --workspace --doc
+else
+    cargo test --workspace
+fi
 cargo clippy --workspace --all-targets -- -D warnings
 git diff --check
