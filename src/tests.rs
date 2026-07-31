@@ -108,6 +108,37 @@ fn compile_inline_returns_artifact_without_a_user_output_dir() {
 }
 
 #[test]
+fn compile_inline_supports_helpers_without_return_types() {
+    let source = r#"
+        fn authorize(int value) {
+            require(value > 0);
+        }
+
+        state CounterState {
+            int count;
+        }
+
+        actor Counter owns CounterState {
+            entry bump(int delta) emits next: Counter {
+                authorize(delta);
+                unrestricted(next.value);
+                CounterState next_state = {
+                    count: count + delta,
+                };
+                become next <- Counter(next_state);
+            }
+        }
+
+        app CounterApp {
+            actor Counter;
+        }
+    "#;
+
+    let artifact = compile_inline("void-helper.ag", source).expect("void helper compiles through Silverscript");
+    assert!(artifact.sil_abi.contract("Counter").is_some());
+}
+
+#[test]
 fn build_inline_writes_outputs_and_returns_artifact() {
     let out_dir = std::env::temp_dir().join(format!("argent-build-inline-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&out_dir);

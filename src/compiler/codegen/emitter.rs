@@ -269,7 +269,8 @@ fn emit_shared_functions(out: &mut String, model: &Model<'_>) {
                 .map(|param| format!("{} {}", lower_type_ref(&param.ty, model), param.name))
                 .collect::<Vec<_>>()
                 .join(", ");
-            out.push_str(&format!("    function {}({}) : {} {{\n", function.name, params, lower_type_ref(&function.return_ty, model)));
+            let return_type = function.return_ty.as_ref().map(|ty| format!(" : {}", lower_type_ref(ty, model))).unwrap_or_default();
+            out.push_str(&format!("    function {}({}){return_type} {{\n", function.name, params));
             out.push_str(&indent_block_body(&function.body, 8));
             out.push_str("    }\n");
         }
