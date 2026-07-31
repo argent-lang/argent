@@ -207,6 +207,9 @@ impl EntryStatementParser<'_> {
     fn parse_sequence(&mut self, end: Option<char>) -> Result<Vec<EntryStatement>> {
         let mut statements = Vec::new();
         while !self.cursor.is_eof() && !end.is_some_and(|symbol| self.cursor.check_symbol(symbol)) {
+            if self.cursor.check_symbol('}') {
+                return Err(self.error("unexpected `}`"));
+            }
             if self.cursor.consume_symbol(';') {
                 continue;
             }
@@ -563,5 +566,12 @@ mod tests {
         .expect_err("a route target without state arguments must not consume the next route");
 
         assert!(err.to_string().contains("expected `(` after become target"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn unexpected_closing_brace_is_rejected() {
+        let err = EntryBody::new("}").expect_err("an unmatched closing brace must be rejected");
+
+        assert!(err.to_string().contains("unexpected `}`"), "unexpected error: {err}");
     }
 }
