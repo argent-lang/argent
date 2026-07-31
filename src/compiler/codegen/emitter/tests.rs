@@ -1839,7 +1839,7 @@ fn icc_asset_lowers_cov_id_co_spend_and_else_if() {
     let out_dir = std::env::temp_dir().join(format!("argent-icc-asset-test-{}", std::process::id()));
     let _ = fs::remove_dir_all(&out_dir);
 
-    let program = crate::compiler::load::load_program(Path::new("examples/icc/kcc20_asset.ag")).expect("ICC asset app loads");
+    let program = crate::compiler::loader::load_program(Path::new("examples/icc/kcc20_asset.ag")).expect("ICC asset app loads");
     emit_build(&program, &out_dir).expect("ICC asset app builds");
 
     let kcc20_sil = fs::read_to_string(out_dir.join("sil/KCC20.sil")).expect("KCC20.sil exists");
@@ -2486,7 +2486,7 @@ fn stones_delegate_reads_use_length_only_template_witnesses() {
     let out_dir = std::env::temp_dir().join(format!("argent-stones-length-witness-test-{}", std::process::id()));
     let _ = fs::remove_dir_all(&out_dir);
 
-    let program = crate::compiler::load::load_program(Path::new("examples/stones/app.ag")).expect("stones example loads");
+    let program = crate::compiler::loader::load_program(Path::new("examples/stones/app.ag")).expect("stones example loads");
     emit_build(&program, &out_dir).expect("stones example builds");
     let player_sil = fs::read_to_string(out_dir.join("sil/Player.sil")).expect("Player.sil exists");
     let league_sil = fs::read_to_string(out_dir.join("sil/League.sil")).expect("League.sil exists");

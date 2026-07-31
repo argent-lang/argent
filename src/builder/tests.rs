@@ -7,7 +7,7 @@ use crate::{
     },
     codec::{CodecError, decode_hex, encode_entry_sig_script},
     compiler::codegen::emit_build_app,
-    compiler::load::load_program,
+    compiler::loader::load_program,
 };
 use std::{
     cell::Cell,

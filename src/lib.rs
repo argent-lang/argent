@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use compiler::{load as loader, syntax as ast};
+use compiler::{loader, syntax as ast};
 
 pub mod artifact;
 pub mod builder;
