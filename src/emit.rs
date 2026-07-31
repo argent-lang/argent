@@ -1697,6 +1697,15 @@ struct BodyLowerer<'a, 'm> {
     current_statement: Option<Span>,
 }
 
+/// Argent metadata restored when a nested Sil lexical scope ends.
+#[derive(Clone)]
+struct BodyScopeSnapshot {
+    types: BTreeMap<String, String>,
+    source_types: BTreeMap<String, String>,
+    materialized_selectors: BTreeSet<String>,
+    materialized_route_locals: BTreeMap<String, String>,
+}
+
 #[derive(Debug)]
 struct OutputValueRef {
     source: String,
@@ -1891,13 +1900,28 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                 EntryStatement::Block { statements, .. } => {
                     push_indent(out, indent);
                     out.push_str("{\n");
-                    self.lower_statements(out, indent + 4, statements)?;
+                    self.lower_scoped_statements(out, indent + 4, statements)?;
                     push_indent(out, indent);
                     out.push_str("}\n");
                 }
             }
         }
         Ok(())
+    }
+
+    fn lower_scoped_statements(&mut self, out: &mut String, indent: usize, statements: &[EntryStatement]) -> Result<()> {
+        let outer = BodyScopeSnapshot {
+            types: self.types.clone(),
+            source_types: self.source_types.clone(),
+            materialized_selectors: self.materialized_selectors.clone(),
+            materialized_route_locals: self.materialized_route_locals.clone(),
+        };
+        let result = self.lower_statements(out, indent, statements);
+        self.types = outer.types;
+        self.source_types = outer.source_types;
+        self.materialized_selectors = outer.materialized_selectors;
+        self.materialized_route_locals = outer.materialized_route_locals;
+        result
     }
 
     fn lower_if(
@@ -1918,7 +1942,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         let condition = self.entry.body.span_text(condition).trim();
         out.push_str(&format!("if ({}) {{\n", self.lower_expr(condition, None, indent)?));
         self.conditional_depth += 1;
-        self.lower_statements(out, indent + 4, then_statements)?;
+        self.lower_scoped_statements(out, indent + 4, then_statements)?;
         self.conditional_depth -= 1;
         push_indent(out, indent);
         out.push('}');
@@ -1935,7 +1959,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             };
             out.push_str(" else {\n");
             self.conditional_depth += 1;
-            self.lower_statements(out, indent + 4, else_statements)?;
+            self.lower_scoped_statements(out, indent + 4, else_statements)?;
             self.conditional_depth -= 1;
             push_indent(out, indent);
             out.push('}');
@@ -1951,8 +1975,8 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
 
         self.conditional_depth += 1;
         match body {
-            EntryStatement::Block { statements, .. } => self.lower_statements(out, indent + 4, statements)?,
-            statement => self.lower_statements(out, indent + 4, std::slice::from_ref(statement))?,
+            EntryStatement::Block { statements, .. } => self.lower_scoped_statements(out, indent + 4, statements)?,
+            statement => self.lower_scoped_statements(out, indent + 4, std::slice::from_ref(statement))?,
         }
         self.conditional_depth -= 1;
 
