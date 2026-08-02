@@ -192,12 +192,16 @@ fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model
         }
     }
     let mut state_names = model.actors.iter().map(|actor| actor.state.clone()).collect::<Vec<_>>();
+    let mut open_physical_states = BTreeSet::new();
     state_names.extend(signature_states.iter().cloned());
     for entry in &current_actor.entries {
         for observe in &entry.observes {
             for observed in observe.inputs.iter().chain(observe.outputs.iter()) {
                 if let Some(state) = observed_open_state_for_decl(current_actor, entry, observe, observed, model)? {
                     state_names.push(state.to_string());
+                    if state != current_actor.state && model.state(&state)?.expansion.is_some() {
+                        open_physical_states.insert(state.to_string());
+                    }
                 } else {
                     state_names.push(model.actor(&observed.actor)?.state.clone());
                 }
@@ -210,9 +214,26 @@ fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model
                 };
                 let state = spawn_target_state(interaction.target(), &output.actor, current_actor, entry, model)?
                     .expect("spawn target checked during model validation");
+                if model.resolve_static_actor_target(interaction.target()).is_none()
+                    && state != current_actor.state
+                    && model.state(&state)?.expansion.is_some()
+                {
+                    open_physical_states.insert(state.clone());
+                }
                 state_names.push(state);
             }
         }
+    }
+
+    let mut state_idx = 0;
+    while state_idx < state_names.len() {
+        let state_name = &state_names[state_idx];
+        if (state_name != &current_actor.state || signature_states.contains(state_name))
+            && let Some(expansion) = model.state(state_name)?.expansion.as_ref()
+        {
+            state_names.extend(expansion.digests.iter().map(|digest| digest.state.clone()));
+        }
+        state_idx += 1;
     }
 
     for state_name in state_names {
@@ -222,11 +243,31 @@ fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model
         if !emitted.insert(state_name.clone()) {
             continue;
         }
-        let state = model.storage_state(&state_name)?;
+        let state = model.state(&state_name)?;
+        let storage_state = model.storage_state(&state_name)?;
         out.push_str(&format!("    struct {state_name} {{\n"));
-        if !state.fields.is_empty() {
+        if !storage_state.fields.is_empty() {
             out.push_str("        // :: user declared fields\n");
-            for field in &state.fields {
+            for field in &storage_state.fields {
+                let ty = state
+                    .expansion
+                    .as_ref()
+                    .and_then(|expansion| expansion.digests.iter().find(|digest| digest.field == field.name))
+                    .map_or_else(|| lower_type_ref(&field.ty, model), |digest| digest.state.clone());
+                out.push_str(&format!("        {ty} {};\n", field.name));
+            }
+        }
+        out.push_str("    }\n");
+    }
+
+    // Source-named expanded structs expose nested authored values. Open actor
+    // state reads need a separate type for their committed digest layout.
+    for state_name in open_physical_states {
+        let storage_state = model.storage_state(&state_name)?;
+        out.push_str(&format!("    struct {} {{\n", hidden_storage_state_type_name(&state_name)));
+        if !storage_state.fields.is_empty() {
+            out.push_str("        // :: user declared fields\n");
+            for field in &storage_state.fields {
                 out.push_str(&format!("        {} {};\n", lower_type_ref(&field.ty, model), field.name));
             }
         }
@@ -1612,11 +1653,30 @@ fn emit_artifact(program: &Program, model: &Model<'_>, actor_sil: &BTreeMap<Stri
                 .collect(),
         })
         .collect::<Vec<_>>();
-    let states = argent_states
-        .iter()
-        .map(|state| StateArtifact {
-            name: state.name.clone(),
-            fields: state.fields.iter().map(|field| FieldArtifact { name: field.name.clone(), ty: field.ty.clone() }).collect(),
+    // Signature structs describe authored values. Each contract's physical
+    // `State` layout is recorded separately in its runtime-state ABI.
+    let states = model
+        .all_states()
+        .map(|state| {
+            let storage_state = model.storage_state(&state.name).expect("state expansions are valid after model validation");
+            StateArtifact {
+                name: state.name.clone(),
+                fields: storage_state
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        let ty = state
+                            .expansion
+                            .as_ref()
+                            .and_then(|expansion| expansion.digests.iter().find(|digest| digest.field == field.name))
+                            .map_or_else(
+                                || type_artifact(&field.ty, model),
+                                |digest| TypeArtifact::Struct { name: digest.state.clone() },
+                            );
+                        FieldArtifact { name: field.name.clone(), ty }
+                    })
+                    .collect(),
+            }
         })
         .collect::<Vec<_>>();
     let state_expansions = model
@@ -2790,7 +2850,9 @@ pub(super) fn entry_param_sil_type(actor: &ActorDecl, ty: &TypeRef, model: &Mode
         (model.storage_state_name(&actor.state), model.storage_state_name(&ty.name)),
         (Ok(actor_storage), Ok(param_storage)) if actor_storage == param_storage
     );
-    if !same_storage || !matches!(route_field_kind_for_actor(&actor.name, model), RouteFieldKind::None) {
+    let authored_layout_is_physical = model.state(&ty.name).is_ok_and(|state| state.expansion.is_none());
+    if !same_storage || !authored_layout_is_physical || !matches!(route_field_kind_for_actor(&actor.name, model), RouteFieldKind::None)
+    {
         return ty.clone();
     }
 
@@ -2925,6 +2987,10 @@ fn hidden_actor_suffix(actor: &str) -> String {
 
 fn hidden_actor_state_type_name(actor: &str) -> String {
     format!("{RESERVED_GENERATED_TYPE_PREFIX}{}State", to_upper_camel(actor))
+}
+
+fn hidden_storage_state_type_name(state: &str) -> String {
+    format!("{RESERVED_GENERATED_TYPE_PREFIX}Physical{}", to_upper_camel(state))
 }
 
 fn hidden_template_init_name(actor: &str) -> String {
@@ -3536,10 +3602,21 @@ pub(super) fn contract_state_type_for_actor(actor: &str, current_actor: &ActorDe
         });
     }
 
-    if matches!(route_field_kind_for_actor(actor, model), RouteFieldKind::None) {
+    if matches!(route_field_kind_for_actor(actor, model), RouteFieldKind::None) && model.state(target_state)?.expansion.is_none() {
         Ok(target_state.to_string())
     } else {
         Ok(hidden_actor_state_type_name(actor))
+    }
+}
+
+/// Select the physical layout used by an open actor with a known state type.
+pub(super) fn contract_state_type_for_dynamic_state(state: &str, current_actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
+    if state == current_actor.state {
+        Ok("State".to_string())
+    } else if model.state(state)?.expansion.is_some() {
+        Ok(hidden_storage_state_type_name(state))
+    } else {
+        Ok(state.to_string())
     }
 }
 
@@ -3551,7 +3628,7 @@ pub(super) fn contract_state_type_for_observed_actor(
     model: &Model<'_>,
 ) -> Result<String> {
     if let Some(target_state) = observed_open_state_for_decl(actor, entry, observe, observed, model)? {
-        if target_state == actor.state { Ok("State".to_string()) } else { Ok(target_state.to_string()) }
+        contract_state_type_for_dynamic_state(&target_state, actor, model)
     } else {
         contract_state_type_for_actor(&observed.actor, actor, model)
     }

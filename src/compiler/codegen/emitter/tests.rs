@@ -1089,6 +1089,82 @@ fn current_state_array_entry_param_uses_source_state_type() {
 }
 
 #[test]
+fn expanded_entry_params_keep_the_authored_nested_layout() {
+    let (actor_sil, artifact) = inline_actor_sil_and_artifact(
+        "expanded-entry-param-layout",
+        r#"
+            state Capsule {
+                int nonce;
+                virtual detail;
+            }
+
+            state Details {
+                int count;
+            }
+
+            state Expanded expands Capsule {
+                detail: Details;
+            }
+
+            actor Vault owns Expanded {
+                entry inspect(Expanded value, Expanded[] values) emits none {
+                    require(value.detail.count >= 0);
+                    require(values.length >= 0);
+                }
+            }
+
+            state ReaderState {
+                int nonce;
+            }
+
+            actor Reader owns ReaderState {
+                entry inspect() consumes {
+                    vault: Vault,
+                } emits next: Reader {
+                    require(vault.nonce >= 0);
+
+                    Expanded candidate = {
+                        nonce: vault.nonce,
+                        detail: Details { count: 0 },
+                    };
+                    require(candidate.detail.count == 0);
+
+                    unrestricted(next.value);
+                    become next <- Reader(self.state);
+                }
+            }
+
+            app ExpandedArgs {
+                actor Vault;
+                actor Reader;
+            }
+            "#,
+    );
+    let sil = &actor_sil["Vault"];
+
+    assert!(sil.contains("struct Expanded {"), "{sil}");
+    assert!(sil.contains("Details detail;"), "{sil}");
+    assert!(sil.contains("Expanded value,\n        Expanded[] values,"), "{sil}");
+    let inspect = artifact.sil_abi.contract("Vault").expect("Vault contract exists").entry("inspect").expect("inspect entry exists");
+    assert_eq!(inspect.params[0].ty, TypeArtifact::Struct { name: "Expanded".to_string() });
+    assert_eq!(
+        inspect.params[1].ty,
+        TypeArtifact::DynamicArray { item: Box::new(TypeArtifact::Struct { name: "Expanded".to_string() }) }
+    );
+    let expanded = artifact.sil_abi.states.iter().find(|state| state.name == "Expanded").expect("Expanded ABI state exists");
+    assert_eq!(
+        expanded.fields[1].ty,
+        TypeArtifact::Struct { name: "Details".to_string() },
+        "expanded entry arguments expose their authored nested field"
+    );
+
+    let reader_sil = &actor_sil["Reader"];
+    assert!(reader_sil.contains("struct Gen__VaultState {"), "{reader_sil}");
+    assert!(reader_sil.contains("byte[32] detail;"), "{reader_sil}");
+    assert!(reader_sil.contains("Gen__VaultState vault = readInputStateWithTemplate("), "{reader_sil}");
+}
+
+#[test]
 fn equivalent_current_state_params_use_physical_state_type() {
     let (actor_sil, artifact) = inline_actor_sil_and_artifact(
         "current-state-dynamic-array-entry-param",

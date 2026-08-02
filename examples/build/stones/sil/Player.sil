@@ -195,10 +195,36 @@ contract Player(
         require(tx.outputs[gen__self_out_output_idx].value == tx.inputs[this.activeInputIndex].value);
         require(tx.outputs[gen__opponent_out_output_idx].value == tx.inputs[gen__opponent_input_idx].value);
         require(tx.outputs[gen__game_output_idx].value > 0);
+        State gen__state_self_out_state = {
+            // :: generated fields
+            gen__player_template: gen__player_template,
+            gen__stones_game_template: gen__stones_game_template,
+            gen__stones_settle_template: gen__stones_settle_template,
+            // :: user declared fields
+            owner: next_self.owner,
+            player_id: next_self.player_id,
+            open_games: next_self.open_games,
+            games: next_self.games,
+            wins: next_self.wins,
+            losses: next_self.losses,
+        };
         // :: become Player
-        validateOutputState(gen__self_out_output_idx, next_self);
+        validateOutputState(gen__self_out_output_idx, gen__state_self_out_state);
+        State gen__state_opponent_out_state = {
+            // :: generated fields
+            gen__player_template: gen__player_template,
+            gen__stones_game_template: gen__stones_game_template,
+            gen__stones_settle_template: gen__stones_settle_template,
+            // :: user declared fields
+            owner: next_opponent.owner,
+            player_id: next_opponent.player_id,
+            open_games: next_opponent.open_games,
+            games: next_opponent.games,
+            wins: next_opponent.wins,
+            losses: next_opponent.losses,
+        };
         // :: become Player
-        validateOutputState(gen__opponent_out_output_idx, next_opponent);
+        validateOutputState(gen__opponent_out_output_idx, gen__state_opponent_out_state);
         Gen__StonesGameState gen__state_game_gen__stones_game_state = {
             // :: generated fields
             gen__player_template: gen__player_template,

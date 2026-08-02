@@ -22,11 +22,17 @@ contract Agent(
         byte[32] species_id;
         byte[32] controller_id;
         byte[32] capabilities_digest;
-        byte[32] strategy;
+        ForagerStrategy strategy;
         int x;
         int y;
         int energy;
         int generation;
+    }
+    struct ForagerStrategy {
+        // :: user declared fields
+        int hunger;
+        int mood;
+        byte[32] target_agent_id;
     }
 
     // :: shared helper functions

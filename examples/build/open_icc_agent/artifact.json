@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "c40494781d5516039a52a51b68f3b1e4f890fa685e50f6891f5579fcc4f809b4",
+  "id": "a9c5cb5a57308beee0a9e649863cb8f07a6940273fc8de4a3f59ea12bed217cd",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -677,8 +677,8 @@
           {
             "name": "strategy",
             "type": {
-              "kind": "fixed_bytes",
-              "len": 32
+              "kind": "struct",
+              "name": "ForagerStrategy"
             }
           },
           {
