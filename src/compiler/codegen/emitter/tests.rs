@@ -170,7 +170,7 @@ fn rejects_explicit_auth_output_index_syntax() {
                     next: Foo at auth[0],
                 } {
                     unrestricted(next.value);
-                    FooState next_state = {
+                    State next_state = {
                         amount: amount + 1,
                     };
 
@@ -933,7 +933,7 @@ fn self_transition_uses_same_template_shortcut() {
             actor Foo owns FooState {
                 entry bump(int amount) emits next: Foo {
                     unrestricted(next.value);
-                    State next_state = {
+                    FooState next_state = {
                         count: count + amount,
                     };
                     become next <- Foo(next_state);
@@ -998,6 +998,175 @@ fn current_state_array_entry_param_uses_contract_state_type() {
         inspect.params[0].ty,
         TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Struct { name: "State".to_string() }), len: 2 }
     );
+}
+
+#[test]
+fn routed_current_state_array_entry_param_uses_source_state_type() {
+    let (actor_sil, artifact) = inline_actor_sil_and_artifact(
+        "current-state-array-entry-param",
+        r#"
+            state NoteState {
+                int nonce;
+            }
+
+            state ArchiveState {
+                int nonce;
+            }
+
+            actor Note owns NoteState {
+                entry choose(NoteState[2] notes) emits next: Note {
+                    unrestricted(next.value);
+                    require(notes[0].nonce < notes[1].nonce);
+                    become next <- Note(notes[1]);
+                }
+
+                entry archive() emits saved: Archive {
+                    unrestricted(saved.value);
+                    become saved <- Archive(ArchiveState { nonce: nonce });
+                }
+            }
+
+            actor Archive owns ArchiveState {
+                entry hold() emits none {
+                    require(nonce >= 0);
+                }
+            }
+
+            app Test {
+                actor Note;
+                actor Archive;
+            }
+            "#,
+    );
+
+    let sil = actor_sil.get("Note").expect("Note emits");
+    assert!(sil.contains("struct NoteState"), "{sil}");
+    assert!(sil.contains("entrypoint function choose(NoteState[2] notes)"), "{sil}");
+    assert!(sil.contains("gen__archive_template: gen__archive_template"), "{sil}");
+    assert!(sil.contains("nonce: notes[1].nonce"), "{sil}");
+
+    let choose = artifact.sil_abi.contract("Note").expect("Note Sil ABI exists").entry("choose").expect("choose entry exists");
+    assert_eq!(
+        choose.params[0].ty,
+        TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Struct { name: "NoteState".to_string() }), len: 2 }
+    );
+}
+
+#[test]
+fn expanded_entry_params_keep_the_authored_nested_layout() {
+    let (actor_sil, artifact) = inline_actor_sil_and_artifact(
+        "expanded-entry-param-layout",
+        r#"
+            state Capsule {
+                int nonce;
+                virtual detail;
+            }
+
+            state Details {
+                int count;
+            }
+
+            state Expanded expands Capsule {
+                detail: Details;
+            }
+
+            actor Vault owns Expanded {
+                entry inspect(Expanded value, Expanded[] values) emits none {
+                    require(value.detail.count >= 0);
+                    require(values.length >= 0);
+                }
+            }
+
+            state ReaderState {
+                int nonce;
+            }
+
+            actor Reader owns ReaderState {
+                entry inspect() consumes {
+                    vault: Vault,
+                } emits next: Reader {
+                    require(vault.nonce >= 0);
+
+                    Expanded candidate = {
+                        nonce: vault.nonce,
+                        detail: Details { count: 0 },
+                    };
+                    require(candidate.detail.count == 0);
+
+                    unrestricted(next.value);
+                    become next <- Reader(self.state);
+                }
+            }
+
+            app ExpandedArgs {
+                actor Vault;
+                actor Reader;
+            }
+            "#,
+    );
+    let sil = &actor_sil["Vault"];
+
+    assert!(sil.contains("struct Expanded {"), "{sil}");
+    assert!(sil.contains("Details detail;"), "{sil}");
+    assert!(sil.contains("Expanded value,\n        Expanded[] values,"), "{sil}");
+    let inspect = artifact.sil_abi.contract("Vault").expect("Vault contract exists").entry("inspect").expect("inspect entry exists");
+    assert_eq!(inspect.params[0].ty, TypeArtifact::Struct { name: "Expanded".to_string() });
+    assert_eq!(
+        inspect.params[1].ty,
+        TypeArtifact::DynamicArray { item: Box::new(TypeArtifact::Struct { name: "Expanded".to_string() }) }
+    );
+    let expanded = artifact.sil_abi.states.iter().find(|state| state.name == "Expanded").expect("Expanded ABI state exists");
+    assert_eq!(
+        expanded.fields[1].ty,
+        TypeArtifact::Struct { name: "Details".to_string() },
+        "expanded entry arguments expose their authored nested field"
+    );
+
+    let reader_sil = &actor_sil["Reader"];
+    assert!(reader_sil.contains("struct Gen__VaultState {"), "{reader_sil}");
+    assert!(reader_sil.contains("byte[32] detail;"), "{reader_sil}");
+    assert!(reader_sil.contains("Gen__VaultState vault = readInputStateWithTemplate("), "{reader_sil}");
+}
+
+#[test]
+fn equivalent_current_state_params_use_physical_state_type() {
+    let (actor_sil, artifact) = inline_actor_sil_and_artifact(
+        "current-state-dynamic-array-entry-param",
+        r#"
+            state NoteState {
+                int nonce;
+            }
+
+            actor Note owns NoteState {
+                entry inspect(NoteState note) emits none {
+                    require(note.nonce >= 0);
+                }
+
+                entry inspect_many(NoteState[] notes) emits none {
+                    require(notes.length > 0);
+                    require(notes[0].nonce >= 0);
+                }
+            }
+
+            app Test {
+                actor Note;
+            }
+            "#,
+    );
+
+    let sil = actor_sil.get("Note").expect("Note emits");
+    assert!(!sil.contains("struct NoteState"), "{sil}");
+    assert!(sil.contains("entrypoint function inspect(State note)"), "{sil}");
+    assert!(sil.contains("entrypoint function inspect_many(State[] notes)"), "{sil}");
+
+    let note = artifact.sil_abi.contract("Note").expect("Note Sil ABI exists");
+    assert_eq!(note.entry("inspect").expect("inspect entry exists").params[0].ty, TypeArtifact::Struct { name: "State".to_string() });
+    assert_eq!(
+        note.entry("inspect_many").expect("inspect_many entry exists").params[0].ty,
+        TypeArtifact::DynamicArray { item: Box::new(TypeArtifact::Struct { name: "State".to_string() }) }
+    );
+    assert_eq!(artifact.argent.actors.iter().find(|actor| actor.name == "Note").expect("Note actor exists").state, "NoteState");
+    assert!(artifact.argent.states.iter().any(|state| state.name == "NoteState"));
 }
 
 #[test]
@@ -1882,7 +2051,9 @@ fn icc_asset_lowers_cov_id_co_spend_and_else_if() {
 
     let proxy_sil = fs::read_to_string(out_dir.join("sil/MinterProxy.sil")).expect("MinterProxy.sil exists");
     assert!(proxy_sil.contains("byte[32] controller_id = init_controller_id;"), "{proxy_sil}");
-    assert!(proxy_sil.contains("entrypoint function mint(\n        State next_proxy,"), "{proxy_sil}");
+    assert!(proxy_sil.contains("entrypoint function mint(\n        MinterProxyState next_proxy,"), "{proxy_sil}");
+    assert!(proxy_sil.contains("gen__kcc20_template: gen__kcc20_template"), "{proxy_sil}");
+    assert!(proxy_sil.contains("controller_id: next_proxy.controller_id"), "{proxy_sil}");
     assert!(proxy_sil.contains("// :: co-spent with controller_id"), "{proxy_sil}");
     assert!(proxy_sil.contains("require(OpCovInputCount(controller_id) > 0);"), "{proxy_sil}");
 
@@ -1891,7 +2062,7 @@ fn icc_asset_lowers_cov_id_co_spend_and_else_if() {
     let proxy_entry =
         artifact.sil_abi.contract("MinterProxy").expect("MinterProxy ABI exists").entry("mint").expect("mint ABI exists");
     assert_eq!(proxy_entry.params[0].name, "next_proxy");
-    assert_eq!(proxy_entry.params[0].ty, TypeArtifact::Struct { name: "State".to_string() });
+    assert_eq!(proxy_entry.params[0].ty, TypeArtifact::Struct { name: "MinterProxyState".to_string() });
 
     let _ = fs::remove_dir_all(out_dir);
 }

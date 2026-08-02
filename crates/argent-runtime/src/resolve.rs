@@ -12,6 +12,7 @@ use kaspa_consensus_core::{
     tx::{CovenantBinding, MutableTransaction, ScriptPublicKey, Transaction, TransactionInput, TransactionOutput},
 };
 use kaspa_txscript::{pay_to_script_hash_script, pay_to_script_hash_signature_script_with_flags};
+use silverscript_abi::encode_entry_sig_script;
 
 use crate::{
     ActorInput, ActorPath, Artifact, ArtifactValue, BuilderError, BuilderResult, ContextInput, ContextOutput, ContractRef, EntryArgs,
@@ -412,7 +413,6 @@ impl<'artifact> TxBuilder<'artifact> {
                 input.artifact_entry,
                 source_args,
             )?;
-            let values = self.runtime_entry_args(input.artifact, input.contract, input.sil_entry, input.artifact_entry, values)?;
             input.args = Some(ResolvedEntryArgs { values, template_selectors });
         }
 
@@ -658,13 +658,7 @@ impl<'artifact> TxBuilder<'artifact> {
                             .iter()
                             .cloned(),
                     );
-                    let abi_script = self.encode_runtime_entry_sig_script(
-                        input.artifact,
-                        input.contract,
-                        input.sil_entry,
-                        input.artifact_entry,
-                        &args,
-                    )?;
+                    let abi_script = encode_entry_sig_script(&input.artifact.sil_abi, input.contract, input.sil_entry, &args)?;
                     pay_to_script_hash_signature_script_with_flags(
                         self.redeem_script_for_contract(input.contract_ref(), input.source.state.clone())?,
                         abi_script,
@@ -1359,12 +1353,15 @@ mod tests {
     }
 
     #[test]
-    fn context_args_lower_source_state_values_to_runtime_state() {
+    fn context_args_preserve_source_state_values() {
         let artifact = artifact_with_entry(
             "primary",
             "Counter",
             "replace",
-            vec![argent_artifact::ParamArtifact { name: "next".to_string(), ty: TypeArtifact::Struct { name: "State".to_string() } }],
+            vec![argent_artifact::ParamArtifact {
+                name: "next".to_string(),
+                ty: TypeArtifact::Struct { name: "CounterState".to_string() },
+            }],
             Vec::new(),
         );
         let builder = TxBuilder::new(&artifact).expect("artifact builds");
