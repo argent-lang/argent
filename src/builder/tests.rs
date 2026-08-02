@@ -2,8 +2,8 @@ use super::*;
 use crate::{
     artifact::{
         ActorTargetArtifact, CompiledTemplateArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, ObservedTargetArtifact,
-        SilAbiVerificationError, SilContractArtifact, TemplatePlanError, TypeArtifact, route_template_proof_receipt_id,
-        route_template_table_receipt_id,
+        SilAbiVerificationError, SilContractArtifact, TemplatePlanError, TypeArtifact, fixed_runtime_context_value,
+        route_template_proof_receipt_id, route_template_table_receipt_id,
     },
     codec::{CodecError, decode_hex, encode_entry_sig_script},
     compiler::codegen::emit_build_app,
@@ -29,7 +29,9 @@ use kaspa_consensus_core::{
         TransactionOutput, UtxoEntry,
     },
 };
-use kaspa_txscript::{opcodes::codes::OpTrue, parse_script, pay_to_script_hash_signature_script_with_flags};
+use kaspa_txscript::{
+    opcodes::codes::OpTrue, parse_script, pay_to_script_hash_script, pay_to_script_hash_signature_script_with_flags,
+};
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 
 static ARTIFACT_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -91,6 +93,100 @@ fn route_family_table_bytes(artifact: &Artifact, family_id: &str) -> Vec<u8> {
         bytes.extend_from_slice(&decode_hex(&contract.compiled.template_hash_hex).expect("template hash decodes"));
     }
     bytes
+}
+
+fn physical_state_with_fixed_route_fields(
+    artifact: &Artifact,
+    actor: &str,
+    mut source_state: BTreeMap<String, ArtifactValue>,
+) -> BTreeMap<String, ArtifactValue> {
+    let contract = artifact.sil_abi.contract(actor).unwrap_or_else(|| panic!("missing contract `{actor}`"));
+    let runtime_plan = artifact
+        .argent
+        .template_plan
+        .runtime_states
+        .iter()
+        .find(|plan| plan.contract == actor)
+        .unwrap_or_else(|| panic!("missing runtime state plan for `{actor}`"));
+    let mut physical = BTreeMap::new();
+    for field in &contract.runtime_state.fields {
+        let value = if let Some(role) = runtime_plan.field_roles.iter().find(|role| role.name == field.name) {
+            ArtifactValue::Bytes(
+                fixed_runtime_context_value(&artifact.argent.template_plan, runtime_plan, role)
+                    .unwrap_or_else(|err| panic!("fixed route field `{}` resolves: {err}", field.name)),
+            )
+        } else {
+            source_state.remove(&field.name).unwrap_or_else(|| panic!("missing authored field `{}`", field.name))
+        };
+        physical.insert(field.name.clone(), value);
+    }
+    assert!(source_state.is_empty(), "test source state contains fields outside `{actor}`");
+    physical
+}
+
+fn script_public_key_for_physical_state(
+    contract: &SilContractArtifact,
+    physical_state: &BTreeMap<String, ArtifactValue>,
+) -> ScriptPublicKey {
+    let state_script =
+        crate::codec::encode_runtime_state_script(&contract.runtime_state, physical_state).expect("physical runtime state encodes");
+    let compiled_script = decode_hex(&contract.compiled.script_hex).expect("compiled script decodes");
+    let (prefix, _, suffix) = contract.compiled.script_parts(&compiled_script).expect("compiled state span is valid");
+    let mut script = prefix.to_vec();
+    script.extend_from_slice(&state_script);
+    script.extend_from_slice(suffix);
+    pay_to_script_hash_script(&script)
+}
+
+fn assert_route_field_mutations_fail(
+    artifact: &Artifact,
+    tx: &Transaction,
+    entries: &[UtxoEntry],
+    input_idx: usize,
+    output_idx: usize,
+    output_actor: &str,
+    output_state: BTreeMap<String, ArtifactValue>,
+) {
+    execute_input_with_covenants(tx, entries.to_vec(), input_idx).expect("unmodified route transition executes");
+
+    for (field, script_public_key) in mutated_route_field_script_public_keys(artifact, output_actor, output_state) {
+        let mut malicious = tx.clone();
+        malicious.outputs[output_idx].script_public_key = script_public_key;
+        assert!(
+            execute_input_with_covenants(&malicious, entries.to_vec(), input_idx).is_err(),
+            "`{output_actor}` route field `{field}` must be authenticated by input {input_idx}",
+        );
+    }
+}
+
+fn mutated_route_field_script_public_keys(
+    artifact: &Artifact,
+    actor: &str,
+    source_state: BTreeMap<String, ArtifactValue>,
+) -> Vec<(String, ScriptPublicKey)> {
+    let contract = artifact.sil_abi.contract(actor).unwrap_or_else(|| panic!("missing contract `{actor}`"));
+    let runtime_plan = artifact
+        .argent
+        .template_plan
+        .runtime_states
+        .iter()
+        .find(|plan| plan.contract == actor)
+        .unwrap_or_else(|| panic!("missing runtime state plan for `{actor}`"));
+    assert!(!runtime_plan.field_roles.is_empty(), "security case must have generated route fields");
+    let physical = physical_state_with_fixed_route_fields(artifact, actor, source_state);
+
+    runtime_plan
+        .field_roles
+        .iter()
+        .map(|role| {
+            let mut mutated = physical.clone();
+            let ArtifactValue::Bytes(bytes) = mutated.get_mut(&role.name).expect("generated field exists") else {
+                panic!("generated route field `{}` is not bytes", role.name);
+            };
+            bytes[0] ^= 1;
+            (role.name.clone(), script_public_key_for_physical_state(contract, &mutated))
+        })
+        .collect()
 }
 
 #[test]
@@ -968,10 +1064,19 @@ fn context_executes_static_observation_between_same_app_covenants() {
                     0,
                 )
                 .actor_output("Local", local_next, CovenantBinding::new(0, local_covenant_id), 2_000)
-                .actor_output("Foreign", foreign_state, CovenantBinding::new(1, foreign_covenant_id), 1_000),
+                .actor_output("Foreign", foreign_state.clone(), CovenantBinding::new(1, foreign_covenant_id), 1_000),
         )
         .expect("same-app static observation builds");
 
+    assert_route_field_mutations_fail(
+        &artifact,
+        &transaction,
+        &[local_utxo.clone(), foreign_utxo.clone()],
+        0,
+        1,
+        "Foreign",
+        foreign_state,
+    );
     execute_transaction_with_covenants(&mut transaction, vec![local_utxo, foreign_utxo])
         .expect("same-app static observation executes");
 }
@@ -1189,6 +1294,17 @@ fn context_spawns_a_static_actor_without_an_actor_type_value() {
     let transaction = builder.build(&context).expect("static actor spawn executes");
     let child_id = covenant_id(launcher_outpoint, [(1, &transaction.outputs[1])].into_iter());
     assert_eq!(transaction.outputs[1].covenant, Some(CovenantBinding::new(0, child_id)));
+
+    for (field, script_public_key) in mutated_route_field_script_public_keys(&artifact, "Child", state! { amount: 42 }) {
+        let mut malicious = transaction.clone();
+        malicious.outputs[1].script_public_key = script_public_key;
+        let malicious_child_id = covenant_id(launcher_outpoint, [(1, &malicious.outputs[1])].into_iter());
+        malicious.outputs[1].covenant = Some(CovenantBinding::new(0, malicious_child_id));
+        assert!(
+            execute_input_with_covenants(&malicious, vec![launcher_utxo.clone(), child_utxo.clone()], 0).is_err(),
+            "spawned Child route field `{field}` must be authenticated by Launcher",
+        );
+    }
 
     let wrong_actor = TxContext::new()
         .actor_input("Launcher", launcher_state, EntryCall::new("launch").args(args![32]), launcher_outpoint, launcher_utxo, 0)
@@ -2000,6 +2116,99 @@ fn toy_chess_builder_redeems_route_family_and_worker_paths() {
         input_value,
     );
     assert!(builder.build(&wrong_worker).is_err(), "choose_pawn must reject an output using the wrong worker template");
+}
+
+#[test]
+fn routed_outputs_authenticate_every_generated_state_field() {
+    let artifact = example_artifact("examples/toy_chess/app.ag", "route-field-security-matrix");
+    let builder = TxBuilder::new(&artifact).expect("builder accepts toy chess artifact");
+    let covenant_id = Hash::from_bytes([0x73; 32]);
+    let input_value = 1_000;
+
+    // Direct fields plus a family digest: League -> Player.
+    let league_state = state! { nonce: 7 };
+    let player_state = toy_player_state(8);
+    let league_utxo =
+        builder.covenant_utxo("League", league_state.clone(), input_value, 0, false, Some(covenant_id)).expect("League UTXO builds");
+    let league_tx = builder
+        .build(
+            &TxContext::new()
+                .actor_input(
+                    "League",
+                    league_state,
+                    "register",
+                    TransactionOutpoint::new(TransactionId::from_bytes([0x74; 32]), 0),
+                    league_utxo.clone(),
+                    0,
+                )
+                .actor_output("Player", player_state.clone(), CovenantBinding::new(0, covenant_id), input_value),
+        )
+        .expect("League can route to Player");
+    assert_route_field_mutations_fail(&artifact, &league_tx, &[league_utxo], 0, 0, "Player", player_state.clone());
+
+    // Opening the family digest into its table: Player -> Mux.
+    let mux_state = board_state(8, 0);
+    let player_utxo =
+        builder.covenant_utxo("Player", player_state.clone(), input_value, 0, false, Some(covenant_id)).expect("Player UTXO builds");
+    let player_tx = builder
+        .build(
+            &TxContext::new()
+                .actor_input(
+                    "Player",
+                    player_state,
+                    "enter_mux",
+                    TransactionOutpoint::new(TransactionId::from_bytes([0x75; 32]), 0),
+                    player_utxo.clone(),
+                    0,
+                )
+                .actor_output("Mux", mux_state.clone(), CovenantBinding::new(0, covenant_id), input_value),
+        )
+        .expect("Player can open the Mux route family");
+    assert_route_field_mutations_fail(&artifact, &player_tx, &[player_utxo], 0, 0, "Mux", mux_state.clone());
+
+    // Retaining the open table inside the family: Mux -> Pawn.
+    let pawn_state = board_state(8, 1);
+    let mux_utxo = builder.covenant_utxo("Mux", mux_state.clone(), input_value, 0, false, Some(covenant_id)).expect("Mux UTXO builds");
+    let mux_tx = builder
+        .build(
+            &TxContext::new()
+                .actor_input(
+                    "Mux",
+                    mux_state,
+                    "choose_pawn",
+                    TransactionOutpoint::new(TransactionId::from_bytes([0x76; 32]), 0),
+                    mux_utxo.clone(),
+                    0,
+                )
+                .actor_output("Pawn", pawn_state.clone(), CovenantBinding::new(0, covenant_id), input_value),
+        )
+        .expect("Mux can route to Pawn");
+    assert_route_field_mutations_fail(&artifact, &mux_tx, &[mux_utxo], 0, 0, "Pawn", pawn_state);
+
+    // Packing the open table back into a family digest: Mux -> Archive.
+    let route_artifact = example_artifact("examples/route_state_bodies.ag", "route-field-pack-security");
+    let route_builder = TxBuilder::new(&route_artifact).expect("builder accepts route-state example");
+    let route_covenant_id = Hash::from_bytes([0x77; 32]);
+    let mux_state = state! { ply: 4 };
+    let archive_state = state! { final_ply: 4 };
+    let mux_utxo = route_builder
+        .covenant_utxo("Mux", mux_state.clone(), input_value, 0, false, Some(route_covenant_id))
+        .expect("route-state Mux UTXO builds");
+    let archive_tx = route_builder
+        .build(
+            &TxContext::new()
+                .actor_input(
+                    "Mux",
+                    mux_state,
+                    "archive",
+                    TransactionOutpoint::new(TransactionId::from_bytes([0x78; 32]), 0),
+                    mux_utxo.clone(),
+                    0,
+                )
+                .actor_output("Archive", archive_state.clone(), CovenantBinding::new(0, route_covenant_id), input_value),
+        )
+        .expect("Mux can pack its route family into Archive");
+    assert_route_field_mutations_fail(&route_artifact, &archive_tx, &[mux_utxo], 0, 0, "Archive", archive_state);
 }
 
 #[test]
