@@ -185,7 +185,7 @@ fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model
         }
     }
     let mut state_names = model.actors.iter().map(|actor| actor.state.clone()).collect::<Vec<_>>();
-    let mut open_physical_states = BTreeSet::new();
+    let mut physical_states = BTreeSet::new();
     state_names.extend(signature_states.iter().cloned());
     for entry in &current_actor.entries {
         for observe in &entry.observes {
@@ -193,7 +193,7 @@ fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model
                 if let Some(state) = observed_open_state_for_decl(current_actor, entry, observe, observed, model)? {
                     state_names.push(state.to_string());
                     if state != current_actor.state && model.state(&state)?.expansion.is_some() {
-                        open_physical_states.insert(state.to_string());
+                        physical_states.insert(state.to_string());
                     }
                 } else {
                     state_names.push(model.actor(&observed.actor)?.state.clone());
@@ -211,7 +211,7 @@ fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model
                     && state != current_actor.state
                     && model.state(&state)?.expansion.is_some()
                 {
-                    open_physical_states.insert(state.clone());
+                    physical_states.insert(state.clone());
                 }
                 state_names.push(state);
             }
@@ -253,20 +253,6 @@ fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model
         out.push_str("    }\n");
     }
 
-    // Source-named expanded structs expose nested authored values. Open actor
-    // state reads need a separate type for their committed digest layout.
-    for state_name in open_physical_states {
-        let storage_state = model.storage_state(&state_name)?;
-        out.push_str(&format!("    struct {} {{\n", hidden_storage_state_type_name(&state_name)));
-        if !storage_state.fields.is_empty() {
-            out.push_str("        // :: user declared fields\n");
-            for field in &storage_state.fields {
-                out.push_str(&format!("        {} {};\n", lower_type_ref(&field.ty, model), field.name));
-            }
-        }
-        out.push_str("    }\n");
-    }
-
     let mut referenced_actors = BTreeSet::new();
     for entry in &current_actor.entries {
         referenced_actors.extend(entry.consumes.iter().map(|consume| consume.actor.clone()));
@@ -283,10 +269,18 @@ fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model
         }
     }
     for actor_name in referenced_actors {
-        let Some(actor) = model.actors_by_name.get(&actor_name) else {
+        let Some(target) = model.static_actor_target(&actor_name) else {
             continue;
         };
-        if contract_state_type_for_actor(&actor.name, current_actor, model)? != hidden_actor_state_type_name(&actor.name) {
+        let state_type = contract_state_type_for_actor(&actor_name, current_actor, model)?;
+        if state_type == hidden_storage_state_type_name(target.state()) {
+            physical_states.insert(target.state().to_string());
+            continue;
+        }
+        let Some(actor) = target.in_app_actor() else {
+            continue;
+        };
+        if state_type != hidden_actor_state_type_name(&actor.name) {
             continue;
         }
         let state = model.storage_state(&actor.state)?;
@@ -300,6 +294,19 @@ fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model
         if !state.fields.is_empty() {
             out.push_str("        // :: user declared fields\n");
             for field in &state.fields {
+                out.push_str(&format!("        {} {};\n", lower_type_ref(&field.ty, model), field.name));
+            }
+        }
+        out.push_str("    }\n");
+    }
+    // Expanded source structs expose nested authored values. Physical states
+    // without app-local route context use one state-qualified digest layout.
+    for state_name in physical_states {
+        let storage_state = model.storage_state(&state_name)?;
+        out.push_str(&format!("    struct {} {{\n", hidden_storage_state_type_name(&state_name)));
+        if !storage_state.fields.is_empty() {
+            out.push_str("        // :: user declared fields\n");
+            for field in &storage_state.fields {
                 out.push_str(&format!("        {} {};\n", lower_type_ref(&field.ty, model), field.name));
             }
         }
@@ -3583,10 +3590,14 @@ pub(super) fn hidden_output_idx_name(output: &str) -> String {
 
 /// Select the concrete state layout carried by a known actor template.
 ///
-/// Named state structs remain route-neutral; generated route context uses an
-/// actor-qualified struct unless the target shares the current actor's layout.
+/// Named state structs remain authored. App-local route context uses an
+/// actor-qualified physical struct; linked expanded states need only their
+/// state-qualified digest layout because their route context is in the prefix.
 pub(super) fn contract_state_type_for_actor(actor: &str, current_actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
     let target_state = model.actor(actor)?.state.as_str();
+    if model.linked_actor(actor).is_some() && model.state(target_state)?.expansion.is_some() {
+        return Ok(hidden_storage_state_type_name(target_state));
+    }
     if target_state == current_actor.state {
         return Ok(if route_field_kind_for_actor(actor, model) == route_field_kind_for_actor(&current_actor.name, model) {
             "State".to_string()

@@ -677,6 +677,104 @@ app RootApp {
 }
 
 #[test]
+fn linked_expanded_actor_uses_a_state_qualified_physical_layout() {
+    let temp = std::env::temp_dir().join(format!("argent-linked-expanded-state-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp);
+    std::fs::create_dir_all(&temp).expect("temp dir created");
+
+    std::fs::write(
+        temp.join("child.ag"),
+        r#"
+state ChildStorage {
+    int amount;
+    virtual detail;
+}
+
+state ChildDetail {
+    int count;
+}
+
+state ChildState expands ChildStorage {
+    detail: ChildDetail;
+}
+
+actor Child owns ChildState {
+    entry hold() emits none {
+        require(amount >= 0);
+    }
+}
+
+app ChildApp {
+    actor Child;
+}
+"#,
+    )
+    .expect("child source written");
+    std::fs::write(
+        temp.join("launcher.ag"),
+        r#"
+import app ChildApp from "./child.ag";
+
+state LauncherState {
+    int launches;
+}
+
+actor Launcher owns LauncherState {
+    entry launch(cov_id child_id)
+    observes child by child_id {
+        inputs {
+            before: ChildApp::Child,
+        }
+        outputs {
+            after: ChildApp::Child,
+        }
+    }
+    spawns children by children_id {
+        outputs {
+            child: ChildApp::Child,
+        }
+    }
+    emits next: Launcher {
+        ChildState child_state = {
+            amount: child.inputs.before.state.amount + 1,
+            detail: ChildDetail { count: 1 },
+        };
+
+        require child.outputs become {
+            after <- ChildApp::Child(child_state),
+        };
+        unrestricted(children.outputs.child.value);
+        require children.outputs become {
+            child <- ChildApp::Child(child_state),
+        };
+
+        LauncherState next_state = {
+            launches: launches + 1,
+        };
+        unrestricted(next.value);
+        become next <- Launcher(next_state);
+    }
+}
+
+app LauncherApp {
+    actor Launcher;
+}
+"#,
+    )
+    .expect("launcher source written");
+
+    let out_dir = temp.join("build");
+    let compiled = build_file_app_bundle(temp.join("launcher.ag"), "LauncherApp", &out_dir)
+        .expect("linked expanded observation and spawn compile");
+    let sil = std::fs::read_to_string(out_dir.join("sil/Launcher.sil")).expect("Launcher Sil exists");
+    assert!(sil.contains("struct Gen__PhysicalChildState"), "{sil}");
+    assert!(!sil.contains("Gen__ChildApp::ChildState"), "{sil}");
+    assert!(compiled.primary().sil_abi.contract("Launcher").is_some());
+
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
 fn module_import_links_qualified_app_actors_and_shares_constants() {
     let temp = std::env::temp_dir().join(format!("argent-build-module-app-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&temp);
