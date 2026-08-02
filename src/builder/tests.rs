@@ -347,6 +347,143 @@ fn context_executes_dynamic_byte_array_sigscript_arguments_at_varying_lengths() 
 }
 
 #[test]
+fn context_executes_source_state_arguments_without_exposing_generated_fields() {
+    let artifact = inline_artifact(
+        "context-source-state-arguments",
+        r#"
+            state NoteState {
+                int nonce;
+            }
+
+            state ArchiveState {
+                int nonce;
+            }
+
+            actor Note owns NoteState {
+                entry choose_scalar(NoteState note) emits next: Note {
+                    unrestricted(next.value);
+                    become next <- Note(note);
+                }
+
+                entry choose_fixed(NoteState[2] notes) emits next: Note {
+                    unrestricted(next.value);
+                    require(notes[0].nonce < notes[1].nonce);
+                    become next <- Note(notes[1]);
+                }
+
+                entry choose_dynamic(NoteState[] notes) emits next: Note {
+                    unrestricted(next.value);
+                    require(notes.length == 3);
+                    become next <- Note(notes[notes.length - 1]);
+                }
+
+                entry archive() emits saved: Archive {
+                    unrestricted(saved.value);
+                    ArchiveState archived = {
+                        nonce: nonce,
+                    };
+                    become saved <- Archive(archived);
+                }
+            }
+
+            actor Archive owns ArchiveState {
+                entry hold() emits none {
+                    require(nonce >= 0);
+                }
+            }
+
+            app NoteApp {
+                actor Note;
+                actor Archive;
+            }
+            "#,
+    );
+    assert!(
+        artifact
+            .sil_abi
+            .contract("Note")
+            .expect("Note contract exists")
+            .runtime_state
+            .fields
+            .iter()
+            .any(|field| field.name == "gen__archive_template"),
+        "the runtime test must exercise a current state with compiler-generated fields"
+    );
+    let builder = TxBuilder::new(&artifact).expect("builder accepts source-state parameters");
+    let covenant_id = Hash::from_bytes([0x45; 32]);
+    let input_value = 1_000;
+    let initial = state! { nonce: 0 };
+    let state_array =
+        |nonces: &[i64]| ArtifactValue::Array(nonces.iter().map(|nonce| ArtifactValue::Object(state! { nonce: *nonce })).collect());
+
+    let scalar_utxo =
+        builder.covenant_utxo("Note", initial.clone(), input_value, 0, false, Some(covenant_id)).expect("scalar Note UTXO builds");
+    let scalar = TxContext::new()
+        .actor_input(
+            "Note",
+            initial.clone(),
+            EntryCall::new("choose_scalar").args(args![state! { nonce: 4 }]),
+            TransactionOutpoint::new(TransactionId::from_bytes([0x48; 32]), 0),
+            scalar_utxo,
+            0,
+        )
+        .actor_output("Note", state! { nonce: 4 }, CovenantBinding::new(0, covenant_id), input_value);
+    builder.build(&scalar).expect("scalar current-state argument executes");
+
+    let explicit_hidden_utxo = builder
+        .covenant_utxo("Note", initial.clone(), input_value, 0, false, Some(covenant_id))
+        .expect("explicit-hidden-field Note UTXO builds");
+    let explicit_hidden = TxContext::new()
+        .actor_input(
+            "Note",
+            initial.clone(),
+            EntryCall::new("choose_scalar").args(args![state! {
+                nonce: 4,
+                gen__archive_template: vec![0; 32],
+            }]),
+            TransactionOutpoint::new(TransactionId::from_bytes([0x49; 32]), 0),
+            explicit_hidden_utxo,
+            0,
+        )
+        .actor_output("Note", state! { nonce: 4 }, CovenantBinding::new(0, covenant_id), input_value);
+    let err = builder.build(&explicit_hidden).expect_err("entry arguments must not accept generated state fields");
+    assert!(
+        matches!(err, BuilderError::Codec(CodecError::UnknownField(ref field)) if field == "gen__archive_template"),
+        "unexpected error: {err}"
+    );
+
+    let fixed_utxo = builder
+        .covenant_utxo("Note", initial.clone(), input_value, 0, false, Some(covenant_id))
+        .expect("fixed-array Note UTXO builds");
+    let fixed = TxContext::new()
+        .actor_input(
+            "Note",
+            initial.clone(),
+            EntryCall::new("choose_fixed").args(args![state_array(&[3, 7])]),
+            TransactionOutpoint::new(TransactionId::from_bytes([0x46; 32]), 0),
+            fixed_utxo,
+            0,
+        )
+        .actor_output("Note", state! { nonce: 7 }, CovenantBinding::new(0, covenant_id), input_value);
+    builder.build(&fixed).expect("fixed current-state array argument executes");
+
+    let dynamic_utxo = builder
+        .covenant_utxo("Note", initial.clone(), input_value, 0, false, Some(covenant_id))
+        .expect("dynamic-array Note UTXO builds");
+    let dynamic = TxContext::new()
+        .actor_input(
+            "Note",
+            initial,
+            EntryCall::new("choose_dynamic").args(args![state_array(&[2, 5, 9])]),
+            TransactionOutpoint::new(TransactionId::from_bytes([0x47; 32]), 0),
+            dynamic_utxo,
+            0,
+        )
+        .actor_output("Note", state! { nonce: 9 }, CovenantBinding::new(0, covenant_id), input_value);
+    builder.build(&dynamic).expect("dynamic current-state array argument executes");
+}
+
+#[test]
 fn context_executes_and_pins_invocation_uid() {
     let artifact = inline_artifact(
         "context-invocation-uid",
@@ -2083,7 +2220,7 @@ fn same_template_shortcut_redeems_self_transition_and_rejects_changed_template()
             actor Foo owns FooState {
                 entry bump(int amount) emits next: Foo {
                     unrestricted(next.value);
-                    State next_state = {
+                    FooState next_state = {
                         count: count + amount,
                     };
                     become next <- Foo(next_state);

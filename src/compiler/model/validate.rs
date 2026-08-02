@@ -3,10 +3,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::compiler::naming::to_snake;
-use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX};
+use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, Token, TokenKind, lex};
 use crate::compiler::syntax::word;
 use crate::compiler::syntax::{
-    ActorDecl, ArrayDim, EmitOutput, EmitSpec, EntryDecl, EntryKind, ObserveDecl, ObservedActorDecl, RouteCall,
+    ActorDecl, ArrayDim, EmitOutput, EmitSpec, EntryDecl, EntryKind, ObserveDecl, ObservedActorDecl, RouteCall, TypeRef,
 };
 use crate::error::{ArgentError, Result};
 
@@ -162,21 +162,31 @@ impl Model<'_> {
         reject_reserved_identifier(word::APP, &self.app_name)?;
         for ct in &self.consts {
             reject_reserved_identifier("constant", &ct.name)?;
+            reject_reserved_type(&format!("constant `{}`", ct.name), &ct.ty)?;
         }
         for function in &self.functions {
             reject_reserved_function_identifier(&function.name)?;
             for param in &function.params {
                 reject_reserved_identifier(&format!("function `{}` parameter", function.name), &param.name)?;
+                reject_reserved_type(&format!("function `{}` parameter `{}`", function.name, param.name), &param.ty)?;
             }
+            if let Some(return_ty) = &function.return_ty {
+                reject_reserved_type(&format!("function `{}` return", function.name), return_ty)?;
+            }
+            let tokens = lex(&function.body)?;
+            reject_reserved_state_tokens(&format!("function `{}` body", function.name), &tokens)?;
         }
         for state in self.states.values() {
             reject_reserved_identifier(word::STATE, &state.name)?;
             for field in &state.fields {
                 reject_reserved_identifier(&format!("state `{}` field", state.name), &field.name)?;
+                reject_reserved_type(&format!("state `{}` field `{}`", state.name, field.name), &field.ty)?;
             }
             if let Some(expansion) = &state.expansion {
+                reject_reserved_state_type(&format!("state `{}` expansion base", state.name), &expansion.base)?;
                 for digest in &expansion.digests {
                     reject_reserved_identifier(&format!("state `{}` expanded digest field", state.name), &digest.field)?;
+                    reject_reserved_state_type(&format!("state `{}` expanded digest `{}`", state.name, digest.field), &digest.state)?;
                 }
             }
         }
@@ -189,6 +199,7 @@ impl Model<'_> {
                 reject_reserved_identifier(&format!("entry `{}::{}`", actor.name, entry.name), &entry.name)?;
                 for param in &entry.params {
                     reject_reserved_identifier(&format!("entry `{}::{}` parameter", actor.name, entry.name), &param.name)?;
+                    reject_reserved_type(&format!("entry `{}::{}` parameter `{}`", actor.name, entry.name, param.name), &param.ty)?;
                 }
                 for consume in &entry.consumes {
                     reject_reserved_identifier(&format!("entry `{}::{}` consume handle", actor.name, entry.name), &consume.name)?;
@@ -200,6 +211,15 @@ impl Model<'_> {
                             &format!("entry `{}::{}` observe `{}` input handle", actor.name, entry.name, observe.name),
                             &observed.name,
                         )?;
+                        if let Some(state) = &observed.open_state {
+                            reject_reserved_state_type(
+                                &format!(
+                                    "entry `{}::{}` observe `{}` open input `{}`",
+                                    actor.name, entry.name, observe.name, observed.name
+                                ),
+                                state,
+                            )?;
+                        }
                     }
                     for observed in &observe.outputs {
                         reject_reserved_identifier(
@@ -229,6 +249,7 @@ impl Model<'_> {
                 for route in &entry.routes {
                     reject_reserved_identifier(&format!("entry `{}::{}` route output handle", actor.name, entry.name), &route.output)?;
                 }
+                reject_reserved_state_tokens(&format!("entry `{}::{}` body", actor.name, entry.name), entry.body.tokens())?;
             }
         }
         Ok(())
@@ -620,6 +641,32 @@ fn reject_reserved_identifier(context: &str, name: &str) -> Result<()> {
     }
     if name == "State" {
         return Err(ArgentError::new(format!("{context} identifier `State` is reserved for generated Silverscript state")));
+    }
+    Ok(())
+}
+
+fn reject_reserved_type(context: &str, ty: &TypeRef) -> Result<()> {
+    reject_reserved_state_type(context, &ty.name)?;
+    if let Some(state) = &ty.actor_state {
+        reject_reserved_state_type(context, state)?;
+    }
+    Ok(())
+}
+
+fn reject_reserved_state_type(context: &str, state: &str) -> Result<()> {
+    if state == "State" {
+        return Err(ArgentError::new(format!(
+            "{context} uses reserved state type `State`; use a declared Argent state type and let the compiler select the physical state layout"
+        )));
+    }
+    Ok(())
+}
+
+fn reject_reserved_state_tokens(context: &str, tokens: &[Token]) -> Result<()> {
+    if tokens.iter().any(|token| matches!(&token.kind, TokenKind::Ident(name) if name == "State")) {
+        return Err(ArgentError::new(format!(
+            "{context} uses reserved state type `State`; use a declared Argent state type and let the compiler select the physical state layout"
+        )));
     }
     Ok(())
 }

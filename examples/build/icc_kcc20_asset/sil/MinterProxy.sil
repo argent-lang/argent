@@ -17,6 +17,10 @@ contract MinterProxy(
         byte identifier_type;
         int amount;
     }
+    struct MinterProxyState {
+        // :: user declared fields
+        byte[32] controller_id;
+    }
 
     // :: route templates
     byte[32] gen__kcc20_template = gen__init_kcc20_template;
@@ -27,7 +31,7 @@ contract MinterProxy(
     // :: entrypoints
     // :: leader entry (1:N)
     entrypoint function mint(
-        State next_proxy,
+        MinterProxyState next_proxy,
         KCC20State recipient,
         byte[] gen__kcc20_prefix,
         byte[] gen__kcc20_suffix
@@ -42,8 +46,14 @@ contract MinterProxy(
         // :: co-spent with controller_id
         require(OpCovInputCount(controller_id) > 0);
         require(next_proxy.controller_id == controller_id);
+        State gen__state_proxy_state = {
+            // :: generated fields
+            gen__kcc20_template: gen__kcc20_template,
+            // :: user declared fields
+            controller_id: next_proxy.controller_id,
+        };
         // :: become MinterProxy
-        validateOutputState(gen__proxy_output_idx, next_proxy);
+        validateOutputState(gen__proxy_output_idx, gen__state_proxy_state);
         // :: become KCC20
         validateOutputStateWithTemplate(
             gen__recipient_output_idx,
