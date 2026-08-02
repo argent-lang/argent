@@ -362,19 +362,19 @@ fn context_executes_source_state_arguments_without_exposing_generated_fields() {
             actor Note owns NoteState {
                 entry choose_scalar(NoteState note) emits next: Note {
                     unrestricted(next.value);
-                    become next <- Note(note);
+                    become next <- Note((note));
                 }
 
                 entry choose_fixed(NoteState[2] notes) emits next: Note {
                     unrestricted(next.value);
                     require(notes[0].nonce < notes[1].nonce);
-                    become next <- Note(notes[1]);
+                    become next <- Note((notes[1]));
                 }
 
                 entry choose_dynamic(NoteState[] notes) emits next: Note {
                     unrestricted(next.value);
                     require(notes.length == 3);
-                    become next <- Note(notes[notes.length - 1]);
+                    become next <- Note(((notes[notes.length - 1])));
                 }
 
                 entry archive() emits saved: Archive {
