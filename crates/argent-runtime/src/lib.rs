@@ -47,9 +47,7 @@ use kaspa_txscript::{
     script_builder::ScriptBuilderError,
 };
 use kaspa_txscript_errors::TxScriptError;
-use silverscript_abi::{
-    CodecError, TypeArtifact, decode_hex, encode_entry_sig_script, encode_runtime_state_script, encode_struct_payload,
-};
+use silverscript_abi::{CodecError, decode_hex, encode_runtime_state_script, encode_struct_payload};
 use thiserror::Error;
 
 pub type BuilderResult<T> = std::result::Result<T, BuilderError>;
@@ -903,119 +901,6 @@ impl<'a> TxBuilder<'a> {
         }
 
         Ok((artifact_args, template_selectors))
-    }
-
-    fn runtime_entry_args(
-        &self,
-        artifact: &'a Artifact,
-        contract: &'a SilContractArtifact,
-        entry: &SilEntryArtifact,
-        artifact_entry: &EntryArtifact,
-        user_args: Vec<ArtifactValue>,
-    ) -> BuilderResult<Vec<ArtifactValue>> {
-        let mut args = Vec::with_capacity(user_args.len());
-        for (idx, value) in user_args.into_iter().enumerate() {
-            let runtime_contract = match entry.params.get(idx) {
-                Some(param) => match &param.ty {
-                    TypeArtifact::Struct { name } => {
-                        self.runtime_contract_for_param(artifact, contract, artifact_entry, &param.name, name)?
-                    }
-                    _ => None,
-                },
-                None => None,
-            };
-            match (runtime_contract, value) {
-                (Some(runtime_contract), ArtifactValue::Object(fields)) => {
-                    args.push(ArtifactValue::Object(self.runtime_state_values(artifact, runtime_contract, fields)?));
-                }
-                (_, value) => args.push(value),
-            }
-        }
-        Ok(args)
-    }
-
-    fn encode_runtime_entry_sig_script(
-        &self,
-        artifact: &'a Artifact,
-        contract: &'a SilContractArtifact,
-        entry: &'a SilEntryArtifact,
-        artifact_entry: &EntryArtifact,
-        args: &[ArtifactValue],
-    ) -> BuilderResult<Vec<u8>> {
-        let mut abi = artifact.sil_abi.clone();
-        let mut runtime_fields = BTreeMap::new();
-        for param in &entry.params {
-            let TypeArtifact::Struct { name } = &param.ty else {
-                continue;
-            };
-            let Some(runtime_contract) = self.runtime_contract_for_param(artifact, contract, artifact_entry, &param.name, name)?
-            else {
-                continue;
-            };
-            if name == "State" {
-                continue;
-            }
-            let fields: Vec<_> = runtime_contract
-                .runtime_state
-                .fields
-                .iter()
-                .map(|field| silverscript_abi::FieldArtifact { name: field.name.clone(), ty: field.ty.clone() })
-                .collect();
-            if let Some(existing) = runtime_fields.insert(name, fields.clone())
-                && existing != fields
-            {
-                return Err(BuilderError::RuntimeStatePlanMismatch {
-                    contract: contract.name.clone(),
-                    message: format!("entry `{}` uses incompatible runtime layouts for struct `{name}`", entry.name),
-                });
-            }
-            let Some(state) = abi.states.iter_mut().find(|state| state.name == *name) else {
-                continue;
-            };
-            state.fields = fields;
-        }
-        Ok(encode_entry_sig_script(&abi, contract, entry, args)?)
-    }
-
-    fn runtime_contract_for_param(
-        &self,
-        artifact: &'a Artifact,
-        contract: &'a SilContractArtifact,
-        entry: &EntryArtifact,
-        param: &str,
-        state: &str,
-    ) -> BuilderResult<Option<&'a SilContractArtifact>> {
-        if state == "State" {
-            return Ok(Some(contract));
-        }
-        if let Some(route) = entry.routes.iter().find(|route| route.state_expr == param) {
-            let routed = self.contract_in_artifact(artifact, &route.actor)?;
-            if routed.runtime_state.source != state {
-                return Err(BuilderError::RuntimeStatePlanMismatch {
-                    contract: contract.name.clone(),
-                    message: format!(
-                        "entry `{}` routes parameter `{param}: {state}` to actor `{}`, which owns `{}`",
-                        entry.name, route.actor, routed.runtime_state.source
-                    ),
-                });
-            }
-            return Ok(Some(routed));
-        }
-
-        let mut candidates = artifact.sil_abi.contracts.iter().filter(|candidate| candidate.runtime_state.source == state);
-        let Some(first) = candidates.next() else {
-            return Ok(None);
-        };
-        if candidates.any(|candidate| candidate.runtime_state.fields != first.runtime_state.fields) {
-            return Err(BuilderError::RuntimeStatePlanMismatch {
-                contract: contract.name.clone(),
-                message: format!(
-                    "entry `{}` parameter `{param}: {state}` has no route and matches multiple runtime layouts",
-                    entry.name
-                ),
-            });
-        }
-        Ok(Some(first))
     }
 
     pub fn covenant_utxo(

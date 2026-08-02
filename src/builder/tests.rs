@@ -347,6 +347,286 @@ fn context_executes_dynamic_byte_array_sigscript_arguments_at_varying_lengths() 
 }
 
 #[test]
+fn context_executes_source_state_arguments_without_exposing_generated_fields() {
+    let artifact = inline_artifact(
+        "context-source-state-arguments",
+        r#"
+            state NoteState {
+                int nonce;
+            }
+
+            state ArchiveState {
+                int nonce;
+            }
+
+            actor Note owns NoteState {
+                entry choose_scalar(NoteState note) emits next: Note {
+                    unrestricted(next.value);
+                    become next <- Note((note));
+                }
+
+                entry choose_fixed(NoteState[2] notes) emits next: Note {
+                    unrestricted(next.value);
+                    require(notes[0].nonce < notes[1].nonce);
+                    become next <- Note((notes[1]));
+                }
+
+                entry choose_dynamic(NoteState[] notes) emits next: Note {
+                    unrestricted(next.value);
+                    require(notes.length == 3);
+                    become next <- Note(((notes[notes.length - 1])));
+                }
+
+                entry archive() emits saved: Archive {
+                    unrestricted(saved.value);
+                    ArchiveState archived = {
+                        nonce: nonce,
+                    };
+                    become saved <- Archive(archived);
+                }
+            }
+
+            actor Archive owns ArchiveState {
+                entry hold() emits none {
+                    require(nonce >= 0);
+                }
+            }
+
+            app NoteApp {
+                actor Note;
+                actor Archive;
+            }
+            "#,
+    );
+    assert!(
+        artifact
+            .sil_abi
+            .contract("Note")
+            .expect("Note contract exists")
+            .runtime_state
+            .fields
+            .iter()
+            .any(|field| field.name == "gen__archive_template"),
+        "the runtime test must exercise a current state with compiler-generated fields"
+    );
+    let builder = TxBuilder::new(&artifact).expect("builder accepts source-state parameters");
+    let covenant_id = Hash::from_bytes([0x45; 32]);
+    let input_value = 1_000;
+    let initial = state! { nonce: 0 };
+    let state_array =
+        |nonces: &[i64]| ArtifactValue::Array(nonces.iter().map(|nonce| ArtifactValue::Object(state! { nonce: *nonce })).collect());
+
+    let scalar_utxo =
+        builder.covenant_utxo("Note", initial.clone(), input_value, 0, false, Some(covenant_id)).expect("scalar Note UTXO builds");
+    let scalar = TxContext::new()
+        .actor_input(
+            "Note",
+            initial.clone(),
+            EntryCall::new("choose_scalar").args(args![state! { nonce: 4 }]),
+            TransactionOutpoint::new(TransactionId::from_bytes([0x48; 32]), 0),
+            scalar_utxo,
+            0,
+        )
+        .actor_output("Note", state! { nonce: 4 }, CovenantBinding::new(0, covenant_id), input_value);
+    builder.build(&scalar).expect("scalar current-state argument executes");
+
+    let explicit_hidden_utxo = builder
+        .covenant_utxo("Note", initial.clone(), input_value, 0, false, Some(covenant_id))
+        .expect("explicit-hidden-field Note UTXO builds");
+    let explicit_hidden = TxContext::new()
+        .actor_input(
+            "Note",
+            initial.clone(),
+            EntryCall::new("choose_scalar").args(args![state! {
+                nonce: 4,
+                gen__archive_template: vec![0; 32],
+            }]),
+            TransactionOutpoint::new(TransactionId::from_bytes([0x49; 32]), 0),
+            explicit_hidden_utxo,
+            0,
+        )
+        .actor_output("Note", state! { nonce: 4 }, CovenantBinding::new(0, covenant_id), input_value);
+    let err = builder.build(&explicit_hidden).expect_err("entry arguments must not accept generated state fields");
+    assert!(
+        matches!(err, BuilderError::Codec(CodecError::UnknownField(ref field)) if field == "gen__archive_template"),
+        "unexpected error: {err}"
+    );
+
+    let fixed_utxo = builder
+        .covenant_utxo("Note", initial.clone(), input_value, 0, false, Some(covenant_id))
+        .expect("fixed-array Note UTXO builds");
+    let fixed = TxContext::new()
+        .actor_input(
+            "Note",
+            initial.clone(),
+            EntryCall::new("choose_fixed").args(args![state_array(&[3, 7])]),
+            TransactionOutpoint::new(TransactionId::from_bytes([0x46; 32]), 0),
+            fixed_utxo,
+            0,
+        )
+        .actor_output("Note", state! { nonce: 7 }, CovenantBinding::new(0, covenant_id), input_value);
+    builder.build(&fixed).expect("fixed current-state array argument executes");
+
+    let dynamic_utxo = builder
+        .covenant_utxo("Note", initial.clone(), input_value, 0, false, Some(covenant_id))
+        .expect("dynamic-array Note UTXO builds");
+    let dynamic = TxContext::new()
+        .actor_input(
+            "Note",
+            initial,
+            EntryCall::new("choose_dynamic").args(args![state_array(&[2, 5, 9])]),
+            TransactionOutpoint::new(TransactionId::from_bytes([0x47; 32]), 0),
+            dynamic_utxo,
+            0,
+        )
+        .actor_output("Note", state! { nonce: 9 }, CovenantBinding::new(0, covenant_id), input_value);
+    builder.build(&dynamic).expect("dynamic current-state array argument executes");
+}
+
+#[test]
+fn context_executes_expanded_state_arguments_from_authored_values() {
+    let artifact = inline_artifact(
+        "context-expanded-state-arguments",
+        r#"
+            state Capsule {
+                int nonce;
+                virtual detail;
+            }
+
+            state Details {
+                int count;
+            }
+
+            state Expanded expands Capsule {
+                detail: Details;
+            }
+
+            state ArchiveState {
+                int nonce;
+            }
+
+            actor Vault owns Expanded {
+                entry replace_scalar(Expanded replacement) emits out: Vault {
+                    unrestricted(out.value);
+                    become out <- Vault((replacement));
+                }
+
+                entry replace_fixed(Expanded[2] replacements) emits out: Vault {
+                    unrestricted(out.value);
+                    become out <- Vault((replacements[1]));
+                }
+
+                entry replace_dynamic(Expanded[] replacements) emits out: Vault {
+                    unrestricted(out.value);
+                    require(replacements.length == 3);
+                    become out <- Vault((replacements[2]));
+                }
+
+                entry archive() emits out: Archive {
+                    unrestricted(out.value);
+                    ArchiveState archived = { nonce: nonce };
+                    become out <- Archive(archived);
+                }
+            }
+
+            actor Archive owns ArchiveState {
+                entry hold() emits none {
+                    require(nonce >= 0);
+                }
+            }
+
+            app ExpandedArgs {
+                actor Vault;
+                actor Archive;
+            }
+            "#,
+    );
+    let builder = TxBuilder::new(&artifact).expect("builder accepts expanded-state arguments");
+    let covenant_id = Hash::from_bytes([0x4a; 32]);
+    let input_value = 1_000;
+    let expanded = |nonce: i64, count: i64| {
+        state! {
+            nonce: nonce,
+            detail: state! { count: count },
+        }
+    };
+    let expanded_array = |values: &[(i64, i64)]| {
+        ArtifactValue::Array(values.iter().map(|(nonce, count)| ArtifactValue::Object(expanded(*nonce, *count))).collect())
+    };
+    let initial = expanded(0, 0);
+
+    let scalar_utxo =
+        builder.covenant_utxo("Vault", initial.clone(), input_value, 0, false, Some(covenant_id)).expect("scalar Vault UTXO builds");
+    let scalar = TxContext::new()
+        .actor_input(
+            "Vault",
+            initial.clone(),
+            EntryCall::new("replace_scalar").args(args![expanded(4, 40)]),
+            TransactionOutpoint::new(TransactionId::from_bytes([0x4b; 32]), 0),
+            scalar_utxo,
+            0,
+        )
+        .actor_output("Vault", expanded(4, 40), CovenantBinding::new(0, covenant_id), input_value);
+    builder.build(&scalar).expect("scalar expanded-state argument executes");
+
+    let raw_digest_utxo = builder
+        .covenant_utxo("Vault", initial.clone(), input_value, 0, false, Some(covenant_id))
+        .expect("raw-digest Vault UTXO builds");
+    let raw_digest = TxContext::new()
+        .actor_input(
+            "Vault",
+            initial.clone(),
+            EntryCall::new("replace_scalar").args(args![state! {
+                nonce: 4,
+                detail: vec![0; 32],
+            }]),
+            TransactionOutpoint::new(TransactionId::from_bytes([0x4e; 32]), 0),
+            raw_digest_utxo,
+            0,
+        )
+        .actor_output("Vault", expanded(4, 40), CovenantBinding::new(0, covenant_id), input_value);
+    let err = builder.build(&raw_digest).expect_err("entry arguments must not expose expanded-state digest slots");
+    assert!(
+        matches!(
+            err,
+            BuilderError::Codec(CodecError::TypeMismatch { ref expected, ref actual })
+                if expected == "object" && actual == "bytes"
+        ),
+        "unexpected error: {err}"
+    );
+
+    let fixed_utxo = builder
+        .covenant_utxo("Vault", initial.clone(), input_value, 0, false, Some(covenant_id))
+        .expect("fixed-array Vault UTXO builds");
+    let fixed = TxContext::new()
+        .actor_input(
+            "Vault",
+            initial.clone(),
+            EntryCall::new("replace_fixed").args(args![expanded_array(&[(2, 20), (5, 50)])]),
+            TransactionOutpoint::new(TransactionId::from_bytes([0x4c; 32]), 0),
+            fixed_utxo,
+            0,
+        )
+        .actor_output("Vault", expanded(5, 50), CovenantBinding::new(0, covenant_id), input_value);
+    builder.build(&fixed).expect("fixed expanded-state array argument executes");
+
+    let dynamic_utxo = builder
+        .covenant_utxo("Vault", initial.clone(), input_value, 0, false, Some(covenant_id))
+        .expect("dynamic-array Vault UTXO builds");
+    let dynamic = TxContext::new()
+        .actor_input(
+            "Vault",
+            initial,
+            EntryCall::new("replace_dynamic").args(args![expanded_array(&[(3, 30), (6, 60), (9, 90)])]),
+            TransactionOutpoint::new(TransactionId::from_bytes([0x4d; 32]), 0),
+            dynamic_utxo,
+            0,
+        )
+        .actor_output("Vault", expanded(9, 90), CovenantBinding::new(0, covenant_id), input_value);
+    builder.build(&dynamic).expect("dynamic expanded-state array argument executes");
+}
+
+#[test]
 fn context_executes_and_pins_invocation_uid() {
     let artifact = inline_artifact(
         "context-invocation-uid",
@@ -1060,6 +1340,192 @@ fn context_spawns_a_static_actor_without_an_actor_type_value() {
         .actor_genesis_output(0, "spawn::child_group", "Launcher", state! { launches: 42 }, 2_000);
     let err = builder.build(&wrong_actor).expect_err("static spawn requires the declared actor template");
     assert!(matches!(err, BuilderError::InvalidSpawnGroup(ref spawn, _) if spawn == "child_group"), "unexpected error: {err}");
+}
+
+#[test]
+fn linked_expanded_actor_uses_a_clean_state_qualified_physical_layout() {
+    let temp = std::env::temp_dir().join(format!("argent-linked-expanded-state-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp);
+    std::fs::create_dir_all(&temp).expect("temp dir created");
+
+    std::fs::write(
+        temp.join("child.ag"),
+        r#"
+state ChildStorage {
+    int amount;
+    virtual detail;
+}
+
+state ChildDetail {
+    int count;
+}
+
+state ChildState expands ChildStorage {
+    detail: ChildDetail;
+}
+
+actor Child owns ChildState {
+    entry advance() emits next: Child {
+        ChildState next_state = {
+            amount: amount + 1,
+            detail: ChildDetail { count: 1 },
+        };
+        unrestricted(next.value);
+        become next <- Child(next_state);
+    }
+
+    entry archive() emits saved: Archive {
+        ArchiveState archived = {
+            amount: amount,
+        };
+        unrestricted(saved.value);
+        become saved <- Archive(archived);
+    }
+}
+
+state ArchiveState {
+    int amount;
+}
+
+actor Archive owns ArchiveState {
+    entry hold() emits none {
+        require(amount >= 0);
+    }
+}
+
+app ChildApp {
+    actor Child;
+    actor Archive;
+}
+"#,
+    )
+    .expect("child source written");
+    std::fs::write(
+        temp.join("launcher.ag"),
+        r#"
+import app ChildApp from "./child.ag";
+
+state LauncherState {
+    int launches;
+}
+
+actor Launcher owns LauncherState {
+    entry launch(cov_id child_id)
+    observes child by child_id {
+        inputs {
+            before: ChildApp::Child,
+        }
+        outputs {
+            after: ChildApp::Child,
+        }
+    }
+    spawns children by children_id {
+        outputs {
+            child: ChildApp::Child,
+        }
+    }
+    emits next: Launcher {
+        ChildState child_state = {
+            amount: child.inputs.before.state.amount + 1,
+            detail: ChildDetail { count: 1 },
+        };
+
+        require child.outputs become {
+            after <- ChildApp::Child(child_state),
+        };
+        unrestricted(children.outputs.child.value);
+        require children.outputs become {
+            child <- ChildApp::Child(child_state),
+        };
+
+        LauncherState next_state = {
+            launches: launches + 1,
+        };
+        unrestricted(next.value);
+        become next <- Launcher(next_state);
+    }
+}
+
+app LauncherApp {
+    actor Launcher;
+}
+"#,
+    )
+    .expect("launcher source written");
+
+    let out_dir = temp.join("build");
+    let compiled = crate::build_file_app_bundle(temp.join("launcher.ag"), "LauncherApp", &out_dir)
+        .expect("linked expanded observation and spawn compile");
+    let sil = std::fs::read_to_string(out_dir.join("sil/Launcher.sil")).expect("Launcher Sil exists");
+    assert!(sil.contains("struct Gen__PhysicalChildState"), "{sil}");
+    assert!(!sil.contains("Gen__ChildApp::ChildState"), "{sil}");
+    let linked_layout = sil
+        .split_once("struct Gen__PhysicalChildState {")
+        .and_then(|(_, rest)| rest.split_once('}'))
+        .map(|(layout, _)| layout)
+        .expect("Launcher declares the linked Child physical state");
+    let linked_fields = linked_layout.lines().map(str::trim).filter(|line| line.ends_with(';')).collect::<Vec<_>>();
+    assert_eq!(linked_fields, ["int amount;", "byte[32] detail;"], "linked state layout must contain only physical storage fields");
+
+    let child_artifact = compiled.app("ChildApp").expect("compiled bundle contains ChildApp");
+    let child_contract = child_artifact.sil_abi.contract("Child").expect("Child contract exists");
+    assert_eq!(
+        child_contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        ["gen__archive_template", "amount", "detail"],
+        "the defining Child contract must exercise an in-app route field before its storage fields"
+    );
+    let child_handle = child_artifact
+        .argent
+        .template_plan
+        .templates
+        .iter()
+        .find(|template| template.actor == "Child")
+        .expect("Child exports an actor-type handle");
+    assert_eq!(child_handle.actor_type_handle.state, "ChildStorage");
+    assert_eq!(child_handle.actor_type_handle.context_fields, ["gen__archive_template"]);
+
+    let bundle = compiled.runtime_bundle().expect("compiled artifacts form a runtime bundle");
+    let builder = TxBuilder::from_bundle(&bundle).expect("builder accepts the linked expanded-state bundle");
+    let launcher_id = Hash::from_bytes([0xa1; 32]);
+    let child_id = Hash::from_bytes([0xa2; 32]);
+    let launcher_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0xa3; 32]), 0);
+    let child_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0xa4; 32]), 0);
+    let launcher_initial = state! { launches: 0 };
+    let launcher_next = state! { launches: 1 };
+    let child_initial = state! {
+        amount: 4,
+        detail: state! { count: 0 },
+    };
+    let child_next = state! {
+        amount: 5,
+        detail: state! { count: 1 },
+    };
+    let launcher_utxo =
+        builder.covenant_utxo("Launcher", launcher_initial.clone(), 5_000, 0, false, Some(launcher_id)).expect("Launcher UTXO builds");
+    let child_utxo = builder
+        .covenant_utxo("child_app::Child", child_initial.clone(), 2_000, 0, false, Some(child_id))
+        .expect("linked Child UTXO builds from its authored expanded state");
+    let mut transaction = builder
+        .build(
+            &TxContext::new()
+                .actor_input(
+                    "Launcher",
+                    launcher_initial,
+                    EntryCall::new("launch").args(args![child_id]),
+                    launcher_outpoint,
+                    launcher_utxo.clone(),
+                    0,
+                )
+                .actor_input("child_app::Child", child_initial, "advance", child_outpoint, child_utxo.clone(), 0)
+                .actor_output("Launcher", launcher_next, CovenantBinding::new(0, launcher_id), 3_000)
+                .actor_output("child_app::Child", child_next.clone(), CovenantBinding::new(1, child_id), 2_000)
+                .actor_genesis_output(0, "spawn::children", "child_app::Child", child_next, 2_000),
+        )
+        .expect("linked expanded observation and spawn build");
+    execute_transaction_with_covenants(&mut transaction, vec![launcher_utxo, child_utxo])
+        .expect("linked expanded observation and spawn execute");
+
+    let _ = std::fs::remove_dir_all(temp);
 }
 
 #[test]

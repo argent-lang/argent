@@ -163,8 +163,26 @@ impl BodyBindings {
         self.get(name).and_then(|binding| binding.value.lowered_type.as_deref())
     }
 
+    fn lowered_type_for_expr(&self, expr: &str) -> Option<String> {
+        let expr = strip_outer_parentheses(expr);
+        if let Some(ty) = self.lowered_type(expr) {
+            return Some(ty.to_string());
+        }
+        let root = indexed_root_binding(expr)?;
+        array_element_type(self.lowered_type(root)?).map(str::to_string)
+    }
+
     fn source_type(&self, name: &str) -> Option<&str> {
         self.get(name).and_then(|binding| binding.value.source_type.as_deref())
+    }
+
+    fn source_type_for_expr(&self, expr: &str) -> Option<String> {
+        let expr = strip_outer_parentheses(expr);
+        if let Some(ty) = self.source_type(expr) {
+            return Some(ty.to_string());
+        }
+        let root = indexed_root_binding(expr)?;
+        array_element_type(self.source_type(root)?).map(str::to_string)
     }
 
     fn selector(&self, name: &str) -> Option<(BodyBindingId, &TemplateSelector)> {
@@ -237,7 +255,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             }
         }
         for param in &entry.params {
-            let ty = lower_entry_param_type(actor, &param.ty, model);
+            let ty = lower_type_ref(&entry_param_sil_type(actor, &param.ty, model), model);
             let mut binding = BodyBinding::typed(source_type_ref(&param.ty), ty);
             if param.ty.array.is_none()
                 && let Some(selector) = selector_catalog.get(&param.name)
@@ -475,7 +493,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             return Ok(());
         }
         let lowered_ty = if self.model.has_state(source_ty) {
-            self.bindings.lowered_type(expr.trim()).map(str::to_string).unwrap_or_else(|| self.lower_local_type(source_ty))
+            self.bindings.lowered_type_for_expr(expr.trim()).unwrap_or_else(|| self.lower_local_type(source_ty))
         } else {
             self.lower_local_type(source_ty)
         };
@@ -744,14 +762,13 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         };
         let state_ty = if static_target.is_some() {
             contract_state_type_for_actor(actor_expr, self.actor, self.model)?
-        } else if state_name == self.actor.state {
-            "State".to_string()
         } else {
-            state_name.clone()
+            contract_state_type_for_dynamic_state(&state_name, self.actor, self.model)?
         };
-        let state_expr = route.state.trim();
+        let state_expr = self.materialize_indexed_expanded_state(out, indent, &route)?;
+        let state_expr = state_expr.as_str();
         let packs_family = transition.is_some_and(|transition| !transition.families_to_pack.is_empty());
-        let state_arg = if !packs_family && self.bindings.lowered_type(state_expr).is_some_and(|ty| ty == state_ty) {
+        let state_arg = if !packs_family && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
             self.lower_expr(state_expr, Some(&state_ty), indent)?
         } else {
             let name = generated_state_name(&route, &state_ty);
@@ -920,6 +937,30 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         self.lower_state_expr_for_layout(state_name, state_ty, generated_fields, false, expr, indent)
     }
 
+    /// Sil flattens struct arrays, but cannot directly traverse a nested struct
+    /// field through an array index. Bind an indexed expanded value first.
+    fn materialize_indexed_expanded_state(&mut self, out: &mut String, indent: usize, route: &RouteCall) -> Result<String> {
+        let expr = strip_outer_parentheses(route.state.trim());
+        if indexed_root_binding(expr).is_none() {
+            return Ok(expr.to_string());
+        }
+        let Some(source_state) = self.bindings.source_type_for_expr(expr) else {
+            return Ok(expr.to_string());
+        };
+        if self.bindings.lowered_type_for_expr(expr).as_deref() != Some(source_state.as_str())
+            || self.model.state(&source_state)?.expansion.is_none()
+        {
+            return Ok(expr.to_string());
+        }
+
+        let name = format!("{RESERVED_GENERATED_PREFIX}source_{}_{}", to_snake(&route.output), to_snake(&source_state));
+        let lowered = self.lower_expr(expr, Some(&source_state), indent)?;
+        push_indent(out, indent);
+        out.push_str(&format!("{source_state} {name} = {lowered};\n"));
+        self.bindings.declare(name.clone(), BodyBinding::typed(source_state.clone(), source_state));
+        Ok(name)
+    }
+
     fn lower_state_expr_for_layout(
         &self,
         state_name: &str,
@@ -929,10 +970,12 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         expr: &str,
         indent: usize,
     ) -> Result<String> {
-        let expr = expr.trim();
-        if !force_materialization && self.bindings.lowered_type(expr).is_some_and(|ty| ty == state_ty) {
+        let expr = strip_outer_parentheses(expr.trim());
+        if !force_materialization && self.bindings.lowered_type_for_expr(expr).is_some_and(|ty| ty == state_ty) {
             return self.lower_expr(expr, Some(state_ty), indent);
         }
+        // A source expression may be caller-controlled. Materialization copies
+        // only authored fields from it; generated fields come from the route context.
         if let Some((source_state, body)) = split_state_constructor(expr) {
             if self.model.storage_state_name(source_state)? != self.model.storage_state_name(state_name)? {
                 return Err(ArgentError::new(format!("state `{source_state}` cannot initialize contract state `{state_name}`")));
@@ -941,24 +984,37 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         }
 
         let source_state = if expr == "self.state" {
-            Some(self.actor.state.as_str())
+            Some(self.actor.state.clone())
         } else {
-            self.bindings.source_type(expr).filter(|source_ty| self.model.has_state(source_ty))
+            self.bindings.source_type_for_expr(expr).filter(|source_ty| self.model.has_state(source_ty))
         };
         if let Some(source_state) = source_state {
-            if self.model.storage_state_name(source_state)? != self.model.storage_state_name(state_name)? {
+            if self.model.storage_state_name(&source_state)? != self.model.storage_state_name(state_name)? {
                 return Err(ArgentError::new(format!("state `{source_state}` cannot initialize contract state `{state_name}`")));
             }
+            let source_uses_authored_layout = expr != "self.state"
+                && self.bindings.lowered_type_for_expr(expr).as_deref() == Some(source_state.as_str())
+                && self.model.state(&source_state)?.expansion.is_some();
             let fields = self
                 .model
                 .storage_state(state_name)?
                 .fields
                 .iter()
                 .map(|field| {
-                    let expr = if expr == "self.state" { field.name.clone() } else { format!("{expr}.{}", field.name) };
-                    (field.name.clone(), expr)
+                    let value = if expr == "self.state" { field.name.clone() } else { format!("{expr}.{}", field.name) };
+                    let value = if source_uses_authored_layout {
+                        self.model
+                            .state(&source_state)?
+                            .expansion
+                            .as_ref()
+                            .and_then(|expansion| expansion.digests.iter().find(|digest| digest.field == field.name))
+                            .map_or(Ok(value.clone()), |digest| state_payload_digest_expr(&digest.state, &value, self.model))?
+                    } else {
+                        value
+                    };
+                    Ok((field.name.clone(), value))
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>>>()?;
             return self.render_state_object(state_name, &fields, generated_fields, indent);
         }
 
@@ -995,9 +1051,10 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             self.model.route_transition(&self.actor.name, &route.actor).expect("validated non-self route has a planned cut transition")
         });
         let state_ty = contract_state_type_for_actor(&route.actor, self.actor, self.model)?;
-        let state_expr = route.state.trim();
+        let state_expr = self.materialize_indexed_expanded_state(out, indent, &route)?;
+        let state_expr = state_expr.as_str();
         let packs_family = transition.is_some_and(|transition| !transition.families_to_pack.is_empty());
-        let state_arg = if !packs_family && self.bindings.lowered_type(state_expr).is_some_and(|ty| ty == state_ty) {
+        let state_arg = if !packs_family && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
             self.lower_expr(state_expr, Some(&state_ty), indent)?
         } else {
             let name = generated_state_name(&route, &state_ty);
@@ -1069,9 +1126,10 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             "selector variants must use one cut transition"
         );
         let state_ty = contract_state_type_for_actor(layout_actor, self.actor, self.model)?;
-        let state_expr = route.state.trim();
+        let state_expr = self.materialize_indexed_expanded_state(out, indent, &route)?;
+        let state_expr = state_expr.as_str();
         let packs_family = !transition.families_to_pack.is_empty();
-        let state_arg = if !packs_family && self.bindings.lowered_type(state_expr).is_some_and(|ty| ty == state_ty) {
+        let state_arg = if !packs_family && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
             self.lower_expr(state_expr, Some(&state_ty), indent)?
         } else {
             let name = generated_state_name(&route, &state_ty);
@@ -1161,9 +1219,12 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         if let Some(state_name) = self.source_state_for_local_type(source_ty)
             && let Some(body) = split_state_object_literal(expr)
         {
+            if lowered_ty == source_ty && self.model.state(&state_name)?.expansion.is_some() {
+                return self.lower_authored_state_object(&state_name, body, indent);
+            }
             return self.lower_state_object_for_state(&state_name, body, indent);
         }
-        if self.model.has_state(source_ty) && self.bindings.lowered_type(expr.trim()).is_none_or(|ty| ty != lowered_ty) {
+        if self.model.has_state(source_ty) && self.bindings.lowered_type_for_expr(expr.trim()).is_none_or(|ty| ty != lowered_ty) {
             let lowered_expr = self.lower_expr(expr, None, indent)?;
             let fields = self
                 .model
@@ -1209,6 +1270,14 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         self.model.state(state_name)?;
         let generated_fields = hidden_template_object_fields_for_state(self.actor, state_name, self.model);
         self.lower_state_object(state_name, body, generated_fields, indent)
+    }
+
+    fn lower_authored_state_object(&self, state_name: &str, body: &str, indent: usize) -> Result<String> {
+        let fields = parse_state_fields(body)
+            .into_iter()
+            .map(|(name, expr)| self.lower_expr(&expr, None, indent + 4).map(|lowered| (name, lowered)))
+            .collect::<Result<Vec<_>>>()?;
+        self.render_state_object(state_name, &fields, Vec::new(), indent)
     }
 
     fn lower_state_object(
@@ -1662,6 +1731,57 @@ fn matching_symbol(tokens: &[Token], open_pos: usize, open: char, close: char) -
         }
     }
     None
+}
+
+/// Remove parentheses that enclose the complete expression.
+fn strip_outer_parentheses(mut expr: &str) -> &str {
+    loop {
+        let Ok(tokens) = lex(expr) else {
+            return expr;
+        };
+        if !is_symbol(&tokens, 0, '(') {
+            return expr;
+        }
+        let Some(close) = matching_symbol(&tokens, 0, '(', ')') else {
+            return expr;
+        };
+        if !matches!(tokens.get(close + 1).map(|token| &token.kind), Some(TokenKind::Eof)) {
+            return expr;
+        }
+        expr = expr[tokens[0].span.end..tokens[close].span.start].trim();
+    }
+}
+
+/// Return the bound root when the entire expression is one index access.
+fn indexed_root_binding(expr: &str) -> Option<&str> {
+    let tokens = lex(expr).ok()?;
+    let TokenKind::Ident(_) = tokens.first()?.kind else {
+        return None;
+    };
+    if !is_symbol(&tokens, 1, '[') {
+        return None;
+    }
+    let close = matching_symbol(&tokens, 1, '[', ']')?;
+    if !matches!(tokens.get(close + 1).map(|token| &token.kind), Some(TokenKind::Eof)) {
+        return None;
+    }
+    Some(&expr[tokens[0].span.start..tokens[0].span.end])
+}
+
+/// Return the element type of a one-dimensional Sil array type.
+fn array_element_type(ty: &str) -> Option<&str> {
+    let tokens = lex(ty).ok()?;
+    let TokenKind::Ident(_) = tokens.first()?.kind else {
+        return None;
+    };
+    if !is_symbol(&tokens, 1, '[') {
+        return None;
+    }
+    let close = matching_symbol(&tokens, 1, '[', ']')?;
+    if !matches!(tokens.get(close + 1).map(|token| &token.kind), Some(TokenKind::Eof)) {
+        return None;
+    }
+    Some(&ty[tokens[0].span.start..tokens[0].span.end])
 }
 
 fn is_ident(tokens: &[Token], pos: usize, ident: &str) -> bool {
