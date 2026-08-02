@@ -970,6 +970,37 @@ fn self_transition_uses_same_template_shortcut() {
 }
 
 #[test]
+fn current_state_array_entry_param_uses_contract_state_type() {
+    let (actor_sil, artifact) = inline_actor_sil_and_artifact(
+        "current-state-array-entry-param",
+        r#"
+            state NoteState {
+                int nonce;
+            }
+
+            actor Note owns NoteState {
+                entry inspect(NoteState[2] notes) emits none {
+                    require(notes[0].nonce >= 0);
+                }
+            }
+
+            app Test {
+                actor Note;
+            }
+            "#,
+    );
+
+    let sil = actor_sil.get("Note").expect("Note emits");
+    assert!(sil.contains("entrypoint function inspect(State[2] notes)"), "{sil}");
+
+    let inspect = artifact.sil_abi.contract("Note").expect("Note Sil ABI exists").entry("inspect").expect("inspect entry exists");
+    assert_eq!(
+        inspect.params[0].ty,
+        TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Struct { name: "State".to_string() }), len: 2 }
+    );
+}
+
+#[test]
 fn terminal_state_does_not_carry_its_own_template() {
     let path = PathBuf::from("terminal-route.ag");
     let module = crate::compiler::syntax::parser::parse_module(
