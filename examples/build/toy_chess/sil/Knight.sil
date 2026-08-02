@@ -42,18 +42,10 @@ contract Knight(
             selector: selector,
             ply: ply + 1,
         };
-        State gen__state_next_state = {
-            // :: generated fields
-            gen__mux_template: gen__mux_template,
-            gen__mux_routes: gen__mux_routes,
-            // :: user declared fields
-            selector: next_board.selector,
-            ply: next_board.ply,
-        };
         // :: become Mux
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            gen__state_next_state,
+            next_board,
             gen__mux_prefix,
             gen__mux_suffix,
             gen__mux_template

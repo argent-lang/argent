@@ -2761,8 +2761,8 @@ fn stones_delegate_reads_use_length_only_template_witnesses() {
         !player_sil.contains("gen__league_template"),
         "Player route-family template root should not carry unrelated League template: {player_sil}"
     );
-    assert!(player_sil.contains("validateOutputState(gen__self_out_output_idx, gen__state_self_out_state);"), "{player_sil}");
-    assert!(player_sil.contains("validateOutputState(gen__opponent_out_output_idx, gen__state_opponent_out_state);"), "{player_sil}");
+    assert!(player_sil.contains("validateOutputState(gen__self_out_output_idx, next_self);"), "{player_sil}");
+    assert!(player_sil.contains("validateOutputState(gen__opponent_out_output_idx, next_opponent);"), "{player_sil}");
     assert!(player_sil.contains("validateOutputStateWithTemplate(\n            gen__game_output_idx,"), "{player_sil}");
     assert!(league_sil.contains("entrypoint function register_player(\n"), "{league_sil}");
     assert!(league_sil.contains("byte[] gen__player_prefix,"), "{league_sil}");
@@ -3738,6 +3738,57 @@ fn rejects_untyped_physical_state_readers_for_routed_outputs() {
             "unexpected error for `{state_expr}`: {err}"
         );
     }
+}
+
+#[test]
+fn reassigned_state_local_does_not_retain_route_field_provenance() {
+    let source = r#"
+            state NoteState {
+                int nonce;
+            }
+
+            state ArchiveState {
+                int nonce;
+            }
+
+            actor Note owns NoteState {
+                entry replace() emits next: Note {
+                    NoteState candidate = { nonce: nonce + 1 };
+                    candidate = readInputState(1);
+
+                    unrestricted(next.value);
+                    become next <- Note(candidate);
+                }
+
+                entry archive() emits next: Archive {
+                    ArchiveState archived = { nonce: nonce };
+                    unrestricted(next.value);
+                    become next <- Archive(archived);
+                }
+            }
+
+            actor Archive owns ArchiveState {
+                entry hold() emits none {
+                    require(nonce >= 0);
+                }
+            }
+
+            app Test {
+                actor Note;
+                actor Archive;
+            }
+            "#;
+    let path = PathBuf::from("reassigned-state-route-fields.ag");
+    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let model = Model::from_program(&program).expect("model validates");
+    let actor_sil = actor_sil_for_model(&model);
+    let sil = &actor_sil["Note"];
+
+    assert!(sil.contains("candidate = readInputState(1);"), "{sil}");
+    assert!(sil.contains("gen__archive_template: gen__archive_template,"), "{sil}");
+    assert!(sil.contains("nonce: candidate.nonce,"), "{sil}");
+    assert!(sil.contains("validateOutputState(gen__next_output_idx, gen__state_next_state);"), "{sil}");
 }
 
 #[test]

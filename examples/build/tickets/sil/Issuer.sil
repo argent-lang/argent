@@ -57,15 +57,8 @@ contract Issuer(
         };
         require(tx.outputs[gen__issuer_output_idx].value == tx.inputs[this.activeInputIndex].value);
         require(tx.outputs[gen__ticket_output_idx].value > 0);
-        State gen__state_issuer_state = {
-            // :: generated fields
-            gen__ticket_template: gen__ticket_template,
-            // :: user declared fields
-            admin: next_issuer.admin,
-            next_serial: next_issuer.next_serial,
-        };
         // :: become Issuer
-        validateOutputState(gen__issuer_output_idx, gen__state_issuer_state);
+        validateOutputState(gen__issuer_output_idx, next_issuer);
         // :: become Ticket
         validateOutputStateWithTemplate(
             gen__ticket_output_idx,

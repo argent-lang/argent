@@ -46,18 +46,8 @@ contract ReserveAsset(
             policy: blake2b(byte[8](gen__policy_nonce + 1)),
             balance: next_balance,
         };
-        State gen__state_next_state = {
-            // :: generated fields
-            gen__reserve_asset_template: gen__reserve_asset_template,
-            gen__wallet_asset_template: gen__wallet_asset_template,
-            // :: user declared fields
-            owner_kind: next_asset.owner_kind,
-            owner_id: next_asset.owner_id,
-            policy: next_asset.policy,
-            balance: next_asset.balance,
-        };
         // :: become ReserveAsset
-        validateOutputState(gen__next_output_idx, gen__state_next_state);
+        validateOutputState(gen__next_output_idx, next_asset);
     }
 
     // :: leader entry (1:N)
@@ -88,20 +78,10 @@ contract ReserveAsset(
             policy: blake2b(byte[8](gen__policy_nonce + 1)),
             balance: next_balance,
         };
-        State gen__state_next_state = {
-            // :: generated fields
-            gen__reserve_asset_template: gen__reserve_asset_template,
-            gen__wallet_asset_template: gen__wallet_asset_template,
-            // :: user declared fields
-            owner_kind: next_asset.owner_kind,
-            owner_id: next_asset.owner_id,
-            policy: next_asset.policy,
-            balance: next_asset.balance,
-        };
         // :: become WalletAsset
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            gen__state_next_state,
+            next_asset,
             gen__wallet_asset_prefix,
             gen__wallet_asset_suffix,
             gen__wallet_asset_template

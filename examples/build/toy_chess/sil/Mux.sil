@@ -45,14 +45,6 @@ contract Mux(
             selector: selector,
             ply: ply + 1,
         };
-        State gen__state_next_state = {
-            // :: generated fields
-            gen__mux_template: gen__mux_template,
-            gen__mux_routes: gen__mux_routes,
-            // :: user declared fields
-            selector: next_board.selector,
-            ply: next_board.ply,
-        };
         int gen__target_selector = target;
         require(gen__target_selector >= 0);
         require(gen__target_selector < 2);
@@ -62,7 +54,7 @@ contract Mux(
         // :: become target
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            gen__state_next_state,
+            next_board,
             gen__target_prefix,
             gen__target_suffix,
             gen__target_template
@@ -90,18 +82,10 @@ contract Mux(
         byte[32] gen__target_template = byte[32](
             gen__mux_routes.slice(gen__target_selector * 32, gen__target_selector * 32 + 32)
         );
-        State gen__state_next_state = {
-            // :: generated fields
-            gen__mux_template: gen__mux_template,
-            gen__mux_routes: gen__mux_routes,
-            // :: user declared fields
-            selector: next_board.selector,
-            ply: next_board.ply,
-        };
         // :: become target
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            gen__state_next_state,
+            next_board,
             gen__target_prefix,
             gen__target_suffix,
             gen__target_template
@@ -125,18 +109,10 @@ contract Mux(
             selector: selector,
             ply: ply + 1,
         };
-        State gen__state_next_state = {
-            // :: generated fields
-            gen__mux_template: gen__mux_template,
-            gen__mux_routes: gen__mux_routes,
-            // :: user declared fields
-            selector: next_board.selector,
-            ply: next_board.ply,
-        };
         // :: become Pawn
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            gen__state_next_state,
+            next_board,
             gen__pawn_prefix,
             gen__pawn_suffix,
             gen__pawn_template
@@ -160,18 +136,10 @@ contract Mux(
             selector: selector,
             ply: ply + 1,
         };
-        State gen__state_next_state = {
-            // :: generated fields
-            gen__mux_template: gen__mux_template,
-            gen__mux_routes: gen__mux_routes,
-            // :: user declared fields
-            selector: next_board.selector,
-            ply: next_board.ply,
-        };
         // :: become Knight
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            gen__state_next_state,
+            next_board,
             gen__knight_prefix,
             gen__knight_suffix,
             gen__knight_template

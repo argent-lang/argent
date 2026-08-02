@@ -92,15 +92,8 @@ contract Launcher(
             gen__child_suffix_len,
             gen__child_template
         );
-        State gen__state_next_state = {
-            // :: generated fields
-            gen__child_template: gen__child_template,
-            gen__launcher_template: gen__launcher_template,
-            // :: user declared fields
-            launches: next.launches,
-        };
         // :: become Launcher
-        validateOutputState(gen__next_output_idx, gen__state_next_state);
+        validateOutputState(gen__next_output_idx, next);
     }
 
 }

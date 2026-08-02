@@ -91,24 +91,52 @@ struct BodyBinding {
     source_type: Option<String>,
     lowered_type: Option<String>,
     selector: Option<TemplateSelector>,
+    /// Exact route fields assigned when Argent materialized this physical state.
+    /// `None` means its generated fields must not be reused for an output route.
+    materialized_route_fields: Option<Vec<(String, String)>>,
 }
 
 impl BodyBinding {
     fn typed(source_type: impl Into<String>, lowered_type: impl Into<String>) -> Self {
-        Self { source_type: Some(source_type.into()), lowered_type: Some(lowered_type.into()), selector: None }
+        Self {
+            source_type: Some(source_type.into()),
+            lowered_type: Some(lowered_type.into()),
+            selector: None,
+            materialized_route_fields: None,
+        }
     }
 
     fn source_typed(source_type: impl Into<String>) -> Self {
-        Self { source_type: Some(source_type.into()), lowered_type: None, selector: None }
+        Self { source_type: Some(source_type.into()), lowered_type: None, selector: None, materialized_route_fields: None }
     }
 
     fn lowered_typed(lowered_type: impl Into<String>) -> Self {
-        Self { source_type: None, lowered_type: Some(lowered_type.into()), selector: None }
+        Self { source_type: None, lowered_type: Some(lowered_type.into()), selector: None, materialized_route_fields: None }
     }
 
     fn with_selector(mut self, selector: TemplateSelector) -> Self {
         self.selector = Some(selector);
         self
+    }
+
+    fn with_materialized_route_fields(mut self, fields: Vec<(String, String)>) -> Self {
+        self.materialized_route_fields = Some(fields);
+        self
+    }
+}
+
+struct LoweredLocalInitializer {
+    sil: String,
+    materialized_route_fields: Option<Vec<(String, String)>>,
+}
+
+impl LoweredLocalInitializer {
+    fn plain(sil: String) -> Self {
+        Self { sil, materialized_route_fields: None }
+    }
+
+    fn materialized(sil: String, route_fields: Vec<(String, String)>) -> Self {
+        Self { sil, materialized_route_fields: Some(route_fields) }
     }
 }
 
@@ -183,6 +211,16 @@ impl BodyBindings {
         }
         let root = indexed_root_binding(expr)?;
         array_element_type(self.source_type(root)?).map(str::to_string)
+    }
+
+    fn materialized_route_fields(&self, expr: &str) -> Option<&[(String, String)]> {
+        self.get(strip_outer_parentheses(expr))?.value.materialized_route_fields.as_deref()
+    }
+
+    fn invalidate_materialized_route_fields(&mut self, name: &str) {
+        if let Some(binding) = self.scopes.iter_mut().rev().find_map(|scope| scope.bindings.get_mut(name)) {
+            binding.value.materialized_route_fields = None;
+        }
     }
 
     fn selector(&self, name: &str) -> Option<(BodyBindingId, &TemplateSelector)> {
@@ -503,8 +541,11 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         let lowered = self.lower_typed_local_initializer(source_ty, &lowered_ty, &expr, indent)?;
 
         push_indent(out, indent);
-        out.push_str(&format!("{emitted_type} {name} = {lowered};\n"));
+        out.push_str(&format!("{emitted_type} {name} = {};\n", lowered.sil));
         let mut binding = BodyBinding::typed(source_ty, lowered_ty);
+        if let Some(route_fields) = lowered.materialized_route_fields {
+            binding = binding.with_materialized_route_fields(route_fields);
+        }
         if let Some(selector) = self.selector_catalog.get(name)
             && selector.actor_enum == source_ty
         {
@@ -533,6 +574,9 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         push_indent(out, indent);
         out.push_str(&self.lower_expr(&statement, None, indent)?);
         out.push_str(";\n");
+        if let Some(name) = assigned_binding_root(&statement) {
+            self.bindings.invalidate_materialized_route_fields(&name);
+        }
         for binding in bindings {
             self.declare_sil_binding(binding);
         }
@@ -767,8 +811,12 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         };
         let state_expr = self.materialize_indexed_expanded_state(out, indent, &route)?;
         let state_expr = state_expr.as_str();
-        let has_generated_fields = static_target.is_some() && self.actor_state_has_generated_fields(actor_expr, transition);
-        let state_arg = if !has_generated_fields && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
+        let can_reuse = if static_target.is_some() {
+            self.can_reuse_actor_state_expr(actor_expr, transition, state_expr, &state_ty)
+        } else {
+            self.can_reuse_state_expr(state_expr, &state_ty, &[])
+        };
+        let state_arg = if can_reuse {
             self.lower_expr(state_expr, Some(&state_ty), indent)?
         } else {
             let name = generated_state_name(&route, &state_ty);
@@ -936,8 +984,23 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         self.lower_state_expr_for_layout(state_name, state_ty, generated_fields, expr, indent)
     }
 
-    fn actor_state_has_generated_fields(&self, actor: &str, transition: Option<&CompilerRouteTransition>) -> bool {
-        !hidden_template_object_fields_for_actor(self.actor, actor, transition, self.model).is_empty()
+    fn can_reuse_state_expr(&self, expr: &str, state_ty: &str, required_route_fields: &[(String, String)]) -> bool {
+        if self.bindings.lowered_type_for_expr(expr).as_deref() != Some(state_ty) {
+            return false;
+        }
+        required_route_fields.is_empty()
+            || self.bindings.materialized_route_fields(expr).is_some_and(|fields| fields == required_route_fields)
+    }
+
+    fn can_reuse_actor_state_expr(
+        &self,
+        actor: &str,
+        transition: Option<&CompilerRouteTransition>,
+        expr: &str,
+        state_ty: &str,
+    ) -> bool {
+        let route_fields = hidden_template_object_fields_for_actor(self.actor, actor, transition, self.model);
+        self.can_reuse_state_expr(expr, state_ty, &route_fields)
     }
 
     /// Sil flattens struct arrays, but cannot directly traverse a nested struct
@@ -973,7 +1036,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         indent: usize,
     ) -> Result<String> {
         let expr = strip_outer_parentheses(expr.trim());
-        if generated_fields.is_empty() && self.bindings.lowered_type_for_expr(expr).is_some_and(|ty| ty == state_ty) {
+        if self.can_reuse_state_expr(expr, state_ty, &generated_fields) {
             return self.lower_expr(expr, Some(state_ty), indent);
         }
         // A source expression may be caller-controlled. Materialization copies
@@ -1061,8 +1124,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         let state_ty = contract_state_type_for_actor(&route.actor, self.actor, self.model)?;
         let state_expr = self.materialize_indexed_expanded_state(out, indent, &route)?;
         let state_expr = state_expr.as_str();
-        let has_generated_fields = self.actor_state_has_generated_fields(&route.actor, transition);
-        let state_arg = if !has_generated_fields && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
+        let state_arg = if self.can_reuse_actor_state_expr(&route.actor, transition, state_expr, &state_ty) {
             self.lower_expr(state_expr, Some(&state_ty), indent)?
         } else {
             let name = generated_state_name(&route, &state_ty);
@@ -1136,8 +1198,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         let state_ty = contract_state_type_for_actor(layout_actor, self.actor, self.model)?;
         let state_expr = self.materialize_indexed_expanded_state(out, indent, &route)?;
         let state_expr = state_expr.as_str();
-        let has_generated_fields = self.actor_state_has_generated_fields(layout_actor, Some(transition));
-        let state_arg = if !has_generated_fields && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
+        let state_arg = if self.can_reuse_actor_state_expr(layout_actor, Some(transition), state_expr, &state_ty) {
             self.lower_expr(state_expr, Some(&state_ty), indent)?
         } else {
             let name = generated_state_name(&route, &state_ty);
@@ -1220,17 +1281,25 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         state_payload_digest_expr(state_name, value, self.model)
     }
 
-    fn lower_typed_local_initializer(&self, source_ty: &str, lowered_ty: &str, expr: &str, indent: usize) -> Result<String> {
+    fn lower_typed_local_initializer(
+        &self,
+        source_ty: &str,
+        lowered_ty: &str,
+        expr: &str,
+        indent: usize,
+    ) -> Result<LoweredLocalInitializer> {
         if self.model.actor_enums.contains_key(source_ty) {
-            return self.lower_actor_enum_initializer(source_ty, expr, indent);
+            return self.lower_actor_enum_initializer(source_ty, expr, indent).map(LoweredLocalInitializer::plain);
         }
         if let Some(state_name) = self.source_state_for_local_type(source_ty)
             && let Some(body) = split_state_object_literal(expr)
         {
             if lowered_ty == source_ty && self.model.state(&state_name)?.expansion.is_some() {
-                return self.lower_authored_state_object(&state_name, body, indent);
+                return self.lower_authored_state_object(&state_name, body, indent).map(LoweredLocalInitializer::plain);
             }
-            return self.lower_state_object_for_state(&state_name, body, indent);
+            let route_fields = hidden_template_object_fields_for_state(self.actor, &state_name, self.model);
+            let sil = self.lower_state_object(&state_name, body, route_fields.clone(), indent)?;
+            return Ok(LoweredLocalInitializer::materialized(sil, route_fields));
         }
         if self.model.has_state(source_ty) && self.bindings.lowered_type_for_expr(expr.trim()).is_none_or(|ty| ty != lowered_ty) {
             let lowered_expr = self.lower_expr(expr, None, indent)?;
@@ -1241,10 +1310,13 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                 .iter()
                 .map(|field| (field.name.clone(), format!("{lowered_expr}.{}", field.name)))
                 .collect::<Vec<_>>();
-            let generated_fields = hidden_template_object_fields_for_state(self.actor, source_ty, self.model);
-            return self.render_state_object(source_ty, &fields, generated_fields, indent);
+            let route_fields = hidden_template_object_fields_for_state(self.actor, source_ty, self.model);
+            let sil = self.render_state_object(source_ty, &fields, route_fields.clone(), indent)?;
+            return Ok(LoweredLocalInitializer::materialized(sil, route_fields));
         }
-        self.lower_expr(expr, Some(lowered_ty), indent)
+        let sil = self.lower_expr(expr, Some(lowered_ty), indent)?;
+        let materialized_route_fields = self.bindings.materialized_route_fields(expr).map(|fields| fields.to_vec());
+        Ok(LoweredLocalInitializer { sil, materialized_route_fields })
     }
 
     fn lower_actor_enum_initializer(&self, actor_enum_name: &str, expr: &str, indent: usize) -> Result<String> {
@@ -1758,6 +1830,18 @@ fn strip_outer_parentheses(mut expr: &str) -> &str {
         }
         expr = expr[tokens[0].span.end..tokens[close].span.start].trim();
     }
+}
+
+/// Return the root binding replaced by a plain whole-value assignment.
+fn assigned_binding_root(statement: &str) -> Option<String> {
+    let tokens = lex(statement).ok()?;
+    let TokenKind::Ident(name) = &tokens.first()?.kind else {
+        return None;
+    };
+    if !is_symbol(&tokens, 1, '=') || is_symbol(&tokens, 2, '=') {
+        return None;
+    }
+    Some(name.clone())
 }
 
 /// Return the bound root when the entire expression is one index access.

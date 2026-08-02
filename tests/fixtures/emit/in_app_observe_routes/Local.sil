@@ -78,16 +78,8 @@ contract Local(
             foreign_id: foreign_id,
             steps: steps + 1,
         };
-        State gen__state_next_state = {
-            // :: generated fields
-            gen__foreign_template: gen__foreign_template,
-            gen__target_template: gen__target_template,
-            // :: user declared fields
-            foreign_id: next_local.foreign_id,
-            steps: next_local.steps,
-        };
         // :: become Local
-        validateOutputState(gen__next_output_idx, gen__state_next_state);
+        validateOutputState(gen__next_output_idx, next_local);
     }
 
 }
