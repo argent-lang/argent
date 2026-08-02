@@ -55,10 +55,16 @@ contract Local(
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Local
 
         Gen__ForeignState next_foreign = gen__remote_src_state;
+        Gen__ForeignState gen__state_next_gen__foreign_state = {
+            // :: generated fields
+            gen__target_template: gen__target_template,
+            // :: user declared fields
+            amount: next_foreign.amount,
+        };
         // :: observed become remote.next -> Foreign
         validateOutputStateWithInputTemplate(
             gen__remote_next_output_idx,
-            next_foreign,
+            gen__state_next_gen__foreign_state,
             gen__remote_src_input_idx,
             gen__foreign_prefix_len,
             gen__foreign_suffix_len,
@@ -72,8 +78,16 @@ contract Local(
             foreign_id: foreign_id,
             steps: steps + 1,
         };
+        State gen__state_next_state = {
+            // :: generated fields
+            gen__foreign_template: gen__foreign_template,
+            gen__target_template: gen__target_template,
+            // :: user declared fields
+            foreign_id: next_local.foreign_id,
+            steps: next_local.steps,
+        };
         // :: become Local
-        validateOutputState(gen__next_output_idx, next_local);
+        validateOutputState(gen__next_output_idx, gen__state_next_state);
     }
 
 }

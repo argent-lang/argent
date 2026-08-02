@@ -105,8 +105,15 @@ contract Controller(
             gen__actor_type_self_pair_type_suffix,
             pair_type
         );
+        State gen__state_next_state = {
+            // :: generated fields
+            gen__anchor_template: gen__anchor_template,
+            // :: user declared fields
+            pair_type: next.pair_type,
+            launches: next.launches,
+        };
         // :: become Controller
-        validateOutputState(gen__next_output_idx, next);
+        validateOutputState(gen__next_output_idx, gen__state_next_state);
     }
 
 }

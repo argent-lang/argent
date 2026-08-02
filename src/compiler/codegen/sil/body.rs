@@ -766,8 +766,8 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             state_name.clone()
         };
         let state_expr = route.state.trim();
-        let packs_family = transition.is_some_and(|transition| !transition.families_to_pack.is_empty());
-        let state_arg = if !packs_family && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
+        let has_generated_fields = static_target.is_some() && self.actor_state_has_generated_fields(actor_expr, transition);
+        let state_arg = if !has_generated_fields && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
             self.lower_expr(state_expr, Some(&state_ty), indent)?
         } else {
             let name = generated_state_name(&route, &state_ty);
@@ -927,13 +927,16 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         let state_name = &self.model.actor(actor)?.state;
         let state_ty = contract_state_type_for_actor(actor, self.actor, self.model)?;
         let generated_fields = hidden_template_object_fields_for_actor(self.actor, actor, transition, self.model);
-        let force_materialization = transition.is_some_and(|transition| !transition.families_to_pack.is_empty());
-        self.lower_state_expr_for_layout(state_name, &state_ty, generated_fields, force_materialization, expr, indent)
+        self.lower_state_expr_for_layout(state_name, &state_ty, generated_fields, expr, indent)
     }
 
     fn lower_state_expr_for_dynamic_state(&self, state_name: &str, state_ty: &str, expr: &str, indent: usize) -> Result<String> {
         let generated_fields = hidden_template_object_fields(self.actor, RouteFieldKind::None, &[], self.model);
-        self.lower_state_expr_for_layout(state_name, state_ty, generated_fields, false, expr, indent)
+        self.lower_state_expr_for_layout(state_name, state_ty, generated_fields, expr, indent)
+    }
+
+    fn actor_state_has_generated_fields(&self, actor: &str, transition: Option<&CompilerRouteTransition>) -> bool {
+        !hidden_template_object_fields_for_actor(self.actor, actor, transition, self.model).is_empty()
     }
 
     fn lower_state_expr_for_layout(
@@ -941,12 +944,11 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         state_name: &str,
         state_ty: &str,
         generated_fields: Vec<(String, String)>,
-        force_materialization: bool,
         expr: &str,
         indent: usize,
     ) -> Result<String> {
         let expr = expr.trim();
-        if !force_materialization && self.bindings.lowered_type_for_expr(expr).is_some_and(|ty| ty == state_ty) {
+        if generated_fields.is_empty() && self.bindings.lowered_type_for_expr(expr).is_some_and(|ty| ty == state_ty) {
             return self.lower_expr(expr, Some(state_ty), indent);
         }
         // A source expression may be caller-controlled. Materialization copies
@@ -978,6 +980,12 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                 })
                 .collect::<Vec<_>>();
             return self.render_state_object(state_name, &fields, generated_fields, indent);
+        }
+
+        if !generated_fields.is_empty() {
+            return Err(self.error(format!(
+                "state expression `{expr}` has no known authored state type and cannot initialize compiler-generated route fields"
+            )));
         }
 
         self.lower_expr(expr, Some(state_ty), indent)
@@ -1014,8 +1022,8 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         });
         let state_ty = contract_state_type_for_actor(&route.actor, self.actor, self.model)?;
         let state_expr = route.state.trim();
-        let packs_family = transition.is_some_and(|transition| !transition.families_to_pack.is_empty());
-        let state_arg = if !packs_family && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
+        let has_generated_fields = self.actor_state_has_generated_fields(&route.actor, transition);
+        let state_arg = if !has_generated_fields && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
             self.lower_expr(state_expr, Some(&state_ty), indent)?
         } else {
             let name = generated_state_name(&route, &state_ty);
@@ -1088,8 +1096,8 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         );
         let state_ty = contract_state_type_for_actor(layout_actor, self.actor, self.model)?;
         let state_expr = route.state.trim();
-        let packs_family = !transition.families_to_pack.is_empty();
-        let state_arg = if !packs_family && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
+        let has_generated_fields = self.actor_state_has_generated_fields(layout_actor, Some(transition));
+        let state_arg = if !has_generated_fields && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
             self.lower_expr(state_expr, Some(&state_ty), indent)?
         } else {
             let name = generated_state_name(&route, &state_ty);

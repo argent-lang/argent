@@ -2685,8 +2685,8 @@ fn stones_delegate_reads_use_length_only_template_witnesses() {
         !player_sil.contains("gen__league_template"),
         "Player route-family template root should not carry unrelated League template: {player_sil}"
     );
-    assert!(player_sil.contains("validateOutputState(gen__self_out_output_idx, next_self);"), "{player_sil}");
-    assert!(player_sil.contains("validateOutputState(gen__opponent_out_output_idx, next_opponent);"), "{player_sil}");
+    assert!(player_sil.contains("validateOutputState(gen__self_out_output_idx, gen__state_self_out_state);"), "{player_sil}");
+    assert!(player_sil.contains("validateOutputState(gen__opponent_out_output_idx, gen__state_opponent_out_state);"), "{player_sil}");
     assert!(player_sil.contains("validateOutputStateWithTemplate(\n            gen__game_output_idx,"), "{player_sil}");
     assert!(league_sil.contains("entrypoint function register_player(\n"), "{league_sil}");
     assert!(league_sil.contains("byte[] gen__player_prefix,"), "{league_sil}");
@@ -3645,6 +3645,23 @@ fn family_commitments_pack_on_planned_cut_transitions() {
     assert!(!mux_sil.contains("gen__mux_routes_digest: gen__mux_routes_digest,"), "{mux_sil}");
 
     inline_artifact("family-pack-transition", &source);
+}
+
+#[test]
+fn rejects_untyped_physical_state_readers_for_routed_outputs() {
+    for state_expr in ["readInputState(this.activeInputIndex)", "readInputStateWithTemplate(this.activeInputIndex, 0, 0, byte[32](0))"]
+    {
+        let source = toy_chess_source().replace(
+            "PlayerState next_player = {\n                        nonce: nonce,\n                    };\n                    become next <- Player(next_player);",
+            &format!("become next <- Player({state_expr});"),
+        );
+        let err = emit_inline_error(&source);
+
+        assert!(
+            err.to_string().contains("has no known authored state type and cannot initialize compiler-generated route fields"),
+            "unexpected error for `{state_expr}`: {err}"
+        );
+    }
 }
 
 #[test]
