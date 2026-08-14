@@ -2047,7 +2047,7 @@ fn icc_asset_lowers_cov_id_co_spend_and_else_if() {
     assert!(kcc20_sil.contains("require(checkSig(owner_sig, owner_identifier));"), "{kcc20_sil}");
     assert!(kcc20_sil.contains("// :: co-spent with owner_identifier"), "{kcc20_sil}");
     assert!(kcc20_sil.contains("require(OpCovInputCount(owner_identifier) > 0);"), "{kcc20_sil}");
-    assert!(kcc20_sil.contains("State next_state = {"), "{kcc20_sil}");
+    assert!(kcc20_sil.contains("State next_state = State {"), "{kcc20_sil}");
 
     let proxy_sil = fs::read_to_string(out_dir.join("sil/MinterProxy.sil")).expect("MinterProxy.sil exists");
     assert!(proxy_sil.contains("byte[32] controller_id = init_controller_id;"), "{proxy_sil}");
@@ -3183,8 +3183,8 @@ fn foreign_routes_materialize_the_target_actors_cut() {
         .expect("A receives an actor-qualified foreign state layout");
     assert!(actor_layout.contains("byte[32] gen__tail_a_template;"), "{source_sil}");
     assert!(!actor_layout.contains("gen__tail_b_template"), "{source_sil}");
-    assert!(source_sil.contains("SharedState next = {"), "{source_sil}");
-    assert!(source_sil.contains("Gen__AState gen__state_next_gen__a_state = {"), "{source_sil}");
+    assert!(source_sil.contains("SharedState next = SharedState {"), "{source_sil}");
+    assert!(source_sil.contains("Gen__AState gen__state_next_gen__a_state = Gen__AState {"), "{source_sil}");
     assert!(source_sil.contains("amount: next.amount,"), "{source_sil}");
     assert!(source_sil.contains("gen__tail_a_template: gen__tail_a_template,"), "{source_sil}");
     assert!(!source_sil.contains("gen__tail_b_template:"), "{source_sil}");
@@ -3680,7 +3680,7 @@ fn family_commitments_pack_on_planned_cut_transitions() {
     );
 
     let mux_sil = emit_actor(model.actor("Mux").expect("Mux exists"), &model).expect("Mux Sil emits");
-    assert!(mux_sil.contains("PlayerState next_player = {"), "{mux_sil}");
+    assert!(mux_sil.contains("PlayerState next_player = PlayerState {"), "{mux_sil}");
     assert!(mux_sil.contains("gen__mux_routes_digest: blake2b(gen__mux_routes),"), "{mux_sil}");
     assert!(!mux_sil.contains("gen__mux_routes_digest: gen__mux_routes_digest,"), "{mux_sil}");
 
@@ -3698,13 +3698,25 @@ fn route_neutral_state_locals_convert_at_actor_routes() {
     let straight_sil = actor_sil_for_model(&straight_model);
 
     assert!(straight_sil["Lobby"].contains("struct BoardState {"), "{}", straight_sil["Lobby"]);
-    assert!(straight_sil["Lobby"].contains("BoardState next_board = {"), "{}", straight_sil["Lobby"]);
-    assert!(straight_sil["Lobby"].contains("Gen__MuxState gen__state_next_gen__mux_state = {"), "{}", straight_sil["Lobby"]);
+    assert!(straight_sil["Lobby"].contains("BoardState next_board = BoardState {"), "{}", straight_sil["Lobby"]);
+    assert!(
+        straight_sil["Lobby"].contains("Gen__MuxState gen__state_next_gen__mux_state = Gen__MuxState {"),
+        "{}",
+        straight_sil["Lobby"]
+    );
     assert!(straight_sil["Mux"].contains("struct ArchiveState {"), "{}", straight_sil["Mux"]);
-    assert!(straight_sil["Mux"].contains("ArchiveState next_archive = {"), "{}", straight_sil["Mux"]);
-    assert!(straight_sil["Mux"].contains("Gen__ArchiveState gen__state_next_gen__archive_state = {"), "{}", straight_sil["Mux"]);
-    assert!(straight_sil["Archive"].contains("BoardState next_board = {"), "{}", straight_sil["Archive"]);
-    assert!(straight_sil["Archive"].contains("Gen__PawnState gen__state_next_gen__pawn_state = {"), "{}", straight_sil["Archive"]);
+    assert!(straight_sil["Mux"].contains("ArchiveState next_archive = ArchiveState {"), "{}", straight_sil["Mux"]);
+    assert!(
+        straight_sil["Mux"].contains("Gen__ArchiveState gen__state_next_gen__archive_state = Gen__ArchiveState {"),
+        "{}",
+        straight_sil["Mux"]
+    );
+    assert!(straight_sil["Archive"].contains("BoardState next_board = BoardState {"), "{}", straight_sil["Archive"]);
+    assert!(
+        straight_sil["Archive"].contains("Gen__PawnState gen__state_next_gen__pawn_state = Gen__PawnState {"),
+        "{}",
+        straight_sil["Archive"]
+    );
 
     let choice_path = PathBuf::from("examples/route_state_body_choice.ag");
     let choice_source = fs::read_to_string(&choice_path).expect("route state body choice example exists");
@@ -3714,8 +3726,8 @@ fn route_neutral_state_locals_convert_at_actor_routes() {
     let choice_sil = emit_actor(choice_model.actor("Lobby").expect("Lobby exists"), &choice_model).expect("Lobby Sil emits");
 
     assert!(choice_sil.contains("struct BoardState {"), "{choice_sil}");
-    assert!(choice_sil.contains("BoardState next_board = {"), "{choice_sil}");
-    assert!(choice_sil.contains("Gen__MuxState gen__state_next_gen__mux_state = {"), "{choice_sil}");
+    assert!(choice_sil.contains("BoardState next_board = BoardState {"), "{choice_sil}");
+    assert!(choice_sil.contains("Gen__MuxState gen__state_next_gen__mux_state = Gen__MuxState {"), "{choice_sil}");
     assert!(
         choice_sil.contains("validateOutputStateWithTemplate(\n                gen__next_output_idx,\n                next_board,"),
         "{choice_sil}"
@@ -3896,8 +3908,8 @@ fn toy_chess_sil_uses_one_level_route_family_shape() {
     assert!(player_sil.contains("byte[] gen__mux_suffix,"), "{player_sil}");
     assert!(player_sil.contains("byte[64] gen__mux_routes"), "{player_sil}");
     assert!(player_sil.contains("require(blake2b(gen__mux_routes) == gen__mux_routes_digest);"), "{player_sil}");
-    assert!(player_sil.contains("BoardState next_board = {"), "{player_sil}");
-    assert!(player_sil.contains("Gen__MuxState gen__state_next_gen__mux_state = {"), "{player_sil}");
+    assert!(player_sil.contains("BoardState next_board = BoardState {"), "{player_sil}");
+    assert!(player_sil.contains("Gen__MuxState gen__state_next_gen__mux_state = Gen__MuxState {"), "{player_sil}");
     assert!(!player_sil.contains("gen__pawn_template"), "{player_sil}");
     assert!(!player_sil.contains("gen__knight_template"), "{player_sil}");
 

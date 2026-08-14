@@ -980,7 +980,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             if self.model.storage_state_name(source_state)? != self.model.storage_state_name(state_name)? {
                 return Err(ArgentError::new(format!("state `{source_state}` cannot initialize contract state `{state_name}`")));
             }
-            return self.lower_state_object(source_state, body, generated_fields, indent);
+            return self.lower_state_object(source_state, state_ty, body, generated_fields, indent);
         }
 
         let source_state = if expr == "self.state" {
@@ -1015,7 +1015,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                     Ok((field.name.clone(), value))
                 })
                 .collect::<Result<Vec<_>>>()?;
-            return self.render_state_object(state_name, &fields, generated_fields, indent);
+            return self.render_state_object(state_name, state_ty, &fields, generated_fields, indent);
         }
 
         self.lower_expr(expr, Some(state_ty), indent)
@@ -1181,7 +1181,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             return self.lower_digest_expr(value);
         }
         if let Some((state_name, body)) = split_state_constructor(expr) {
-            return self.lower_state_constructor(state_name, body, indent);
+            return self.lower_state_constructor(state_name, expected_ty.unwrap_or(state_name), body, indent);
         }
         self.lower_refs(expr)
     }
@@ -1195,12 +1195,12 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             .iter()
             .map(|field| (field.name.clone(), field.name.clone()))
             .collect::<Vec<_>>();
-        self.render_state_object_for_state(state_name, &fields, indent)
+        self.render_state_object_for_state(state_name, ty, &fields, indent)
     }
 
-    fn lower_state_constructor(&self, state_name: &str, body: &str, indent: usize) -> Result<String> {
+    fn lower_state_constructor(&self, state_name: &str, sil_type: &str, body: &str, indent: usize) -> Result<String> {
         self.model.state(state_name)?;
-        self.lower_state_object_for_state(state_name, body, indent)
+        self.lower_state_object_for_state(state_name, sil_type, body, indent)
     }
 
     fn lower_digest_expr(&self, value: &str) -> Result<String> {
@@ -1220,9 +1220,9 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             && let Some(body) = split_state_object_literal(expr)
         {
             if lowered_ty == source_ty && self.model.state(&state_name)?.expansion.is_some() {
-                return self.lower_authored_state_object(&state_name, body, indent);
+                return self.lower_authored_state_object(&state_name, lowered_ty, body, indent);
             }
-            return self.lower_state_object_for_state(&state_name, body, indent);
+            return self.lower_state_object_for_state(&state_name, lowered_ty, body, indent);
         }
         if self.model.has_state(source_ty) && self.bindings.lowered_type_for_expr(expr.trim()).is_none_or(|ty| ty != lowered_ty) {
             let lowered_expr = self.lower_expr(expr, None, indent)?;
@@ -1234,7 +1234,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                 .map(|field| (field.name.clone(), format!("{lowered_expr}.{}", field.name)))
                 .collect::<Vec<_>>();
             let generated_fields = hidden_template_object_fields_for_state(self.actor, source_ty, self.model);
-            return self.render_state_object(source_ty, &fields, generated_fields, indent);
+            return self.render_state_object(source_ty, lowered_ty, &fields, generated_fields, indent);
         }
         self.lower_expr(expr, Some(lowered_ty), indent)
     }
@@ -1266,36 +1266,37 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         self.lower_expr(expr, Some("int"), indent)
     }
 
-    fn lower_state_object_for_state(&self, state_name: &str, body: &str, indent: usize) -> Result<String> {
+    fn lower_state_object_for_state(&self, state_name: &str, sil_type: &str, body: &str, indent: usize) -> Result<String> {
         self.model.state(state_name)?;
         let generated_fields = hidden_template_object_fields_for_state(self.actor, state_name, self.model);
-        self.lower_state_object(state_name, body, generated_fields, indent)
+        self.lower_state_object(state_name, sil_type, body, generated_fields, indent)
     }
 
-    fn lower_authored_state_object(&self, state_name: &str, body: &str, indent: usize) -> Result<String> {
+    fn lower_authored_state_object(&self, state_name: &str, sil_type: &str, body: &str, indent: usize) -> Result<String> {
         let fields = parse_state_fields(body)
             .into_iter()
             .map(|(name, expr)| self.lower_expr(&expr, None, indent + 4).map(|lowered| (name, lowered)))
             .collect::<Result<Vec<_>>>()?;
-        self.render_state_object(state_name, &fields, Vec::new(), indent)
+        self.render_state_object(state_name, sil_type, &fields, Vec::new(), indent)
     }
 
     fn lower_state_object(
         &self,
         state_name: &str,
+        sil_type: &str,
         body: &str,
         generated_fields: Vec<(String, String)>,
         indent: usize,
     ) -> Result<String> {
         let raw_fields = parse_state_fields(body);
         if self.model.state(state_name)?.expansion.is_some() {
-            return self.render_expanded_state_object(state_name, &raw_fields, generated_fields, indent);
+            return self.render_expanded_state_object(state_name, sil_type, &raw_fields, generated_fields, indent);
         }
         let fields = raw_fields
             .into_iter()
             .map(|(name, expr)| self.lower_expr(&expr, None, indent + 4).map(|lowered| (name, lowered)))
             .collect::<Result<Vec<_>>>()?;
-        self.render_state_object(state_name, &fields, generated_fields, indent)
+        self.render_state_object(state_name, sil_type, &fields, generated_fields, indent)
     }
 
     fn lower_local_type(&self, source_ty: &str) -> String {
@@ -1322,14 +1323,23 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         }
     }
 
-    fn render_state_object_for_state(&self, state_name: &str, fields: &[(String, String)], indent: usize) -> Result<String> {
+    fn render_state_object_for_state(
+        &self,
+        state_name: &str,
+        sil_type: &str,
+        fields: &[(String, String)],
+        indent: usize,
+    ) -> Result<String> {
         let generated_fields = hidden_template_object_fields_for_state(self.actor, state_name, self.model);
-        self.render_state_object(state_name, fields, generated_fields, indent)
+        self.render_state_object(state_name, sil_type, fields, generated_fields, indent)
     }
 
+    /// `state_name` selects the authored/storage fields, while `sil_type`
+    /// names the concrete struct that contains those fields in generated Sil.
     fn render_state_object(
         &self,
         state_name: &str,
+        sil_type: &str,
         fields: &[(String, String)],
         generated_fields: Vec<(String, String)>,
         indent: usize,
@@ -1340,8 +1350,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         if pending.len() != fields.len() {
             return Err(ArgentError::new(format!("state `{state_name}` constructor contains duplicate fields")));
         }
-        let mut out = String::new();
-        out.push_str("{\n");
+        let mut out = format!("{sil_type} {{\n");
         if !generated_fields.is_empty() {
             out.push_str(&format!("{field_indent}// :: generated fields\n"));
         }
@@ -1387,6 +1396,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     fn render_expanded_state_object(
         &self,
         state_name: &str,
+        sil_type: &str,
         fields: &[(String, String)],
         generated_fields: Vec<(String, String)>,
         indent: usize,
@@ -1400,8 +1410,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         }
         let field_indent = " ".repeat(indent + 4);
         let close_indent = " ".repeat(indent);
-        let mut out = String::new();
-        out.push_str("{\n");
+        let mut out = format!("{sil_type} {{\n");
         if !generated_fields.is_empty() {
             out.push_str(&format!("{field_indent}// :: generated fields\n"));
         }
