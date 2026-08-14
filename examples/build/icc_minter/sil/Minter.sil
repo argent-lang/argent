@@ -13,8 +13,8 @@ contract Minter(
     byte constant IDENTIFIER_COVENANT_ID = 0x02;
 
     // :: linked templates
-    byte[32] constant gen__kcc20_asset__kcc20_template_const = 0x0e9a40dcf2fd307d0288957c166beae77750f79686c43c8d42d6c4178a3ea72a;
-    byte[32] constant gen__kcc20_asset__minter_proxy_template_const = 0x69ddc77eece6021e9aa72af49be79cdd42b86d8170dfdfe2c934144a85a36024;
+    byte[32] constant gen__kcc20_asset__kcc20_template_const = byte[32](0x0a70e12197b9768e87d19602f0313c35014da6c25964121d1d9655469c142ad8);
+    byte[32] constant gen__kcc20_asset__minter_proxy_template_const = byte[32](0x3b29866f0aae49957c95fafc589d9e234eb4bc85ff1e602ec3336ea8faa2a432);
 
     // :: state layouts
     struct MinterProxyState {
@@ -38,7 +38,7 @@ contract Minter(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function mint(
+    entry mint(
         sig owner_sig,
         byte[32] recipient_owner,
         int minted_amount,
@@ -78,11 +78,11 @@ contract Minter(
         require(initialized);
         require(amount >= minted_amount);
         require(prev_proxy.controller_id == OpInputCovenantId(this.activeInputIndex));
-        MinterProxyState next_proxy = {
+        MinterProxyState next_proxy = MinterProxyState {
             // :: user declared fields
             controller_id: OpInputCovenantId(this.activeInputIndex),
         };
-        KCC20State next_recipient = {
+        KCC20State next_recipient = KCC20State {
             // :: user declared fields
             owner_identifier: recipient_owner,
             identifier_type: IDENTIFIER_PUBKEY,
@@ -105,7 +105,7 @@ contract Minter(
             gen__kcc20_asset__kcc20_suffix,
             gen__kcc20_asset__kcc20_template
         );
-        State next_controller = {
+        State next_controller = State {
             // :: user declared fields
             owner: owner,
             kcc20_covid: kcc20_covid,

@@ -24,7 +24,7 @@ contract Issuer(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function issue(
+    entry issue(
         sig admin_sig,
         pubkey admin_pk,
         pubkey owner_pk,
@@ -38,18 +38,18 @@ contract Issuer(
         // :: output ticket: Ticket
         int gen__ticket_output_idx = OpAuthOutputIdx(this.activeInputIndex, 1);
 
-        require(blake2b(admin_pk) == admin);
+        require(blake2b(byte[](admin_pk)) == admin);
         require(checkSig(admin_sig, admin_pk));
         int serial = next_serial;
-        byte[32] owner = blake2b(owner_pk);
-        State next_issuer = {
+        byte[32] owner = blake2b(byte[](owner_pk));
+        State next_issuer = State {
             // :: generated fields
             gen__ticket_template: gen__ticket_template,
             // :: user declared fields
             admin: admin,
             next_serial: next_serial + 1,
         };
-        TicketState new_ticket = {
+        TicketState new_ticket = TicketState {
             // :: user declared fields
             owner: owner,
             serial: serial,

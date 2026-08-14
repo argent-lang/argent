@@ -20,7 +20,7 @@ contract Local(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function step(int gen__foreign_prefix_len, int gen__foreign_suffix_len) {
+    entry step(int gen__foreign_prefix_len, int gen__foreign_suffix_len) {
         // :: observed covenants
         byte[32] gen__asset_cov_id = target_id; // observe asset
         require(OpCovInputCount(gen__asset_cov_id) == 1);
@@ -40,7 +40,7 @@ contract Local(
         require(OpAuthOutputCount(this.activeInputIndex) == 0);
 
         ForeignState prev = gen__asset_src_state;
-        ForeignState next = {
+        ForeignState next = ForeignState {
             // :: user declared fields
             count: prev.count + 1,
         };

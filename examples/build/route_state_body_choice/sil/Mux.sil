@@ -22,13 +22,13 @@ contract Mux(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function choose(int target, byte[] gen__target_prefix, byte[] gen__target_suffix) {
+    entry choose(int target, byte[] gen__target_prefix, byte[] gen__target_suffix) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         // :: output next: MoveActor
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
-        State next_board = {
+        State next_board = State {
             // :: generated fields
             gen__mux_template: gen__mux_template,
             gen__mux_routes: gen__mux_routes,

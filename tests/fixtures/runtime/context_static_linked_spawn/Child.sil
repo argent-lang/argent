@@ -14,7 +14,7 @@ contract Child(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function hold() {
+    entry hold() {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 0);
 

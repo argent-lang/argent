@@ -36,16 +36,16 @@ contract League(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function register(byte[] gen__player_prefix, byte[] gen__player_suffix) {
+    entry register(byte[] gen__player_prefix, byte[] gen__player_suffix) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Player
 
-        PlayerState next_player = {
+        PlayerState next_player = PlayerState {
             // :: user declared fields
             nonce: nonce + 1,
         };
-        Gen__PlayerState gen__state_next_gen__player_state = {
+        Gen__PlayerState gen__state_next_gen__player_state = Gen__PlayerState {
             // :: generated fields
             gen__mux_template: gen__mux_template,
             gen__mux_routes_digest: gen__mux_routes_digest,

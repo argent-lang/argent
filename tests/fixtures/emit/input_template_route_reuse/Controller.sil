@@ -20,7 +20,7 @@ contract Controller(
 
     // :: entrypoints
     // :: leader entry (M:N)
-    entrypoint function step(int gen__peer_prefix_len, int gen__peer_suffix_len) {
+    entry step(int gen__peer_prefix_len, int gen__peer_suffix_len) {
         // :: cov inputs
         byte[32] gen__cov_id = OpInputCovenantId(this.activeInputIndex);
         require(OpCovInputCount(gen__cov_id) == 2);
@@ -37,7 +37,7 @@ contract Controller(
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__peer_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output peer: Peer
 
-        PeerState next_peer = {
+        PeerState next_peer = PeerState {
             // :: user declared fields
             count: peer.count + 1,
         };

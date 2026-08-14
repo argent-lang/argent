@@ -1,8 +1,4 @@
-use super::{EntryBinding, EntryBody, EntryStatement, lex};
-
-fn binding(name: &str, source_type: &str) -> EntryBinding {
-    EntryBinding { name: name.to_string(), source_type: source_type.to_string(), actor_type_state: None }
-}
+use super::{EntryBody, EntryStatement, lex};
 
 #[test]
 fn cursor_takes_nested_balanced_source() {
@@ -69,7 +65,7 @@ fn statements_keep_for_structure_and_the_following_boundary() {
     else {
         panic!("expected one for loop followed by one plain statement");
     };
-    assert_eq!(loop_binding, &binding("i", "int"));
+    assert_eq!((&*loop_binding.name, &*loop_binding.source_type), ("i", "int"));
     assert_eq!(body.span_text(*header), "i, 0, count, MAX_COUNT");
     assert!(matches!(loop_body.as_ref(), EntryStatement::Block { .. }));
     assert_eq!(body.span_text(*following).trim(), "require(done);");
@@ -92,11 +88,11 @@ fn statements_record_sil_bindings() {
     .expect("body parses");
 
     let expected = [
-        vec![binding("value", "int")],
-        vec![binding("hash", "byte[32]")],
-        vec![binding("left", "int"), binding("right", "bool")],
-        vec![binding("first", "int"), binding("second", "int")],
-        vec![binding("unpacked", "int"), binding("unpacked_hash", "byte[32]")],
+        vec![("value", "int")],
+        vec![("hash", "byte[32]")],
+        vec![("left", "int"), ("right", "bool")],
+        vec![("first", "int"), ("second", "int")],
+        vec![("unpacked", "int"), ("unpacked_hash", "byte[32]")],
         vec![],
         vec![],
         vec![],
@@ -108,7 +104,7 @@ fn statements_record_sil_bindings() {
             EntryStatement::Plain { bindings, .. } => bindings,
             _ => panic!("expected a local declaration or plain statement"),
         };
-        assert_eq!(bindings, expected.as_slice());
+        assert_eq!(bindings.iter().map(|binding| (binding.name.as_str(), binding.source_type.as_str())).collect::<Vec<_>>(), expected);
     }
 
     let EntryStatement::Local { declaration, .. } = &body.statements()[1] else {
@@ -151,8 +147,8 @@ fn local_declarations_keep_structured_selector_syntax() {
 fn statements_distinguish_brace_assignments_from_standalone_blocks() {
     let body = EntryBody::new(
         r#"
-            {left: int first, right: int second} = pair;
-            {count: int current} = readInputState(index);
+            PairState {left: int first, right: int second} = pair;
+            State {count: int current} = readInputState(index);
             {
                 require(first == current);
             }
@@ -161,15 +157,17 @@ fn statements_distinguish_brace_assignments_from_standalone_blocks() {
     .expect("body lexes");
 
     let [
-        EntryStatement::Plain { span: destructure, .. },
-        EntryStatement::Plain { span: state_read, .. },
+        EntryStatement::Plain { destructured_type: Some(pair_type), span: destructure, .. },
+        EntryStatement::Plain { destructured_type: Some(state_type), span: state_read, .. },
         EntryStatement::Block { .. },
     ] = body.statements()
     else {
         panic!("expected two brace assignments followed by one standalone block");
     };
-    assert_eq!(body.span_text(*destructure).trim(), "{left: int first, right: int second} = pair;");
-    assert_eq!(body.span_text(*state_read).trim(), "{count: int current} = readInputState(index);");
+    assert_eq!(body.span_text(*pair_type), "PairState");
+    assert_eq!(body.span_text(*state_type), "State");
+    assert_eq!(body.span_text(*destructure).trim(), "PairState {left: int first, right: int second} = pair;");
+    assert_eq!(body.span_text(*state_read).trim(), "State {count: int current} = readInputState(index);");
 }
 
 #[test]

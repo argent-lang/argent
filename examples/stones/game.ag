@@ -18,7 +18,7 @@ actor StonesGame owns GameState {
         require(amount <= max_take);
         require(amount <= pile);
 
-        byte[32] actor_ref = player_ref(blake2b(move_pk), player_id);
+        byte[32] actor_ref = player_ref(blake2b(byte[](move_pk)), player_id);
         byte[32] expected_ref = side_player(turn, player_a, player_b);
         require(actor_ref == expected_ref);
         require(checkSig(move_sig, move_pk));
@@ -56,7 +56,7 @@ actor StonesGame owns GameState {
     ) emits {
         settle: StonesSettle,
     } {
-        byte[32] actor_ref = player_ref(blake2b(move_pk), player_id);
+        byte[32] actor_ref = player_ref(blake2b(byte[](move_pk)), player_id);
         byte[32] expected_ref = side_player(turn, player_a, player_b);
         require(actor_ref == expected_ref);
         require(checkSig(move_sig, move_pk));

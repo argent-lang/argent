@@ -29,7 +29,7 @@ contract Launcher(
 
     // :: entrypoints
     // :: leader entry (M:N)
-    entrypoint function launch(
+    entry launch(
         int amount,
         int gen__child_prefix_len,
         int gen__child_suffix_len,
@@ -55,28 +55,28 @@ contract Launcher(
         // :: genesis covenants
         byte[] gen__child_group_genesis_preimage =
             OpOutpointTxId(this.activeInputIndex)
-            + bytes(OpOutpointIndex(this.activeInputIndex), 8).slice(0, 4)
-            + bytes(1, 8)
-            + bytes(gen__child_group_child_output_idx, 8).slice(0, 4)
-            + bytes(tx.outputs[gen__child_group_child_output_idx].value, 8)
-            + 0x0000
-            + bytes(35, 8)
+            + (OpOutpointIndex(this.activeInputIndex) as byte[8]).slice(0, 4)
+            + (1 as byte[8])
+            + (gen__child_group_child_output_idx as byte[8]).slice(0, 4)
+            + (tx.outputs[gen__child_group_child_output_idx].value as byte[8])
+            + byte[2](0x0000)
+            + (35 as byte[8])
             + OpTxOutputSpkSubstr(gen__child_group_child_output_idx, 2, 37);
-        byte[32] child_id = blake2bWithKey(gen__child_group_genesis_preimage, bytes("CovenantID"));
+        byte[32] child_id = blake2bWithKey(gen__child_group_genesis_preimage, byte[]("CovenantID"));
         require(OpOutputCovenantId(gen__child_group_child_output_idx) == child_id);
 
-        ChildState child_state = {
+        ChildState child_state = ChildState {
             // :: user declared fields
             amount: source.amount + amount,
         };
-        State next = {
+        State next = State {
             // :: generated fields
             gen__child_template: gen__child_template,
             gen__launcher_template: gen__launcher_template,
             // :: user declared fields
             launches: launches + 1,
         };
-        Gen__ChildState gen__state_child_gen__child_state = {
+        Gen__ChildState gen__state_child_gen__child_state = Gen__ChildState {
             // :: generated fields
             gen__child_template: gen__child_template,
             gen__launcher_template: gen__launcher_template,

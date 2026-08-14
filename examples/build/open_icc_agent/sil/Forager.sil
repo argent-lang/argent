@@ -54,14 +54,14 @@ contract Forager(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function step(
+    entry step(
         int next_x,
         int next_y,
         int next_energy,
         byte[48] gen__strategy_forager_strategy_preimage
     ) {
         // :: expanded state
-        require(blake2b(gen__strategy_forager_strategy_preimage) == strategy);
+        require(blake2b(byte[](gen__strategy_forager_strategy_preimage)) == strategy);
         int gen__strategy_hunger = OpBin2Num(gen__strategy_forager_strategy_preimage.slice(0, 8));
         int gen__strategy_mood = OpBin2Num(gen__strategy_forager_strategy_preimage.slice(8, 16));
         byte[32] gen__strategy_target_agent_id = byte[32](gen__strategy_forager_strategy_preimage.slice(16, 48));
@@ -75,14 +75,14 @@ contract Forager(
         require(OpCovInputCount(controller_id) > 0);
         require(next_energy == energy - 1);
         require(next_energy >= 0);
-        State next_agent = {
+        State next_agent = State {
             // :: user declared fields
             world_id: world_id,
             agent_id: agent_id,
             species_id: species_id,
             controller_id: controller_id,
             capabilities_digest: capabilities_digest,
-            strategy: blake2b(byte[8](gen__strategy_hunger + 1) + byte[8](gen__strategy_mood) + byte[](gen__strategy_target_agent_id)),
+            strategy: blake2b(byte[](((gen__strategy_hunger + 1) as byte[8]) + ((gen__strategy_mood) as byte[8]) + byte[](gen__strategy_target_agent_id))),
             x: next_x,
             y: next_y,
             energy: next_energy,

@@ -32,7 +32,7 @@ contract Controller(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function advance(
+    entry advance(
         byte[32] pair_id,
         int spawned_amount,
         int gen__anchor_prefix_len,
@@ -64,25 +64,25 @@ contract Controller(
         // :: genesis covenants
         byte[] gen__newborn_genesis_preimage =
             OpOutpointTxId(this.activeInputIndex)
-            + bytes(OpOutpointIndex(this.activeInputIndex), 8).slice(0, 4)
-            + bytes(1, 8)
-            + bytes(gen__newborn_pair_output_idx, 8).slice(0, 4)
-            + bytes(tx.outputs[gen__newborn_pair_output_idx].value, 8)
-            + 0x0000
-            + bytes(35, 8)
+            + (OpOutpointIndex(this.activeInputIndex) as byte[8]).slice(0, 4)
+            + (1 as byte[8])
+            + (gen__newborn_pair_output_idx as byte[8]).slice(0, 4)
+            + (tx.outputs[gen__newborn_pair_output_idx].value as byte[8])
+            + byte[2](0x0000)
+            + (35 as byte[8])
             + OpTxOutputSpkSubstr(gen__newborn_pair_output_idx, 2, 37);
-        byte[32] newborn_id = blake2bWithKey(gen__newborn_genesis_preimage, bytes("CovenantID"));
+        byte[32] newborn_id = blake2bWithKey(gen__newborn_genesis_preimage, byte[]("CovenantID"));
         require(OpOutputCovenantId(gen__newborn_pair_output_idx) == newborn_id);
 
-        PairState observed_next = {
+        PairState observed_next = PairState {
             // :: user declared fields
             amount: gen__existing_anchor_state.amount + 1,
         };
-        PairState spawned = {
+        PairState spawned = PairState {
             // :: user declared fields
             amount: spawned_amount,
         };
-        State next = {
+        State next = State {
             // :: generated fields
             gen__anchor_template: gen__anchor_template,
             // :: user declared fields

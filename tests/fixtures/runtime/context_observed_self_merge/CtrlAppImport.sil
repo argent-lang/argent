@@ -6,7 +6,7 @@ contract Ctrl(
     int init_n
 ) {
     // :: linked templates
-    byte[32] constant gen__asset_app__asset_template_const = 0xa946f8b5a2d33b35ce603ca9a02b4b6845f3b0561de2ff58c8cdcddf770f6160;
+    byte[32] constant gen__asset_app__asset_template_const = byte[32](0x38b1f17d736d263ac370b717c74d490e4bb153c08fb16e3c851b3f4265c82b6d);
 
     // :: state layouts
     struct AssetState {
@@ -22,7 +22,7 @@ contract Ctrl(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function act(
+    entry act(
         byte[32] asset_id,
         byte[32] new_owner,
         int gen__asset_app__asset_prefix_len,
@@ -51,7 +51,7 @@ contract Ctrl(
         int gen__ctrl_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output ctrl: Ctrl
 
         AssetState source = gen__asset_src_state;
-        AssetState next_asset = {
+        AssetState next_asset = AssetState {
             // :: user declared fields
             owner: new_owner,
             amount: source.amount,
@@ -65,7 +65,7 @@ contract Ctrl(
             gen__asset_app__asset_suffix_len,
             gen__asset_app__asset_template
         );
-        State next_ctrl = {
+        State next_ctrl = State {
             // :: user declared fields
             n: next_asset.amount,
         };

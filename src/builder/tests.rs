@@ -309,7 +309,7 @@ fn context_executes_dynamic_byte_array_sigscript_arguments_at_varying_lengths() 
                     unrestricted(next.value);
                     BlobState next = {
                         size: data.length,
-                        digest: blake2b(data),
+                        digest: blake2b(byte[](data)),
                     };
 
                     become next <- Blob(next);

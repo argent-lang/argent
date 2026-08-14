@@ -389,7 +389,9 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                 EntryStatement::Local { declaration, span } => {
                     self.lower_local_declaration(out, indent, declaration, *span)?;
                 }
-                EntryStatement::Plain { bindings, span, .. } => self.lower_plain_statement(out, indent, bindings, *span)?,
+                EntryStatement::Plain { bindings, destructured_type, span, .. } => {
+                    self.lower_plain_statement(out, indent, bindings, *destructured_type, *span)?;
+                }
                 EntryStatement::Block { statements, .. } => {
                     push_indent(out, indent);
                     out.push_str("{\n");
@@ -501,7 +503,6 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         let type_suffix = declared_type.strip_prefix(source_ty).expect("declared type starts with its parsed source type");
         let emitted_type = format!("{lowered_ty}{type_suffix}");
         let lowered = self.lower_typed_local_initializer(source_ty, &lowered_ty, &expr, indent)?;
-
         push_indent(out, indent);
         out.push_str(&format!("{emitted_type} {name} = {lowered};\n"));
         let mut binding = BodyBinding::typed(source_ty, lowered_ty);
@@ -514,9 +515,24 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         Ok(())
     }
 
-    fn lower_plain_statement(&mut self, out: &mut String, indent: usize, bindings: &[EntryBinding], span: Span) -> Result<()> {
+    fn lower_plain_statement(
+        &mut self,
+        out: &mut String,
+        indent: usize,
+        bindings: &[EntryBinding],
+        destructured_type: Option<Span>,
+        span: Span,
+    ) -> Result<()> {
         let source = self.entry.body.span_text(span).trim();
-        let statement = source.strip_suffix(';').ok_or_else(|| self.error("unterminated statement"))?.trim().to_string();
+        let mut statement = source.strip_suffix(';').ok_or_else(|| self.error("unterminated statement"))?.trim().to_string();
+
+        if let Some(type_span) = destructured_type {
+            let source_type = self.entry.body.span_text(type_span);
+            let lowered_type = self.lower_local_type(source_type);
+            let relative_start = type_span.start - span.start;
+            let relative_end = type_span.end - span.start;
+            statement.replace_range(relative_start..relative_end, &lowered_type);
+        }
 
         if let Some(value) = parse_unrestricted_output_value(&statement) {
             self.validate_unrestricted_output_value(value)?;
@@ -600,12 +616,12 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     }
 
     fn ensure_selector_template(&mut self, out: &mut String, indent: usize, selector_name: &str) -> Result<String> {
-        let template_var = hidden_template_selector_template_name(selector_name);
         let (binding_id, selector) = self
             .bindings
             .selector(selector_name)
             .map(|(id, selector)| (id, selector.clone()))
             .ok_or_else(|| ArgentError::new(format!("unknown actor handle `{selector_name}`")))?;
+        let template_var = hidden_template_selector_template_name(&selector.name);
         if self.bindings.selector_is_materialized(binding_id) {
             return Ok(template_var);
         }
@@ -1459,7 +1475,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                         digest.field
                     )));
                 }
-                out.push_str(&format!("{field_indent}{}: blake2b({payload}),\n", field.name));
+                out.push_str(&format!("{field_indent}{}: blake2b(byte[]({payload})),\n", field.name));
             } else if field.virtual_slot {
                 let raw_expr = pending.remove(&field.name).unwrap_or_else(|| field.name.clone());
                 let expr = self.lower_expr(&raw_expr, None, indent + 4)?;

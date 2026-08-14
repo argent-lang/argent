@@ -20,7 +20,7 @@ contract Controller(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function launch(
+    entry launch(
         int first_left_amount,
         int first_right_amount,
         int second_amount,
@@ -42,71 +42,71 @@ contract Controller(
         // :: genesis covenants
         byte[] gen__first_pair_genesis_preimage =
             OpOutpointTxId(this.activeInputIndex)
-            + bytes(OpOutpointIndex(this.activeInputIndex), 8).slice(0, 4)
-            + bytes(2, 8)
-            + bytes(gen__first_pair_left_output_idx, 8).slice(0, 4)
-            + bytes(tx.outputs[gen__first_pair_left_output_idx].value, 8)
-            + 0x0000
-            + bytes(35, 8)
+            + (OpOutpointIndex(this.activeInputIndex) as byte[8]).slice(0, 4)
+            + (2 as byte[8])
+            + (gen__first_pair_left_output_idx as byte[8]).slice(0, 4)
+            + (tx.outputs[gen__first_pair_left_output_idx].value as byte[8])
+            + byte[2](0x0000)
+            + (35 as byte[8])
             + OpTxOutputSpkSubstr(gen__first_pair_left_output_idx, 2, 37)
-            + bytes(gen__first_pair_right_output_idx, 8).slice(0, 4)
-            + bytes(tx.outputs[gen__first_pair_right_output_idx].value, 8)
-            + 0x0000
-            + bytes(35, 8)
+            + (gen__first_pair_right_output_idx as byte[8]).slice(0, 4)
+            + (tx.outputs[gen__first_pair_right_output_idx].value as byte[8])
+            + byte[2](0x0000)
+            + (35 as byte[8])
             + OpTxOutputSpkSubstr(gen__first_pair_right_output_idx, 2, 37);
-        byte[32] first_pair_id = blake2bWithKey(gen__first_pair_genesis_preimage, bytes("CovenantID"));
+        byte[32] first_pair_id = blake2bWithKey(gen__first_pair_genesis_preimage, byte[]("CovenantID"));
         require(OpOutputCovenantId(gen__first_pair_left_output_idx) == first_pair_id);
         byte[] gen__second_pair_genesis_preimage =
             OpOutpointTxId(this.activeInputIndex)
-            + bytes(OpOutpointIndex(this.activeInputIndex), 8).slice(0, 4)
-            + bytes(1, 8)
-            + bytes(gen__second_pair_pair_output_idx, 8).slice(0, 4)
-            + bytes(tx.outputs[gen__second_pair_pair_output_idx].value, 8)
-            + 0x0000
-            + bytes(35, 8)
+            + (OpOutpointIndex(this.activeInputIndex) as byte[8]).slice(0, 4)
+            + (1 as byte[8])
+            + (gen__second_pair_pair_output_idx as byte[8]).slice(0, 4)
+            + (tx.outputs[gen__second_pair_pair_output_idx].value as byte[8])
+            + byte[2](0x0000)
+            + (35 as byte[8])
             + OpTxOutputSpkSubstr(gen__second_pair_pair_output_idx, 2, 37);
-        byte[32] second_pair_id = blake2bWithKey(gen__second_pair_genesis_preimage, bytes("CovenantID"));
+        byte[32] second_pair_id = blake2bWithKey(gen__second_pair_genesis_preimage, byte[]("CovenantID"));
         require(gen__first_pair_left_output_idx < gen__second_pair_pair_output_idx);
         require(OpOutputCovenantId(gen__second_pair_pair_output_idx) == second_pair_id);
         byte[] gen__third_pair_genesis_preimage =
             OpOutpointTxId(this.activeInputIndex)
-            + bytes(OpOutpointIndex(this.activeInputIndex), 8).slice(0, 4)
-            + bytes(2, 8)
-            + bytes(gen__third_pair_left_output_idx, 8).slice(0, 4)
-            + bytes(tx.outputs[gen__third_pair_left_output_idx].value, 8)
-            + 0x0000
-            + bytes(35, 8)
+            + (OpOutpointIndex(this.activeInputIndex) as byte[8]).slice(0, 4)
+            + (2 as byte[8])
+            + (gen__third_pair_left_output_idx as byte[8]).slice(0, 4)
+            + (tx.outputs[gen__third_pair_left_output_idx].value as byte[8])
+            + byte[2](0x0000)
+            + (35 as byte[8])
             + OpTxOutputSpkSubstr(gen__third_pair_left_output_idx, 2, 37)
-            + bytes(gen__third_pair_right_output_idx, 8).slice(0, 4)
-            + bytes(tx.outputs[gen__third_pair_right_output_idx].value, 8)
-            + 0x0000
-            + bytes(35, 8)
+            + (gen__third_pair_right_output_idx as byte[8]).slice(0, 4)
+            + (tx.outputs[gen__third_pair_right_output_idx].value as byte[8])
+            + byte[2](0x0000)
+            + (35 as byte[8])
             + OpTxOutputSpkSubstr(gen__third_pair_right_output_idx, 2, 37);
-        byte[32] third_pair_id = blake2bWithKey(gen__third_pair_genesis_preimage, bytes("CovenantID"));
+        byte[32] third_pair_id = blake2bWithKey(gen__third_pair_genesis_preimage, byte[]("CovenantID"));
         require(gen__second_pair_pair_output_idx < gen__third_pair_left_output_idx);
         require(OpOutputCovenantId(gen__third_pair_left_output_idx) == third_pair_id);
 
-        PairState first_left = {
+        PairState first_left = PairState {
             // :: user declared fields
             amount: first_left_amount,
         };
-        PairState first_right = {
+        PairState first_right = PairState {
             // :: user declared fields
             amount: first_right_amount,
         };
-        PairState second = {
+        PairState second = PairState {
             // :: user declared fields
             amount: second_amount,
         };
-        PairState third_left = {
+        PairState third_left = PairState {
             // :: user declared fields
             amount: third_left_amount,
         };
-        PairState third_right = {
+        PairState third_right = PairState {
             // :: user declared fields
             amount: third_right_amount,
         };
-        State next = {
+        State next = State {
             // :: user declared fields
             pair_type: pair_type,
             launches: launches + 3,

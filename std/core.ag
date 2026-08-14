@@ -10,8 +10,8 @@ fn invocation_uid(byte[] domain) -> byte[32] {
 
     byte[36] outpoint = byte[36](
         OpOutpointTxId(this.activeInputIndex)
-            + byte[4](OpOutpointIndex(this.activeInputIndex))
+            + (OpOutpointIndex(this.activeInputIndex) as byte[4])
     );
 
-    return blake2bWithKey(outpoint, domain);
+    return blake2bWithKey(byte[](outpoint), domain);
 }

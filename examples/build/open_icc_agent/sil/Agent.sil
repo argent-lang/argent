@@ -60,7 +60,7 @@ contract Agent(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function step(State next_agent) {
+    entry step(State next_agent) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         // :: output agent: Agent

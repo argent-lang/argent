@@ -28,7 +28,7 @@ contract Mux(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function choose(int target, byte[] gen__target_prefix, byte[] gen__target_suffix) {
+    entry choose(int target, byte[] gen__target_prefix, byte[] gen__target_suffix) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         // :: output next: MoveActor
@@ -37,7 +37,7 @@ contract Mux(
         if (target == 1 /*KNIGHT*/) {
             require(selector >= 0);
         }
-        State next_board = {
+        State next_board = State {
             // :: generated fields
             gen__mux_template: gen__mux_template,
             gen__mux_routes: gen__mux_routes,
@@ -62,13 +62,13 @@ contract Mux(
     }
 
     // :: leader entry (1:N)
-    entrypoint function choose_knight_const(byte[] gen__target_prefix, byte[] gen__target_suffix) {
+    entry choose_knight_const(byte[] gen__target_prefix, byte[] gen__target_suffix) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         // :: output next: MoveActor
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
-        State next_board = {
+        State next_board = State {
             // :: generated fields
             gen__mux_template: gen__mux_template,
             gen__mux_routes: gen__mux_routes,
@@ -93,7 +93,7 @@ contract Mux(
     }
 
     // :: leader entry (1:N)
-    entrypoint function choose_pawn(byte[] gen__pawn_prefix, byte[] gen__pawn_suffix) {
+    entry choose_pawn(byte[] gen__pawn_prefix, byte[] gen__pawn_suffix) {
         // :: routes: Pawn
         byte[32] gen__pawn_template = byte[32](gen__mux_routes.slice(0, 32));
 
@@ -101,7 +101,7 @@ contract Mux(
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Pawn
 
-        State next_board = {
+        State next_board = State {
             // :: generated fields
             gen__mux_template: gen__mux_template,
             gen__mux_routes: gen__mux_routes,
@@ -120,7 +120,7 @@ contract Mux(
     }
 
     // :: leader entry (1:N)
-    entrypoint function choose_knight(byte[] gen__knight_prefix, byte[] gen__knight_suffix) {
+    entry choose_knight(byte[] gen__knight_prefix, byte[] gen__knight_suffix) {
         // :: routes: Knight
         byte[32] gen__knight_template = byte[32](gen__mux_routes.slice(32, 64));
 
@@ -128,7 +128,7 @@ contract Mux(
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Knight
 
-        State next_board = {
+        State next_board = State {
             // :: generated fields
             gen__mux_template: gen__mux_template,
             gen__mux_routes: gen__mux_routes,

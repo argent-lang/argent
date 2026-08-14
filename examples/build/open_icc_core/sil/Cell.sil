@@ -48,7 +48,7 @@ contract Cell(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function advance(
+    entry advance(
         int gen__actor_type_self_occupant_agent_type_prefix_len,
         int gen__actor_type_self_occupant_agent_type_suffix_len,
         byte[32] gen__remote_agent_next_strategy
@@ -75,7 +75,7 @@ contract Cell(
         AgentCapsule prev_state = gen__remote_agent_state;
         require(prev_state.world_id == world_id);
         require(prev_state.capabilities_digest == occupant_caps_digest);
-        AgentCapsule next_state = {
+        AgentCapsule next_state = AgentCapsule {
             // :: user declared fields
             world_id: prev_state.world_id,
             agent_id: prev_state.agent_id,
@@ -97,7 +97,7 @@ contract Cell(
             gen__actor_type_self_occupant_agent_type_suffix_len,
             occupant_agent_type
         );
-        State next_cell = {
+        State next_cell = State {
             // :: user declared fields
             world_id: world_id,
             x: x,
@@ -112,7 +112,7 @@ contract Cell(
     }
 
     // :: leader entry (M:N)
-    entrypoint function move(
+    entry move(
         int dx,
         int dy,
         byte[32] empty_agent_covid,
@@ -166,7 +166,7 @@ contract Cell(
         require(target_cell.occupant_agent_covid == empty_agent_covid);
         require(target_cell.occupant_agent_type == empty_agent_type);
         require(target_cell.occupant_caps_digest == empty_caps_digest);
-        AgentCapsule next_agent = {
+        AgentCapsule next_agent = AgentCapsule {
             // :: user declared fields
             world_id: prev_state.world_id,
             agent_id: prev_state.agent_id,
@@ -179,7 +179,7 @@ contract Cell(
             energy: prev_state.energy - 1,
             generation: prev_state.generation,
         };
-        State next_source = {
+        State next_source = State {
             // :: user declared fields
             world_id: world_id,
             x: x,
@@ -189,7 +189,7 @@ contract Cell(
             occupant_agent_type: empty_agent_type,
             occupant_caps_digest: empty_caps_digest,
         };
-        State next_target = {
+        State next_target = State {
             // :: user declared fields
             world_id: target_cell.world_id,
             x: target_cell.x,

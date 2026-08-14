@@ -23,16 +23,16 @@ contract Ticket(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function redeem(sig owner_sig, pubkey owner_pk) {
+    entry redeem(sig owner_sig, pubkey owner_pk) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Ticket
 
-        require(blake2b(owner_pk) == owner);
+        require(blake2b(byte[](owner_pk)) == owner);
         require(checkSig(owner_sig, owner_pk));
         require(redeemed == 0);
         require(tx.outputs[gen__next_output_idx].value == tx.inputs[this.activeInputIndex].value);
-        State redeemed_ticket = {
+        State redeemed_ticket = State {
             // :: user declared fields
             owner: owner,
             serial: serial,

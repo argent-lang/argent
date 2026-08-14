@@ -14,7 +14,7 @@ contract Counter(
 
     // :: entrypoints
     // :: leader entry (M:N)
-    entrypoint function merge() {
+    entry merge() {
         // :: cov inputs
         byte[32] gen__cov_id = OpInputCovenantId(this.activeInputIndex);
         require(OpCovInputCount(gen__cov_id) == 2);
@@ -28,7 +28,7 @@ contract Counter(
         // :: output next: Counter
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
-        State next = {
+        State next = State {
             // :: user declared fields
             count: count + other.count,
         };
@@ -37,7 +37,7 @@ contract Counter(
     }
 
     // :: leader entry (1:N)
-    entrypoint function hold() {
+    entry hold() {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 0);
 

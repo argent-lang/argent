@@ -174,7 +174,7 @@ app SelectorShadow {
 "#;
 
 #[test]
-fn state_local_scope_survives_a_standalone_block() {
+fn state_binding_remains_visible_after_a_standalone_block() {
     execute_scope_flows(
         "state-standalone-block",
         r#"
@@ -183,10 +183,10 @@ fn state_local_scope_survives_a_standalone_block() {
             guard: guard,
         };
         {
-            ShadowState next_state = {
+            ShadowState probe_state = {
                 marker: true,
             };
-            require(next_state.marker);
+            require(probe_state.marker);
         }
 
         become next <- Counter(next_state);
@@ -196,7 +196,7 @@ fn state_local_scope_survives_a_standalone_block() {
 }
 
 #[test]
-fn state_local_scope_survives_both_if_paths() {
+fn state_binding_remains_visible_after_both_if_paths() {
     execute_scope_flows(
         "state-if-branch",
         r#"
@@ -205,10 +205,10 @@ fn state_local_scope_survives_both_if_paths() {
             guard: guard,
         };
         if (choose) {
-            ShadowState next_state = {
+            ShadowState probe_state = {
                 marker: true,
             };
-            require(next_state.marker);
+            require(probe_state.marker);
         }
 
         become next <- Counter(next_state);
@@ -218,7 +218,7 @@ fn state_local_scope_survives_both_if_paths() {
 }
 
 #[test]
-fn state_local_scope_survives_zero_and_nonzero_loop_iterations() {
+fn state_binding_remains_visible_after_zero_and_nonzero_loop_iterations() {
     execute_scope_flows(
         "state-for-body",
         r#"
@@ -227,10 +227,10 @@ fn state_local_scope_survives_zero_and_nonzero_loop_iterations() {
             guard: guard,
         };
         for (i, 0, iterations, 8) {
-            ShadowState next_state = {
+            ShadowState probe_state = {
                 marker: i >= 0,
             };
-            require(next_state.marker);
+            require(probe_state.marker);
         }
 
         become next <- Counter(next_state);
@@ -240,14 +240,14 @@ fn state_local_scope_survives_zero_and_nonzero_loop_iterations() {
 }
 
 #[test]
-fn cov_id_local_scope_survives_a_standalone_block() {
+fn cov_id_binding_remains_visible_after_a_standalone_block() {
     execute_scope_flows(
         "cov-id-standalone-block",
         r#"
         cov_id relevant = guard;
         {
-            int relevant = 1;
-            require(relevant == 1);
+            int probe = 1;
+            require(probe == 1);
         }
         require(relevant.co_spent());
 
@@ -262,14 +262,14 @@ fn cov_id_local_scope_survives_a_standalone_block() {
 }
 
 #[test]
-fn cov_id_local_scope_survives_both_if_paths() {
+fn cov_id_binding_remains_visible_after_both_if_paths() {
     execute_scope_flows(
         "cov-id-if-branch",
         r#"
         cov_id relevant = guard;
         if (choose) {
-            int relevant = 1;
-            require(relevant == 1);
+            int probe = 1;
+            require(probe == 1);
         }
         require(relevant.co_spent());
 
@@ -284,14 +284,14 @@ fn cov_id_local_scope_survives_both_if_paths() {
 }
 
 #[test]
-fn cov_id_local_scope_survives_zero_and_nonzero_loop_iterations() {
+fn cov_id_binding_remains_visible_after_zero_and_nonzero_loop_iterations() {
     execute_scope_flows(
         "cov-id-for-body",
         r#"
         cov_id relevant = guard;
         for (i, 0, iterations, 8) {
-            int relevant = i;
-            require(relevant >= 0);
+            int probe = i;
+            require(probe >= 0);
         }
         require(relevant.co_spent());
 
@@ -454,16 +454,37 @@ fn function_result_local_shadows_an_outer_selector() {
 }
 
 #[test]
-fn outer_selector_is_restored_after_a_same_named_loop_binding() {
+fn outer_selector_remains_visible_after_a_loop() {
     let source = SCOPED_SELECTOR_SOURCE.replace("entry choose(bool choose)", "entry choose(NextActor target)").replace(
         "__SELECTOR_SCOPE__",
         r#"
-        for (target, 0, 1, 1) {
-            require(target >= 0);
+        for (i, 0, 1, 1) {
+            require(i >= 0);
         }
         "#,
     );
     compile_app("selector-loop-binding-scope", &source);
+}
+
+#[test]
+fn lexical_shadowing_is_rejected_by_sil() {
+    let source = APP_SOURCE.replace(
+        "__BODY__",
+        r#"
+        int value = 1;
+        {
+            int value = 2;
+            require(value == 2);
+        }
+
+        CounterState next_state = {
+            count: count + 1,
+            guard: guard,
+        };
+        become next <- Counter(next_state);
+        "#,
+    );
+    assert_source_rejected("lexical-shadowing", &source, "variable 'value' is already defined");
 }
 
 fn assert_selector_shadow_rejected(name: &str, shadow: &str) {
@@ -477,19 +498,23 @@ fn assert_selector_scope_rejected(name: &str, selector_scope: &str) {
 }
 
 fn assert_selector_source_rejected(name: &str, source: &str, expected: &str) {
+    assert_source_rejected(name, source, expected);
+}
+
+fn assert_source_rejected(name: &str, source: &str, expected: &str) {
     let out_dir = std::env::temp_dir().join(format!("argent-{name}-scope-test-{}", std::process::id()));
     if out_dir.exists() {
         fs::remove_dir_all(&out_dir).expect("old scope test output is removed");
     }
 
     let err = match argent::build_inline(PathBuf::from(format!("{name}.ag")), source, &out_dir) {
-        Ok(_) => panic!("selector binding must not escape its lexical scope"),
+        Ok(_) => panic!("scope fixture `{name}` must be rejected"),
         Err(err) => err,
     };
     if out_dir.exists() {
         fs::remove_dir_all(&out_dir).expect("scope test output is removed");
     }
-    assert!(err.to_string().contains(expected), "unexpected selector scope error: {err}");
+    assert!(err.to_string().contains(expected), "unexpected scope error: {err}");
 }
 
 fn execute_scope_flows(name: &str, body: &str, flows: &[(bool, i64)]) {

@@ -6,7 +6,7 @@ contract Launcher(
     int init_launches
 ) {
     // :: linked templates
-    byte[32] constant gen__child_app__child_template_const = 0x5b2a4c009d5c13a72a95c0fdc75470122ba59513cf4c743b71fbb5ccf07aa8fb;
+    byte[32] constant gen__child_app__child_template_const = byte[32](0x5b2a4c009d5c13a72a95c0fdc75470122ba59513cf4c743b71fbb5ccf07aa8fb);
 
     // :: state layouts
     struct RelayState {
@@ -25,7 +25,7 @@ contract Launcher(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function launch(
+    entry launch(
         byte[32] source_id,
         int amount,
         int gen__child_app__child_prefix_len,
@@ -56,22 +56,22 @@ contract Launcher(
         // :: genesis covenants
         byte[] gen__children_genesis_preimage =
             OpOutpointTxId(this.activeInputIndex)
-            + bytes(OpOutpointIndex(this.activeInputIndex), 8).slice(0, 4)
-            + bytes(1, 8)
-            + bytes(gen__children_child_output_idx, 8).slice(0, 4)
-            + bytes(tx.outputs[gen__children_child_output_idx].value, 8)
-            + 0x0000
-            + bytes(35, 8)
+            + (OpOutpointIndex(this.activeInputIndex) as byte[8]).slice(0, 4)
+            + (1 as byte[8])
+            + (gen__children_child_output_idx as byte[8]).slice(0, 4)
+            + (tx.outputs[gen__children_child_output_idx].value as byte[8])
+            + byte[2](0x0000)
+            + (35 as byte[8])
             + OpTxOutputSpkSubstr(gen__children_child_output_idx, 2, 37);
-        byte[32] child_id = blake2bWithKey(gen__children_genesis_preimage, bytes("CovenantID"));
+        byte[32] child_id = blake2bWithKey(gen__children_genesis_preimage, byte[]("CovenantID"));
         require(OpOutputCovenantId(gen__children_child_output_idx) == child_id);
 
         ChildState source_state = gen__source_child_state;
-        ChildState child_state = {
+        ChildState child_state = ChildState {
             // :: user declared fields
             amount: source_state.amount + amount,
         };
-        State next = {
+        State next = State {
             // :: user declared fields
             launches: launches + 1,
         };

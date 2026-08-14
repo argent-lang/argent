@@ -34,7 +34,7 @@ contract Local(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function step(int gen__foreign_prefix_len, int gen__foreign_suffix_len) {
+    entry step(int gen__foreign_prefix_len, int gen__foreign_suffix_len) {
         // :: observed covenants
         byte[32] gen__remote_cov_id = foreign_id; // observe remote
         require(OpCovInputCount(gen__remote_cov_id) == 1);
@@ -64,7 +64,7 @@ contract Local(
             gen__foreign_suffix_len,
             gen__foreign_template
         );
-        State next_local = {
+        State next_local = State {
             // :: generated fields
             gen__foreign_template: gen__foreign_template,
             gen__target_template: gen__target_template,

@@ -56,14 +56,14 @@ contract StonesSettle(
     }
 
     // :: shared helper functions
-    function player_ref(byte[32] owner, byte[32] player_id) : byte[32] {
-        return blake2b(owner + player_id);
+    function player_ref(byte[32] owner_value, byte[32] player_id_value) : byte[32] {
+        return blake2b(byte[](owner_value + player_id_value));
     }
-    function side_player(int side, byte[32] player_a, byte[32] player_b) : byte[32] {
-        require(side == SIDE_A || side == SIDE_B);
-        byte[32] result = player_b;
-        if (side == SIDE_A) {
-            result = player_a;
+    function side_player(int side_value, byte[32] a_ref, byte[32] b_ref) : byte[32] {
+        require(side_value == SIDE_A || side_value == SIDE_B);
+        byte[32] result = b_ref;
+        if (side_value == SIDE_A) {
+            result = a_ref;
         }
         return result;
     }
@@ -88,10 +88,10 @@ contract StonesSettle(
 
         byte[36] outpoint = byte[36](
             OpOutpointTxId(this.activeInputIndex)
-                + byte[4](OpOutpointIndex(this.activeInputIndex))
+                + (OpOutpointIndex(this.activeInputIndex) as byte[4])
         );
 
-        return blake2bWithKey(outpoint, domain);
+        return blake2bWithKey(byte[](outpoint), domain);
     }
 
     // :: route templates
@@ -106,7 +106,7 @@ contract StonesSettle(
 
     // :: entrypoints
     // :: leader entry (M:N)
-    entrypoint function settle(int gen__player_prefix_len, int gen__player_suffix_len) {
+    entry settle(int gen__player_prefix_len, int gen__player_suffix_len) {
         // :: cov inputs
         byte[32] gen__cov_id = OpInputCovenantId(this.activeInputIndex);
         require(OpCovInputCount(gen__cov_id) == 3);
@@ -155,7 +155,7 @@ contract StonesSettle(
             require(tx.outputs[gen__player_a_out_output_idx].value == tx.inputs[gen__player_a_in_input_idx].value);
             require(tx.outputs[gen__player_b_out_output_idx].value == tx.inputs[gen__player_b_in_input_idx].value + tx.inputs[this.activeInputIndex].value);
         }
-        PlayerState next_player_a = {
+        PlayerState next_player_a = PlayerState {
             // :: user declared fields
             owner: player_a_in.owner,
             player_id: player_a_in.player_id,
@@ -164,7 +164,7 @@ contract StonesSettle(
             wins: player_a_wins,
             losses: player_a_losses,
         };
-        PlayerState next_player_b = {
+        PlayerState next_player_b = PlayerState {
             // :: user declared fields
             owner: player_b_in.owner,
             player_id: player_b_in.player_id,
@@ -173,7 +173,7 @@ contract StonesSettle(
             wins: player_b_wins,
             losses: player_b_losses,
         };
-        Gen__PlayerState gen__state_player_a_out_gen__player_state = {
+        Gen__PlayerState gen__state_player_a_out_gen__player_state = Gen__PlayerState {
             // :: generated fields
             gen__player_template: gen__player_template,
             gen__stones_game_template: gen__stones_game_template,
@@ -195,7 +195,7 @@ contract StonesSettle(
             gen__player_suffix_len,
             gen__player_template
         );
-        Gen__PlayerState gen__state_player_b_out_gen__player_state = {
+        Gen__PlayerState gen__state_player_b_out_gen__player_state = Gen__PlayerState {
             // :: generated fields
             gen__player_template: gen__player_template,
             gen__stones_game_template: gen__stones_game_template,

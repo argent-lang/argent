@@ -25,11 +25,11 @@ actor Issuer owns IssuerState {
         issuer: Issuer,
         ticket: Ticket,
     } {
-        require(blake2b(admin_pk) == admin);
+        require(blake2b(byte[](admin_pk)) == admin);
         require(checkSig(admin_sig, admin_pk));
 
         int serial = next_serial;
-        byte[32] owner = blake2b(owner_pk);
+        byte[32] owner = blake2b(byte[](owner_pk));
 
         IssuerState next_issuer = { admin: admin, next_serial: next_serial + 1, };
         TicketState new_ticket = { owner: owner, serial: serial, redeemed: 0, };
@@ -52,7 +52,7 @@ actor Ticket owns TicketState {
     entry redeem(sig owner_sig, pubkey owner_pk) emits {
         next: Ticket,
     } {
-        require(blake2b(owner_pk) == owner);
+        require(blake2b(byte[](owner_pk)) == owner);
         require(checkSig(owner_sig, owner_pk));
         require(redeemed == 0);
         require(next.value == self.value);

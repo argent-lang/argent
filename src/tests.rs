@@ -162,7 +162,7 @@ fn build_inline_loads_explicit_standard_module() {
 
     assert!(artifact.modules.iter().any(|module| module == "std::core"));
     assert!(sil.contains("function invocation_uid(byte[] domain) : byte[32]"), "{sil}");
-    assert!(sil.contains("return blake2bWithKey(outpoint, domain);"), "{sil}");
+    assert!(sil.contains("return blake2bWithKey(byte[](outpoint), domain);"), "{sil}");
     assert!(sil.contains("byte[32] uid = invocation_uid(domain);"), "{sil}");
 
     let _ = std::fs::remove_dir_all(out_dir);
