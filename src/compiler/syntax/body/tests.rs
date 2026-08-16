@@ -157,15 +157,17 @@ fn statements_distinguish_brace_assignments_from_standalone_blocks() {
     .expect("body lexes");
 
     let [
-        EntryStatement::Plain { destructured_type: Some(pair_type), span: destructure, .. },
-        EntryStatement::Plain { destructured_type: Some(state_type), span: state_read, .. },
+        EntryStatement::Plain { destructuring: Some(pair), span: destructure, .. },
+        EntryStatement::Plain { destructuring: Some(state), span: state_read, .. },
         EntryStatement::Block { .. },
     ] = body.statements()
     else {
         panic!("expected two brace assignments followed by one standalone block");
     };
-    assert_eq!(body.span_text(*pair_type), "PairState");
-    assert_eq!(body.span_text(*state_type), "State");
+    assert_eq!(body.span_text(pair.declared_type), "PairState");
+    assert_eq!(body.span_text(pair.value), "pair");
+    assert_eq!(body.span_text(state.declared_type), "State");
+    assert_eq!(body.span_text(state.value), "readInputState(index)");
     assert_eq!(body.span_text(*destructure).trim(), "PairState {left: int first, right: int second} = pair;");
     assert_eq!(body.span_text(*state_read).trim(), "State {count: int current} = readInputState(index);");
 }

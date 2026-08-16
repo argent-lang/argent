@@ -5019,6 +5019,46 @@ fn brace_leading_assignments_lower_and_compile_as_sil_statements() {
 }
 
 #[test]
+fn typed_destructuring_keeps_an_expanded_entry_parameter_authored() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "expanded-parameter-destructuring",
+        r#"
+            state Detail {
+                int count;
+            }
+
+            state Capsule {
+                int amount;
+                virtual detail;
+            }
+
+            state Expanded expands Capsule {
+                detail: Detail;
+            }
+
+            actor Vault owns Expanded {
+                entry inspect(Expanded value) emits none {
+                    Expanded {
+                        amount: int amount_value,
+                        detail: Detail detail_value,
+                    } = value;
+                    require(amount_value >= 0);
+                    require(detail_value.count >= 0);
+                }
+            }
+
+            app ExpandedDestructuring {
+                actor Vault;
+            }
+            "#,
+    );
+
+    let sil = actor_sil.get("Vault").expect("Vault emits");
+    assert!(sil.contains("        Expanded {\n"), "{sil}");
+    assert!(!sil.contains("        State {\n"), "{sil}");
+}
+
+#[test]
 fn genesis_spawn_lowers_to_pinned_sil_and_artifact_metadata() {
     let (controller_sil, controller_artifact) =
         emit_selected_fixture("tests/fixtures/runtime/context_genesis_spawn/app.ag", "ControllerApp", "Controller");

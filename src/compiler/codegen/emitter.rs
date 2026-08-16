@@ -681,7 +681,10 @@ pub(super) fn packed_field_expr(ty: &TypeRef, expr: &str) -> Result<String> {
     }
     match (ty.name.as_str(), ty.array) {
         ("int", None) => Ok(format!("(({expr}) as byte[8])")),
-        ("bool", None) | ("byte", None) => Ok(format!("byte[]({expr})")),
+        // Sil booleans use the VM's numeric representation, where false is
+        // empty. Normalize through int before fixing the one-byte state width.
+        ("bool", None) => Ok(format!("((int({expr})) as byte[1])")),
+        ("byte", None) => Ok(format!("byte[]({expr})")),
         ("byte", Some(ArrayDim::Fixed(_))) | ("pubkey", None) | (word::COVENANT_ID, None) | ("sig", None) | ("datasig", None) => {
             Ok(format!("byte[]({expr})"))
         }

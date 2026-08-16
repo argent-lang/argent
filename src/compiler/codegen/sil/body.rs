@@ -8,7 +8,7 @@ use crate::compiler::model::{
     observed_open_state_for_decl, parse_actor_enum_selector, parse_actor_enum_variant, spawn_target_state,
 };
 use crate::compiler::naming::to_snake;
-use crate::compiler::syntax::body::{EntryBinding, EntryLocalDecl, EntryRoute, EntryStatement};
+use crate::compiler::syntax::body::{EntryBinding, EntryLocalDecl, EntryRoute, EntryStatement, EntryStructDestructure};
 use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, Span, Token, TokenKind, lex};
 use crate::compiler::syntax::word;
 use crate::compiler::syntax::*;
@@ -389,8 +389,8 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                 EntryStatement::Local { declaration, span } => {
                     self.lower_local_declaration(out, indent, declaration, *span)?;
                 }
-                EntryStatement::Plain { bindings, destructured_type, span, .. } => {
-                    self.lower_plain_statement(out, indent, bindings, *destructured_type, *span)?;
+                EntryStatement::Plain { bindings, destructuring, span, .. } => {
+                    self.lower_plain_statement(out, indent, bindings, destructuring.as_ref(), *span)?;
                 }
                 EntryStatement::Block { statements, .. } => {
                     push_indent(out, indent);
@@ -520,17 +520,18 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         out: &mut String,
         indent: usize,
         bindings: &[EntryBinding],
-        destructured_type: Option<Span>,
+        destructuring: Option<&EntryStructDestructure>,
         span: Span,
     ) -> Result<()> {
         let source = self.entry.body.span_text(span).trim();
         let mut statement = source.strip_suffix(';').ok_or_else(|| self.error("unterminated statement"))?.trim().to_string();
 
-        if let Some(type_span) = destructured_type {
-            let source_type = self.entry.body.span_text(type_span);
-            let lowered_type = self.lower_local_type(source_type);
-            let relative_start = type_span.start - span.start;
-            let relative_end = type_span.end - span.start;
+        if let Some(destructuring) = destructuring {
+            let source_type = self.entry.body.span_text(destructuring.declared_type);
+            let value = self.entry.body.span_text(destructuring.value).trim();
+            let lowered_type = self.bindings.lowered_type_for_expr(value).unwrap_or_else(|| source_type.to_string());
+            let relative_start = destructuring.declared_type.start - span.start;
+            let relative_end = destructuring.declared_type.end - span.start;
             statement.replace_range(relative_start..relative_end, &lowered_type);
         }
 

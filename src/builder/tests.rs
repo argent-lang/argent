@@ -347,6 +347,70 @@ fn context_executes_dynamic_byte_array_sigscript_arguments_at_varying_lengths() 
 }
 
 #[test]
+fn context_executes_expanded_bool_transition_to_false() {
+    let artifact = inline_artifact(
+        "context-expanded-bool-transition",
+        r#"
+            state Toggle {
+                bool enabled;
+            }
+
+            state SwitchCapsule {
+                virtual toggle;
+                int revision;
+            }
+
+            state SwitchState expands SwitchCapsule {
+                toggle: Toggle;
+            }
+
+            actor Switch owns SwitchState {
+                entry set(bool enabled) emits next: Switch {
+                    SwitchState next_state = {
+                        toggle: Toggle {
+                            enabled: enabled,
+                        },
+                        revision: revision + 1,
+                    };
+
+                    unrestricted(next.value);
+                    become next <- Switch(next_state);
+                }
+            }
+
+            app SwitchApp {
+                actor Switch;
+            }
+            "#,
+    );
+    let builder = TxBuilder::new(&artifact).expect("builder accepts expanded bool artifact");
+    let covenant_id = Hash::from_bytes([0x44; 32]);
+    let input_value = 1_000;
+    let initial = state! {
+        toggle: state! { enabled: true },
+        revision: 0,
+    };
+    let next = state! {
+        toggle: state! { enabled: false },
+        revision: 1,
+    };
+    let input_utxo =
+        builder.covenant_utxo("Switch", initial.clone(), input_value, 0, false, Some(covenant_id)).expect("Switch UTXO builds");
+    let context = TxContext::new()
+        .actor_input(
+            "Switch",
+            initial,
+            EntryCall::new("set").args(args![false]),
+            TransactionOutpoint::new(TransactionId::from_bytes([0x45; 32]), 0),
+            input_utxo,
+            0,
+        )
+        .actor_output("Switch", next, CovenantBinding::new(0, covenant_id), input_value);
+
+    builder.build(&context).expect("expanded bool transition executes");
+}
+
+#[test]
 fn context_executes_source_state_arguments_without_exposing_generated_fields() {
     let artifact = inline_artifact(
         "context-source-state-arguments",
