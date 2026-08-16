@@ -511,7 +511,7 @@ fn push_sig_arg(
         TypeArtifact::Int => push_i64(builder, expect_int(value)?),
         TypeArtifact::Bool => push_i64(builder, i64::from(expect_bool(value)?)),
         TypeArtifact::Byte => {
-            builder.add_data_with_push_opcode(&[expect_byte(value)?])?;
+            push_data(builder, &[expect_byte(value)?])?;
             Ok(())
         }
         TypeArtifact::Bytes => {
@@ -986,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn encodes_pushes_like_silverscript_builder() {
+    fn encodes_sigscript_arguments_canonically() {
         let artifact = tiny_sil_abi();
         let sigscript = encode_contract_entry_sig_script(
             &artifact,
@@ -996,7 +996,7 @@ mod tests {
         )
         .expect("sigscript encodes");
 
-        assert_eq!(encode_hex(&sigscript), "0111040102030451010100");
+        assert_eq!(encode_hex(&sigscript), "01110401020304515100");
     }
 
     #[test]

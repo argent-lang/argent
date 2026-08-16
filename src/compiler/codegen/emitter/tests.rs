@@ -5894,7 +5894,7 @@ fn toy_chess_source() -> String {
 }
 
 #[test]
-fn artifact_codec_matches_silverscript_sigscript_builder() {
+fn artifact_codec_matches_silverscript_sigscript_builder_except_pinned_byte_push() {
     let module = crate::compiler::syntax::parser::parse_module(
         PathBuf::from("test.ag"),
         r#"
@@ -5954,7 +5954,10 @@ fn artifact_codec_matches_silverscript_sigscript_builder() {
     let sil_bump = compiled
         .build_sig_script("bump", vec![SilExpr::int(17), SilExpr::bytes(vec![1, 2, 3, 4]), SilExpr::bool(true), SilExpr::byte(1)])
         .expect("Sil bump sigscript builds");
-    assert_eq!(portable_bump, sil_bump);
+    // The pinned Sil revision forces an explicit data push for scalar bytes.
+    // Restore direct equality once Sil uses the canonical push selected here.
+    assert_eq!(encode_hex(&portable_bump), "01110401020304515100");
+    assert_eq!(encode_hex(&sil_bump), "0111040102030451010100");
 
     let portable_done =
         crate::codec::encode_contract_entry_sig_script(&sil_abi, "Foo", "done", &[]).expect("portable done sigscript builds");
