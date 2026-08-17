@@ -36,13 +36,13 @@ contract Mux(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function choose(int target, byte[] gen__target_prefix, byte[] gen__target_suffix) {
+    entry choose(int target, byte[] gen__target_prefix, byte[] gen__target_suffix) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         // :: output next: MoveActor
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
-        State next_board = {
+        State next_board = State {
             // :: generated fields
             gen__archive_template: gen__archive_template,
             gen__mux_template: gen__mux_template,
@@ -67,21 +67,21 @@ contract Mux(
     }
 
     // :: leader entry (1:N)
-    entrypoint function archive(byte[] gen__archive_prefix, byte[] gen__archive_suffix) {
+    entry archive(byte[] gen__archive_prefix, byte[] gen__archive_suffix) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         // :: output next: Archive
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
-        ArchiveState next_archive = {
+        ArchiveState next_archive = ArchiveState {
             // :: user declared fields
             final_ply: ply,
         };
-        Gen__ArchiveState gen__state_next_gen__archive_state = {
+        Gen__ArchiveState gen__state_next_gen__archive_state = Gen__ArchiveState {
             // :: generated fields
             gen__archive_template: gen__archive_template,
             gen__mux_template: gen__mux_template,
-            gen__mux_routes_digest: blake2b(gen__mux_routes),
+            gen__mux_routes_digest: blake2b(byte[](gen__mux_routes)),
             // :: user declared fields
             final_ply: next_archive.final_ply,
         };

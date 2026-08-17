@@ -28,7 +28,7 @@ contract Pawn(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function inspect() {
+    entry inspect() {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 0);
 

@@ -23,7 +23,7 @@ contract Pair(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function keep() {
+    entry keep() {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Pair

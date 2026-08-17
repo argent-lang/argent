@@ -168,7 +168,11 @@ fn emit_imported_template_constants(out: &mut String, specs: &[ImportedTemplateS
 
     emit_section_header(out, "Linked templates");
     for spec in specs {
-        out.push_str(&format!("    byte[32] constant {} = 0x{};\n", hidden_imported_template_const_name(spec), spec.hash_hex));
+        out.push_str(&format!(
+            "    byte[32] constant {} = byte[32](0x{});\n",
+            hidden_imported_template_const_name(spec),
+            spec.hash_hex
+        ));
     }
     out.push('\n');
 }
@@ -513,21 +517,21 @@ fn emit_spawn_prelude(out: &mut String, entry: &EntryDecl) -> Result<()> {
         let preimage = hidden_spawn_preimage_name(&spawn.name);
         out.push_str(&format!("        byte[] {preimage} =\n"));
         out.push_str("            OpOutpointTxId(this.activeInputIndex)\n");
-        out.push_str("            + bytes(OpOutpointIndex(this.activeInputIndex), 8).slice(0, 4)\n");
-        out.push_str(&format!("            + bytes({}, 8)\n", spawn.outputs.len()));
+        out.push_str("            + (OpOutpointIndex(this.activeInputIndex) as byte[8]).slice(0, 4)\n");
+        out.push_str(&format!("            + ({} as byte[8])\n", spawn.outputs.len()));
         for (output_position, output) in spawn.outputs.iter().enumerate() {
             let output_idx = hidden_spawn_output_idx_name(&spawn.name, &output.name);
-            out.push_str(&format!("            + bytes({output_idx}, 8).slice(0, 4)\n"));
-            out.push_str(&format!("            + bytes(tx.outputs[{output_idx}].value, 8)\n"));
-            out.push_str(&format!("            + 0x{:02x}{:02x}\n", P2SH_SPK_VERSION[0], P2SH_SPK_VERSION[1]));
-            out.push_str(&format!("            + bytes({P2SH_SCRIPT_LEN}, 8)\n"));
+            out.push_str(&format!("            + ({output_idx} as byte[8]).slice(0, 4)\n"));
+            out.push_str(&format!("            + (tx.outputs[{output_idx}].value as byte[8])\n"));
+            out.push_str(&format!("            + byte[2](0x{:02x}{:02x})\n", P2SH_SPK_VERSION[0], P2SH_SPK_VERSION[1]));
+            out.push_str(&format!("            + ({P2SH_SCRIPT_LEN} as byte[8])\n"));
             let terminator = if output_position + 1 == spawn.outputs.len() { ";" } else { "" };
             out.push_str(&format!(
                 "            + OpTxOutputSpkSubstr({output_idx}, {SPK_VERSION_LEN}, {}){terminator}\n",
                 SPK_VERSION_LEN + P2SH_SCRIPT_LEN
             ));
         }
-        out.push_str(&format!("        byte[32] {} = blake2bWithKey({preimage}, bytes(\"CovenantID\"));\n", spawn.covenant));
+        out.push_str(&format!("        byte[32] {} = blake2bWithKey({preimage}, byte[](\"CovenantID\"));\n", spawn.covenant));
         let first_output = spawn.outputs.first().expect("spawn outputs checked during model validation");
         let first_output_idx = hidden_spawn_output_idx_name(&spawn.name, &first_output.name);
         if let Some(previous_first_output_idx) = &previous_first_output_idx {
@@ -553,7 +557,7 @@ fn emit_state_expansion_prelude(out: &mut String, actor: &ActorDecl, model: &Mod
     out.push_str("        // :: expanded state\n");
     for spec in specs {
         let hidden = hidden_state_expansion_preimage_name(&spec);
-        let digest = format!("blake2b({hidden})");
+        let digest = format!("blake2b(byte[]({hidden}))");
         push_generated_binary_require(out, 8, &digest, "==", &spec.field);
         let mut offset = 0usize;
         for field in &model.state(&spec.memory_state)?.fields {
@@ -645,7 +649,7 @@ fn emit_observed_inputs(out: &mut String, actor: &ActorDecl, entry: &EntryDecl, 
 }
 
 pub(super) fn state_payload_digest_expr(state_name: &str, value_expr: &str, model: &Model<'_>) -> Result<String> {
-    Ok(format!("blake2b({})", state_payload_bytes_expr(state_name, value_expr, model)?))
+    Ok(format!("blake2b(byte[]({}))", state_payload_bytes_expr(state_name, value_expr, model)?))
 }
 
 fn state_payload_bytes_expr(state_name: &str, value_expr: &str, model: &Model<'_>) -> Result<String> {
@@ -676,8 +680,11 @@ pub(super) fn packed_field_expr(ty: &TypeRef, expr: &str) -> Result<String> {
         return Ok(format!("byte[]({expr})"));
     }
     match (ty.name.as_str(), ty.array) {
-        ("int", None) => Ok(format!("byte[8]({expr})")),
-        ("bool", None) | ("byte", None) => Ok(format!("byte[1]({expr})")),
+        ("int", None) => Ok(format!("(({expr}) as byte[8])")),
+        // Sil booleans use the VM's numeric representation, where false is
+        // empty. Normalize through int before fixing the one-byte state width.
+        ("bool", None) => Ok(format!("((int({expr})) as byte[1])")),
+        ("byte", None) => Ok(format!("byte[]({expr})")),
         ("byte", Some(ArrayDim::Fixed(_))) | ("pubkey", None) | (word::COVENANT_ID, None) | ("sig", None) | ("datasig", None) => {
             Ok(format!("byte[]({expr})"))
         }
@@ -728,7 +735,7 @@ fn emit_entry_template_locals(out: &mut String, _actor: &ActorDecl, witness_spec
     for spec in &witness_specs.families {
         let table = hidden_route_family_table_name_by_id(&spec.family_id);
         let commitment = hidden_route_family_commitment_name_by_id(&spec.family_id);
-        out.push_str(&format!("        require(blake2b({table}) == {commitment});\n"));
+        out.push_str(&format!("        require(blake2b(byte[]({table})) == {commitment});\n"));
     }
     for spec in template_locals {
         if let TemplateWitnessSource::FamilyTable { family_id, offset } = &spec.source {
@@ -767,14 +774,14 @@ pub(super) fn push_indent(out: &mut String, indent: usize) {
 }
 
 fn push_entry_signature(out: &mut String, name: &str, params: &[String]) {
-    let single = format!("    entrypoint function {name}({}) {{", params.join(", "));
+    let single = format!("    entry {name}({}) {{", params.join(", "));
     if single.len() <= GENERATED_SIL_LINE_LIMIT {
         out.push_str(&single);
         out.push('\n');
         return;
     }
 
-    out.push_str(&format!("    entrypoint function {name}(\n"));
+    out.push_str(&format!("    entry {name}(\n"));
     for (idx, param) in params.iter().enumerate() {
         out.push_str("        ");
         out.push_str(param);
@@ -2025,11 +2032,11 @@ fn actor_type_handle_artifact(
     let state_end = state_start
         .checked_add(compiled.state_layout.len)
         .ok_or_else(|| ArgentError::new(format!("actor `{}` state offset overflow", actor.name)))?;
-    if compiled.script.get(state_start..context_end) != Some(context_script.as_slice()) {
+    if compiled.bytecode.get(state_start..context_end) != Some(context_script.as_slice()) {
         return Err(ArgentError::new(format!("actor `{}` compiled capsule context does not match its runtime state ABI", actor.name)));
     }
-    let prefix = &compiled.script[..context_end];
-    let suffix = &compiled.script[state_end..];
+    let prefix = &compiled.bytecode[..context_end];
+    let suffix = &compiled.bytecode[state_end..];
     let hash = silverscript_lang::template::template_hash(prefix, suffix);
     Ok(ActorTypeHandleArtifact {
         state: source_state.to_string(),
@@ -2233,7 +2240,7 @@ fn placeholder_expr_for_type<'i>(ty: &TypeRef) -> Result<SilExpr<'i>> {
         (_, Some(ArrayDim::Fixed(len))) => {
             let item = TypeRef::new(ty.name.clone());
             let values = (0..len).map(|_| placeholder_expr_for_type(&item)).collect::<Result<Vec<_>>>()?;
-            Ok(values.into())
+            SilExpr::try_from(values).map_err(|err| ArgentError::new(err.to_string()))
         }
         (_, Some(ArrayDim::Dynamic)) => Err(ArgentError::new("dynamic arrays are not supported in actor state")),
         ("int", None) => Ok(SilExpr::int(0)),
@@ -2249,26 +2256,26 @@ fn placeholder_expr_for_type<'i>(ty: &TypeRef) -> Result<SilExpr<'i>> {
 }
 
 fn zero_byte_array_expr<'i>(len: usize) -> SilExpr<'i> {
-    (0..len).map(|_| SilExpr::byte(0)).collect::<Vec<_>>().into()
+    SilExpr::bytes(vec![0; len])
 }
 
 fn compiled_contract_artifact(compiled: &CompiledContract<'_>) -> Result<CompiledContractArtifact> {
     let layout = compiled.state_layout;
     let suffix_start = layout.start + layout.len;
-    if layout.start > compiled.script.len() || suffix_start > compiled.script.len() {
+    if layout.start > compiled.bytecode.len() || suffix_start > compiled.bytecode.len() {
         return Err(ArgentError::new(format!(
             "compiled contract `{}` reported invalid state span start={} len={} for script len={}",
             compiled.contract_name,
             layout.start,
             layout.len,
-            compiled.script.len()
+            compiled.bytecode.len()
         )));
     }
 
     let template_hash = compiled.template_hash();
 
     Ok(CompiledContractArtifact {
-        script_hex: encode_hex(&compiled.script),
+        script_hex: encode_hex(&compiled.bytecode),
         template_hash_hex: encode_hex(&template_hash),
         state_span: StateSpanArtifact { offset: layout.start, len: layout.len },
     })
@@ -3309,11 +3316,11 @@ fn hidden_route_family_commitment_expr(
     }
 
     if model.route_family_for_actor(&source_actor.name).is_some_and(|source_family| source_family.id == family.id) {
-        return format!("blake2b({})", hidden_route_family_table_name(family));
+        return format!("blake2b(byte[]({}))", hidden_route_family_table_name(family));
     }
 
     let preimage = family.table_actors().iter().map(|actor| hidden_template_name(actor)).collect::<Vec<_>>().join(" + ");
-    format!("blake2b({preimage})")
+    format!("blake2b(byte[]({preimage}))")
 }
 
 fn template_receipt_id(actor: &str) -> String {

@@ -25,7 +25,7 @@ contract Foreign(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function hold() {
+    entry hold() {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         // :: output next: Foreign
@@ -39,12 +39,12 @@ contract Foreign(
     }
 
     // :: leader entry (1:N)
-    entrypoint function route(byte[] gen__target_prefix, byte[] gen__target_suffix) {
+    entry route(byte[] gen__target_prefix, byte[] gen__target_suffix) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Target
 
-        TargetState next = {
+        TargetState next = TargetState {
             // :: user declared fields
             units: 0,
         };

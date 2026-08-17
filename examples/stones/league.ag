@@ -10,8 +10,8 @@ actor League owns LeagueState {
         player: Player,
     } {
         require(checkSig(owner_sig, owner_pk));
-        byte[32] owner = blake2b(owner_pk);
-        byte[32] player_id = invocation_uid(bytes("StonesPlayer"));
+        byte[32] owner = blake2b(byte[](owner_pk));
+        byte[32] player_id = invocation_uid(byte[]("StonesPlayer"));
 
         PlayerState next_player = {
             owner: owner,

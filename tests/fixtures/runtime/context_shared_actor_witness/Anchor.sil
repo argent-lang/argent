@@ -25,12 +25,12 @@ contract Anchor(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function advance(byte[] gen__pair_prefix, byte[] gen__pair_suffix) {
+    entry advance(byte[] gen__pair_prefix, byte[] gen__pair_suffix) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Pair
 
-        PairState next = {
+        PairState next = PairState {
             // :: user declared fields
             amount: amount + 1,
         };

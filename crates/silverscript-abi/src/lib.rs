@@ -986,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn encodes_pushes_like_silverscript_builder() {
+    fn encodes_sigscript_arguments_canonically() {
         let artifact = tiny_sil_abi();
         let sigscript = encode_contract_entry_sig_script(
             &artifact,

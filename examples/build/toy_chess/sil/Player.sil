@@ -35,24 +35,20 @@ contract Player(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function enter_mux(
-        byte[] gen__mux_prefix,
-        byte[] gen__mux_suffix,
-        byte[64] gen__mux_routes
-    ) {
+    entry enter_mux(byte[] gen__mux_prefix, byte[] gen__mux_suffix, byte[64] gen__mux_routes) {
         // :: routes: route_family/BoardState/mux
-        require(blake2b(gen__mux_routes) == gen__mux_routes_digest);
+        require(blake2b(byte[](gen__mux_routes)) == gen__mux_routes_digest);
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Mux
 
-        BoardState next_board = {
+        BoardState next_board = BoardState {
             // :: user declared fields
             selector: nonce,
             ply: 0,
         };
-        Gen__MuxState gen__state_next_gen__mux_state = {
+        Gen__MuxState gen__state_next_gen__mux_state = Gen__MuxState {
             // :: generated fields
             gen__mux_template: gen__mux_template,
             gen__mux_routes: gen__mux_routes,

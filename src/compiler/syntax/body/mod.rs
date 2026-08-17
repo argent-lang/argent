@@ -95,9 +95,12 @@ pub(crate) enum EntryStatement {
         declaration: EntryLocalDecl,
         span: Span,
     },
-    /// An ordinary Sil statement kept opaque except for the bindings it introduces.
+    /// An ordinary Sil statement kept opaque except for introduced bindings and
+    /// the layout boundary on typed struct destructuring.
     Plain {
         bindings: Vec<EntryBinding>,
+        /// Layout-relevant spans on a typed Sil struct destructuring assignment.
+        destructuring: Option<EntryStructDestructure>,
         span: Span,
     },
 }
@@ -151,6 +154,13 @@ pub(crate) struct EntryBinding {
     pub(crate) source_type: String,
     /// Inner state when the declared type is a scalar `actor_type<State>`.
     pub(crate) actor_type_state: Option<String>,
+}
+
+/// The written type and source value of a typed Sil struct destructuring.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EntryStructDestructure {
+    pub(crate) declared_type: Span,
+    pub(crate) value: Span,
 }
 
 /// One parsed route in a `become` statement.
@@ -342,7 +352,7 @@ impl EntryStatementParser<'_> {
         let parsed = PlainBindingParser::new(self.cursor.body, &self.cursor.body.tokens[token_start..self.cursor.pos]).parse();
         match parsed {
             ParsedPlain::Local(declaration) => EntryStatement::Local { declaration, span },
-            ParsedPlain::Bindings(bindings) => EntryStatement::Plain { bindings, span },
+            ParsedPlain::Bindings { bindings, destructuring } => EntryStatement::Plain { bindings, destructuring, span },
         }
     }
 
@@ -537,12 +547,12 @@ struct PlainBindingParser<'a> {
 
 enum ParsedPlain {
     Local(EntryLocalDecl),
-    Bindings(Vec<EntryBinding>),
+    Bindings { bindings: Vec<EntryBinding>, destructuring: Option<EntryStructDestructure> },
 }
 
 impl Default for ParsedPlain {
     fn default() -> Self {
-        Self::Bindings(Vec::new())
+        Self::Bindings { bindings: Vec::new(), destructuring: None }
     }
 }
 
@@ -563,15 +573,27 @@ impl<'a> PlainBindingParser<'a> {
 
     fn parse(mut self) -> ParsedPlain {
         if self.consume_symbol('{') {
-            return self.parse_struct_bindings().unwrap_or_default();
+            return self.parse_struct_bindings(None).unwrap_or_default();
         }
         if self.consume_symbol('(') {
             return self.parse_parenthesized_bindings().unwrap_or_default();
         }
+        let start = self.pos;
+        let type_start = self.current().map(|token| token.span.start);
+        if self.parse_type().is_some() {
+            let type_end = self.tokens.get(self.pos.saturating_sub(1)).map(|token| token.span.end);
+            if self.consume_symbol('{')
+                && let (Some(type_start), Some(type_end)) = (type_start, type_end)
+            {
+                let declared_type = Span { start: type_start, end: type_end };
+                return self.parse_struct_bindings(Some(declared_type)).unwrap_or_default();
+            }
+        }
+        self.pos = start;
         self.parse_leading_bindings().unwrap_or_default()
     }
 
-    fn parse_struct_bindings(&mut self) -> Option<ParsedPlain> {
+    fn parse_struct_bindings(&mut self, declared_type: Option<Span>) -> Option<ParsedPlain> {
         let mut bindings = Vec::new();
         loop {
             self.take_ident()?;
@@ -586,7 +608,11 @@ impl<'a> PlainBindingParser<'a> {
             }
         }
         self.consume_symbol('=').then_some(())?;
-        Some(ParsedPlain::Bindings(bindings))
+        let destructuring = match declared_type {
+            Some(declared_type) => Some(EntryStructDestructure { declared_type, value: self.remaining_initializer_span()? }),
+            None => None,
+        };
+        Some(ParsedPlain::Bindings { bindings, destructuring })
     }
 
     fn parse_parenthesized_bindings(&mut self) -> Option<ParsedPlain> {
@@ -599,7 +625,7 @@ impl<'a> PlainBindingParser<'a> {
         }
         self.consume_symbol(')').then_some(())?;
         self.consume_symbol('=').then_some(())?;
-        Some(ParsedPlain::Bindings(bindings))
+        Some(ParsedPlain::Bindings { bindings, destructuring: None })
     }
 
     fn parse_leading_bindings(&mut self) -> Option<ParsedPlain> {
@@ -610,7 +636,7 @@ impl<'a> PlainBindingParser<'a> {
         if self.consume_symbol(',') {
             let second = self.parse_typed_binding()?;
             self.consume_symbol('=').then_some(())?;
-            return Some(ParsedPlain::Bindings(vec![first.binding, second]));
+            return Some(ParsedPlain::Bindings { bindings: vec![first.binding, second], destructuring: None });
         }
         if self.consume_symbol('=') {
             return self.remaining_initializer_span().map(|initializer| {
@@ -618,7 +644,7 @@ impl<'a> PlainBindingParser<'a> {
             });
         }
         self.check_symbol(';').then_some(())?;
-        Some(ParsedPlain::Bindings(vec![first.binding]))
+        Some(ParsedPlain::Bindings { bindings: vec![first.binding], destructuring: None })
     }
 
     fn parse_variable_binding(&mut self) -> Option<ParsedVariableBinding> {

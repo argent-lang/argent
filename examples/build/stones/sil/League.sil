@@ -56,42 +56,42 @@ contract League(
     }
 
     // :: shared helper functions
-    function player_ref(byte[32] owner, byte[32] player_id) : byte[32] {
-        return blake2b(owner + player_id);
+    function player_ref(byte[32] owner_, byte[32] player_id_) : byte[32] {
+        return blake2b(byte[](owner_ + player_id_));
     }
-    function side_player(int side, byte[32] player_a, byte[32] player_b) : byte[32] {
-        require(side == SIDE_A || side == SIDE_B);
-        byte[32] result = player_b;
-        if (side == SIDE_A) {
-            result = player_a;
+    function side_player(int side_, byte[32] a_ref_, byte[32] b_ref_) : byte[32] {
+        require(side_ == SIDE_A || side_ == SIDE_B);
+        byte[32] result_ = b_ref_;
+        if (side_ == SIDE_A) {
+            result_ = a_ref_;
         }
-        return result;
+        return result_;
     }
-    function other_side(int side) : int {
-        require(side == SIDE_A || side == SIDE_B);
-        int result = SIDE_A;
-        if (side == SIDE_A) {
-            result = SIDE_B;
+    function other_side(int side_) : int {
+        require(side_ == SIDE_A || side_ == SIDE_B);
+        int result_ = SIDE_A;
+        if (side_ == SIDE_A) {
+            result_ = SIDE_B;
         }
-        return result;
+        return result_;
     }
-    function win_status(int side) : int {
-        require(side == SIDE_A || side == SIDE_B);
-        int result = B_WIN;
-        if (side == SIDE_A) {
-            result = A_WIN;
+    function win_status(int side_) : int {
+        require(side_ == SIDE_A || side_ == SIDE_B);
+        int result_ = B_WIN;
+        if (side_ == SIDE_A) {
+            result_ = A_WIN;
         }
-        return result;
+        return result_;
     }
-    function invocation_uid(byte[] domain) : byte[32] {
-        require(domain.length > 0);
+    function invocation_uid(byte[] domain_) : byte[32] {
+        require(domain_.length > 0);
 
-        byte[36] outpoint = byte[36](
+        byte[36] outpoint_ = byte[36](
             OpOutpointTxId(this.activeInputIndex)
-                + byte[4](OpOutpointIndex(this.activeInputIndex))
+                + (OpOutpointIndex(this.activeInputIndex) as byte[4])
         );
 
-        return blake2bWithKey(outpoint, domain);
+        return blake2bWithKey(byte[](outpoint_), domain_);
     }
 
     // :: route templates
@@ -106,7 +106,7 @@ contract League(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function register_player(
+    entry register_player(
         sig owner_sig,
         pubkey owner_pk,
         byte[] gen__player_prefix,
@@ -120,9 +120,9 @@ contract League(
         int gen__player_output_idx = OpAuthOutputIdx(this.activeInputIndex, 1);
 
         require(checkSig(owner_sig, owner_pk));
-        byte[32] owner = blake2b(owner_pk);
-        byte[32] player_id = invocation_uid(bytes("StonesPlayer"));
-        PlayerState next_player = {
+        byte[32] owner = blake2b(byte[](owner_pk));
+        byte[32] player_id = invocation_uid(byte[]("StonesPlayer"));
+        PlayerState next_player = PlayerState {
             // :: user declared fields
             owner: owner,
             player_id: player_id,
@@ -138,7 +138,7 @@ contract League(
             tx.outputs[gen__league_output_idx].scriptPubKey
                 == tx.inputs[this.activeInputIndex].scriptPubKey
         );
-        Gen__PlayerState gen__state_player_gen__player_state = {
+        Gen__PlayerState gen__state_player_gen__player_state = Gen__PlayerState {
             // :: generated fields
             gen__player_template: gen__player_template,
             gen__stones_game_template: gen__stones_game_template,

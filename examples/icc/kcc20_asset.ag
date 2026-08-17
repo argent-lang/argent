@@ -22,7 +22,7 @@ actor KCC20 owns KCC20State {
         next: KCC20,
     } {
         if (identifier_type == IDENTIFIER_PUBKEY) {
-            require(checkSig(owner_sig, owner_identifier));
+            require(checkSig(owner_sig, pubkey(owner_identifier)));
         } else if (identifier_type == IDENTIFIER_COVENANT_ID) {
             require(cov_id(owner_identifier).co_spent());
         } else {

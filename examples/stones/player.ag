@@ -19,7 +19,7 @@ actor Player owns PlayerState {
         opponent_out: Player,
         game: StonesGame,
     } {
-        require(blake2b(owner_pk) == owner);
+        require(blake2b(byte[](owner_pk)) == owner);
         require(checkSig(owner_sig, owner_pk));
 
         require(opponent.player_id != player_id);
@@ -72,7 +72,7 @@ actor Player owns PlayerState {
     delegate accept_start(sig owner_sig, pubkey owner_pk) consumes {
         starter: Player,
     } {
-        require(blake2b(owner_pk) == owner);
+        require(blake2b(byte[](owner_pk)) == owner);
         require(checkSig(owner_sig, owner_pk));
 
         require(starter.player_id != player_id);
@@ -86,7 +86,7 @@ actor Player owns PlayerState {
     }
 
     entry retire(sig owner_sig, pubkey owner_pk) emits none {
-        require(blake2b(owner_pk) == owner);
+        require(blake2b(byte[](owner_pk)) == owner);
         require(checkSig(owner_sig, owner_pk));
         require(open_games == 0);
     }

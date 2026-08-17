@@ -24,7 +24,7 @@ contract Cell(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function advance(
+    entry advance(
         int gen__remote_observed_agent_prefix_len,
         int gen__remote_observed_agent_suffix_len,
         byte[32] gen__remote_observed_agent_template
@@ -52,7 +52,7 @@ contract Cell(
         AgentCapsule prev_state = gen__remote_agent_state;
         require(agent_type == observed_agent);
         require(prev_state.controller_id == OpInputCovenantId(this.activeInputIndex));
-        AgentCapsule next_state = {
+        AgentCapsule next_state = AgentCapsule {
             // :: user declared fields
             controller_id: prev_state.controller_id,
             caps_digest: prev_state.caps_digest,
@@ -67,7 +67,7 @@ contract Cell(
             gen__remote_observed_agent_suffix_len,
             observed_agent
         );
-        State next_cell = {
+        State next_cell = State {
             // :: user declared fields
             agent_covid: agent_covid,
             agent_type: agent_type,

@@ -31,7 +31,7 @@ contract Lobby(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entrypoint function open_or_watch(
+    entry open_or_watch(
         bool watch,
         byte[] gen__mux_prefix,
         byte[] gen__mux_suffix,
@@ -40,14 +40,14 @@ contract Lobby(
         byte[64] gen__mux_routes
     ) {
         // :: routes: route_family/BoardState/mux
-        require(blake2b(gen__mux_routes) == gen__mux_routes_digest);
+        require(blake2b(byte[](gen__mux_routes)) == gen__mux_routes_digest);
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         // :: output next: Mux | Spectator
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
-        BoardState next_board = {
+        BoardState next_board = BoardState {
             // :: user declared fields
             ply: nonce,
         };
@@ -61,7 +61,7 @@ contract Lobby(
                 gen__spectator_template
             );
         } else {
-            Gen__MuxState gen__state_next_gen__mux_state = {
+            Gen__MuxState gen__state_next_gen__mux_state = Gen__MuxState {
                 // :: generated fields
                 gen__mux_template: gen__mux_template,
                 gen__mux_routes: gen__mux_routes,
