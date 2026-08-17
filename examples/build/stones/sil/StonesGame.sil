@@ -53,32 +53,32 @@ contract StonesGame(
     }
 
     // :: shared helper functions
-    function player_ref(byte[32] owner_value, byte[32] player_id_value) : byte[32] {
-        return blake2b(byte[](owner_value + player_id_value));
+    function player_ref(byte[32] owner_, byte[32] player_id_) : byte[32] {
+        return blake2b(byte[](owner_ + player_id_));
     }
-    function side_player(int side_value, byte[32] a_ref, byte[32] b_ref) : byte[32] {
-        require(side_value == SIDE_A || side_value == SIDE_B);
-        byte[32] result = b_ref;
-        if (side_value == SIDE_A) {
-            result = a_ref;
+    function side_player(int side_, byte[32] a_ref_, byte[32] b_ref_) : byte[32] {
+        require(side_ == SIDE_A || side_ == SIDE_B);
+        byte[32] result_ = b_ref_;
+        if (side_ == SIDE_A) {
+            result_ = a_ref_;
         }
-        return result;
+        return result_;
     }
-    function other_side(int side) : int {
-        require(side == SIDE_A || side == SIDE_B);
-        int result = SIDE_A;
-        if (side == SIDE_A) {
-            result = SIDE_B;
+    function other_side(int side_) : int {
+        require(side_ == SIDE_A || side_ == SIDE_B);
+        int result_ = SIDE_A;
+        if (side_ == SIDE_A) {
+            result_ = SIDE_B;
         }
-        return result;
+        return result_;
     }
-    function win_status(int side) : int {
-        require(side == SIDE_A || side == SIDE_B);
-        int result = B_WIN;
-        if (side == SIDE_A) {
-            result = A_WIN;
+    function win_status(int side_) : int {
+        require(side_ == SIDE_A || side_ == SIDE_B);
+        int result_ = B_WIN;
+        if (side_ == SIDE_A) {
+            result_ = A_WIN;
         }
-        return result;
+        return result_;
     }
     function invocation_uid(byte[] domain_) : byte[32] {
         require(domain_.length > 0);
