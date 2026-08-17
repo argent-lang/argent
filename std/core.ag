@@ -5,13 +5,13 @@
 /// domain return the same value.
 ///
 /// The domain must contain between 1 and 64 bytes.
-fn invocation_uid(byte[] domain) -> byte[32] {
-    require(domain.length > 0);
+fn invocation_uid(byte[] domain_) -> byte[32] {
+    require(domain_.length > 0);
 
-    byte[36] outpoint = byte[36](
+    byte[36] outpoint_ = byte[36](
         OpOutpointTxId(this.activeInputIndex)
             + (OpOutpointIndex(this.activeInputIndex) as byte[4])
     );
 
-    return blake2bWithKey(byte[](outpoint), domain);
+    return blake2bWithKey(byte[](outpoint_), domain_);
 }
