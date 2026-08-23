@@ -26,7 +26,7 @@ contract WalletAsset(
     // :: leader entry (1:N)
     entry hold(byte[8] gen__policy_reserve_policy_preimage) {
         // :: expanded state
-        require(blake2b(byte[](gen__policy_reserve_policy_preimage)) == policy);
+        require(blake3(byte[](gen__policy_reserve_policy_preimage)) == policy);
         int gen__policy_nonce = OpBin2Num(gen__policy_reserve_policy_preimage.slice(0, 8));
 
         // :: auth outputs

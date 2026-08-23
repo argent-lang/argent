@@ -6,7 +6,7 @@ contract Launcher(
     int init_launches
 ) {
     // :: linked templates
-    byte[32] constant gen__child_app__child_template_const = byte[32](0x5b2a4c009d5c13a72a95c0fdc75470122ba59513cf4c743b71fbb5ccf07aa8fb);
+    byte[32] constant gen__child_app__child_template_const = byte[32](0x06d0d72f785f2aa83723d7f4567daf9a12f65af49db2d7858c4280b2a976f5c1);
 
     // :: state layouts
     struct RelayState {

@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use blake2b_simd::Params as Blake2bParams;
+use blake3::Hasher as Blake3Hasher;
 use kaspa_txscript::{
     EngineFlags, deserialize_i64 as deserialize_script_i64,
     opcodes::codes::{
@@ -35,17 +35,7 @@ pub fn template_hash(prefix: &[u8], suffix: &[u8]) -> [u8; 32] {
     let encoded_prefix_len = serialize_script_i64(prefix_len, Some(TEMPLATE_PART_LENGTH_BYTES)).unwrap();
     let encoded_suffix_len = serialize_script_i64(suffix_len, Some(TEMPLATE_PART_LENGTH_BYTES)).unwrap();
 
-    Blake2bParams::new()
-        .hash_length(32)
-        .to_state()
-        .update(encoded_prefix_len.as_ref())
-        .update(prefix)
-        .update(encoded_suffix_len.as_ref())
-        .update(suffix)
-        .finalize()
-        .as_bytes()
-        .try_into()
-        .unwrap()
+    Blake3Hasher::new().update(&encoded_prefix_len).update(prefix).update(&encoded_suffix_len).update(suffix).finalize().into()
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -900,6 +890,16 @@ mod tests {
 
         for (prefix, suffix) in cases {
             assert_eq!(template_hash(prefix, suffix), silverscript_lang::template::template_hash(prefix, suffix));
+        }
+
+        let kcc1_vectors: &[(&[u8], &[u8], &str)] = &[
+            (&[], &[], "e572dff82304700b856a555ac3a4558d0df3646a3727816500270a93c66aac1e"),
+            (b"a", b"bc", "405e183e2494cdbe2df89349cc0ffa5b77fb885ad97a1d5660ecd0692ef8142a"),
+            (b"ab", b"c", "a0968c014f3fc7bd1a7d9a8d1ad1177eb379bd2f05e56309eb4e20347c5e7eba"),
+            (&[0x00, 0xff], &[0x10, 0x00, 0x80], "6616a66757315de0221cb2acba729113cebde31f8d3ca7fa93878a0584b96905"),
+        ];
+        for (prefix, suffix, expected) in kcc1_vectors {
+            assert_eq!(encode_hex(&template_hash(prefix, suffix)), *expected);
         }
     }
 

@@ -557,7 +557,7 @@ fn emit_state_expansion_prelude(out: &mut String, actor: &ActorDecl, model: &Mod
     out.push_str("        // :: expanded state\n");
     for spec in specs {
         let hidden = hidden_state_expansion_preimage_name(&spec);
-        let digest = format!("blake2b(byte[]({hidden}))");
+        let digest = format!("blake3(byte[]({hidden}))");
         push_generated_binary_require(out, 8, &digest, "==", &spec.field);
         let mut offset = 0usize;
         for field in &model.state(&spec.memory_state)?.fields {
@@ -649,7 +649,7 @@ fn emit_observed_inputs(out: &mut String, actor: &ActorDecl, entry: &EntryDecl, 
 }
 
 pub(super) fn state_payload_digest_expr(state_name: &str, value_expr: &str, model: &Model<'_>) -> Result<String> {
-    Ok(format!("blake2b(byte[]({}))", state_payload_bytes_expr(state_name, value_expr, model)?))
+    Ok(format!("blake3(byte[]({}))", state_payload_bytes_expr(state_name, value_expr, model)?))
 }
 
 fn state_payload_bytes_expr(state_name: &str, value_expr: &str, model: &Model<'_>) -> Result<String> {
@@ -683,7 +683,7 @@ pub(super) fn packed_field_expr(ty: &TypeRef, expr: &str) -> Result<String> {
         ("int", None) => Ok(format!("(({expr}) as byte[8])")),
         // Sil booleans use the VM's numeric representation, where false is
         // empty. Normalize through int before fixing the one-byte state width.
-        ("bool", None) => Ok(format!("((int({expr})) as byte[1])")),
+        ("bool", None) => Ok(format!("((({expr}) as int) as byte[1])")),
         ("byte", None) => Ok(format!("byte[]({expr})")),
         ("byte", Some(ArrayDim::Fixed(_))) | ("pubkey", None) | (word::COVENANT_ID, None) | ("sig", None) | ("datasig", None) => {
             Ok(format!("byte[]({expr})"))
@@ -735,7 +735,7 @@ fn emit_entry_template_locals(out: &mut String, _actor: &ActorDecl, witness_spec
     for spec in &witness_specs.families {
         let table = hidden_route_family_table_name_by_id(&spec.family_id);
         let commitment = hidden_route_family_commitment_name_by_id(&spec.family_id);
-        out.push_str(&format!("        require(blake2b(byte[]({table})) == {commitment});\n"));
+        out.push_str(&format!("        require(blake3(byte[]({table})) == {commitment});\n"));
     }
     for spec in template_locals {
         if let TemplateWitnessSource::FamilyTable { family_id, offset } = &spec.source {
@@ -3316,11 +3316,11 @@ fn hidden_route_family_commitment_expr(
     }
 
     if model.route_family_for_actor(&source_actor.name).is_some_and(|source_family| source_family.id == family.id) {
-        return format!("blake2b(byte[]({}))", hidden_route_family_table_name(family));
+        return format!("blake3(byte[]({}))", hidden_route_family_table_name(family));
     }
 
     let preimage = family.table_actors().iter().map(|actor| hidden_template_name(actor)).collect::<Vec<_>>().join(" + ");
-    format!("blake2b(byte[]({preimage}))")
+    format!("blake3(byte[]({preimage}))")
 }
 
 fn template_receipt_id(actor: &str) -> String {

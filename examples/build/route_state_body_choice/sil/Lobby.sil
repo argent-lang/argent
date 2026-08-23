@@ -40,7 +40,7 @@ contract Lobby(
         byte[64] gen__mux_routes
     ) {
         // :: routes: route_family/BoardState/mux
-        require(blake2b(byte[](gen__mux_routes)) == gen__mux_routes_digest);
+        require(blake3(byte[](gen__mux_routes)) == gen__mux_routes_digest);
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);

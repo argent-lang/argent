@@ -133,6 +133,7 @@ name = "argent-artifact"
 version = "0.1.0"
 dependencies = [
  "blake2b_simd",
+ "blake3",
  "faster-hex 0.10.0",
  "serde",
  "serde_json",
@@ -146,6 +147,7 @@ version = "0.1.0"
 dependencies = [
  "argent-artifact",
  "blake2b_simd",
+ "blake3",
  "kaspa-consensus-core",
  "kaspa-txscript",
  "kaspa-txscript-errors",
@@ -3329,7 +3331,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 name = "silverscript-abi"
 version = "0.1.0"
 dependencies = [
- "blake2b_simd",
+ "blake3",
  "faster-hex 0.10.0",
  "kaspa-txscript",
  "serde",
@@ -3341,9 +3343,10 @@ dependencies = [
 [[package]]
 name = "silverscript-lang"
 version = "0.1.0"
-source = "git+https://github.com/kaspanet/silverscript?rev=14dce9a5ce8769cdfbd0c8965f8764fa9c325067#14dce9a5ce8769cdfbd0c8965f8764fa9c325067"
+source = "git+https://github.com/kaspanet/silverscript?rev=140bf184fd03dc0f5c29155f89e9e5d733a1152f#140bf184fd03dc0f5c29155f89e9e5d733a1152f"
 dependencies = [
  "blake2b_simd",
+ "blake3",
  "chrono",
  "clap",
  "faster-hex 0.10.0",

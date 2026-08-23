@@ -7,6 +7,7 @@ rust-version = "1.94.0"
 [dependencies]
 argent-artifact = { workspace = true }
 blake2b_simd = { workspace = true }
+blake3 = { workspace = true }
 kaspa-consensus-core = { workspace = true }
 kaspa-txscript = { workspace = true }
 kaspa-txscript-errors = { workspace = true }

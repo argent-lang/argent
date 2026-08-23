@@ -6,6 +6,7 @@ rust-version = "1.94.0"
 
 [dependencies]
 blake2b_simd = { workspace = true }
+blake3 = { workspace = true }
 faster-hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

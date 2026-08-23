@@ -42,7 +42,7 @@ contract Archive(
         byte[64] gen__mux_routes
     ) {
         // :: routes: route_family/BoardState/mux Pawn
-        require(blake2b(byte[](gen__mux_routes)) == gen__mux_routes_digest);
+        require(blake3(byte[](gen__mux_routes)) == gen__mux_routes_digest);
         byte[32] gen__pawn_template = byte[32](gen__mux_routes.slice(0, 32));
 
         // :: auth outputs

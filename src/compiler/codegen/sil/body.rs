@@ -1476,7 +1476,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                         digest.field
                     )));
                 }
-                out.push_str(&format!("{field_indent}{}: blake2b(byte[]({payload})),\n", field.name));
+                out.push_str(&format!("{field_indent}{}: blake3(byte[]({payload})),\n", field.name));
             } else if field.virtual_slot {
                 let raw_expr = pending.remove(&field.name).unwrap_or_else(|| field.name.clone());
                 let expr = self.lower_expr(&raw_expr, None, indent + 4)?;
