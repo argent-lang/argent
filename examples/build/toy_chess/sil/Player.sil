@@ -37,7 +37,7 @@ contract Player(
     // :: leader entry (1:N)
     entry enter_mux(byte[] gen__mux_prefix, byte[] gen__mux_suffix, byte[64] gen__mux_routes) {
         // :: routes: route_family/BoardState/mux
-        require(blake2b(byte[](gen__mux_routes)) == gen__mux_routes_digest);
+        require(blake3(byte[](gen__mux_routes)) == gen__mux_routes_digest);
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);

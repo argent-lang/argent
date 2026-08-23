@@ -1347,7 +1347,6 @@ fn emits_portable_artifact_schema() {
     assert_eq!(entry.route_plan.outputs[0].name, "next");
 
     let sil_entry = sil_contract.entry(&entry.abi.entry).expect("outer entry should point at Sil ABI entry");
-    assert_eq!(sil_entry.selector, None);
     assert_eq!(sil_entry.params.len(), 1);
     assert_eq!(sil_entry.params[0].name, "amount");
     assert_eq!(sil_entry.params[0].ty, TypeArtifact::Int);
@@ -1615,8 +1614,8 @@ fn builds_examples_with_compiled_artifacts() {
         "examples/tickets.ag",
         "tickets",
         &[
-            ("Issuer", "248ba598853cbacb7e1c42ead043e1e17df6c2b4e8b59be4f7e30eccf6ec1dfc"),
-            ("Ticket", "507ee10c2c3d5788ddde1c4d53750360385d7169a35ada05654efc586b72643b"),
+            ("Issuer", "04e42d0f9f69e8c344142685c9e1512ed03e0e3f317c5f2649b0da3f61b06a13"),
+            ("Ticket", "0480dbcb791c1d53b7f4668bf684c14be77fd7cf4ee02e49c9f9f2528e2fbd3e"),
         ],
     );
     assert_example_build_artifact("examples/stones/app.ag", "stones", &[]);
@@ -2985,10 +2984,10 @@ fn compiler_lowers_injected_deep_forest_cuts() {
     let actor_sil = actor_sil_for_model(&model);
     let a2_sil = &actor_sil["A2"];
     assert!(a2_sil.contains("byte[96] gen__hub_b_routes"), "{a2_sil}");
-    assert!(a2_sil.contains("gen__hub_a_routes_digest: blake2b(byte[](gen__hub_a_routes)),"), "{a2_sil}");
+    assert!(a2_sil.contains("gen__hub_a_routes_digest: blake3(byte[](gen__hub_a_routes)),"), "{a2_sil}");
     let hub_b_sil = &actor_sil["HubB"];
     assert!(hub_b_sil.contains("byte[96] gen__hub_a_routes"), "{hub_b_sil}");
-    assert!(hub_b_sil.contains("gen__hub_b_routes_digest: blake2b(byte[](gen__hub_b_routes)),"), "{hub_b_sil}");
+    assert!(hub_b_sil.contains("gen__hub_b_routes_digest: blake3(byte[](gen__hub_b_routes)),"), "{hub_b_sil}");
 
     let artifact = emit_artifact(&program, &model, &actor_sil).expect("deep-forest artifact emits");
     artifact.verify_template_plan().expect("deep-forest template plan verifies");
@@ -3646,7 +3645,7 @@ fn selected_gates_open_from_the_family_table_and_direct_consumes_stay_concrete()
     assert!(consumer_sil.contains("byte[32] gen__mux_template = gen__init_mux_template;"), "{consumer_sil}");
     assert!(
         consumer_sil
-            .contains("gen__pawn_routes_digest: blake2b(byte[](gen__pawn_template + gen__knight_template + gen__mux_template)),"),
+            .contains("gen__pawn_routes_digest: blake3(byte[](gen__pawn_template + gen__knight_template + gen__mux_template)),"),
         "{consumer_sil}"
     );
 
@@ -3682,7 +3681,7 @@ fn family_commitments_pack_on_planned_cut_transitions() {
 
     let mux_sil = emit_actor(model.actor("Mux").expect("Mux exists"), &model).expect("Mux Sil emits");
     assert!(mux_sil.contains("PlayerState next_player = PlayerState {"), "{mux_sil}");
-    assert!(mux_sil.contains("gen__mux_routes_digest: blake2b(byte[](gen__mux_routes)),"), "{mux_sil}");
+    assert!(mux_sil.contains("gen__mux_routes_digest: blake3(byte[](gen__mux_routes)),"), "{mux_sil}");
     assert!(!mux_sil.contains("gen__mux_routes_digest: gen__mux_routes_digest,"), "{mux_sil}");
 
     inline_artifact("family-pack-transition", &source);
@@ -3908,7 +3907,7 @@ fn toy_chess_sil_uses_one_level_route_family_shape() {
     assert!(player_sil.contains("byte[] gen__mux_prefix,"), "{player_sil}");
     assert!(player_sil.contains("byte[] gen__mux_suffix,"), "{player_sil}");
     assert!(player_sil.contains("byte[64] gen__mux_routes"), "{player_sil}");
-    assert!(player_sil.contains("require(blake2b(byte[](gen__mux_routes)) == gen__mux_routes_digest);"), "{player_sil}");
+    assert!(player_sil.contains("require(blake3(byte[](gen__mux_routes)) == gen__mux_routes_digest);"), "{player_sil}");
     assert!(player_sil.contains("BoardState next_board = BoardState {"), "{player_sil}");
     assert!(player_sil.contains("Gen__MuxState gen__state_next_gen__mux_state = Gen__MuxState {"), "{player_sil}");
     assert!(!player_sil.contains("gen__pawn_template"), "{player_sil}");
@@ -4027,7 +4026,7 @@ fn route_family_state_keeps_downstream_templates() {
     let mux_sil = actor_sil.get("Mux").expect("Mux Sil is emitted");
     assert!(mux_sil.contains("byte[32] gen__receipt_template = gen__init_receipt_template;"), "{mux_sil}");
     assert!(mux_sil.contains("byte[64] gen__mux_routes = gen__init_mux_routes;"), "{mux_sil}");
-    assert!(mux_sil.contains("gen__mux_routes_digest: blake2b(byte[](gen__mux_routes)),"), "{mux_sil}");
+    assert!(mux_sil.contains("gen__mux_routes_digest: blake3(byte[](gen__mux_routes)),"), "{mux_sil}");
 
     emit_artifact(&program, &model, &actor_sil).expect("generated Sil compiles");
 }
@@ -4991,8 +4990,8 @@ fn brace_leading_assignments_lower_and_compile_as_sil_statements() {
                     };
                     CounterState {count: int copied} = snapshot;
                     State {count: int current} = readInputState(this.activeInputIndex);
-                    (byte[2] left, byte[2] right) = packed.split(2);
-                    byte[2] first, byte[2] second = packed.split(2);
+                    (byte[] left, byte[] right) = packed.split(2);
+                    byte[] first, byte[] second = packed.split(2);
                     (int returned) = identity(count);
                     require(
                         (copied == count)
@@ -5013,8 +5012,8 @@ fn brace_leading_assignments_lower_and_compile_as_sil_statements() {
     let sil = actor_sil.get("Counter").expect("Counter emits");
     assert!(sil.contains("State {count: int copied} = snapshot;"), "{sil}");
     assert!(sil.contains("State {count: int current} = readInputState(this.activeInputIndex);"), "{sil}");
-    assert!(sil.contains("(byte[2] left, byte[2] right) = packed.split(2);"), "{sil}");
-    assert!(sil.contains("byte[2] first, byte[2] second = packed.split(2);"), "{sil}");
+    assert!(sil.contains("(byte[] left, byte[] right) = packed.split(2);"), "{sil}");
+    assert!(sil.contains("byte[] first, byte[] second = packed.split(2);"), "{sil}");
     assert!(sil.contains("(int returned) = identity(count);"), "{sil}");
 }
 
@@ -5934,7 +5933,7 @@ fn toy_chess_source() -> String {
 }
 
 #[test]
-fn artifact_codec_matches_silverscript_sigscript_builder_except_pinned_byte_push() {
+fn artifact_codec_matches_silverscript_sigscript_builder() {
     let module = crate::compiler::syntax::parser::parse_module(
         PathBuf::from("test.ag"),
         r#"
@@ -5976,8 +5975,8 @@ fn artifact_codec_matches_silverscript_sigscript_builder_except_pinned_byte_push
     let sil_contract = sil_abi.contract("Foo").expect("Foo Sil ABI exists");
     let bump = sil_contract.entries.iter().find(|entry| entry.name == "bump").expect("bump entry exists");
     let done = sil_contract.entries.iter().find(|entry| entry.name == "done").expect("done entry exists");
-    assert_eq!(bump.selector, Some(0));
-    assert_eq!(done.selector, Some(1));
+    assert_eq!(bump.dispatch_tag.into_bytes(), compiled.entry_by_name("bump").expect("bump ABI exists").dispatch_tag());
+    assert_eq!(done.dispatch_tag.into_bytes(), compiled.entry_by_name("done").expect("done ABI exists").dispatch_tag());
 
     let portable_bump = crate::codec::encode_contract_entry_sig_script(
         &sil_abi,
@@ -5994,15 +5993,55 @@ fn artifact_codec_matches_silverscript_sigscript_builder_except_pinned_byte_push
     let sil_bump = compiled
         .build_sig_script("bump", vec![SilExpr::int(17), SilExpr::bytes(vec![1, 2, 3, 4]), SilExpr::bool(true), SilExpr::byte(1)])
         .expect("Sil bump sigscript builds");
-    // The pinned Sil revision forces an explicit data push for scalar bytes.
-    // Restore direct equality once Sil uses the canonical push selected here.
-    assert_eq!(encode_hex(&portable_bump), "01110401020304515100");
-    assert_eq!(encode_hex(&sil_bump), "0111040102030451010100");
+    assert_eq!(portable_bump, sil_bump);
+    assert_eq!(encode_hex(&portable_bump), "011104010203045151045bdffea8");
 
     let portable_done =
         crate::codec::encode_contract_entry_sig_script(&sil_abi, "Foo", "done", &[]).expect("portable done sigscript builds");
     let sil_done = compiled.build_sig_script("done", vec![]).expect("Sil done sigscript builds");
     assert_eq!(portable_done, sil_done);
+}
+
+#[test]
+fn sil_signature_builtins_pass_through() {
+    let module = crate::compiler::syntax::parser::parse_module(
+        PathBuf::from("test.ag"),
+        r#"
+            state AuthState {
+                int nonce;
+            }
+
+            actor Auth owns AuthState {
+                entry verify(
+                    sig tx_signature,
+                    byte[33] ecdsa_key,
+                    datasig message_signature,
+                    byte[32] digest,
+                    pubkey schnorr_key,
+                ) emits none {
+                    require(checkSig(tx_signature, schnorr_key));
+                    require(checkSigEcdsa(tx_signature, ecdsa_key));
+                    require(checkMsgSig(message_signature, digest, schnorr_key));
+                    require(checkMsgSigEcdsa(message_signature, digest, ecdsa_key));
+                }
+            }
+
+            app Test {
+                actor Auth;
+            }
+            "#
+        .to_string(),
+    )
+    .expect("source parses");
+    let program = Program { root: PathBuf::from("test.ag"), modules: vec![module] };
+    let model = Model::from_program(&program).expect("model validates");
+    let actor_sil = actor_sil_for_model(&model);
+    let sil = actor_sil.get("Auth").expect("Auth Sil exists");
+
+    for call in ["checkSig(", "checkSigEcdsa(", "checkMsgSig(", "checkMsgSigEcdsa("] {
+        assert!(sil.contains(call), "missing `{call}` in generated Sil:\n{sil}");
+    }
+    emit_artifact(&program, &model, &actor_sil).expect("generated Sil compiles");
 }
 
 #[test]

@@ -26,7 +26,7 @@ contract ReserveAsset(
     // :: leader entry (1:N)
     entry settle(int next_balance, byte[8] gen__policy_reserve_policy_preimage) {
         // :: expanded state
-        require(blake2b(byte[](gen__policy_reserve_policy_preimage)) == policy);
+        require(blake3(byte[](gen__policy_reserve_policy_preimage)) == policy);
         int gen__policy_nonce = OpBin2Num(gen__policy_reserve_policy_preimage.slice(0, 8));
 
         // :: auth outputs
@@ -43,7 +43,7 @@ contract ReserveAsset(
             // :: user declared fields
             owner_kind: owner_kind,
             owner_id: owner_id,
-            policy: blake2b(byte[](((gen__policy_nonce + 1) as byte[8]))),
+            policy: blake3(byte[](((gen__policy_nonce + 1) as byte[8]))),
             balance: next_balance,
         };
         // :: become ReserveAsset
@@ -58,7 +58,7 @@ contract ReserveAsset(
         byte[8] gen__policy_reserve_policy_preimage
     ) {
         // :: expanded state
-        require(blake2b(byte[](gen__policy_reserve_policy_preimage)) == policy);
+        require(blake3(byte[](gen__policy_reserve_policy_preimage)) == policy);
         int gen__policy_nonce = OpBin2Num(gen__policy_reserve_policy_preimage.slice(0, 8));
 
         // :: auth outputs
@@ -75,7 +75,7 @@ contract ReserveAsset(
             // :: user declared fields
             owner_kind: owner_kind,
             owner_id: owner_id,
-            policy: blake2b(byte[](((gen__policy_nonce + 1) as byte[8]))),
+            policy: blake3(byte[](((gen__policy_nonce + 1) as byte[8]))),
             balance: next_balance,
         };
         // :: become WalletAsset

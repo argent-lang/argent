@@ -1437,7 +1437,7 @@ impl<'a> TxBuilder<'a> {
                     {
                         let payload =
                             self.state_expansion_preimage_payload(artifact, contract, &field.name, memory_state, &mut source_state)?;
-                        ArtifactValue::Bytes(blake2b32(&payload))
+                        ArtifactValue::Bytes(blake3_32(&payload))
                     } else {
                         source_state.remove(&field.name).ok_or_else(|| CodecError::MissingField(field.name.clone()))?
                     };
@@ -1793,8 +1793,8 @@ fn to_snake(input: &str) -> String {
     out
 }
 
-fn blake2b32(data: &[u8]) -> Vec<u8> {
-    blake2b_simd::Params::new().hash_length(32).to_state().update(data).finalize().as_bytes().to_vec()
+fn blake3_32(data: &[u8]) -> Vec<u8> {
+    blake3::hash(data).as_bytes().to_vec()
 }
 
 pub fn execute_input_with_covenants(tx: &Transaction, entries: Vec<UtxoEntry>, input_idx: usize) -> Result<(), TxScriptError> {
@@ -1877,6 +1877,10 @@ pub fn covenant_engine_flags() -> EngineFlags {
 
 #[cfg(test)]
 mod tests {
+    use argent_artifact::{
+        CompiledContractArtifact, FieldArtifact, RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, StateArtifact,
+        StateSpanArtifact, TypeArtifact,
+    };
     use kaspa_consensus_core::tx::{ScriptPublicKey, TransactionId};
     use kaspa_txscript::opcodes::codes::OpFalse;
 
@@ -1904,6 +1908,44 @@ mod tests {
         assert_eq!(value.get("controller"), Some(&ArtifactValue::Bytes(vec![0x44; 32])));
         assert_eq!(value.get("label"), Some(&ArtifactValue::Text("counter".to_string())));
         assert_eq!(value.get("nested"), Some(&ArtifactValue::Object(nested)));
+    }
+
+    #[test]
+    fn expansion_commitment_matches_kcc1_virtual_element_vector() {
+        let abi = SilAbiArtifact {
+            schema_version: SIL_ABI_SCHEMA_VERSION,
+            states: vec![StateArtifact {
+                name: "VirtualElement".to_string(),
+                fields: vec![
+                    FieldArtifact { name: "counter".to_string(), ty: TypeArtifact::Int },
+                    FieldArtifact { name: "enabled".to_string(), ty: TypeArtifact::Bool },
+                ],
+            }],
+            contracts: vec![SilContractArtifact {
+                name: "Test".to_string(),
+                source_path: "sil/Test.sil".to_string(),
+                runtime_state: RuntimeStateArtifact { source: "State".to_string(), fields: Vec::new() },
+                entries: Vec::new(),
+                compiled: CompiledContractArtifact {
+                    script_hex: String::new(),
+                    template_hash_hex: String::new(),
+                    state_span: StateSpanArtifact { offset: 0, len: 0 },
+                },
+            }],
+        };
+        let values =
+            BTreeMap::from([("counter".to_string(), ArtifactValue::Int(-5)), ("enabled".to_string(), ArtifactValue::Bool(true))]);
+        let payload = encode_struct_payload(&abi, abi.contract("Test").expect("contract exists"), "VirtualElement", &values)
+            .expect("virtual element encodes");
+
+        assert_eq!(payload, [0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x01]);
+        assert_eq!(
+            blake3_32(&payload),
+            [
+                0x15, 0xe0, 0x06, 0xc7, 0xc5, 0x06, 0xfb, 0x20, 0xb6, 0xde, 0x95, 0x73, 0xe3, 0x1b, 0xdc, 0x47, 0x59, 0x1e, 0x93,
+                0x7c, 0x38, 0xf9, 0xfc, 0xf3, 0x1c, 0xdf, 0xab, 0xe5, 0x5d, 0x12, 0x2b, 0xda,
+            ]
+        );
     }
 
     #[test]

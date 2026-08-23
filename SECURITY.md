@@ -55,7 +55,7 @@ group.
 A generated delegate reads covenant input zero using the template of its first
 consumed actor. A transaction using another contract at that position fails
 template validation. The delegate therefore trusts the generated contract of
-the named leader actor, not an unauthenticated entrypoint selector.
+the named leader actor, not an unauthenticated entrypoint dispatch tag.
 
 ### Claim 3: covenant input zero executes a leader entry
 
@@ -89,7 +89,7 @@ delegates.
 ### Leader-actor batching restriction
 
 The restriction applies to the whole leader actor because all of its entries
-share one generated contract and another input's entrypoint selector is not
+share one generated contract and another input's selected entrypoint is not
 safely introspectable. Once any delegate names an actor as its leader, every
 leader entry of that actor closes its same-covenant input group, including
 otherwise independent 1:N entries.

@@ -18,7 +18,7 @@ contract Forager(
     // :: leader entry (1:N)
     entry hold(byte[8] gen__strategy_forager_strategy_preimage) {
         // :: expanded state
-        require(blake2b(byte[](gen__strategy_forager_strategy_preimage)) == strategy);
+        require(blake3(byte[](gen__strategy_forager_strategy_preimage)) == strategy);
         int gen__strategy_hunger = OpBin2Num(gen__strategy_forager_strategy_preimage.slice(0, 8));
 
         // :: auth outputs
@@ -29,7 +29,7 @@ contract Forager(
         require(energy > 0);
         State next_state = State {
             // :: user declared fields
-            strategy: blake2b(byte[](((gen__strategy_hunger + 1) as byte[8]))),
+            strategy: blake3(byte[](((gen__strategy_hunger + 1) as byte[8]))),
             energy: energy - 1,
         };
         // :: become Forager

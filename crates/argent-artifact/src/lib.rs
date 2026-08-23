@@ -15,9 +15,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use silverscript_abi::{
-    ArtifactVersionError, CompiledContractArtifact, CompiledTemplateArtifact, FieldArtifact, ParamArtifact, RuntimeFieldArtifact,
-    RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, SilAbiVerificationError, SilContractArtifact, SilEntryArtifact,
-    StateArtifact, StateSpanArtifact, TypeArtifact,
+    ArtifactVersionError, CompiledContractArtifact, CompiledTemplateArtifact, DispatchTag, DispatchTagParseError, FieldArtifact,
+    ParamArtifact, RuntimeFieldArtifact, RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, SilAbiVerificationError,
+    SilContractArtifact, SilEntryArtifact, StateArtifact, StateSpanArtifact, TypeArtifact,
 };
 
 pub const ARTIFACT_SCHEMA_VERSION: u32 = 1;
@@ -1458,7 +1458,7 @@ pub fn fixed_runtime_context_value(
                 .find(|table| table.id == family.table_id)
                 .ok_or_else(|| invalid(format!("missing route table `{}`", family.table_id)))?;
             let bytes = fixed_route_table_bytes(plan, runtime_state, table)?;
-            Ok(blake2b_simd::Params::new().hash_length(32).hash(&bytes).as_bytes().to_vec())
+            Ok(blake3::hash(&bytes).as_bytes().to_vec())
         }
         RuntimeFieldRoleArtifact::TemplateRoot { .. } => {
             let proof_id = route_template_proof_receipt_id(&runtime_state.source, &field.name);
@@ -1713,8 +1713,7 @@ fn route_template_merkle_root_hex(layers: &[Vec<[u8; 32]>]) -> String {
 }
 
 fn route_template_empty_merkle_root_hex() -> String {
-    let hash = blake2b_simd::Params::new().hash_length(32).to_state().finalize();
-    encode_hex(hash.as_bytes())
+    encode_hex(blake3::hash(&[]).as_bytes())
 }
 
 fn route_template_merkle_proof(layers: &[Vec<[u8; 32]>], mut index: usize) -> Vec<RouteTemplateProofStepArtifact> {
@@ -1748,8 +1747,7 @@ fn route_template_merkle_proof_root(
 }
 
 fn route_template_merkle_parent(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let hash = blake2b_simd::Params::new().hash_length(32).to_state().update(left).update(right).finalize();
-    hash.as_bytes().try_into().expect("hash length is fixed at 32 bytes")
+    blake3::Hasher::new().update(left).update(right).finalize().into()
 }
 
 fn decode_hash_hex(id: &str, hex: &str) -> std::result::Result<[u8; 32], TemplatePlanError> {
@@ -1779,6 +1777,16 @@ fn encode_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn route_commitments_use_blake3() {
+        assert_eq!(route_template_empty_merkle_root_hex(), "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262");
+
+        let left = [0x11; 32];
+        let right = [0x22; 32];
+        let expected = blake3::Hasher::new().update(&left).update(&right).finalize();
+        assert_eq!(route_template_merkle_parent(&left, &right), *expected.as_bytes());
+    }
 
     #[test]
     fn lowers_fixed_bytes_as_structural_type() {

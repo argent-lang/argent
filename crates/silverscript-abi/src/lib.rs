@@ -1,7 +1,7 @@
 //! Portable ABI and codec data for generated Silverscript contracts.
 //!
 //! This crate owns only bytecode-facing facts: contract scripts, entrypoint
-//! selectors and parameters, runtime state field order, structural field types,
+//! dispatch tags and parameters, runtime state field order, structural field types,
 //! template state spans and hashes, and the codec for encoding those values.
 //!
 //! It must not know why a field exists. Argent coordination semantics such as
@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use blake2b_simd::Params as Blake2bParams;
+use blake3::Hasher as Blake3Hasher;
 use kaspa_txscript::{
     EngineFlags, deserialize_i64 as deserialize_script_i64,
     opcodes::codes::{
@@ -22,11 +22,77 @@ use kaspa_txscript::{
     script_builder::{ScriptBuilder, ScriptBuilderError},
     serialize_i64 as serialize_script_i64,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
 pub const SIL_ABI_SCHEMA_VERSION: u32 = 1;
 const TEMPLATE_PART_LENGTH_BYTES: usize = 8;
+
+/// A Sil entrypoint's fixed-width signature dispatch tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DispatchTag([u8; 4]);
+
+impl DispatchTag {
+    /// Borrow the four bytes placed in the entry signature script.
+    pub const fn as_bytes(&self) -> &[u8; 4] {
+        &self.0
+    }
+
+    /// Return the four bytes placed in the entry signature script.
+    pub const fn into_bytes(self) -> [u8; 4] {
+        self.0
+    }
+
+    /// Parse the eight-character representation stored in portable artifacts.
+    pub fn from_hex(hex: &str) -> Result<Self, DispatchTagParseError> {
+        if hex.len() != 8 {
+            return Err(DispatchTagParseError::InvalidLength(hex.len()));
+        }
+
+        let mut bytes = [0; 4];
+        faster_hex::hex_decode(hex.as_bytes(), &mut bytes).map_err(|err| DispatchTagParseError::InvalidHex(err.to_string()))?;
+        Ok(Self(bytes))
+    }
+
+    /// Encode the tag using the portable artifact's lowercase hex form.
+    pub fn to_hex(&self) -> String {
+        encode_hex(&self.0)
+    }
+}
+
+impl From<[u8; 4]> for DispatchTag {
+    fn from(bytes: [u8; 4]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl Serialize for DispatchTag {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for DispatchTag {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let hex = String::deserialize(deserializer)?;
+        Self::from_hex(&hex).map_err(serde::de::Error::custom)
+    }
+}
+
+/// An invalid portable dispatch-tag representation.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum DispatchTagParseError {
+    #[error("dispatch tag must contain exactly 8 hexadecimal characters, found {0}")]
+    InvalidLength(usize),
+    #[error("invalid dispatch tag hex: {0}")]
+    InvalidHex(String),
+}
 
 /// Calculate the canonical hash of a state-bearing Silverscript template.
 pub fn template_hash(prefix: &[u8], suffix: &[u8]) -> [u8; 32] {
@@ -35,17 +101,7 @@ pub fn template_hash(prefix: &[u8], suffix: &[u8]) -> [u8; 32] {
     let encoded_prefix_len = serialize_script_i64(prefix_len, Some(TEMPLATE_PART_LENGTH_BYTES)).unwrap();
     let encoded_suffix_len = serialize_script_i64(suffix_len, Some(TEMPLATE_PART_LENGTH_BYTES)).unwrap();
 
-    Blake2bParams::new()
-        .hash_length(32)
-        .to_state()
-        .update(encoded_prefix_len.as_ref())
-        .update(prefix)
-        .update(encoded_suffix_len.as_ref())
-        .update(suffix)
-        .finalize()
-        .as_bytes()
-        .try_into()
-        .unwrap()
+    Blake3Hasher::new().update(&encoded_prefix_len).update(prefix).update(&encoded_suffix_len).update(suffix).finalize().into()
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -192,8 +248,7 @@ pub struct RuntimeFieldArtifact {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SilEntryArtifact {
     pub name: String,
-    #[serde(default)]
-    pub selector: Option<i64>,
+    pub dispatch_tag: DispatchTag,
     pub params: Vec<ParamArtifact>,
 }
 
@@ -244,6 +299,8 @@ pub enum SilAbiVerificationError {
     InvalidTemplateHashLength { contract: String, len: usize },
     #[error("contract `{contract}` template hash mismatch: expected `{expected}`, found `{found}`")]
     TemplateHashMismatch { contract: String, expected: String, found: String },
+    #[error("contract `{contract}` entries `{first}` and `{second}` have the same dispatch tag `{tag}`")]
+    DispatchTagCollision { contract: String, first: String, second: String, tag: String },
 }
 
 pub type CodecResult<T> = std::result::Result<T, CodecError>;
@@ -333,9 +390,7 @@ pub fn encode_entry_sig_script(
     for ((name, ty), value) in params.iter().zip(args) {
         push_sig_arg(&mut builder, &ctx, name, ty, value)?;
     }
-    if let Some(selector) = entry.selector {
-        push_i64(&mut builder, selector)?;
-    }
+    builder.add_data(entry.dispatch_tag.as_bytes())?;
     Ok(builder.drain())
 }
 
@@ -410,6 +465,19 @@ fn verify_compiled_contract(contract: &SilContractArtifact) -> std::result::Resu
     };
     let script = decode("script", &contract.compiled.script_hex)?;
     let found_hash = decode("template hash", &contract.compiled.template_hash_hex)?;
+
+    let mut entries_by_tag = BTreeMap::<DispatchTag, &str>::new();
+    for entry in &contract.entries {
+        let tag = entry.dispatch_tag;
+        if let Some(first) = entries_by_tag.insert(tag, &entry.name) {
+            return Err(SilAbiVerificationError::DispatchTagCollision {
+                contract: contract.name.clone(),
+                first: first.to_string(),
+                second: entry.name.clone(),
+                tag: tag.to_hex(),
+            });
+        }
+    }
 
     let span = &contract.compiled.state_span;
     let Some((prefix, state_script, suffix)) = contract.compiled.script_parts(&script) else {
@@ -901,6 +969,16 @@ mod tests {
         for (prefix, suffix) in cases {
             assert_eq!(template_hash(prefix, suffix), silverscript_lang::template::template_hash(prefix, suffix));
         }
+
+        let kcc1_vectors: &[(&[u8], &[u8], &str)] = &[
+            (&[], &[], "e572dff82304700b856a555ac3a4558d0df3646a3727816500270a93c66aac1e"),
+            (b"a", b"bc", "405e183e2494cdbe2df89349cc0ffa5b77fb885ad97a1d5660ecd0692ef8142a"),
+            (b"ab", b"c", "a0968c014f3fc7bd1a7d9a8d1ad1177eb379bd2f05e56309eb4e20347c5e7eba"),
+            (&[0x00, 0xff], &[0x10, 0x00, 0x80], "6616a66757315de0221cb2acba729113cebde31f8d3ca7fa93878a0584b96905"),
+        ];
+        for (prefix, suffix, expected) in kcc1_vectors {
+            assert_eq!(encode_hex(&template_hash(prefix, suffix)), *expected);
+        }
     }
 
     #[test]
@@ -930,6 +1008,26 @@ mod tests {
         assert!(matches!(
             abi.verify(),
             Err(SilAbiVerificationError::TemplateHashMismatch { ref contract, .. }) if contract == "Foo"
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_dispatch_tags_during_deserialization() {
+        let wrong_length = serde_json::from_str::<DispatchTag>(r#""00""#).expect_err("short tag should fail");
+        assert!(wrong_length.to_string().contains("exactly 8 hexadecimal characters"));
+
+        let invalid_hex = serde_json::from_str::<DispatchTag>(r#""zzzzzzzz""#).expect_err("invalid hex should fail");
+        assert!(invalid_hex.to_string().contains("invalid dispatch tag hex"));
+    }
+
+    #[test]
+    fn rejects_colliding_dispatch_tags() {
+        let mut abi = tiny_sil_abi();
+        abi.contracts[0].entries[1].dispatch_tag = abi.contracts[0].entries[0].dispatch_tag;
+        assert!(matches!(
+            abi.verify(),
+            Err(SilAbiVerificationError::DispatchTagCollision { ref contract, ref first, ref second, .. })
+                if contract == "Foo" && first == "step" && second == "other"
         ));
     }
 
@@ -991,12 +1089,12 @@ mod tests {
         let sigscript = encode_contract_entry_sig_script(
             &artifact,
             "Foo",
-            "main",
+            "step",
             &[ArtifactValue::Int(17), ArtifactValue::Bytes(vec![1, 2, 3, 4]), ArtifactValue::Bool(true), ArtifactValue::Byte(1)],
         )
         .expect("sigscript encodes");
 
-        assert_eq!(encode_hex(&sigscript), "01110401020304515100");
+        assert_eq!(encode_hex(&sigscript), "011104010203045151042c49ed65");
     }
 
     #[test]
@@ -1049,7 +1147,7 @@ mod tests {
               "entries": [
                 {
                   "name": "step",
-                  "selector": 0,
+                  "dispatch_tag": "2c49ed65",
                   "params": [{ "name": "amount", "type": { "kind": "int" } }]
                 }
               ],
@@ -1065,11 +1163,16 @@ mod tests {
 
         let abi: SilAbiArtifact = serde_json::from_str(json).expect("sil abi should deserialize");
         abi.check_schema_version().expect("sil abi schema version should be supported");
-        assert_eq!(abi.contract("Foo").and_then(|contract| contract.entry("step")).and_then(|entry| entry.selector), Some(0));
+        assert_eq!(
+            abi.contract("Foo").and_then(|contract| contract.entry("step")).map(|entry| entry.dispatch_tag),
+            Some(DispatchTag::from([0x2c, 0x49, 0xed, 0x65]))
+        );
         assert_eq!(
             abi.contract("Foo").and_then(|contract| contract.entry("step")).map(|entry| entry.params[0].name.as_str()),
             Some("amount")
         );
+        let serialized = serde_json::to_value(&abi).expect("Sil ABI artifact serializes");
+        assert_eq!(serialized["contracts"][0]["entries"][0]["dispatch_tag"], "2c49ed65");
     }
 
     #[test]
@@ -1078,7 +1181,7 @@ mod tests {
         let err = encode_contract_entry_sig_script(
             &artifact,
             "Foo",
-            "main",
+            "step",
             &[ArtifactValue::Int(i64::MIN), ArtifactValue::Bytes(vec![1, 2, 3, 4]), ArtifactValue::Bool(true), ArtifactValue::Byte(1)],
         )
         .expect_err("i64::MIN needs 9 bytes and should match txscript rejection");
@@ -1127,8 +1230,8 @@ mod tests {
                 runtime_state: RuntimeStateArtifact { source: "FooState".to_string(), fields: Vec::new() },
                 entries: vec![
                     SilEntryArtifact {
-                        name: "main".to_string(),
-                        selector: Some(0),
+                        name: "step".to_string(),
+                        dispatch_tag: DispatchTag::from([0x2c, 0x49, 0xed, 0x65]),
                         params: vec![
                             param("n", TypeArtifact::Int),
                             param("hash", TypeArtifact::FixedBytes { len: 4 }),
@@ -1136,7 +1239,11 @@ mod tests {
                             param("b", TypeArtifact::Byte),
                         ],
                     },
-                    SilEntryArtifact { name: "other".to_string(), selector: Some(1), params: Vec::new() },
+                    SilEntryArtifact {
+                        name: "other".to_string(),
+                        dispatch_tag: DispatchTag::from([0xde, 0xad, 0xbe, 0xef]),
+                        params: Vec::new(),
+                    },
                 ],
                 compiled: CompiledContractArtifact {
                     script_hex: String::new(),

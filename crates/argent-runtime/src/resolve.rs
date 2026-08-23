@@ -889,10 +889,10 @@ mod tests {
     use std::{cell::Cell, collections::BTreeMap};
 
     use argent_artifact::{
-        ARTIFACT_SCHEMA_VERSION, ActorAbiRefArtifact, ActorArtifact, ArgentArtifact, CompiledContractArtifact, EmitArtifact,
-        EntryAbiRefArtifact, EntryArtifact, EntryKindArtifact, EntryRoutePlanArtifact, GeneratorArtifact, InterfaceSetArtifact,
-        RuntimeFieldArtifact, RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, SilContractArtifact, SilEntryArtifact,
-        StateSpanArtifact, TemplatePlanArtifact, TemplateSelectorArtifact, TypeArtifact,
+        ARTIFACT_SCHEMA_VERSION, ActorAbiRefArtifact, ActorArtifact, ArgentArtifact, CompiledContractArtifact, DispatchTag,
+        EmitArtifact, EntryAbiRefArtifact, EntryArtifact, EntryKindArtifact, EntryRoutePlanArtifact, GeneratorArtifact,
+        InterfaceSetArtifact, RuntimeFieldArtifact, RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, SilContractArtifact,
+        SilEntryArtifact, StateSpanArtifact, TemplatePlanArtifact, TemplateSelectorArtifact, TypeArtifact,
     };
     use kaspa_consensus_core::{
         Hash,
@@ -967,7 +967,7 @@ mod tests {
                     name: actor.to_string(),
                     source_path: format!("sil/{actor}.sil"),
                     runtime_state,
-                    entries: vec![SilEntryArtifact { name: entry.to_string(), selector: None, params }],
+                    entries: vec![SilEntryArtifact { name: entry.to_string(), dispatch_tag: DispatchTag::from([0; 4]), params }],
                     compiled: CompiledContractArtifact {
                         script_hex: silverscript_abi::encode_hex(&state_script),
                         template_hash_hex: silverscript_abi::encode_hex(&silverscript_abi::template_hash(&[], &[])),

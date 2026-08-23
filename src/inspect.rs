@@ -238,9 +238,7 @@ fn inspect_entry(
         };
         signature_script_bytes = signature_script_bytes.plus(estimate);
     }
-    if let Some(selector) = sil_entry.selector {
-        signature_script_bytes = signature_script_bytes.plus(SizeEstimate::exact(integer_size(selector)?));
-    }
+    signature_script_bytes = signature_script_bytes.plus(SizeEstimate::exact(ScriptBuilder::canonical_data_size(&[0; 4])));
 
     Ok(EntryInspection {
         actor: actor.to_string(),
