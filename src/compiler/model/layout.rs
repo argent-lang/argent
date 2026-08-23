@@ -10,7 +10,7 @@ pub(crate) fn packed_field_len(ty: &TypeRef) -> Result<usize> {
         return Ok(32);
     }
     match (ty.name.as_str(), ty.array) {
-        ("int", None) => Ok(8),
+        ("int" | "temporal", None) => Ok(8),
         ("bool", None) | ("byte", None) => Ok(1),
         ("byte", Some(ArrayDim::Fixed(len))) => Ok(len),
         ("pubkey", None) | (word::COVENANT_ID, None) => Ok(32),

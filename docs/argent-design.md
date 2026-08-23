@@ -17,7 +17,7 @@ those pieces usable from Argent.
 - `emits` declares authorized output shape.
 - `become` is tail-dispatch into successor actor state.
 - Typed covenant inputs hide `readInputStateWithTemplate` boilerplate.
-- Basic Silverscript data types stay visible as-is, such as `sig` and `pubkey`;
+- Basic Silverscript data types stay visible as-is, such as `temporal`, `sig`, and `pubkey`;
   Argent does not invent wrapper primitive types for them.
 - Prefix/suffix witnesses are generated Silverscript ABI, not Argent source
   surface.

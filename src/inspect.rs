@@ -429,7 +429,7 @@ fn merge_estimates(estimates: &[SizeEstimate]) -> Option<SizeEstimate> {
 
 fn type_size(artifact: &Artifact, contract: &SilContractArtifact, ty: &TypeArtifact) -> SizeEstimate {
     match ty {
-        TypeArtifact::Int => SizeEstimate::range(1, 9),
+        TypeArtifact::Int | TypeArtifact::Temporal => SizeEstimate::range(1, 9),
         TypeArtifact::Bool => SizeEstimate::exact(1),
         TypeArtifact::Byte => SizeEstimate::range(1, 2),
         TypeArtifact::Bytes | TypeArtifact::Text | TypeArtifact::DynamicArray { .. } => SizeEstimate::variable(1),
@@ -469,7 +469,7 @@ fn type_size(artifact: &Artifact, contract: &SilContractArtifact, ty: &TypeArtif
 
 fn fixed_payload_len(ty: &TypeArtifact) -> Option<usize> {
     match ty {
-        TypeArtifact::Int => Some(8),
+        TypeArtifact::Int | TypeArtifact::Temporal => Some(8),
         TypeArtifact::Bool | TypeArtifact::Byte => Some(1),
         TypeArtifact::Pubkey => Some(32),
         TypeArtifact::Sig => Some(65),
@@ -510,6 +510,7 @@ fn param_label(param: &ParamArtifact) -> String {
 fn type_label(ty: &TypeArtifact) -> String {
     match ty {
         TypeArtifact::Int => "int".to_string(),
+        TypeArtifact::Temporal => "temporal".to_string(),
         TypeArtifact::Bool => "bool".to_string(),
         TypeArtifact::Byte => "byte".to_string(),
         TypeArtifact::Bytes => "bytes".to_string(),
@@ -630,8 +631,9 @@ app Show {
     }
 
     #[test]
-    fn reports_variable_integer_argument_size() {
+    fn reports_variable_numeric_argument_sizes() {
         assert_eq!(type_size_for_test(&TypeArtifact::Int), SizeEstimate::range(1, 9));
+        assert_eq!(type_size_for_test(&TypeArtifact::Temporal), SizeEstimate::range(1, 9));
     }
 
     fn type_size_for_test(ty: &TypeArtifact) -> SizeEstimate {

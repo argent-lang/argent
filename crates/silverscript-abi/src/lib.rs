@@ -136,6 +136,7 @@ pub struct ParamArtifact {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TypeArtifact {
     Int,
+    Temporal,
     Bool,
     Byte,
     Bytes,
@@ -175,6 +176,7 @@ impl TypeArtifact {
     fn scalar(name: &str) -> Self {
         match name {
             "int" => Self::Int,
+            "temporal" => Self::Temporal,
             "bool" => Self::Bool,
             "byte" => Self::Byte,
             "bytes" => Self::Bytes,
@@ -576,7 +578,7 @@ fn push_sig_arg(
         TypeArtifact::DynamicArray { item } if matches!(item.as_ref(), TypeArtifact::Struct { .. }) => {
             push_struct_array_fields(builder, ctx, item, None, value)
         }
-        TypeArtifact::Int => push_i64(builder, expect_int(value)?),
+        TypeArtifact::Int | TypeArtifact::Temporal => push_i64(builder, expect_int(value)?),
         TypeArtifact::Bool => push_i64(builder, i64::from(expect_bool(value)?)),
         TypeArtifact::Byte => {
             push_data(builder, &[expect_byte(value)?])?;
@@ -681,7 +683,7 @@ fn encode_struct_fields_payload(state: &StateArtifact, fields: &BTreeMap<String,
 
 fn decode_state_payload(name: &str, ty: &TypeArtifact, payload: &[u8]) -> CodecResult<ArtifactValue> {
     match ty {
-        TypeArtifact::Int => {
+        TypeArtifact::Int | TypeArtifact::Temporal => {
             require_len(name, 8, payload.len())?;
             Ok(ArtifactValue::Int(deserialize_fixed_i64(payload)?))
         }
@@ -749,7 +751,7 @@ fn encode_array_payload(name: &str, item: &TypeArtifact, expected_len: Option<us
 
 fn encode_fixed_payload(name: &str, ty: &TypeArtifact, value: &ArtifactValue) -> CodecResult<Vec<u8>> {
     match ty {
-        TypeArtifact::Int => serialize_fixed_i64(expect_int(value)?, 8),
+        TypeArtifact::Int | TypeArtifact::Temporal => serialize_fixed_i64(expect_int(value)?, 8),
         TypeArtifact::Bool => Ok(vec![u8::from(expect_bool(value)?)]),
         TypeArtifact::Byte => Ok(vec![expect_byte(value)?]),
         TypeArtifact::Pubkey => fixed_bytes(name, value, 32),
@@ -765,7 +767,7 @@ fn encode_fixed_payload(name: &str, ty: &TypeArtifact, value: &ArtifactValue) ->
 
 fn fixed_payload_len(ty: &TypeArtifact) -> Option<usize> {
     match ty {
-        TypeArtifact::Int => Some(8),
+        TypeArtifact::Int | TypeArtifact::Temporal => Some(8),
         TypeArtifact::Bool => Some(1),
         TypeArtifact::Byte => Some(1),
         TypeArtifact::Pubkey => Some(32),
@@ -942,6 +944,7 @@ fn require_len(name: &str, expected: usize, actual: usize) -> CodecResult<()> {
 fn type_name(ty: &TypeArtifact) -> String {
     match ty {
         TypeArtifact::Int => "int".to_string(),
+        TypeArtifact::Temporal => "temporal".to_string(),
         TypeArtifact::Bool => "bool".to_string(),
         TypeArtifact::Byte => "byte".to_string(),
         TypeArtifact::Bytes => "bytes".to_string(),
@@ -1095,6 +1098,42 @@ mod tests {
         .expect("sigscript encodes");
 
         assert_eq!(encode_hex(&sigscript), "011104010203045151042c49ed65");
+    }
+
+    #[test]
+    fn encodes_temporal_values_with_integer_payloads() {
+        assert_eq!(TypeArtifact::from_parts("temporal", None), TypeArtifact::Temporal);
+        assert_eq!(serde_json::to_value(TypeArtifact::Temporal).unwrap(), serde_json::json!({ "kind": "temporal" }));
+
+        let mut artifact = tiny_sil_abi();
+        artifact.contracts[0].entries[1].params =
+            vec![param("at", TypeArtifact::Temporal), param("history", TypeArtifact::dynamic_array(TypeArtifact::Temporal))];
+        let history = ArtifactValue::Array(vec![ArtifactValue::Int(1), ArtifactValue::Int(-2)]);
+        let sigscript = encode_contract_entry_sig_script(&artifact, "Foo", "other", &[ArtifactValue::Int(-5), history.clone()])
+            .expect("temporal arguments encode");
+        let pushes = parse_pushes(&sigscript).expect("signature script contains only data pushes");
+        assert_eq!(
+            pushes.iter().map(|(_, data)| data.clone()).collect::<Vec<_>>(),
+            vec![
+                vec![0x85],
+                [serialize_fixed_i64(1, 8).unwrap(), serialize_fixed_i64(-2, 8).unwrap()].concat(),
+                vec![0xde, 0xad, 0xbe, 0xef],
+            ]
+        );
+
+        let runtime_state = RuntimeStateArtifact {
+            source: "ClockState".to_string(),
+            fields: vec![
+                RuntimeFieldArtifact { name: "at".to_string(), ty: TypeArtifact::Temporal },
+                RuntimeFieldArtifact {
+                    name: "history".to_string(),
+                    ty: TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Temporal), len: 2 },
+                },
+            ],
+        };
+        let values = BTreeMap::from([("at".to_string(), ArtifactValue::Int(-5)), ("history".to_string(), history)]);
+        let encoded = encode_runtime_state_script(&runtime_state, &values).expect("temporal state encodes");
+        assert_eq!(decode_runtime_state_script(&runtime_state, &encoded).expect("temporal state decodes"), values);
     }
 
     #[test]

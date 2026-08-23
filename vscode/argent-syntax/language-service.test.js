@@ -7,10 +7,15 @@ const test = require('node:test');
 const {
   BUILTINS,
   PRIMITIVE_DOCUMENTATION,
+  PRIMITIVE_TYPES,
   scanDocument,
   standardModuleRelativePath,
   tokenize,
 } = require('./language-service');
+
+test('includes temporal among Argent primitive types', () => {
+  assert.ok(PRIMITIVE_TYPES.includes('temporal'));
+});
 
 test('resolves compiler-standard modules for import navigation and symbol indexing', () => {
   const relativePath = standardModuleRelativePath('std::core');
