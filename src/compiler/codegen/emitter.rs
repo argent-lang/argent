@@ -2173,25 +2173,32 @@ fn actor_artifact(actor: &ActorDecl, model: &Model<'_>) -> Result<ActorArtifact>
 }
 
 fn sil_contract_artifact(actor: &ActorDecl, model: &Model<'_>, actor_sil: &BTreeMap<String, String>) -> Result<SilContractArtifact> {
-    let entries = actor.entries.iter().enumerate().map(|(idx, entry)| sil_entry_artifact(actor, idx, entry, model)).collect();
     let sil = actor_sil
         .get(&actor.name)
         .ok_or_else(|| ArgentError::new(format!("missing generated Silverscript for actor `{}`", actor.name)))?;
+    let args = constructor_args_for_actor(actor, model)?;
+    let compiled = compile_contract(sil, &args, CompileOptions::default())
+        .map_err(|err| ArgentError::new(format!("generated Silverscript for actor `{}` failed to compile: {err}", actor.name)))?;
+    let entries = actor
+        .entries
+        .iter()
+        .map(|entry| {
+            // Sil owns canonical function signatures and their dispatch tags;
+            // the portable ABI carries the exact tag used by compiled code.
+            let compiled_entry = compiled.entry_by_name(&entry.name).ok_or_else(|| {
+                ArgentError::new(format!("generated Silverscript for actor `{}` has no entry `{}`", actor.name, entry.name))
+            })?;
+            Ok(sil_entry_artifact(actor, entry, model, compiled_entry.dispatch_tag()))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(SilContractArtifact {
         name: actor.name.clone(),
         source_path: format!("sil/{}.sil", actor.name),
         runtime_state: RuntimeStateArtifact { source: actor.state.clone(), fields: runtime_state_fields_for_actor(actor, model)? },
         entries,
-        compiled: compile_contract_artifact(sil, actor, model)?,
+        compiled: compiled_contract_artifact(&compiled)?,
     })
-}
-
-fn compile_contract_artifact<'i>(sil: &'i str, actor: &ActorDecl, model: &Model<'_>) -> Result<CompiledContractArtifact> {
-    let args: Vec<SilExpr<'i>> = constructor_args_for_actor(actor, model)?;
-    let compiled = compile_contract(sil, &args, CompileOptions::default())
-        .map_err(|err| ArgentError::new(format!("generated Silverscript for actor `{}` failed to compile: {err}", actor.name)))?;
-    compiled_contract_artifact(&compiled)
 }
 
 fn constructor_args_for_actor<'i>(actor: &ActorDecl, model: &Model<'_>) -> Result<Vec<SilExpr<'i>>> {
@@ -2792,7 +2799,7 @@ fn route_output_handles(entry: &EntryModel<'_>) -> Vec<RouteOutputHandleArtifact
         .collect()
 }
 
-fn sil_entry_artifact(actor: &ActorDecl, entry_index: usize, entry: &EntryDecl, model: &Model<'_>) -> SilEntryArtifact {
+fn sil_entry_artifact(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>, dispatch_tag: [u8; 4]) -> SilEntryArtifact {
     let mut params = entry
         .params
         .iter()
@@ -2805,7 +2812,7 @@ fn sil_entry_artifact(actor: &ActorDecl, entry_index: usize, entry: &EntryDecl, 
         hidden_params_for_entry(actor, entry, model).into_iter().map(|param| ParamArtifact { name: param.name, ty: param.ty }),
     );
 
-    SilEntryArtifact { name: entry.name.clone(), selector: (actor.entries.len() > 1).then_some(entry_index as i64), params }
+    SilEntryArtifact { name: entry.name.clone(), dispatch_tag_hex: encode_hex(&dispatch_tag), params }
 }
 
 fn emit_spec_artifact(entry: &EntryModel<'_>) -> EmitArtifact {

@@ -1347,7 +1347,7 @@ fn emits_portable_artifact_schema() {
     assert_eq!(entry.route_plan.outputs[0].name, "next");
 
     let sil_entry = sil_contract.entry(&entry.abi.entry).expect("outer entry should point at Sil ABI entry");
-    assert_eq!(sil_entry.selector, None);
+    assert_eq!(sil_entry.dispatch_tag().expect("entry has a four-byte dispatch tag").len(), 4);
     assert_eq!(sil_entry.params.len(), 1);
     assert_eq!(sil_entry.params[0].name, "amount");
     assert_eq!(sil_entry.params[0].ty, TypeArtifact::Int);
@@ -1615,8 +1615,8 @@ fn builds_examples_with_compiled_artifacts() {
         "examples/tickets.ag",
         "tickets",
         &[
-            ("Issuer", "275d759a93c832175559a99763bc45a744bbbd0a12e35ab36b446376aa9dd60a"),
-            ("Ticket", "cf9f6a98fe3ea46cff6cb319ee3f458f8a3c919d867d82f54cfd097444e0939c"),
+            ("Issuer", "04e42d0f9f69e8c344142685c9e1512ed03e0e3f317c5f2649b0da3f61b06a13"),
+            ("Ticket", "0480dbcb791c1d53b7f4668bf684c14be77fd7cf4ee02e49c9f9f2528e2fbd3e"),
         ],
     );
     assert_example_build_artifact("examples/stones/app.ag", "stones", &[]);
@@ -5976,8 +5976,14 @@ fn artifact_codec_matches_silverscript_sigscript_builder_except_pinned_byte_push
     let sil_contract = sil_abi.contract("Foo").expect("Foo Sil ABI exists");
     let bump = sil_contract.entries.iter().find(|entry| entry.name == "bump").expect("bump entry exists");
     let done = sil_contract.entries.iter().find(|entry| entry.name == "done").expect("done entry exists");
-    assert_eq!(bump.selector, Some(0));
-    assert_eq!(done.selector, Some(1));
+    assert_eq!(
+        bump.dispatch_tag().expect("bump tag decodes"),
+        compiled.entry_by_name("bump").expect("bump ABI exists").dispatch_tag()
+    );
+    assert_eq!(
+        done.dispatch_tag().expect("done tag decodes"),
+        compiled.entry_by_name("done").expect("done ABI exists").dispatch_tag()
+    );
 
     let portable_bump = crate::codec::encode_contract_entry_sig_script(
         &sil_abi,
@@ -5996,8 +6002,8 @@ fn artifact_codec_matches_silverscript_sigscript_builder_except_pinned_byte_push
         .expect("Sil bump sigscript builds");
     // The pinned Sil revision forces an explicit data push for scalar bytes.
     // Restore direct equality once Sil uses the canonical push selected here.
-    assert_eq!(encode_hex(&portable_bump), "01110401020304515100");
-    assert_eq!(encode_hex(&sil_bump), "0111040102030451010100");
+    assert_eq!(encode_hex(&portable_bump), "011104010203045151045bdffea8");
+    assert_eq!(encode_hex(&sil_bump), "01110401020304510101045bdffea8");
 
     let portable_done =
         crate::codec::encode_contract_entry_sig_script(&sil_abi, "Foo", "done", &[]).expect("portable done sigscript builds");

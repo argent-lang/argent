@@ -1,7 +1,7 @@
 //! Portable ABI and codec data for generated Silverscript contracts.
 //!
 //! This crate owns only bytecode-facing facts: contract scripts, entrypoint
-//! selectors and parameters, runtime state field order, structural field types,
+//! dispatch tags and parameters, runtime state field order, structural field types,
 //! template state spans and hashes, and the codec for encoding those values.
 //!
 //! It must not know why a field exists. Argent coordination semantics such as
@@ -182,9 +182,19 @@ pub struct RuntimeFieldArtifact {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SilEntryArtifact {
     pub name: String,
-    #[serde(default)]
-    pub selector: Option<i64>,
+    pub dispatch_tag_hex: String,
     pub params: Vec<ParamArtifact>,
+}
+
+impl SilEntryArtifact {
+    pub fn dispatch_tag(&self) -> CodecResult<[u8; 4]> {
+        let bytes = decode_hex(&self.dispatch_tag_hex)?;
+        bytes.try_into().map_err(|bytes: Vec<u8>| CodecError::InvalidLength {
+            name: format!("entry `{}` dispatch tag", self.name),
+            expected: 4,
+            actual: bytes.len(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,6 +244,10 @@ pub enum SilAbiVerificationError {
     InvalidTemplateHashLength { contract: String, len: usize },
     #[error("contract `{contract}` template hash mismatch: expected `{expected}`, found `{found}`")]
     TemplateHashMismatch { contract: String, expected: String, found: String },
+    #[error("contract `{contract}` entry `{entry}` has an invalid dispatch tag: {message}")]
+    InvalidDispatchTag { contract: String, entry: String, message: String },
+    #[error("contract `{contract}` entries `{first}` and `{second}` have the same dispatch tag `{tag}`")]
+    DispatchTagCollision { contract: String, first: String, second: String, tag: String },
 }
 
 pub type CodecResult<T> = std::result::Result<T, CodecError>;
@@ -323,9 +337,7 @@ pub fn encode_entry_sig_script(
     for ((name, ty), value) in params.iter().zip(args) {
         push_sig_arg(&mut builder, &ctx, name, ty, value)?;
     }
-    if let Some(selector) = entry.selector {
-        push_i64(&mut builder, selector)?;
-    }
+    builder.add_data(&entry.dispatch_tag()?)?;
     Ok(builder.drain())
 }
 
@@ -400,6 +412,23 @@ fn verify_compiled_contract(contract: &SilContractArtifact) -> std::result::Resu
     };
     let script = decode("script", &contract.compiled.script_hex)?;
     let found_hash = decode("template hash", &contract.compiled.template_hash_hex)?;
+
+    let mut entries_by_tag = BTreeMap::<[u8; 4], &str>::new();
+    for entry in &contract.entries {
+        let tag = entry.dispatch_tag().map_err(|err| SilAbiVerificationError::InvalidDispatchTag {
+            contract: contract.name.clone(),
+            entry: entry.name.clone(),
+            message: err.to_string(),
+        })?;
+        if let Some(first) = entries_by_tag.insert(tag, &entry.name) {
+            return Err(SilAbiVerificationError::DispatchTagCollision {
+                contract: contract.name.clone(),
+                first: first.to_string(),
+                second: entry.name.clone(),
+                tag: encode_hex(&tag),
+            });
+        }
+    }
 
     let span = &contract.compiled.state_span;
     let Some((prefix, state_script, suffix)) = contract.compiled.script_parts(&script) else {
@@ -934,6 +963,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_and_colliding_dispatch_tags() {
+        let mut abi = tiny_sil_abi();
+        abi.contracts[0].entries[0].dispatch_tag_hex = "00".to_string();
+        assert!(matches!(
+            abi.verify(),
+            Err(SilAbiVerificationError::InvalidDispatchTag { ref contract, ref entry, .. })
+                if contract == "Foo" && entry == "step"
+        ));
+
+        let mut abi = tiny_sil_abi();
+        abi.contracts[0].entries[1].dispatch_tag_hex = abi.contracts[0].entries[0].dispatch_tag_hex.clone();
+        assert!(matches!(
+            abi.verify(),
+            Err(SilAbiVerificationError::DispatchTagCollision { ref contract, ref first, ref second, .. })
+                if contract == "Foo" && first == "step" && second == "other"
+        ));
+    }
+
+    #[test]
     fn rejects_state_spans_that_do_not_match_the_runtime_state() {
         let mut abi = tiny_sil_abi();
         let contract = &mut abi.contracts[0];
@@ -991,12 +1039,12 @@ mod tests {
         let sigscript = encode_contract_entry_sig_script(
             &artifact,
             "Foo",
-            "main",
+            "step",
             &[ArtifactValue::Int(17), ArtifactValue::Bytes(vec![1, 2, 3, 4]), ArtifactValue::Bool(true), ArtifactValue::Byte(1)],
         )
         .expect("sigscript encodes");
 
-        assert_eq!(encode_hex(&sigscript), "01110401020304515100");
+        assert_eq!(encode_hex(&sigscript), "011104010203045151042c49ed65");
     }
 
     #[test]
@@ -1049,7 +1097,7 @@ mod tests {
               "entries": [
                 {
                   "name": "step",
-                  "selector": 0,
+                  "dispatch_tag_hex": "2c49ed65",
                   "params": [{ "name": "amount", "type": { "kind": "int" } }]
                 }
               ],
@@ -1065,7 +1113,10 @@ mod tests {
 
         let abi: SilAbiArtifact = serde_json::from_str(json).expect("sil abi should deserialize");
         abi.check_schema_version().expect("sil abi schema version should be supported");
-        assert_eq!(abi.contract("Foo").and_then(|contract| contract.entry("step")).and_then(|entry| entry.selector), Some(0));
+        assert_eq!(
+            abi.contract("Foo").and_then(|contract| contract.entry("step")).map(|entry| entry.dispatch_tag_hex.as_str()),
+            Some("2c49ed65")
+        );
         assert_eq!(
             abi.contract("Foo").and_then(|contract| contract.entry("step")).map(|entry| entry.params[0].name.as_str()),
             Some("amount")
@@ -1078,7 +1129,7 @@ mod tests {
         let err = encode_contract_entry_sig_script(
             &artifact,
             "Foo",
-            "main",
+            "step",
             &[ArtifactValue::Int(i64::MIN), ArtifactValue::Bytes(vec![1, 2, 3, 4]), ArtifactValue::Bool(true), ArtifactValue::Byte(1)],
         )
         .expect_err("i64::MIN needs 9 bytes and should match txscript rejection");
@@ -1127,8 +1178,8 @@ mod tests {
                 runtime_state: RuntimeStateArtifact { source: "FooState".to_string(), fields: Vec::new() },
                 entries: vec![
                     SilEntryArtifact {
-                        name: "main".to_string(),
-                        selector: Some(0),
+                        name: "step".to_string(),
+                        dispatch_tag_hex: "2c49ed65".to_string(),
                         params: vec![
                             param("n", TypeArtifact::Int),
                             param("hash", TypeArtifact::FixedBytes { len: 4 }),
@@ -1136,7 +1187,7 @@ mod tests {
                             param("b", TypeArtifact::Byte),
                         ],
                     },
-                    SilEntryArtifact { name: "other".to_string(), selector: Some(1), params: Vec::new() },
+                    SilEntryArtifact { name: "other".to_string(), dispatch_tag_hex: "deadbeef".to_string(), params: Vec::new() },
                 ],
                 compiled: CompiledContractArtifact {
                     script_hex: String::new(),

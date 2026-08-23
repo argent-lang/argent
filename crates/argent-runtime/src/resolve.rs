@@ -967,7 +967,7 @@ mod tests {
                     name: actor.to_string(),
                     source_path: format!("sil/{actor}.sil"),
                     runtime_state,
-                    entries: vec![SilEntryArtifact { name: entry.to_string(), selector: None, params }],
+                    entries: vec![SilEntryArtifact { name: entry.to_string(), dispatch_tag_hex: "00000000".to_string(), params }],
                     compiled: CompiledContractArtifact {
                         script_hex: silverscript_abi::encode_hex(&state_script),
                         template_hash_hex: silverscript_abi::encode_hex(&silverscript_abi::template_hash(&[], &[])),

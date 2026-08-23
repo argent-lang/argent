@@ -13,8 +13,8 @@ contract Minter(
     byte constant IDENTIFIER_COVENANT_ID = 0x02;
 
     // :: linked templates
-    byte[32] constant gen__kcc20_asset__kcc20_template_const = byte[32](0x9fa9c7c0f7394783a0f4af828f9320356df7417ff252dd8c5d552820370306fb);
-    byte[32] constant gen__kcc20_asset__minter_proxy_template_const = byte[32](0x0fdcffc9ca666b5f98944a1387cfd6b45b163ca761243018eae336dd90bd8db6);
+    byte[32] constant gen__kcc20_asset__kcc20_template_const = byte[32](0x2acc1d722544817061d8833bd251a9a1728ee987305630f4d9da12130aa1ce84);
+    byte[32] constant gen__kcc20_asset__minter_proxy_template_const = byte[32](0x7c7eae3f0d65a401154f7f2466796b92e36efda73e1454159ea5e42a516b3551);
 
     // :: state layouts
     struct MinterProxyState {
