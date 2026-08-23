@@ -22,7 +22,7 @@ test('resolves compiler-standard modules for import navigation and symbol indexi
   const invocationUid = scan.declarations.find((declaration) => declaration.name === 'invocation_uid');
   assert.ok(invocationUid);
   assert.equal(invocationUid.kind, 'function');
-  assert.equal(invocationUid.signature, 'fn invocation_uid(byte[] domain) -> byte[32]');
+  assert.equal(invocationUid.signature, 'fn invocation_uid(byte[] domain_) -> byte[32]');
   assert.match(invocationUid.documentation, /current actor invocation/);
 });
 
@@ -161,10 +161,10 @@ test('offers the Silverscript query builtins except automated state-template hel
     'OpNum2Bin',
     'OpBin2Num',
     'OpChainblockSeqCommit',
-    'checkSigFromStack',
-    'checkSigFromStackECDSA',
     'checkSig',
-    'checkMultiSig',
+    'checkSigEcdsa',
+    'checkMsgSig',
+    'checkMsgSigEcdsa',
     'blake2b',
     'templateHash',
   ];
@@ -184,6 +184,13 @@ test('offers the Silverscript query builtins except automated state-template hel
     assert.equal(names.has(name), false, `Argent automates ${name}`);
   }
   assert.equal(BUILTINS.length, names.size, 'builtin names must be unique');
+});
+
+test('does not offer unsupported legacy signature builtins', () => {
+  const names = new Set(BUILTINS.map((builtin) => builtin.name));
+  for (const name of ['checkSigFromStack', 'checkSigFromStackECDSA', 'checkMultiSig']) {
+    assert.equal(names.has(name), false, `unsupported builtin ${name} must not be offered`);
+  }
 });
 
 test('attaches adjacent line and block documentation to declarations', () => {

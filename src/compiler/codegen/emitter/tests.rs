@@ -6010,6 +6010,48 @@ fn artifact_codec_matches_silverscript_sigscript_builder() {
 }
 
 #[test]
+fn sil_signature_builtins_pass_through() {
+    let module = crate::compiler::syntax::parser::parse_module(
+        PathBuf::from("test.ag"),
+        r#"
+            state AuthState {
+                int nonce;
+            }
+
+            actor Auth owns AuthState {
+                entry verify(
+                    sig tx_signature,
+                    byte[33] ecdsa_key,
+                    datasig message_signature,
+                    byte[32] digest,
+                    pubkey schnorr_key,
+                ) emits none {
+                    require(checkSig(tx_signature, schnorr_key));
+                    require(checkSigEcdsa(tx_signature, ecdsa_key));
+                    require(checkMsgSig(message_signature, digest, schnorr_key));
+                    require(checkMsgSigEcdsa(message_signature, digest, ecdsa_key));
+                }
+            }
+
+            app Test {
+                actor Auth;
+            }
+            "#
+        .to_string(),
+    )
+    .expect("source parses");
+    let program = Program { root: PathBuf::from("test.ag"), modules: vec![module] };
+    let model = Model::from_program(&program).expect("model validates");
+    let actor_sil = actor_sil_for_model(&model);
+    let sil = actor_sil.get("Auth").expect("Auth Sil exists");
+
+    for call in ["checkSig(", "checkSigEcdsa(", "checkMsgSig(", "checkMsgSigEcdsa("] {
+        assert!(sil.contains(call), "missing `{call}` in generated Sil:\n{sil}");
+    }
+    emit_artifact(&program, &model, &actor_sil).expect("generated Sil compiles");
+}
+
+#[test]
 fn manifest_uses_relative_paths_when_possible() {
     let cwd = std::env::current_dir().expect("current dir");
     let mut program = test_program();
