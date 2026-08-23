@@ -2812,7 +2812,7 @@ fn sil_entry_artifact(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>, d
         hidden_params_for_entry(actor, entry, model).into_iter().map(|param| ParamArtifact { name: param.name, ty: param.ty }),
     );
 
-    SilEntryArtifact { name: entry.name.clone(), dispatch_tag_hex: encode_hex(&dispatch_tag), params }
+    SilEntryArtifact { name: entry.name.clone(), dispatch_tag: dispatch_tag.into(), params }
 }
 
 fn emit_spec_artifact(entry: &EntryModel<'_>) -> EmitArtifact {

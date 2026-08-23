@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "b5d3c70e15392634e0b7104226bd2c81d00b679ade2add5b2518eeac9c70464a",
+  "id": "3a07087442dc852bda62aa8d6782d5e0f4cfd63eda37512d5ca62586e7a0b6c9",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -1624,7 +1624,7 @@
         "entries": [
           {
             "name": "register",
-            "dispatch_tag_hex": "e936d01d",
+            "dispatch_tag": "e936d01d",
             "params": [
               {
                 "name": "gen__player_prefix",
@@ -1681,7 +1681,7 @@
         "entries": [
           {
             "name": "enter_mux",
-            "dispatch_tag_hex": "689abb8a",
+            "dispatch_tag": "689abb8a",
             "params": [
               {
                 "name": "gen__mux_prefix",
@@ -1751,7 +1751,7 @@
         "entries": [
           {
             "name": "choose",
-            "dispatch_tag_hex": "380205e5",
+            "dispatch_tag": "380205e5",
             "params": [
               {
                 "name": "target",
@@ -1775,7 +1775,7 @@
           },
           {
             "name": "choose_knight_const",
-            "dispatch_tag_hex": "b80bf385",
+            "dispatch_tag": "b80bf385",
             "params": [
               {
                 "name": "gen__target_prefix",
@@ -1793,7 +1793,7 @@
           },
           {
             "name": "choose_pawn",
-            "dispatch_tag_hex": "48db77ff",
+            "dispatch_tag": "48db77ff",
             "params": [
               {
                 "name": "gen__pawn_prefix",
@@ -1811,7 +1811,7 @@
           },
           {
             "name": "choose_knight",
-            "dispatch_tag_hex": "14156150",
+            "dispatch_tag": "14156150",
             "params": [
               {
                 "name": "gen__knight_prefix",
@@ -1874,7 +1874,7 @@
         "entries": [
           {
             "name": "back_to_mux",
-            "dispatch_tag_hex": "c4a3facd",
+            "dispatch_tag": "c4a3facd",
             "params": [
               {
                 "name": "gen__mux_prefix",
@@ -1937,7 +1937,7 @@
         "entries": [
           {
             "name": "back_to_mux",
-            "dispatch_tag_hex": "c4a3facd",
+            "dispatch_tag": "c4a3facd",
             "params": [
               {
                 "name": "gen__mux_prefix",

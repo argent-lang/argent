@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "0db2f010c25b77c8d7a9fe2ac941ce28043233be7386a7ab39bc01c987f273d8",
+  "id": "e1e20005be564b4509aeb46a59ce686cc3f62a40715d2d9c7d023087876bc69e",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -444,7 +444,7 @@
         "entries": [
           {
             "name": "transfer",
-            "dispatch_tag_hex": "6070421c",
+            "dispatch_tag": "6070421c",
             "params": [
               {
                 "name": "new_owner_identifier",
@@ -502,7 +502,7 @@
         "entries": [
           {
             "name": "mint",
-            "dispatch_tag_hex": "f98e3a6b",
+            "dispatch_tag": "f98e3a6b",
             "params": [
               {
                 "name": "next_proxy",

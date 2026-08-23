@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "c0a3b31fda57d0df76d616ddc2e5780e620c6b94b0e4b8b4a2a22652ab16592b",
+  "id": "e5901a1a051360b5c994f85ad1a3990fac335c755deb1d71373ea237799b4d55",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -1706,7 +1706,7 @@
         "entries": [
           {
             "name": "register_player",
-            "dispatch_tag_hex": "824db7fa",
+            "dispatch_tag": "824db7fa",
             "params": [
               {
                 "name": "owner_sig",
@@ -1814,7 +1814,7 @@
         "entries": [
           {
             "name": "start_game",
-            "dispatch_tag_hex": "179ac43d",
+            "dispatch_tag": "179ac43d",
             "params": [
               {
                 "name": "owner_sig",
@@ -1874,7 +1874,7 @@
           },
           {
             "name": "accept_start",
-            "dispatch_tag_hex": "08fa31e4",
+            "dispatch_tag": "08fa31e4",
             "params": [
               {
                 "name": "owner_sig",
@@ -1904,7 +1904,7 @@
           },
           {
             "name": "settle",
-            "dispatch_tag_hex": "3dfbcd41",
+            "dispatch_tag": "3dfbcd41",
             "params": [
               {
                 "name": "gen__stones_settle_prefix_len",
@@ -1922,7 +1922,7 @@
           },
           {
             "name": "retire",
-            "dispatch_tag_hex": "f14387b1",
+            "dispatch_tag": "f14387b1",
             "params": [
               {
                 "name": "owner_sig",
@@ -2012,7 +2012,7 @@
         "entries": [
           {
             "name": "take",
-            "dispatch_tag_hex": "76ddeb52",
+            "dispatch_tag": "76ddeb52",
             "params": [
               {
                 "name": "amount",
@@ -2055,7 +2055,7 @@
           },
           {
             "name": "concede",
-            "dispatch_tag_hex": "ec942f11",
+            "dispatch_tag": "ec942f11",
             "params": [
               {
                 "name": "player_id",
@@ -2152,7 +2152,7 @@
         "entries": [
           {
             "name": "settle",
-            "dispatch_tag_hex": "3dfbcd41",
+            "dispatch_tag": "3dfbcd41",
             "params": [
               {
                 "name": "gen__player_prefix_len",

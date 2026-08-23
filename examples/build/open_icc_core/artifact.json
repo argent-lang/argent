@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "8d741c5d2ac2d652a3d3b69730bccb695088ac74a1766c9add0c1daa94774936",
+  "id": "470f207cdb43be7cfe460d116ac3ecfc4ed6bc52a3fe7f1128a100add861461d",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -856,7 +856,7 @@
         "entries": [
           {
             "name": "advance",
-            "dispatch_tag_hex": "0784c422",
+            "dispatch_tag": "0784c422",
             "params": [
               {
                 "name": "gen__actor_type_self_occupant_agent_type_prefix_len",
@@ -881,7 +881,7 @@
           },
           {
             "name": "move",
-            "dispatch_tag_hex": "3e519bba",
+            "dispatch_tag": "3e519bba",
             "params": [
               {
                 "name": "dx",

@@ -15,9 +15,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use silverscript_abi::{
-    ArtifactVersionError, CompiledContractArtifact, CompiledTemplateArtifact, FieldArtifact, ParamArtifact, RuntimeFieldArtifact,
-    RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, SilAbiVerificationError, SilContractArtifact, SilEntryArtifact,
-    StateArtifact, StateSpanArtifact, TypeArtifact,
+    ArtifactVersionError, CompiledContractArtifact, CompiledTemplateArtifact, DispatchTag, DispatchTagParseError, FieldArtifact,
+    ParamArtifact, RuntimeFieldArtifact, RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, SilAbiVerificationError,
+    SilContractArtifact, SilEntryArtifact, StateArtifact, StateSpanArtifact, TypeArtifact,
 };
 
 pub const ARTIFACT_SCHEMA_VERSION: u32 = 1;

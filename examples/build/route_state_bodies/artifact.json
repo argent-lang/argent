@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "4737b43d1e9029733b24a9483b71c5071457fafb22201e10cee9300fa61e1bb7",
+  "id": "6899b2fc66e7a4a58eb5b461317cd54462d9a73f435eb1fea5ff57188310e8b4",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -1324,7 +1324,7 @@
         "entries": [
           {
             "name": "open_board",
-            "dispatch_tag_hex": "f2387de5",
+            "dispatch_tag": "f2387de5",
             "params": [
               {
                 "name": "gen__mux_prefix",
@@ -1395,7 +1395,7 @@
         "entries": [
           {
             "name": "choose",
-            "dispatch_tag_hex": "380205e5",
+            "dispatch_tag": "380205e5",
             "params": [
               {
                 "name": "target",
@@ -1419,7 +1419,7 @@
           },
           {
             "name": "archive",
-            "dispatch_tag_hex": "eded9232",
+            "dispatch_tag": "eded9232",
             "params": [
               {
                 "name": "gen__archive_prefix",
@@ -1483,7 +1483,7 @@
         "entries": [
           {
             "name": "inspect",
-            "dispatch_tag_hex": "ed806658",
+            "dispatch_tag": "ed806658",
             "params": []
           }
         ],
@@ -1534,7 +1534,7 @@
         "entries": [
           {
             "name": "inspect",
-            "dispatch_tag_hex": "ed806658",
+            "dispatch_tag": "ed806658",
             "params": []
           }
         ],
@@ -1564,7 +1564,7 @@
         "entries": [
           {
             "name": "inspect",
-            "dispatch_tag_hex": "ed806658",
+            "dispatch_tag": "ed806658",
             "params": []
           }
         ],
@@ -1615,7 +1615,7 @@
         "entries": [
           {
             "name": "reopen_as_pawn",
-            "dispatch_tag_hex": "0b5d8338",
+            "dispatch_tag": "0b5d8338",
             "params": [
               {
                 "name": "gen__pawn_prefix",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "d736dc3d469b7f0de04669cb6fb4bd3e5885b8d7989e402646a92453d9ea0f91",
+  "id": "faafb905cc8ba99ac95e0c99164dd130a2fbef54326c660f65955c8ed2e830ed",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -999,7 +999,7 @@
         "entries": [
           {
             "name": "open_or_watch",
-            "dispatch_tag_hex": "0a0cc1f9",
+            "dispatch_tag": "0a0cc1f9",
             "params": [
               {
                 "name": "watch",
@@ -1081,7 +1081,7 @@
         "entries": [
           {
             "name": "choose",
-            "dispatch_tag_hex": "380205e5",
+            "dispatch_tag": "380205e5",
             "params": [
               {
                 "name": "target",
@@ -1144,7 +1144,7 @@
         "entries": [
           {
             "name": "inspect",
-            "dispatch_tag_hex": "ed806658",
+            "dispatch_tag": "ed806658",
             "params": []
           }
         ],
@@ -1188,7 +1188,7 @@
         "entries": [
           {
             "name": "inspect",
-            "dispatch_tag_hex": "ed806658",
+            "dispatch_tag": "ed806658",
             "params": []
           }
         ],
@@ -1218,7 +1218,7 @@
         "entries": [
           {
             "name": "inspect",
-            "dispatch_tag_hex": "ed806658",
+            "dispatch_tag": "ed806658",
             "params": []
           }
         ],

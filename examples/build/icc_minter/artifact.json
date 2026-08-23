@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "8dc96195fc73b14d47c5e8c0b9fb95b9c5cbdb7ce76e4a4e0fe543a777ab06ae",
+  "id": "16e873252f070ea160658c7c4155dc88afab8bdd06bc963badde6628d967afc6",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -9,7 +9,7 @@
   "dependencies": [
     {
       "app": "KCC20Asset",
-      "artifact_id": "0db2f010c25b77c8d7a9fe2ac941ce28043233be7386a7ab39bc01c987f273d8"
+      "artifact_id": "e1e20005be564b4509aeb46a59ce686cc3f62a40715d2d9c7d023087876bc69e"
     }
   ],
   "root": "examples/icc/minter.ag",
@@ -516,7 +516,7 @@
         "entries": [
           {
             "name": "mint",
-            "dispatch_tag_hex": "80a25438",
+            "dispatch_tag": "80a25438",
             "params": [
               {
                 "name": "owner_sig",

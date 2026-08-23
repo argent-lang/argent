@@ -1347,7 +1347,6 @@ fn emits_portable_artifact_schema() {
     assert_eq!(entry.route_plan.outputs[0].name, "next");
 
     let sil_entry = sil_contract.entry(&entry.abi.entry).expect("outer entry should point at Sil ABI entry");
-    assert_eq!(sil_entry.dispatch_tag().expect("entry has a four-byte dispatch tag").len(), 4);
     assert_eq!(sil_entry.params.len(), 1);
     assert_eq!(sil_entry.params[0].name, "amount");
     assert_eq!(sil_entry.params[0].ty, TypeArtifact::Int);
@@ -5976,14 +5975,8 @@ fn artifact_codec_matches_silverscript_sigscript_builder() {
     let sil_contract = sil_abi.contract("Foo").expect("Foo Sil ABI exists");
     let bump = sil_contract.entries.iter().find(|entry| entry.name == "bump").expect("bump entry exists");
     let done = sil_contract.entries.iter().find(|entry| entry.name == "done").expect("done entry exists");
-    assert_eq!(
-        bump.dispatch_tag().expect("bump tag decodes"),
-        compiled.entry_by_name("bump").expect("bump ABI exists").dispatch_tag()
-    );
-    assert_eq!(
-        done.dispatch_tag().expect("done tag decodes"),
-        compiled.entry_by_name("done").expect("done ABI exists").dispatch_tag()
-    );
+    assert_eq!(bump.dispatch_tag.into_bytes(), compiled.entry_by_name("bump").expect("bump ABI exists").dispatch_tag());
+    assert_eq!(done.dispatch_tag.into_bytes(), compiled.entry_by_name("done").expect("done ABI exists").dispatch_tag());
 
     let portable_bump = crate::codec::encode_contract_entry_sig_script(
         &sil_abi,

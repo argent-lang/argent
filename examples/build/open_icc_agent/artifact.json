@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "03d58629191dbd9d27e593dab7b7ca59276f83fbbde641a0c0ecc5503920592b",
+  "id": "2ad2ce21d64ad8646bb1b65571bba74289811ee4e4ea5918e88c7ed297ae55a3",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -810,7 +810,7 @@
         "entries": [
           {
             "name": "step",
-            "dispatch_tag_hex": "a2f20c00",
+            "dispatch_tag": "a2f20c00",
             "params": [
               {
                 "name": "next_agent",
@@ -908,7 +908,7 @@
         "entries": [
           {
             "name": "step",
-            "dispatch_tag_hex": "702d8b15",
+            "dispatch_tag": "702d8b15",
             "params": [
               {
                 "name": "next_x",

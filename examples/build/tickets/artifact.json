@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "ec1079e32c91e710e560f72da7eafc4f12157f7f14211cd8541e5ebcc677c054",
+  "id": "bdb9f95af1f199e66d1b410a618538907f81f270a27fb3f226ee398a624141a6",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -454,7 +454,7 @@
         "entries": [
           {
             "name": "issue",
-            "dispatch_tag_hex": "e9ff4380",
+            "dispatch_tag": "e9ff4380",
             "params": [
               {
                 "name": "admin_sig",
@@ -528,7 +528,7 @@
         "entries": [
           {
             "name": "redeem",
-            "dispatch_tag_hex": "7e70b22d",
+            "dispatch_tag": "7e70b22d",
             "params": [
               {
                 "name": "owner_sig",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "863e248bb7e5c40eb58af5f771cb8507315f74fa5c3859c71a0f82ffab053619",
+  "id": "cc84ce4a20bfa51b372ab15b4f8f03a188c858032640ef82f036c6289a974e35",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -505,7 +505,7 @@
         "entries": [
           {
             "name": "launch",
-            "dispatch_tag_hex": "287e53f9",
+            "dispatch_tag": "287e53f9",
             "params": [
               {
                 "name": "left_amount",
@@ -572,7 +572,7 @@
         "entries": [
           {
             "name": "keep",
-            "dispatch_tag_hex": "4262121d",
+            "dispatch_tag": "4262121d",
             "params": []
           }
         ],
