@@ -1877,6 +1877,10 @@ pub fn covenant_engine_flags() -> EngineFlags {
 
 #[cfg(test)]
 mod tests {
+    use argent_artifact::{
+        CompiledContractArtifact, FieldArtifact, RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, StateArtifact,
+        StateSpanArtifact, TypeArtifact,
+    };
     use kaspa_consensus_core::tx::{ScriptPublicKey, TransactionId};
     use kaspa_txscript::opcodes::codes::OpFalse;
 
@@ -1908,7 +1912,33 @@ mod tests {
 
     #[test]
     fn expansion_commitment_matches_kcc1_virtual_element_vector() {
-        let payload = [0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x01];
+        let abi = SilAbiArtifact {
+            schema_version: SIL_ABI_SCHEMA_VERSION,
+            states: vec![StateArtifact {
+                name: "VirtualElement".to_string(),
+                fields: vec![
+                    FieldArtifact { name: "counter".to_string(), ty: TypeArtifact::Int },
+                    FieldArtifact { name: "enabled".to_string(), ty: TypeArtifact::Bool },
+                ],
+            }],
+            contracts: vec![SilContractArtifact {
+                name: "Test".to_string(),
+                source_path: "sil/Test.sil".to_string(),
+                runtime_state: RuntimeStateArtifact { source: "State".to_string(), fields: Vec::new() },
+                entries: Vec::new(),
+                compiled: CompiledContractArtifact {
+                    script_hex: String::new(),
+                    template_hash_hex: String::new(),
+                    state_span: StateSpanArtifact { offset: 0, len: 0 },
+                },
+            }],
+        };
+        let values =
+            BTreeMap::from([("counter".to_string(), ArtifactValue::Int(-5)), ("enabled".to_string(), ArtifactValue::Bool(true))]);
+        let payload = encode_struct_payload(&abi, abi.contract("Test").expect("contract exists"), "VirtualElement", &values)
+            .expect("virtual element encodes");
+
+        assert_eq!(payload, [0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x01]);
         assert_eq!(
             blake3_32(&payload),
             [
