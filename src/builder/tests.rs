@@ -411,6 +411,105 @@ fn context_executes_expanded_bool_transition_to_false() {
 }
 
 #[test]
+fn context_executes_temporal_state_and_expansion_transition() {
+    let artifact = inline_artifact(
+        "context-temporal-transition",
+        r#"
+            state Timing {
+                temporal nested_at;
+            }
+
+            state ClockCapsule {
+                temporal updated_at;
+                virtual timing;
+            }
+
+            state ClockState expands ClockCapsule {
+                timing: Timing;
+            }
+
+            actor Clock owns ClockState {
+                entry advance(temporal next_at, temporal[2] checkpoints, temporal[] history) emits next: Clock {
+                    require(next_at > updated_at);
+                    require(checkpoints[0] == updated_at);
+                    require(checkpoints[1] == next_at);
+                    require(history.length == 2);
+                    require(history[0] == updated_at);
+                    require(history[1] == next_at);
+                    ClockState next_state = {
+                        updated_at: next_at,
+                        timing: Timing {
+                            nested_at: next_at,
+                        },
+                    };
+
+                    unrestricted(next.value);
+                    become next <- Clock(next_state);
+                }
+            }
+
+            app ClockApp {
+                actor Clock;
+            }
+            "#,
+    );
+    let contract = artifact.sil_abi.contract("Clock").expect("Clock contract exists");
+    assert_eq!(
+        contract.runtime_state.fields.iter().find(|field| field.name == "updated_at").map(|field| &field.ty),
+        Some(&TypeArtifact::Temporal)
+    );
+    let advance = contract.entry("advance").expect("advance entry exists");
+    assert_eq!(
+        advance.params.iter().take(3).map(|param| param.ty.clone()).collect::<Vec<_>>(),
+        vec![
+            TypeArtifact::Temporal,
+            TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Temporal), len: 2 },
+            TypeArtifact::dynamic_array(TypeArtifact::Temporal),
+        ]
+    );
+    assert_eq!(
+        artifact
+            .sil_abi
+            .states
+            .iter()
+            .find(|state| state.name == "Timing")
+            .and_then(|state| state.fields.iter().find(|field| field.name == "nested_at"))
+            .map(|field| &field.ty),
+        Some(&TypeArtifact::Temporal)
+    );
+
+    let builder = TxBuilder::new(&artifact).expect("builder accepts temporal artifact");
+    let covenant_id = Hash::from_bytes([0x46; 32]);
+    let input_value = 1_000;
+    let initial = state! {
+        updated_at: 1_000_i64,
+        timing: state! { nested_at: 900_i64 },
+    };
+    let next = state! {
+        updated_at: 2_000_i64,
+        timing: state! { nested_at: 2_000_i64 },
+    };
+    let input_utxo =
+        builder.covenant_utxo("Clock", initial.clone(), input_value, 0, false, Some(covenant_id)).expect("Clock UTXO builds");
+    let context = TxContext::new()
+        .actor_input(
+            "Clock",
+            initial,
+            EntryCall::new("advance").args(args![
+                2_000_i64,
+                ArtifactValue::Array(vec![ArtifactValue::Int(1_000), ArtifactValue::Int(2_000)]),
+                ArtifactValue::Array(vec![ArtifactValue::Int(1_000), ArtifactValue::Int(2_000)]),
+            ]),
+            TransactionOutpoint::new(TransactionId::from_bytes([0x47; 32]), 0),
+            input_utxo,
+            0,
+        )
+        .actor_output("Clock", next, CovenantBinding::new(0, covenant_id), input_value);
+
+    builder.build(&context).expect("temporal state and expansion transition executes");
+}
+
+#[test]
 fn context_executes_source_state_arguments_without_exposing_generated_fields() {
     let artifact = inline_artifact(
         "context-source-state-arguments",
@@ -1417,6 +1516,7 @@ fn linked_expanded_actor_uses_a_clean_state_qualified_physical_layout() {
         r#"
 state ChildStorage {
     int amount;
+    temporal updated_at;
     virtual detail;
 }
 
@@ -1432,6 +1532,7 @@ actor Child owns ChildState {
     entry advance() emits next: Child {
         ChildState next_state = {
             amount: amount + 1,
+            updated_at: updated_at + temporal(1),
             detail: ChildDetail { count: 1 },
         };
         unrestricted(next.value);
@@ -1491,6 +1592,7 @@ actor Launcher owns LauncherState {
     emits next: Launcher {
         ChildState child_state = {
             amount: child.inputs.before.state.amount + 1,
+            updated_at: child.inputs.before.state.updated_at + temporal(1),
             detail: ChildDetail { count: 1 },
         };
 
@@ -1529,13 +1631,17 @@ app LauncherApp {
         .map(|(layout, _)| layout)
         .expect("Launcher declares the linked Child physical state");
     let linked_fields = linked_layout.lines().map(str::trim).filter(|line| line.ends_with(';')).collect::<Vec<_>>();
-    assert_eq!(linked_fields, ["int amount;", "byte[32] detail;"], "linked state layout must contain only physical storage fields");
+    assert_eq!(
+        linked_fields,
+        ["int amount;", "temporal updated_at;", "byte[32] detail;"],
+        "linked state layout must contain only physical storage fields"
+    );
 
     let child_artifact = compiled.app("ChildApp").expect("compiled bundle contains ChildApp");
     let child_contract = child_artifact.sil_abi.contract("Child").expect("Child contract exists");
     assert_eq!(
         child_contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
-        ["gen__archive_template", "amount", "detail"],
+        ["gen__archive_template", "amount", "updated_at", "detail"],
         "the defining Child contract must exercise an in-app route field before its storage fields"
     );
     let child_handle = child_artifact
@@ -1558,10 +1664,12 @@ app LauncherApp {
     let launcher_next = state! { launches: 1 };
     let child_initial = state! {
         amount: 4,
+        updated_at: 100_i64,
         detail: state! { count: 0 },
     };
     let child_next = state! {
         amount: 5,
+        updated_at: 101_i64,
         detail: state! { count: 1 },
     };
     let launcher_utxo =

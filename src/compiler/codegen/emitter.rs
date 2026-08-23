@@ -681,6 +681,7 @@ pub(super) fn packed_field_expr(ty: &TypeRef, expr: &str) -> Result<String> {
     }
     match (ty.name.as_str(), ty.array) {
         ("int", None) => Ok(format!("(({expr}) as byte[8])")),
+        ("temporal", None) => Ok(format!("((int({expr})) as byte[8])")),
         // Sil booleans use the VM's numeric representation, where false is
         // empty. Normalize through int before fixing the one-byte state width.
         ("bool", None) => Ok(format!("((({expr}) as int) as byte[1])")),
@@ -701,6 +702,7 @@ fn unpack_packed_field_expr(ty: &TypeRef, slice_expr: &str) -> Result<String> {
     }
     match (ty.name.as_str(), ty.array) {
         ("int", None) => Ok(format!("OpBin2Num({slice_expr})")),
+        ("temporal", None) => Ok(format!("temporal(OpBin2Num({slice_expr}))")),
         ("bool", None) => Ok(format!("OpBin2Num({slice_expr}) != 0")),
         ("byte", None) => Ok(format!("byte({slice_expr})")),
         ("byte", Some(ArrayDim::Fixed(len))) => Ok(format!("byte[{len}]({slice_expr})")),
@@ -2251,6 +2253,7 @@ fn placeholder_expr_for_type<'i>(ty: &TypeRef) -> Result<SilExpr<'i>> {
         }
         (_, Some(ArrayDim::Dynamic)) => Err(ArgentError::new("dynamic arrays are not supported in actor state")),
         ("int", None) => Ok(SilExpr::int(0)),
+        ("temporal", None) => Ok(SilExpr::temporal(0)),
         ("bool", None) => Ok(SilExpr::bool(false)),
         ("byte", None) => Ok(SilExpr::byte(0)),
         ("string", None) => Ok(SilExpr::string("")),

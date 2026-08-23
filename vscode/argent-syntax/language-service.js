@@ -44,6 +44,7 @@ const PRIMITIVE_TYPES = Object.freeze([
   'pubkey',
   'sig',
   'string',
+  'temporal',
 ]);
 
 const PRIMITIVE_DOCUMENTATION = Object.freeze({

@@ -267,6 +267,7 @@ fn linked_type_ref(ty: &TypeArtifact) -> Result<TypeRef> {
     let scalar = |name: &str| Ok(TypeRef::new(name));
     match ty {
         TypeArtifact::Int => scalar("int"),
+        TypeArtifact::Temporal => scalar("temporal"),
         TypeArtifact::Bool => scalar("bool"),
         TypeArtifact::Byte => scalar("byte"),
         TypeArtifact::Bytes => Ok(TypeRef::dynamic_array("byte")),
