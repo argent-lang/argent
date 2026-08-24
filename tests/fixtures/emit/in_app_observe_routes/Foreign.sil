@@ -17,6 +17,19 @@ contract Foreign(
         int units;
     }
 
+    // :: global shared functions (vars prefixed with gen__glob_ for creating a unique namespace)
+    function add_one(int gen__glob_value) : int {
+        return gen__glob_value + 1;
+    }
+
+    // :: actor functions
+    function amount_is_valid() : bool {
+        return amount >= 0;
+    }
+    function route_units() : int {
+        return 0;
+    }
+
     // :: route templates
     byte[32] gen__target_template = gen__init_target_template;
 
@@ -31,6 +44,7 @@ contract Foreign(
         // :: output next: Foreign
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
+        require(amount_is_valid());
         // :: become Foreign
         require(
             tx.outputs[gen__next_output_idx].scriptPubKey
@@ -46,7 +60,7 @@ contract Foreign(
 
         TargetState next = TargetState {
             // :: user declared fields
-            units: 0,
+            units: route_units(),
         };
         // :: become Target
         validateOutputStateWithTemplate(

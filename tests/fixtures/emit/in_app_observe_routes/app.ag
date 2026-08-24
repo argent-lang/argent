@@ -11,15 +11,28 @@ state TargetState {
     int units;
 }
 
+fn add_one(int value) -> int {
+    return value + 1;
+}
+
 actor Foreign owns ForeignState {
+    fn amount_is_valid() -> bool {
+        return amount >= 0;
+    }
+
+    fn route_units() -> int {
+        return 0;
+    }
+
     entry hold() emits next: Foreign {
+        require(amount_is_valid());
         unrestricted(next.value);
         become next <- Foreign(self.state);
     }
 
     entry route() emits next: Target {
         TargetState next = {
-            units: 0,
+            units: route_units(),
         };
         unrestricted(next.value);
         become next <- Target(next);
@@ -27,6 +40,10 @@ actor Foreign owns ForeignState {
 }
 
 actor Local owns LocalState {
+    fn incremented_steps() -> int {
+        return add_one(steps);
+    }
+
     entry step()
     observes remote by self.foreign_id {
         inputs {
@@ -45,7 +62,7 @@ actor Local owns LocalState {
 
         LocalState next_local = {
             foreign_id: foreign_id,
-            steps: steps + 1,
+            steps: incremented_steps(),
         };
         unrestricted(next.value);
         become next <- Local(next_local);
@@ -53,8 +70,12 @@ actor Local owns LocalState {
 }
 
 actor Target owns TargetState {
+    fn units_are_valid() -> bool {
+        return units >= 0;
+    }
+
     entry hold() emits none {
-        require(1 == 1);
+        require(units_are_valid());
     }
 }
 

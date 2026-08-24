@@ -16,6 +16,16 @@ contract Target(
         int steps;
     }
 
+    // :: global shared functions (vars prefixed with gen__glob_ for creating a unique namespace)
+    function add_one(int gen__glob_value) : int {
+        return gen__glob_value + 1;
+    }
+
+    // :: actor functions
+    function units_are_valid() : bool {
+        return units >= 0;
+    }
+
     // :: route templates
 
     // :: state fields: Target
@@ -27,7 +37,7 @@ contract Target(
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 0);
 
-        require(1 == 1);
+        require(units_are_valid());
     }
 
 }

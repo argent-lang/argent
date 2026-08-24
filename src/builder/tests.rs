@@ -1167,76 +1167,8 @@ fn context_builds_closed_icc_without_observed_context() {
 }
 
 #[test]
-fn context_executes_static_observation_between_same_app_covenants() {
-    let artifact = inline_artifact(
-        "same-app-static-observe",
-        r#"
-            state ForeignState {
-                int amount;
-            }
-
-            state LocalState {
-                cov_id foreign_id;
-                int steps;
-            }
-
-            state TargetState {
-                int units;
-            }
-
-            actor Foreign owns ForeignState {
-                entry hold() emits next: Foreign {
-                    unrestricted(next.value);
-                    become next <- Foreign(self.state);
-                }
-
-                entry route() emits next: Target {
-                    unrestricted(next.value);
-                    TargetState next = {
-                        units: 0,
-                    };
-                    become next <- Target(next);
-                }
-            }
-
-            actor Local owns LocalState {
-                entry step()
-                observes remote by self.foreign_id {
-                    inputs {
-                        src: Foreign,
-                    }
-                    outputs {
-                        next: Foreign,
-                    }
-                }
-                emits next: Local {
-                    unrestricted(next.value);
-                    ForeignState next_foreign = remote.inputs.src.state;
-                    require remote.outputs become {
-                        next <- Foreign(next_foreign),
-                    };
-
-                    LocalState next_local = {
-                        foreign_id: foreign_id,
-                        steps: steps + 1,
-                    };
-                    become next <- Local(next_local);
-                }
-            }
-
-            actor Target owns TargetState {
-                entry hold() emits none {
-                    require(1 == 1);
-                }
-            }
-
-            app Test {
-                actor Foreign;
-                actor Local;
-                actor Target;
-            }
-            "#,
-    );
+fn actor_and_global_functions_execute_through_static_observation() {
+    let artifact = example_artifact("tests/fixtures/emit/in_app_observe_routes/app.ag", "same-app-static-observe");
     let foreign_template =
         artifact.argent.template_plan.templates.iter().find(|template| template.actor == "Foreign").expect("Foreign template exists");
     assert_ne!(
@@ -1249,6 +1181,8 @@ fn context_executes_static_observation_between_same_app_covenants() {
     let local_initial = state! { foreign_id: foreign_covenant_id, steps: 0 };
     let local_next = state! { foreign_id: foreign_covenant_id, steps: 1 };
     let foreign_state = state! { amount: 7 };
+    let local_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0x76; 32]), 0);
+    let foreign_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0x77; 32]), 0);
     let local_utxo =
         builder.covenant_utxo("Local", local_initial.clone(), 2_000, 0, false, Some(local_covenant_id)).expect("local UTXO builds");
     let foreign_utxo = builder
@@ -1257,29 +1191,23 @@ fn context_executes_static_observation_between_same_app_covenants() {
     let mut transaction = builder
         .build(
             &TxContext::new()
-                .actor_input(
-                    "Local",
-                    local_initial,
-                    "step",
-                    TransactionOutpoint::new(TransactionId::from_bytes([0x76; 32]), 0),
-                    local_utxo.clone(),
-                    0,
-                )
-                .actor_input(
-                    "Foreign",
-                    foreign_state.clone(),
-                    "hold",
-                    TransactionOutpoint::new(TransactionId::from_bytes([0x77; 32]), 0),
-                    foreign_utxo.clone(),
-                    0,
-                )
+                .actor_input("Local", local_initial.clone(), "step", local_outpoint, local_utxo.clone(), 0)
+                .actor_input("Foreign", foreign_state.clone(), "hold", foreign_outpoint, foreign_utxo.clone(), 0)
                 .actor_output("Local", local_next, CovenantBinding::new(0, local_covenant_id), 2_000)
-                .actor_output("Foreign", foreign_state, CovenantBinding::new(1, foreign_covenant_id), 1_000),
+                .actor_output("Foreign", foreign_state.clone(), CovenantBinding::new(1, foreign_covenant_id), 1_000),
         )
         .expect("same-app static observation builds");
 
-    execute_transaction_with_covenants(&mut transaction, vec![local_utxo, foreign_utxo])
+    execute_transaction_with_covenants(&mut transaction, vec![local_utxo.clone(), foreign_utxo.clone()])
         .expect("same-app static observation executes");
+
+    let wrong_result = TxContext::new()
+        .actor_input("Local", local_initial, "step", local_outpoint, local_utxo, 0)
+        .actor_input("Foreign", foreign_state.clone(), "hold", foreign_outpoint, foreign_utxo, 0)
+        .actor_output("Local", state! { foreign_id: foreign_covenant_id, steps: 2 }, CovenantBinding::new(0, local_covenant_id), 2_000)
+        .actor_output("Foreign", foreign_state, CovenantBinding::new(1, foreign_covenant_id), 1_000);
+    let err = builder.build(&wrong_result).expect_err("actor and global functions determine the next step count");
+    assert!(matches!(err, BuilderError::InputScript { input_index: 0, .. }));
 }
 
 #[test]

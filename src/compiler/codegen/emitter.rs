@@ -116,6 +116,7 @@ fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
     emit_imported_template_constants(&mut out, &imported_template_specs_for_actor(actor, model));
     emit_state_layouts(&mut out, actor, model)?;
     emit_shared_functions(&mut out, model)?;
+    emit_actor_functions(&mut out, actor, model)?;
 
     emit_section_header(&mut out, "Route templates");
     emit_route_template_table(&mut out, actor, model);
@@ -326,20 +327,36 @@ fn emit_shared_functions(out: &mut String, model: &Model<'_>) -> Result<()> {
         let lowerer = GlobalFunctionLowerer::new(model);
         for function in &model.functions {
             let function = lowerer.lower(function)?;
-            let params = function
-                .params
-                .iter()
-                .map(|param| format!("{} {}", lower_type_ref(param.ty, model), param.name))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let return_type = function.return_ty.map(|ty| format!(" : {}", lower_type_ref(ty, model))).unwrap_or_default();
-            out.push_str(&format!("    function {}({}){return_type} {{\n", function.name, params));
-            out.push_str(&indent_block_body(&function.body, 8));
-            out.push_str("    }\n");
+            let params =
+                function.params.iter().map(|param| format!("{} {}", lower_type_ref(param.ty, model), param.name)).collect::<Vec<_>>();
+            emit_function(out, function.name, &params, function.return_ty, &function.body, model);
         }
         out.push('\n');
     }
     Ok(())
+}
+
+fn emit_actor_functions(out: &mut String, actor: &ActorDecl, model: &Model<'_>) -> Result<()> {
+    let actor_model = model.actor_model(&actor.name)?;
+    if actor.functions.is_empty() {
+        return Ok(());
+    }
+
+    emit_section_header(out, "Actor functions");
+    for function in actor_model.functions() {
+        let params =
+            function.params.iter().map(|param| format!("{} {}", lower_type_ref(&param.ty, model), param.name)).collect::<Vec<_>>();
+        emit_function(out, &function.name, &params, function.return_ty.as_ref(), &function.body, model);
+    }
+    out.push('\n');
+    Ok(())
+}
+
+fn emit_function(out: &mut String, name: &str, params: &[String], return_ty: Option<&TypeRef>, body: &str, model: &Model<'_>) {
+    let return_type = return_ty.map(|ty| format!(" : {}", lower_type_ref(ty, model))).unwrap_or_default();
+    out.push_str(&format!("    function {name}({}){return_type} {{\n", params.join(", ")));
+    out.push_str(&indent_block_body(body, 8));
+    out.push_str("    }\n");
 }
 
 fn emit_entry(out: &mut String, actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Result<()> {
@@ -3675,7 +3692,7 @@ fn indent_block_body(body: &str, spaces: usize) -> String {
     // stray '\r' attached to the first/last line and producing output that
     // differs byte-for-byte from the same source checked out with LF endings.
     let normalized = body.replace("\r\n", "\n");
-    let trimmed = normalized.trim_matches('\n');
+    let trimmed = normalized.trim_end().trim_start_matches('\n');
     if trimmed.trim().is_empty() {
         return String::new();
     }

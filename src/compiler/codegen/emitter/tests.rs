@@ -452,6 +452,83 @@ fn allows_the_same_function_name_on_different_actors() {
 }
 
 #[test]
+fn emits_actor_functions_only_in_their_owning_contract() {
+    let path = PathBuf::from("actor-functions.ag");
+    let module = crate::compiler::syntax::parser::parse_module(
+        path.clone(),
+        r#"
+            const int BIAS = 1;
+
+            state CounterState {
+                int cycles;
+            }
+
+            state OtherState {
+                int amount;
+            }
+
+            fn add_bias(int value) -> int {
+                return value + BIAS;
+            }
+
+            actor Counter owns CounterState {
+                fn current() -> int {
+                    return cycles;
+                }
+
+                fn adjusted(int delta) -> int {
+                    return add_bias(current() + delta);
+                }
+
+                fn ensure_nonnegative() {
+                    require(current() >= 0);
+                }
+
+                entry check() emits none {
+                    ensure_nonnegative();
+                    require(adjusted(1) == cycles + 2);
+                }
+            }
+
+            actor Other owns OtherState {
+                fn adjusted(int delta) -> int {
+                    return amount - delta;
+                }
+
+                entry check() emits none {
+                    require(adjusted(1) == amount - 1);
+                }
+            }
+
+            app FunctionsApp {
+                actor Counter;
+                actor Other;
+            }
+            "#
+        .to_string(),
+    )
+    .expect("actor-function source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let out_dir = std::env::temp_dir().join(format!("argent-actor-functions-test-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&out_dir);
+
+    emit_build(&program, &out_dir).expect("actor functions compile in their owning contracts");
+    let counter = fs::read_to_string(out_dir.join("sil/Counter.sil")).expect("generated Counter Sil exists");
+    let other = fs::read_to_string(out_dir.join("sil/Other.sil")).expect("generated Other Sil exists");
+
+    assert!(counter.contains("// :: actor functions"), "{counter}");
+    assert!(counter.contains("function current() : int"), "{counter}");
+    assert!(counter.contains("return cycles;"), "{counter}");
+    assert!(counter.contains("function adjusted(int delta) : int"), "{counter}");
+    assert!(counter.contains("return add_bias(current() + delta);"), "{counter}");
+    assert!(counter.contains("function ensure_nonnegative()"), "{counter}");
+    assert!(!other.contains("function current()"), "{other}");
+    assert!(other.contains("return amount - delta;"), "{other}");
+
+    let _ = fs::remove_dir_all(out_dir);
+}
+
+#[test]
 fn global_function_variables_do_not_collide_with_actor_fields() {
     let program = global_function_program(
         r#"
