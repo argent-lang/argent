@@ -11,6 +11,10 @@ contract Local(
         // :: user declared fields
         int count;
     }
+    struct LocalState {
+        // :: user declared fields
+        byte[32] target_id;
+    }
 
     // :: route templates
     byte[32] gen__foreign_template = gen__init_foreign_template;

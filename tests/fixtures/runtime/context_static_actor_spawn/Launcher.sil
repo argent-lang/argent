@@ -8,6 +8,10 @@ contract Launcher(
     int init_launches
 ) {
     // :: state layouts
+    struct LauncherState {
+        // :: user declared fields
+        int launches;
+    }
     struct ChildState {
         // :: user declared fields
         int amount;

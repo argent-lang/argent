@@ -12,6 +12,10 @@ contract Anchor(
         byte[32] pair_type;
         int launches;
     }
+    struct AnchorState {
+        // :: user declared fields
+        int amount;
+    }
     struct PairState {
         // :: user declared fields
         int amount;

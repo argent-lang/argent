@@ -6,6 +6,10 @@ contract Counter(
     int init_count
 ) {
     // :: state layouts
+    struct CounterState {
+        // :: user declared fields
+        int count;
+    }
 
     // :: route templates
 

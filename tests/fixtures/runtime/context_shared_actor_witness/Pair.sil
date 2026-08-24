@@ -15,6 +15,10 @@ contract Pair(
         // :: user declared fields
         int amount;
     }
+    struct PairState {
+        // :: user declared fields
+        int amount;
+    }
 
     // :: route templates
 

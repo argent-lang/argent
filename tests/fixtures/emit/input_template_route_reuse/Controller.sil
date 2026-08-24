@@ -7,6 +7,10 @@ contract Controller(
     int init_tick
 ) {
     // :: state layouts
+    struct ControllerState {
+        // :: user declared fields
+        int tick;
+    }
     struct PeerState {
         // :: user declared fields
         int count;

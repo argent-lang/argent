@@ -40,8 +40,19 @@ actor Foreign owns ForeignState {
 }
 
 actor Local owns LocalState {
+    fn snapshot() -> LocalState {
+        return LocalState {
+            foreign_id: foreign_id,
+            steps: steps,
+        };
+    }
+
+    fn read_steps(LocalState value) -> int {
+        return value.steps;
+    }
+
     fn incremented_steps() -> int {
-        return add_one(steps);
+        return add_one(read_steps(snapshot()));
     }
 
     entry step()

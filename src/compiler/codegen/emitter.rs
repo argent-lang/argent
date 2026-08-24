@@ -115,7 +115,7 @@ fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
     emit_shared_constants(&mut out, model)?;
     emit_imported_template_constants(&mut out, &imported_template_specs_for_actor(actor, model));
     emit_state_layouts(&mut out, actor, model)?;
-    emit_shared_functions(&mut out, model)?;
+    emit_global_functions(&mut out, model)?;
     emit_actor_functions(&mut out, actor, model)?;
 
     emit_section_header(&mut out, "Route templates");
@@ -181,8 +181,9 @@ fn emit_imported_template_constants(out: &mut String, specs: &[ImportedTemplateS
 fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model<'_>) -> Result<()> {
     emit_section_header(out, "State layouts");
     let mut emitted = BTreeSet::new();
-    // Emit source-named signature layouts only when they differ from the
-    // contract's physical `State` layout.
+    // Every actor state keeps its authored name alongside the current
+    // contract's physical `State`. Entry parameters may introduce additional
+    // source states which must also be available by name.
     let mut signature_states = BTreeSet::new();
     for param in current_actor.entries.iter().flat_map(|entry| &entry.params) {
         if model.has_state(&param.ty.name) && entry_param_sil_type(current_actor, &param.ty, model).name != "State" {
@@ -190,6 +191,7 @@ fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model
         }
     }
     let mut state_names = model.actors.iter().map(|actor| actor.state.clone()).collect::<Vec<_>>();
+    state_names.extend(model.states.keys().cloned());
     let mut physical_states = BTreeSet::new();
     state_names.extend(signature_states.iter().cloned());
     for entry in &current_actor.entries {
@@ -226,18 +228,13 @@ fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model
     let mut state_idx = 0;
     while state_idx < state_names.len() {
         let state_name = &state_names[state_idx];
-        if (state_name != &current_actor.state || signature_states.contains(state_name))
-            && let Some(expansion) = model.state(state_name)?.expansion.as_ref()
-        {
+        if let Some(expansion) = model.state(state_name)?.expansion.as_ref() {
             state_names.extend(expansion.digests.iter().map(|digest| digest.state.clone()));
         }
         state_idx += 1;
     }
 
     for state_name in state_names {
-        if state_name == current_actor.state && !signature_states.contains(&state_name) {
-            continue;
-        }
         if !emitted.insert(state_name.clone()) {
             continue;
         }
@@ -321,9 +318,9 @@ fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model
     Ok(())
 }
 
-fn emit_shared_functions(out: &mut String, model: &Model<'_>) -> Result<()> {
+fn emit_global_functions(out: &mut String, model: &Model<'_>) -> Result<()> {
     if !model.functions.is_empty() {
-        emit_section_header(out, "Global shared functions (vars prefixed with gen__glob_ for creating a unique namespace)");
+        emit_section_header(out, "Global functions (isolated using the gen__glob_ namespace)");
         let lowerer = GlobalFunctionLowerer::new(model);
         for function in &model.functions {
             let function = lowerer.lower(function)?;

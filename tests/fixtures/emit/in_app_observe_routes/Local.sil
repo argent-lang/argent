@@ -13,6 +13,11 @@ contract Local(
         // :: user declared fields
         int amount;
     }
+    struct LocalState {
+        // :: user declared fields
+        byte[32] foreign_id;
+        int steps;
+    }
     struct TargetState {
         // :: user declared fields
         int units;
@@ -24,14 +29,23 @@ contract Local(
         int amount;
     }
 
-    // :: global shared functions (vars prefixed with gen__glob_ for creating a unique namespace)
+    // :: global functions (isolated using the gen__glob_ namespace)
     function add_one(int gen__glob_value) : int {
         return gen__glob_value + 1;
     }
 
     // :: actor functions
+    function snapshot() : LocalState {
+        return LocalState {
+            foreign_id: foreign_id,
+            steps: steps,
+        };
+    }
+    function read_steps(LocalState value) : int {
+        return value.steps;
+    }
     function incremented_steps() : int {
-        return add_one(steps);
+        return add_one(read_steps(snapshot()));
     }
 
     // :: route templates

@@ -12,6 +12,10 @@ contract Child(
         // :: user declared fields
         int launches;
     }
+    struct ChildState {
+        // :: user declared fields
+        int amount;
+    }
     struct Gen__LauncherState {
         // :: generated fields
         byte[32] gen__child_template;

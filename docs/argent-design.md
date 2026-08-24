@@ -12,6 +12,8 @@ those pieces usable from Argent.
 
 - Argent emits plain Silverscript, not Silverscript covenant macros.
 - User state is declared once with `state`.
+- Each source state remains available as an authored Sil struct. A contract's
+  physical `State` may additionally contain compiler-generated fields.
 - `actor` owns persistent covenant state.
 - `entry` declares callable transition paths.
 - `emits` declares authorized output shape.
@@ -31,6 +33,9 @@ those pieces usable from Argent.
 - Top-level helper functions are global. They may use their parameters and
   locals, shared constants, other functions, and explicit runtime context, but
   cannot capture actor constructor or state fields through bare names.
+- Actor functions belong to one actor contract. They may access its fields and
+  call global or same-actor functions. Global functions cannot call actor
+  functions.
 - Helper bodies are expected to otherwise be valid Silverscript-shaped code.
   Silverscript remains responsible for final helper/body validity where Argent
   has not lowered the expression itself.

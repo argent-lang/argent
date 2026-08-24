@@ -55,7 +55,7 @@ contract StonesSettle(
         int losses;
     }
 
-    // :: global shared functions (vars prefixed with gen__glob_ for creating a unique namespace)
+    // :: global functions (isolated using the gen__glob_ namespace)
     function player_ref(byte[32] gen__glob_owner, byte[32] gen__glob_player_id) : byte[32] {
         return blake2b(byte[](gen__glob_owner + gen__glob_player_id));
     }

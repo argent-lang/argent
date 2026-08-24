@@ -7,6 +7,20 @@ contract Forager(
     int init_energy
 ) {
     // :: state layouts
+    struct ForagerState {
+        // :: user declared fields
+        ForagerStrategy strategy;
+        int energy;
+    }
+    struct AgentCapsule {
+        // :: user declared fields
+        byte[32] strategy;
+        int energy;
+    }
+    struct ForagerStrategy {
+        // :: user declared fields
+        int hunger;
+    }
 
     // :: route templates
 

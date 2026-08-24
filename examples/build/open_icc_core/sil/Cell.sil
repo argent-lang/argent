@@ -26,7 +26,7 @@ contract Cell(
         int generation;
     }
 
-    // :: global shared functions (vars prefixed with gen__glob_ for creating a unique namespace)
+    // :: global functions (isolated using the gen__glob_ namespace)
     function abs1(int gen__glob_value) : int {
         int gen__glob_result = gen__glob_value;
         if (gen__glob_value < 0) {

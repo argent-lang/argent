@@ -15,8 +15,12 @@ contract Target(
         byte[32] foreign_id;
         int steps;
     }
+    struct TargetState {
+        // :: user declared fields
+        int units;
+    }
 
-    // :: global shared functions (vars prefixed with gen__glob_ for creating a unique namespace)
+    // :: global functions (isolated using the gen__glob_ namespace)
     function add_one(int gen__glob_value) : int {
         return gen__glob_value + 1;
     }

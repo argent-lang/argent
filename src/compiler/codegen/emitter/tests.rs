@@ -1413,7 +1413,7 @@ fn equivalent_current_state_params_use_physical_state_type() {
     );
 
     let sil = actor_sil.get("Note").expect("Note emits");
-    assert!(!sil.contains("struct NoteState"), "{sil}");
+    assert!(sil.contains("struct NoteState {"), "{sil}");
     assert!(sil.contains("entry inspect(State note)"), "{sil}");
     assert!(sil.contains("entry inspect_many(State[] notes)"), "{sil}");
 

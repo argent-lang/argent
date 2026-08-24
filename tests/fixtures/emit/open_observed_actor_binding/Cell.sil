@@ -8,6 +8,12 @@ contract Cell(
     int init_tick
 ) {
     // :: state layouts
+    struct CellState {
+        // :: user declared fields
+        byte[32] agent_covid;
+        byte[32] agent_type;
+        int tick;
+    }
     struct AgentCapsule {
         // :: user declared fields
         byte[32] controller_id;
