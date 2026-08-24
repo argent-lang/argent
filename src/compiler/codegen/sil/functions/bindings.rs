@@ -31,6 +31,7 @@ pub(super) fn prefix_ranges(
     source: &str,
     body_span: Range<usize>,
     constants: &BTreeSet<String>,
+    actor_functions: &BTreeSet<String>,
     function_name: &str,
 ) -> Result<Vec<Range<usize>>> {
     let mut function = parse_function_ast(source)
@@ -66,6 +67,12 @@ pub(super) fn prefix_ranges(
             NameKind::AssignmentTarget => {
                 return Err(ArgentError::new(format!(
                     "global function `{function_name}` assigns unresolved identifier `{}`; declare it locally before assignment",
+                    occurrence.name
+                )));
+            }
+            NameKind::CallTarget if actor_functions.contains(&occurrence.name) => {
+                return Err(ArgentError::new(format!(
+                    "global function `{function_name}` cannot call actor function `{}`",
                     occurrence.name
                 )));
             }

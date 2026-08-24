@@ -390,6 +390,68 @@ fn rejects_function_named_unrestricted() {
 }
 
 #[test]
+fn rejects_global_and_actor_functions_with_the_same_name() {
+    let mut program = test_program();
+    program.modules[0].actors[0].entries.clear();
+    program.modules[0].functions.push(FunctionDecl {
+        name: "helper".to_string(),
+        params: Vec::new(),
+        return_ty: Some(TypeRef::new("int")),
+        body: "return 1;".to_string(),
+    });
+    program.modules[0].actors[0].functions.push(FunctionDecl {
+        name: "helper".to_string(),
+        params: Vec::new(),
+        return_ty: Some(TypeRef::new("int")),
+        body: "return 2;".to_string(),
+    });
+
+    let err = Model::from_program(&program).expect_err("global and actor functions share the generated contract namespace");
+
+    assert_eq!(err.message, "actor `Player` function `helper` conflicts with a global function of the same name");
+}
+
+#[test]
+fn rejects_global_calls_to_actor_functions() {
+    let mut program = test_program();
+    program.modules[0].actors[0].entries.clear();
+    program.modules[0].functions.push(FunctionDecl {
+        name: "global_helper".to_string(),
+        params: Vec::new(),
+        return_ty: Some(TypeRef::new("int")),
+        body: "return actor_helper();".to_string(),
+    });
+    program.modules[0].actors[1].functions.push(FunctionDecl {
+        name: "actor_helper".to_string(),
+        params: Vec::new(),
+        return_ty: Some(TypeRef::new("int")),
+        body: "return 2;".to_string(),
+    });
+    let model = Model::from_program(&program).expect("function declarations form distinct namespaces");
+
+    let err = emit_actor(model.actor("Player").expect("Player exists"), &model)
+        .expect_err("global functions must not depend on actor functions");
+
+    assert_eq!(err.message, "global function `global_helper` cannot call actor function `actor_helper`");
+}
+
+#[test]
+fn allows_the_same_function_name_on_different_actors() {
+    let mut program = test_program();
+    for actor in &mut program.modules[0].actors {
+        actor.entries.clear();
+        actor.functions.push(FunctionDecl {
+            name: "helper".to_string(),
+            params: Vec::new(),
+            return_ty: Some(TypeRef::new("int")),
+            body: "return 1;".to_string(),
+        });
+    }
+
+    Model::from_program(&program).expect("actor-local function names may repeat across contracts");
+}
+
+#[test]
 fn global_function_variables_do_not_collide_with_actor_fields() {
     let program = global_function_program(
         r#"

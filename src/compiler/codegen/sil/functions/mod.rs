@@ -18,6 +18,7 @@ const VARIABLE_PREFIX: &str = "gen__glob_";
 
 pub(in crate::compiler::codegen) struct GlobalFunctionLowerer {
     constants: BTreeSet<String>,
+    actor_functions: BTreeSet<String>,
 }
 
 pub(in crate::compiler::codegen) struct LoweredFunction<'a> {
@@ -35,17 +36,23 @@ pub(in crate::compiler::codegen) struct LoweredParam<'a> {
 impl GlobalFunctionLowerer {
     pub(in crate::compiler::codegen) fn new(model: &Model<'_>) -> Self {
         let constants = model.consts.iter().map(|ct| ct.name.clone()).collect();
-        Self { constants }
+        let actor_functions =
+            model.actor_models.values().flat_map(|actor| actor.functions()).map(|function| function.name.clone()).collect();
+        Self { constants, actor_functions }
     }
 
     pub(in crate::compiler::codegen) fn lower<'a>(&self, function: &'a FunctionDecl) -> Result<LoweredFunction<'a>> {
-        lower_global_function(function, &self.constants)
+        lower_global_function(function, &self.constants, &self.actor_functions)
     }
 }
 
-fn lower_global_function<'a>(function: &'a FunctionDecl, constants: &BTreeSet<String>) -> Result<LoweredFunction<'a>> {
+fn lower_global_function<'a>(
+    function: &'a FunctionDecl,
+    constants: &BTreeSet<String>,
+    actor_functions: &BTreeSet<String>,
+) -> Result<LoweredFunction<'a>> {
     let (source, body_span) = standalone_sil_function(function);
-    let ranges = prefix_ranges(&source, body_span, constants, &function.name)?;
+    let ranges = prefix_ranges(&source, body_span, constants, actor_functions, &function.name)?;
     let params = function.params.iter().map(|param| LoweredParam { ty: &param.ty, name: prefixed(&param.name) }).collect();
     let body = apply_prefix(&function.body, &ranges);
     Ok(LoweredFunction { name: &function.name, params, return_ty: function.return_ty.as_ref(), body })
@@ -121,7 +128,7 @@ mod tests {
         let module = parse_module(PathBuf::from("test.ag"), source.to_string()).expect("module parses");
         let function = &module.functions[0];
         let constants = ["LIMIT".to_string()].into_iter().collect();
-        let lowered = lower_global_function(function, &constants).expect("variables prefix");
+        let lowered = lower_global_function(function, &constants, &BTreeSet::new()).expect("variables prefix");
 
         assert_eq!(lowered.params[0].name, "gen__glob_turn");
         assert_eq!(lowered.params[1].name, "gen__glob_index");
@@ -169,7 +176,8 @@ mod tests {
         let constants = ["LIMIT".to_string()].into_iter().collect();
 
         for function in &module.functions {
-            let err = lower_global_function(function, &constants).err().expect("constant shadowing must be rejected");
+            let err =
+                lower_global_function(function, &constants, &BTreeSet::new()).err().expect("constant shadowing must be rejected");
             assert!(
                 err.to_string().contains(&format!("global function `{}` binding `LIMIT` shadows a shared constant", function.name)),
                 "unexpected error: {err}"

@@ -21,11 +21,28 @@ impl Model<'_> {
         self.validate_state_expansions()?;
         self.validate_reserved_self_members()?;
         self.validate_generated_actor_suffixes()?;
+        self.validate_function_namespaces()?;
         self.validate_route_plan_coverage()?;
 
         for actor in &self.actors {
             for entry in &actor.entries {
                 self.validate_entry(actor, entry)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_function_namespaces(&self) -> Result<()> {
+        let global_functions = self.functions.iter().map(|function| function.name.as_str()).collect::<BTreeSet<_>>();
+        for actor_model in self.actor_models.values() {
+            for function in actor_model.functions() {
+                if global_functions.contains(function.name.as_str()) {
+                    return Err(ArgentError::new(format!(
+                        "actor `{}` function `{}` conflicts with a global function of the same name",
+                        actor_model.source().name,
+                        function.name
+                    )));
+                }
             }
         }
         Ok(())
