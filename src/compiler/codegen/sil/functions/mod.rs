@@ -156,17 +156,24 @@ mod tests {
     #[test]
     fn rejects_bindings_that_shadow_shared_constants() {
         let source = r#"
-            fn invalid(int LIMIT) -> int {
+            fn invalid_param(int LIMIT) -> int {
+                return LIMIT;
+            }
+
+            fn invalid_local() -> int {
+                int LIMIT = 2;
                 return LIMIT;
             }
         "#;
         let module = parse_module(PathBuf::from("test.ag"), source.to_string()).expect("module parses");
         let constants = ["LIMIT".to_string()].into_iter().collect();
 
-        let err = lower_global_function(&module.functions[0], &constants).err().expect("constant shadowing must be rejected");
-        assert!(
-            err.to_string().contains("global function `invalid` binding `LIMIT` shadows a shared constant"),
-            "unexpected error: {err}"
-        );
+        for function in &module.functions {
+            let err = lower_global_function(function, &constants).err().expect("constant shadowing must be rejected");
+            assert!(
+                err.to_string().contains(&format!("global function `{}` binding `LIMIT` shadows a shared constant", function.name)),
+                "unexpected error: {err}"
+            );
+        }
     }
 }
