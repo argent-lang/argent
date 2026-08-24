@@ -15,7 +15,7 @@ Features:
 - The rest of the file falls through to Rust TextMate highlighting.
 - Completion includes Argent keywords, primitive types, builtins, top-level
   `state`, `actor`, `actor enum`, `fn`, `const`, and `app` declarations, plus
-  actor `entry` and `delegate` callables.
+  actor `fn`, `entry`, and `delegate` callables.
 - Relative imports are followed recursively, so declarations from imported
   `.ag` files participate in completion, semantic highlighting, hover, and
   go-to-definition.
@@ -28,8 +28,8 @@ Features:
 - `self.` completes fields from the enclosing actor's owned state (including
   inherited expanded-state fields); hover and go-to-definition resolve back to
   the field declaration.
-- Entry and delegate bodies also offer owned-state fields in ordinary
-  completion.
+- Actor function, entry, and delegate bodies also offer owned-state fields in
+  ordinary completion.
 - Completion inside entry and delegate bodies includes variables introduced by
   `consumes`, `emits`, `observes`, and `spawns` clauses.
 - The editor indexer is tolerant of unfinished function and actor bodies.

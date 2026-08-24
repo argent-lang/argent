@@ -179,6 +179,20 @@ function preferredDeclaration(matches) {
   return matches.find((candidate) => candidate.local) ?? matches[0];
 }
 
+function declarationsVisibleAt(catalog, uri, offset, matches) {
+  const actor = enclosingActor(catalog, uri, offset);
+  return (matches ?? []).filter(
+    (candidate) =>
+      candidate.kind !== 'function' ||
+      !candidate.actor ||
+      (actor && candidate.actor === actor.name && candidate.uri.toString() === actor.uri.toString()),
+  );
+}
+
+function preferredDeclarationAt(catalog, uri, offset, matches) {
+  return preferredDeclaration(declarationsVisibleAt(catalog, uri, offset, matches));
+}
+
 function declarationOfKind(catalog, name, kind) {
   const matches = catalog.byName.get(name)?.filter((candidate) => candidate.kind === kind);
   return preferredDeclaration(matches);
@@ -289,7 +303,7 @@ function functionSnippet(name, params) {
   return new vscode.SnippetString(`${name}(${args})`);
 }
 
-function completionItems(catalog) {
+function completionItems(catalog, actor) {
   const items = [];
 
   for (const keyword of KEYWORDS) {
@@ -322,6 +336,13 @@ function completionItems(catalog) {
 
   const seen = new Set();
   for (const declaration of catalog.declarations) {
+    if (
+      declaration.kind === 'function' &&
+      declaration.actor &&
+      (!actor || declaration.actor !== actor.name || declaration.uri.toString() !== actor.uri.toString())
+    ) {
+      continue;
+    }
     const key = `${declaration.kind}:${declaration.name}`;
     if (seen.has(key)) {
       continue;
@@ -462,13 +483,13 @@ function activate(context) {
           }
         }
         const callable = enclosingCallable(catalog, document.uri, document.offsetAt(position));
-        const actor = callable?.actor ? enclosingActor(catalog, document.uri, document.offsetAt(position)) : undefined;
+        const actor = enclosingActor(catalog, document.uri, document.offsetAt(position));
         const fields = actor ? fieldCompletionItems(fieldsForState(catalog, actor.ownedState)) : [];
         return [
           ...parameterCompletionItems(callable?.parameters ?? []),
           ...clauseVariableCompletionItems(callable?.clauseVariables ?? [], callable?.name),
           ...fields,
-          ...completionItems(catalog),
+          ...completionItems(catalog, actor),
         ];
       },
     }, '.'),
@@ -497,8 +518,13 @@ function activate(context) {
         if (parameter) {
           return declarationLocation(catalog, parameter);
         }
-        const matches = catalog.byName.get(word.value);
-        if (!matches) {
+        const matches = declarationsVisibleAt(
+          catalog,
+          document.uri,
+          document.offsetAt(word.range.start),
+          catalog.byName.get(word.value),
+        );
+        if (matches.length === 0) {
           return undefined;
         }
         return matches.map((declaration) => declarationLocation(catalog, declaration));
@@ -539,7 +565,12 @@ function activate(context) {
           return new vscode.Hover(markdown, word.range);
         }
 
-        const declaration = preferredDeclaration(catalog.byName.get(word.value));
+        const declaration = preferredDeclarationAt(
+          catalog,
+          document.uri,
+          document.offsetAt(word.range.start),
+          catalog.byName.get(word.value),
+        );
         return declaration ? declarationHover(declaration) : undefined;
       },
     }),
@@ -599,7 +630,8 @@ function activate(context) {
               ? selfField(catalog, document.uri, token.start, token.value)
               : undefined;
             const referencedParameter = parameterInScope(catalog, document.uri, token.start, token.value);
-            const declaration = localDeclaration ?? preferredDeclaration(catalog.byName.get(token.value));
+            const declaration =
+              localDeclaration ?? preferredDeclarationAt(catalog, document.uri, token.start, catalog.byName.get(token.value));
             let type;
             let modifiers = [];
 

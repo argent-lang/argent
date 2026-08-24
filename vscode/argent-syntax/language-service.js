@@ -552,7 +552,11 @@ function actorMembers(source, tokens, openIndex, closeIndex) {
   const starts = [];
   let depth = 1;
   for (let index = openIndex + 1; index < end; index += 1) {
-    if (depth === 1 && (ident(tokens[index], 'entry') || ident(tokens[index], 'delegate')) && ident(tokens[index + 1])) {
+    if (
+      depth === 1 &&
+      (ident(tokens[index], 'fn') || ident(tokens[index], 'entry') || ident(tokens[index], 'delegate')) &&
+      ident(tokens[index + 1])
+    ) {
       starts.push(index);
     }
     if (symbol(tokens[index], '{')) {
@@ -564,20 +568,24 @@ function actorMembers(source, tokens, openIndex, closeIndex) {
 
   return starts.map((start, memberIndex) => {
     const keyword = tokens[start].value;
+    const kind = keyword === 'fn' ? 'function' : keyword;
     const nameToken = tokens[start + 1];
     const segmentEnd = starts[memberIndex + 1] ?? end;
     const parameters = functionParameters(source, tokens, start + 1);
     const paramsOpen = start + 2;
     const paramsClose = matchingSymbolIndex(tokens, paramsOpen, '(', ')');
-    const signatureEnd = paramsClose >= 0 ? tokens[paramsClose].end : nameToken.end;
     const { openIndex: bodyOpenIndex, ...bodyRange } = callableBody(
       source,
       tokens,
       paramsClose >= 0 ? paramsClose + 1 : start + 2,
       segmentEnd,
     );
+    let signatureEnd = paramsClose >= 0 ? tokens[paramsClose].end : nameToken.end;
+    if (keyword === 'fn' && bodyOpenIndex >= 0) {
+      signatureEnd = tokens[bodyOpenIndex].start;
+    }
     return declaration(
-      keyword,
+      kind,
       nameToken,
       normalizedSlice(source, tokens[start].start, signatureEnd),
       leadingDocumentation(source, tokens[start].start),

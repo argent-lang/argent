@@ -265,13 +265,18 @@ actor Pair owns PairState {
   assert.ok(actor.bodyEnd > source.indexOf('self.quote_id'));
 });
 
-test('indexes entry and delegate callables with parameters and implementation body ranges', () => {
+test('indexes actor functions, entries, and delegates with their lexical owners', () => {
   const source = `
 state PairState {
   int reserve;
 }
 
 actor Pair owns PairState {
+  /// Returns the adjusted reserve.
+  fn adjusted(int delta) -> int {
+    return reserve + delta;
+  }
+
   /// Exchanges one side of the pair.
   entry swap(int amount, cov_id asset_id)
   observes asset by asset_id {
@@ -296,12 +301,23 @@ actor Pair owns PairState {
   assert.deepEqual(
     actor.members.map(({ kind, name, params }) => ({ kind, name, params })),
     [
+      { kind: 'function', name: 'adjusted', params: ['delta'] },
       { kind: 'entry', name: 'swap', params: ['amount', 'asset_id'] },
       { kind: 'delegate', name: 'authorize', params: ['owner_sig'] },
     ],
   );
 
-  const swap = actor.members[0];
+  const adjusted = actor.members[0];
+  assert.equal(adjusted.signature, 'fn adjusted(int delta) -> int');
+  assert.equal(adjusted.documentation, 'Returns the adjusted reserve.');
+  assert.deepEqual(
+    adjusted.parameters.map(({ name, type }) => ({ name, type })),
+    [{ name: 'delta', type: 'int' }],
+  );
+  assert.ok(adjusted.bodyStart < source.indexOf('return reserve'));
+  assert.ok(adjusted.bodyEnd > source.indexOf('return reserve'));
+
+  const swap = actor.members[1];
   assert.equal(swap.documentation, 'Exchanges one side of the pair.');
   assert.deepEqual(
     swap.parameters.map(({ name, type }) => ({ name, type })),
@@ -314,13 +330,38 @@ actor Pair owns PairState {
   assert.ok(swap.bodyEnd > source.indexOf('require(amount'));
   assert.ok(swap.bodyStart > source.indexOf('inputs {'));
 
-  const authorize = actor.members[1];
+  const authorize = actor.members[2];
   assert.deepEqual(
     authorize.parameters.map(({ name, type }) => ({ name, type })),
     [{ name: 'owner_sig', type: 'sig' }],
   );
   assert.ok(authorize.bodyStart < source.indexOf('checkSig(owner_sig'));
   assert.ok(authorize.bodyEnd > source.indexOf('checkSig(owner_sig'));
+});
+
+test('keeps same-named actor functions attached to their respective actors', () => {
+  const source = `
+actor Left owns LeftState {
+  fn current() -> int {
+    return value;
+  }
+}
+
+actor Right owns RightState {
+  fn current() -> int {
+    return value;
+  }
+}
+`;
+
+  const actors = scanDocument(source).declarations.filter((item) => item.kind === 'actor');
+  assert.deepEqual(
+    actors.map((actor) => ({ actor: actor.name, functions: actor.members.map((member) => member.name) })),
+    [
+      { actor: 'Left', functions: ['current'] },
+      { actor: 'Right', functions: ['current'] },
+    ],
+  );
 });
 
 test('indexes variables introduced by all callable clause forms', () => {
