@@ -12,6 +12,12 @@ contract KCC20(
     byte constant IDENTIFIER_COVENANT_ID = 0x02;
 
     // :: state layouts
+    struct KCC20State {
+        // :: user declared fields
+        byte[32] owner_identifier;
+        byte identifier_type;
+        int amount;
+    }
     struct MinterProxyState {
         // :: user declared fields
         byte[32] controller_id;

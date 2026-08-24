@@ -13,6 +13,12 @@ contract Ticket(
         byte[32] admin;
         int next_serial;
     }
+    struct TicketState {
+        // :: user declared fields
+        byte[32] owner;
+        int serial;
+        int redeemed;
+    }
 
     // :: route templates
 

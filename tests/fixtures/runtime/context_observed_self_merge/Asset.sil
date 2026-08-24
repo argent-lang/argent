@@ -7,6 +7,11 @@ contract Asset(
     int init_amount
 ) {
     // :: state layouts
+    struct AssetState {
+        // :: user declared fields
+        byte[32] owner;
+        int amount;
+    }
 
     // :: route templates
 

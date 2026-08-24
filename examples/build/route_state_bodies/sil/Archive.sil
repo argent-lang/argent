@@ -17,6 +17,10 @@ contract Archive(
         // :: user declared fields
         int ply;
     }
+    struct ArchiveState {
+        // :: user declared fields
+        int final_ply;
+    }
     struct Gen__PawnState {
         // :: generated fields
         byte[32] gen__archive_template;

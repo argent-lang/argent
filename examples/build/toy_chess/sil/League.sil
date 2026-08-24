@@ -9,6 +9,10 @@ contract League(
     int init_nonce
 ) {
     // :: state layouts
+    struct LeagueState {
+        // :: user declared fields
+        int nonce;
+    }
     struct PlayerState {
         // :: user declared fields
         int nonce;

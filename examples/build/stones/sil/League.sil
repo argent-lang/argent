@@ -18,6 +18,12 @@ contract League(
     int constant B_WIN = 2;
 
     // :: state layouts
+    struct LeagueState {
+        // :: user declared fields
+        byte[32] admin;
+        int default_pile;
+        int default_max_take;
+    }
     struct PlayerState {
         // :: user declared fields
         byte[32] owner;

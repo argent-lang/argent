@@ -28,6 +28,35 @@ contract Forager(
         int energy;
         int generation;
     }
+    struct ForagerState {
+        // :: user declared fields
+        byte[32] world_id;
+        byte[32] agent_id;
+        byte[32] species_id;
+        byte[32] controller_id;
+        byte[32] capabilities_digest;
+        ForagerStrategy strategy;
+        int x;
+        int y;
+        int energy;
+        int generation;
+    }
+    struct CellState {
+        // :: user declared fields
+        byte[32] world_id;
+        int x;
+        int y;
+        int food;
+        byte[32] occupant_agent_covid;
+        byte[32] occupant_agent_type;
+        byte[32] occupant_caps_digest;
+    }
+    struct ForagerStrategy {
+        // :: user declared fields
+        int hunger;
+        int mood;
+        byte[32] target_agent_id;
+    }
 
     // :: global functions (isolated using the gen__glob_ namespace)
     function abs1(int gen__glob_value) : int {

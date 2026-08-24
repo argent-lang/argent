@@ -17,6 +17,11 @@ contract Pawn(
         // :: user declared fields
         int nonce;
     }
+    struct BoardState {
+        // :: user declared fields
+        int selector;
+        int ply;
+    }
 
     // :: route templates
     byte[32] gen__mux_template = gen__init_mux_template;

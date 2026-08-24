@@ -17,15 +17,22 @@ contract Minter(
     byte[32] constant gen__kcc20_asset__minter_proxy_template_const = byte[32](0x7c7eae3f0d65a401154f7f2466796b92e36efda73e1454159ea5e42a516b3551);
 
     // :: state layouts
-    struct MinterProxyState {
+    struct MinterState {
         // :: user declared fields
-        byte[32] controller_id;
+        pubkey owner;
+        byte[32] kcc20_covid;
+        int amount;
+        bool initialized;
     }
     struct KCC20State {
         // :: user declared fields
         byte[32] owner_identifier;
         byte identifier_type;
         int amount;
+    }
+    struct MinterProxyState {
+        // :: user declared fields
+        byte[32] controller_id;
     }
 
     // :: route templates

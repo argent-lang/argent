@@ -55,6 +55,13 @@ actor Local owns LocalState {
         return add_one(read_steps(snapshot()));
     }
 
+    fn next_state(int extra_steps) -> LocalState {
+        return LocalState {
+            foreign_id: foreign_id,
+            steps: incremented_steps() + extra_steps,
+        };
+    }
+
     entry step()
     observes remote by self.foreign_id {
         inputs {
@@ -71,12 +78,8 @@ actor Local owns LocalState {
             next <- Foreign(next_foreign),
         };
 
-        LocalState next_local = {
-            foreign_id: foreign_id,
-            steps: incremented_steps(),
-        };
         unrestricted(next.value);
-        become next <- Local(next_local);
+        become next <- Local(next_state(0));
     }
 }
 

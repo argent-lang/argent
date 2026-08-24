@@ -35,6 +35,14 @@ contract StonesGame(
         int wins;
         int losses;
     }
+    struct GameState {
+        // :: user declared fields
+        byte[32] player_a;
+        byte[32] player_b;
+        int pile;
+        int max_take;
+        int turn;
+    }
     struct SettleState {
         // :: user declared fields
         byte[32] player_a;

@@ -27,6 +27,15 @@ contract Player(
         int default_pile;
         int default_max_take;
     }
+    struct PlayerState {
+        // :: user declared fields
+        byte[32] owner;
+        byte[32] player_id;
+        int open_games;
+        int games;
+        int wins;
+        int losses;
+    }
     struct GameState {
         // :: user declared fields
         byte[32] player_a;

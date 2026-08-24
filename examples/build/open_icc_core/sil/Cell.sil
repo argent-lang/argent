@@ -12,6 +12,16 @@ contract Cell(
     byte[32] init_occupant_caps_digest
 ) {
     // :: state layouts
+    struct CellState {
+        // :: user declared fields
+        byte[32] world_id;
+        int x;
+        int y;
+        int food;
+        byte[32] occupant_agent_covid;
+        byte[32] occupant_agent_type;
+        byte[32] occupant_caps_digest;
+    }
     struct AgentCapsule {
         // :: user declared fields
         byte[32] world_id;

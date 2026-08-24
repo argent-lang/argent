@@ -13,6 +13,10 @@ contract Mux(
         // :: user declared fields
         int nonce;
     }
+    struct BoardState {
+        // :: user declared fields
+        int ply;
+    }
     struct ArchiveState {
         // :: user declared fields
         int final_ply;

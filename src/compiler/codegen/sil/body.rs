@@ -782,7 +782,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         } else {
             contract_state_type_for_dynamic_state(&state_name, self.actor, self.model)?
         };
-        let state_expr = self.materialize_indexed_expanded_state(out, indent, &route)?;
+        let state_expr = self.materialize_route_source_state(out, indent, &route)?;
         let state_expr = state_expr.as_str();
         let packs_family = transition.is_some_and(|transition| !transition.families_to_pack.is_empty());
         let state_arg = if !packs_family && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
@@ -954,21 +954,28 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         self.lower_state_expr_for_layout(state_name, state_ty, generated_fields, false, expr, indent)
     }
 
-    /// Sil flattens struct arrays, but cannot directly traverse a nested struct
-    /// field through an array index. Bind an indexed expanded value first.
-    fn materialize_indexed_expanded_state(&mut self, out: &mut String, indent: usize, route: &RouteCall) -> Result<String> {
+    /// Bind an authored state before projecting its fields into a route layout.
+    /// This evaluates function calls once and handles indexed expanded values
+    /// that Sil cannot traverse directly.
+    fn materialize_route_source_state(&mut self, out: &mut String, indent: usize, route: &RouteCall) -> Result<String> {
         let expr = strip_outer_parentheses(route.state.trim());
-        if indexed_root_binding(expr).is_none() {
-            return Ok(expr.to_string());
-        }
-        let Some(source_state) = self.bindings.source_type_for_expr(expr) else {
+        let source_state = if let Some(source_state) = self.authored_state_return_for_call(expr) {
+            Some(source_state)
+        } else if indexed_root_binding(expr).is_some() {
+            // Sil flattens struct arrays, but cannot directly traverse a nested
+            // struct field through an array index. Bind that element first.
+            let Some(source_state) = self.bindings.source_type_for_expr(expr) else {
+                return Ok(expr.to_string());
+            };
+            (self.bindings.lowered_type_for_expr(expr).as_deref() == Some(source_state.as_str())
+                && self.model.state(&source_state)?.expansion.is_some())
+            .then_some(source_state)
+        } else {
+            None
+        };
+        let Some(source_state) = source_state else {
             return Ok(expr.to_string());
         };
-        if self.bindings.lowered_type_for_expr(expr).as_deref() != Some(source_state.as_str())
-            || self.model.state(&source_state)?.expansion.is_none()
-        {
-            return Ok(expr.to_string());
-        }
 
         let name = format!("{RESERVED_GENERATED_PREFIX}source_{}_{}", to_snake(&route.output), to_snake(&source_state));
         let lowered = self.lower_expr(expr, Some(&source_state), indent)?;
@@ -976,6 +983,14 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         out.push_str(&format!("{source_state} {name} = {lowered};\n"));
         self.bindings.declare(name.clone(), BodyBinding::typed(source_state.clone(), source_state));
         Ok(name)
+    }
+
+    fn authored_state_return_for_call(&self, expr: &str) -> Option<String> {
+        let function_name = direct_function_call_name(expr)?;
+        let function =
+            self.actor.functions.iter().chain(self.model.functions.iter().copied()).find(|function| function.name == function_name)?;
+        let return_ty = function.return_ty.as_ref()?;
+        (return_ty.array.is_none() && self.model.has_state(&return_ty.name)).then(|| return_ty.name.clone())
     }
 
     fn lower_state_expr_for_layout(
@@ -1068,7 +1083,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             self.model.route_transition(&self.actor.name, &route.actor).expect("validated non-self route has a planned cut transition")
         });
         let state_ty = contract_state_type_for_actor(&route.actor, self.actor, self.model)?;
-        let state_expr = self.materialize_indexed_expanded_state(out, indent, &route)?;
+        let state_expr = self.materialize_route_source_state(out, indent, &route)?;
         let state_expr = state_expr.as_str();
         let packs_family = transition.is_some_and(|transition| !transition.families_to_pack.is_empty());
         let state_arg = if !packs_family && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
@@ -1143,7 +1158,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             "selector variants must use one cut transition"
         );
         let state_ty = contract_state_type_for_actor(layout_actor, self.actor, self.model)?;
-        let state_expr = self.materialize_indexed_expanded_state(out, indent, &route)?;
+        let state_expr = self.materialize_route_source_state(out, indent, &route)?;
         let state_expr = state_expr.as_str();
         let packs_family = !transition.families_to_pack.is_empty();
         let state_arg = if !packs_family && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
@@ -1552,6 +1567,19 @@ fn split_state_object_literal(expr: &str) -> Option<&str> {
 fn parse_digest_call(expr: &str) -> Option<&str> {
     let expr = expr.trim();
     expr.strip_prefix("digest(")?.strip_suffix(')').map(str::trim)
+}
+
+fn direct_function_call_name(expr: &str) -> Option<&str> {
+    let expr = strip_outer_parentheses(expr.trim());
+    let tokens = lex(expr).ok()?;
+    if !matches!(tokens.first()?.kind, TokenKind::Ident(_)) || !is_symbol(&tokens, 1, '(') {
+        return None;
+    }
+    let close = matching_symbol(&tokens, 1, '(', ')')?;
+    if !matches!(tokens.get(close + 1)?.kind, TokenKind::Eof) {
+        return None;
+    }
+    Some(&expr[tokens[0].span.start..tokens[0].span.end])
 }
 
 fn parse_state_fields(body: &str) -> Vec<(String, String)> {

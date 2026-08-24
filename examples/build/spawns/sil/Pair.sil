@@ -11,6 +11,10 @@ contract Pair(
         byte[32] pair_type;
         int launches;
     }
+    struct PairState {
+        // :: user declared fields
+        int amount;
+    }
 
     // :: route templates
 

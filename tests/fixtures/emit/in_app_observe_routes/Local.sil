@@ -47,6 +47,12 @@ contract Local(
     function incremented_steps() : int {
         return add_one(read_steps(snapshot()));
     }
+    function next_state(int extra_steps) : LocalState {
+        return LocalState {
+            foreign_id: foreign_id,
+            steps: incremented_steps() + extra_steps,
+        };
+    }
 
     // :: route templates
     byte[32] gen__foreign_template = gen__init_foreign_template;
@@ -88,16 +94,17 @@ contract Local(
             gen__foreign_suffix_len,
             gen__foreign_template
         );
-        State next_local = State {
+        LocalState gen__source_next_local_state = next_state(0);
+        State gen__state_next_state = State {
             // :: generated fields
             gen__foreign_template: gen__foreign_template,
             gen__target_template: gen__target_template,
             // :: user declared fields
-            foreign_id: foreign_id,
-            steps: incremented_steps(),
+            foreign_id: gen__source_next_local_state.foreign_id,
+            steps: gen__source_next_local_state.steps,
         };
         // :: become Local
-        validateOutputState(gen__next_output_idx, next_local);
+        validateOutputState(gen__next_output_idx, gen__state_next_state);
     }
 
 }
