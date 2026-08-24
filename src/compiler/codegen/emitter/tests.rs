@@ -1228,7 +1228,7 @@ fn self_transition_uses_same_template_shortcut() {
 }
 
 #[test]
-fn current_state_array_entry_param_uses_contract_state_type() {
+fn current_state_array_entry_param_uses_authored_state_type() {
     let (actor_sil, artifact) = inline_actor_sil_and_artifact(
         "current-state-array-entry-param",
         r#"
@@ -1249,12 +1249,12 @@ fn current_state_array_entry_param_uses_contract_state_type() {
     );
 
     let sil = actor_sil.get("Note").expect("Note emits");
-    assert!(sil.contains("entry inspect(State[2] notes)"), "{sil}");
+    assert!(sil.contains("entry inspect(NoteState[2] notes)"), "{sil}");
 
     let inspect = artifact.sil_abi.contract("Note").expect("Note Sil ABI exists").entry("inspect").expect("inspect entry exists");
     assert_eq!(
         inspect.params[0].ty,
-        TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Struct { name: "State".to_string() }), len: 2 }
+        TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Struct { name: "NoteState".to_string() }), len: 2 }
     );
 }
 
@@ -1387,7 +1387,7 @@ fn expanded_entry_params_keep_the_authored_nested_layout() {
 }
 
 #[test]
-fn equivalent_current_state_params_use_physical_state_type() {
+fn entry_state_params_keep_authored_types_for_actor_function_calls() {
     let (actor_sil, artifact) = inline_actor_sil_and_artifact(
         "current-state-dynamic-array-entry-param",
         r#"
@@ -1396,8 +1396,12 @@ fn equivalent_current_state_params_use_physical_state_type() {
             }
 
             actor Note owns NoteState {
+                fn read_nonce(NoteState note) -> int {
+                    return note.nonce;
+                }
+
                 entry inspect(NoteState note) emits none {
-                    require(note.nonce >= 0);
+                    require(read_nonce(note) >= 0);
                 }
 
                 entry inspect_many(NoteState[] notes) emits none {
@@ -1414,14 +1418,18 @@ fn equivalent_current_state_params_use_physical_state_type() {
 
     let sil = actor_sil.get("Note").expect("Note emits");
     assert!(sil.contains("struct NoteState {"), "{sil}");
-    assert!(sil.contains("entry inspect(State note)"), "{sil}");
-    assert!(sil.contains("entry inspect_many(State[] notes)"), "{sil}");
+    assert!(sil.contains("function read_nonce(NoteState note) : int"), "{sil}");
+    assert!(sil.contains("entry inspect(NoteState note)"), "{sil}");
+    assert!(sil.contains("entry inspect_many(NoteState[] notes)"), "{sil}");
 
     let note = artifact.sil_abi.contract("Note").expect("Note Sil ABI exists");
-    assert_eq!(note.entry("inspect").expect("inspect entry exists").params[0].ty, TypeArtifact::Struct { name: "State".to_string() });
+    assert_eq!(
+        note.entry("inspect").expect("inspect entry exists").params[0].ty,
+        TypeArtifact::Struct { name: "NoteState".to_string() }
+    );
     assert_eq!(
         note.entry("inspect_many").expect("inspect_many entry exists").params[0].ty,
-        TypeArtifact::DynamicArray { item: Box::new(TypeArtifact::Struct { name: "State".to_string() }) }
+        TypeArtifact::DynamicArray { item: Box::new(TypeArtifact::Struct { name: "NoteState".to_string() }) }
     );
     assert_eq!(artifact.argent.actors.iter().find(|actor| actor.name == "Note").expect("Note actor exists").state, "NoteState");
     assert!(artifact.argent.states.iter().any(|state| state.name == "NoteState"));

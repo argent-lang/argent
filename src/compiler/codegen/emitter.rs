@@ -181,19 +181,11 @@ fn emit_imported_template_constants(out: &mut String, specs: &[ImportedTemplateS
 fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model<'_>) -> Result<()> {
     emit_section_header(out, "State layouts");
     let mut emitted = BTreeSet::new();
-    // Every actor state keeps its authored name alongside the current
-    // contract's physical `State`. Entry parameters may introduce additional
-    // source states which must also be available by name.
-    let mut signature_states = BTreeSet::new();
-    for param in current_actor.entries.iter().flat_map(|entry| &entry.params) {
-        if model.has_state(&param.ty.name) && entry_param_sil_type(current_actor, &param.ty, model).name != "State" {
-            signature_states.insert(param.ty.name.clone());
-        }
-    }
+    // Every declared state keeps its authored name alongside the current
+    // contract's physical `State`.
     let mut state_names = model.actors.iter().map(|actor| actor.state.clone()).collect::<Vec<_>>();
     state_names.extend(model.states.keys().cloned());
     let mut physical_states = BTreeSet::new();
-    state_names.extend(signature_states.iter().cloned());
     for entry in &current_actor.entries {
         for observe in &entry.observes {
             for observed in observe.inputs.iter().chain(observe.outputs.iter()) {
@@ -359,7 +351,7 @@ fn emit_function(out: &mut String, name: &str, params: &[String], return_ty: Opt
 fn emit_entry(out: &mut String, actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Result<()> {
     let lowered_body = lower_entry_body(actor, entry, model)?;
     let witness_specs = entry_witness_specs(actor, entry, model)?;
-    let sil_params = lower_entry_params(actor, entry, &witness_specs, model);
+    let sil_params = lower_entry_params(entry, &witness_specs, model);
     match entry.kind {
         EntryKind::Leader => {
             let shape = if entry.consumes.is_empty() { "1:N" } else { "M:N" };
@@ -994,10 +986,10 @@ pub(super) fn route_validation_kind(actor: &ActorDecl, route: &RouteCall) -> Rou
     RouteValidationKind::ForeignTemplate
 }
 
-fn lower_entry_params(actor: &ActorDecl, entry: &EntryDecl, witness_specs: &EntryWitnessSpecs, model: &Model<'_>) -> Vec<String> {
+fn lower_entry_params(entry: &EntryDecl, witness_specs: &EntryWitnessSpecs, model: &Model<'_>) -> Vec<String> {
     let mut out = Vec::new();
     for param in &entry.params {
-        out.push(format!("{} {}", lower_type_ref(&entry_param_sil_type(actor, &param.ty, model), model), param.name));
+        out.push(format!("{} {}", lower_type_ref(&param.ty, model), param.name));
     }
     for spec in &witness_specs.templates {
         match spec.form {
@@ -2823,10 +2815,7 @@ fn sil_entry_artifact(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>, d
     let mut params = entry
         .params
         .iter()
-        .map(|param| ParamArtifact {
-            name: param.name.clone(),
-            ty: type_artifact(&entry_param_sil_type(actor, &param.ty, model), model),
-        })
+        .map(|param| ParamArtifact { name: param.name.clone(), ty: type_artifact(&param.ty, model) })
         .collect::<Vec<_>>();
     params.extend(
         hidden_params_for_entry(actor, entry, model).into_iter().map(|param| ParamArtifact { name: param.name, ty: param.ty }),
@@ -2876,23 +2865,6 @@ pub(super) fn lower_type_ref(ty: &TypeRef, model: &Model<'_>) -> String {
     } else {
         ty.to_sil()
     }
-}
-
-/// Reuse physical `State` only when it exactly matches the authored layout.
-pub(super) fn entry_param_sil_type(actor: &ActorDecl, ty: &TypeRef, model: &Model<'_>) -> TypeRef {
-    let same_storage = matches!(
-        (model.storage_state_name(&actor.state), model.storage_state_name(&ty.name)),
-        (Ok(actor_storage), Ok(param_storage)) if actor_storage == param_storage
-    );
-    let authored_layout_is_physical = model.state(&ty.name).is_ok_and(|state| state.expansion.is_none());
-    if !same_storage || !authored_layout_is_physical || !matches!(route_field_kind_for_actor(&actor.name, model), RouteFieldKind::None)
-    {
-        return ty.clone();
-    }
-
-    let mut sil_ty = ty.clone();
-    sil_ty.name = "State".to_string();
-    sil_ty
 }
 
 pub(super) fn source_type_ref(ty: &TypeRef) -> String {

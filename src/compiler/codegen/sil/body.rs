@@ -255,7 +255,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             }
         }
         for param in &entry.params {
-            let ty = lower_type_ref(&entry_param_sil_type(actor, &param.ty, model), model);
+            let ty = lower_type_ref(&param.ty, model);
             let mut binding = BodyBinding::typed(source_type_ref(&param.ty), ty);
             if param.ty.array.is_none()
                 && let Some(selector) = selector_catalog.get(&param.name)
