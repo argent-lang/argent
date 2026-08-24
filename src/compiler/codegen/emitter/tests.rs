@@ -420,12 +420,56 @@ fn global_function_bare_names_do_not_capture_actor_fields() {
     );
     let model = Model::from_program(&program).expect("program models");
     let counter = model.actor("Counter").expect("Counter exists");
-    let sil = emit_actor(counter, &model).expect("actor source emits");
-    assert!(sil.contains("return gen__glob_cycles;"), "{sil}");
+    let err = emit_actor(counter, &model).expect_err("undeclared global-function name must not capture an actor field");
+    assert!(
+        err.to_string().contains("global function `read_cycles` cannot access unresolved identifier `cycles`"),
+        "unexpected error: {err}"
+    );
+}
 
-    let out_dir = std::env::temp_dir().join(format!("argent-global-function-capture-test-{}", std::process::id()));
-    let err = emit_build(&program, &out_dir).expect_err("undeclared global-function name must not capture an actor field");
-    assert!(err.to_string().contains("failed to compile"), "unexpected error: {err}");
+#[test]
+fn global_function_assignments_do_not_capture_actor_fields() {
+    let program = global_function_program(
+        r#"
+            fn write_cycles() {
+                cycles = 1;
+            }
+        "#,
+        "true",
+    );
+    let model = Model::from_program(&program).expect("program models");
+    let counter = model.actor("Counter").expect("Counter exists");
+    let err = emit_actor(counter, &model).expect_err("global-function assignment must not capture an actor field");
+    assert!(
+        err.to_string().contains("global function `write_cycles` assigns unresolved identifier `cycles`"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn global_function_contextual_names_and_literals_are_lowered_by_sil_syntax() {
+    let program = global_function_program(
+        r#"
+            fn echo(int seconds) -> int {
+                byte[2] marker = byte[_](0xaabb);
+                int grouped = 1_000;
+                require(marker == byte[_](0xaabb));
+                return seconds + grouped - 1_000;
+            }
+        "#,
+        "echo(seconds) >= seconds",
+    );
+    let out_dir = std::env::temp_dir().join(format!("argent-global-function-syntax-test-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&out_dir);
+
+    emit_build(&program, &out_dir).expect("contextual names and complete Sil literals build");
+    let sil = fs::read_to_string(out_dir.join("sil/Counter.sil")).expect("generated Counter Sil exists");
+    assert!(sil.contains("function echo(int gen__glob_seconds) : int"), "{sil}");
+    assert!(sil.contains("byte[2] gen__glob_marker = byte[_](0xaabb);"), "{sil}");
+    assert!(sil.contains("int gen__glob_grouped = 1_000;"), "{sil}");
+    assert!(sil.contains("return gen__glob_seconds + gen__glob_grouped - 1_000;"), "{sil}");
+
+    let _ = fs::remove_dir_all(out_dir);
 }
 
 fn global_function_program(function: &str, requirement: &str) -> Program {
@@ -434,6 +478,7 @@ fn global_function_program(function: &str, requirement: &str) -> Program {
         r#"
             state CounterState {{
                 int cycles;
+                int seconds;
             }}
 
             {function}

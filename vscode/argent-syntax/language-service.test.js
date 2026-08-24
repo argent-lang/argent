@@ -27,7 +27,7 @@ test('resolves compiler-standard modules for import navigation and symbol indexi
   const invocationUid = scan.declarations.find((declaration) => declaration.name === 'invocation_uid');
   assert.ok(invocationUid);
   assert.equal(invocationUid.kind, 'function');
-  assert.equal(invocationUid.signature, 'fn invocation_uid(byte[] domain_) -> byte[32]');
+  assert.equal(invocationUid.signature, 'fn invocation_uid(byte[] domain) -> byte[32]');
   assert.match(invocationUid.documentation, /current actor invocation/);
 });
 
