@@ -3,6 +3,7 @@
 Small implementation hints to revisit during the current compiler work.
 
 - Give helper `fn` bodies token lowering for `cov_id` locals and `.co_spent()`, using parameter, field, and local types.
+- When actor-function bodies have structured type lowering, consider mapping an authored current-state type to physical `State` everywhere when their layouts are identical. Apply the same representation choice to entry parameters; never use it for expansions or compiler-owned route fields.
 - Accept Sil ternaries, bitwise XOR, and single-quoted strings in the shared lexer.
 - Reject locals that shadow fixed Argent references before applying entry-wide rewrites.
 - Put entry-root bindings in one namespace. Reject a local such as `Turn next` when `next` is already an emit handle; contextual resolution of `next.value` and `Pong(next)` currently makes this legal but visually ambiguous.

@@ -1228,6 +1228,45 @@ fn self_transition_uses_same_template_shortcut() {
 }
 
 #[test]
+fn state_returning_function_initializes_an_authored_local_once() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "state-function-local",
+        r#"
+            state CounterState {
+                int left;
+                int right;
+            }
+
+            actor Counter owns CounterState {
+                fn successor() -> CounterState {
+                    return CounterState {
+                        left: left + 1,
+                        right: right + 1,
+                    };
+                }
+
+                entry bump() emits next: Counter {
+                    CounterState candidate = successor();
+                    unrestricted(next.value);
+                    become next <- Counter(candidate);
+                }
+            }
+
+            app Test {
+                actor Counter;
+            }
+        "#,
+    );
+
+    let sil = actor_sil.get("Counter").expect("Counter emits");
+    assert!(sil.contains("CounterState candidate = successor();"), "{sil}");
+    assert!(!sil.contains("successor().left"), "{sil}");
+    assert!(!sil.contains("successor().right"), "{sil}");
+    assert!(sil.contains("left: candidate.left"), "{sil}");
+    assert!(sil.contains("right: candidate.right"), "{sil}");
+}
+
+#[test]
 fn current_state_array_entry_param_uses_authored_state_type() {
     let (actor_sil, artifact) = inline_actor_sil_and_artifact(
         "current-state-array-entry-param",

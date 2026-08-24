@@ -494,15 +494,13 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             self.lower_actor_type_statement(out, indent, state, name, &expr)?;
             return Ok(());
         }
-        let lowered_ty = if self.model.has_state(source_ty) {
-            self.bindings.lowered_type_for_expr(expr.trim()).unwrap_or_else(|| self.lower_local_type(source_ty))
-        } else {
-            self.lower_local_type(source_ty)
-        };
+        let initializer_ty =
+            if self.model.has_state(source_ty) { self.lowered_type_for_local_initializer(source_ty, expr.trim()) } else { None };
+        let lowered_ty = initializer_ty.clone().unwrap_or_else(|| self.lower_local_type(source_ty));
         let declared_type = self.entry.body.span_text(declaration.declared_type).trim();
         let type_suffix = declared_type.strip_prefix(source_ty).expect("declared type starts with its parsed source type");
         let emitted_type = format!("{lowered_ty}{type_suffix}");
-        let lowered = self.lower_typed_local_initializer(source_ty, &lowered_ty, &expr, indent)?;
+        let lowered = self.lower_typed_local_initializer(source_ty, &lowered_ty, initializer_ty.as_deref(), &expr, indent)?;
         push_indent(out, indent);
         out.push_str(&format!("{emitted_type} {name} = {lowered};\n"));
         let mut binding = BodyBinding::typed(source_ty, lowered_ty);
@@ -1244,7 +1242,14 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         state_payload_digest_expr(state_name, value, self.model)
     }
 
-    fn lower_typed_local_initializer(&self, source_ty: &str, lowered_ty: &str, expr: &str, indent: usize) -> Result<String> {
+    fn lower_typed_local_initializer(
+        &self,
+        source_ty: &str,
+        lowered_ty: &str,
+        initializer_ty: Option<&str>,
+        expr: &str,
+        indent: usize,
+    ) -> Result<String> {
         if self.model.actor_enums.contains_key(source_ty) {
             return self.lower_actor_enum_initializer(source_ty, expr, indent);
         }
@@ -1256,7 +1261,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             }
             return self.lower_state_object_for_state(&state_name, lowered_ty, body, indent);
         }
-        if self.model.has_state(source_ty) && self.bindings.lowered_type_for_expr(expr.trim()).is_none_or(|ty| ty != lowered_ty) {
+        if self.model.has_state(source_ty) && initializer_ty.is_none_or(|ty| ty != lowered_ty) {
             let lowered_expr = self.lower_expr(expr, None, indent)?;
             let fields = self
                 .model
@@ -1269,6 +1274,12 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             return self.render_state_object(source_ty, lowered_ty, &fields, generated_fields, indent);
         }
         self.lower_expr(expr, Some(lowered_ty), indent)
+    }
+
+    fn lowered_type_for_local_initializer(&self, source_ty: &str, expr: &str) -> Option<String> {
+        self.bindings
+            .lowered_type_for_expr(expr)
+            .or_else(|| self.authored_state_return_for_call(expr).filter(|return_ty| return_ty == source_ty))
     }
 
     fn lower_actor_enum_initializer(&self, actor_enum_name: &str, expr: &str, indent: usize) -> Result<String> {
