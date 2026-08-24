@@ -385,6 +385,75 @@ fn rejects_function_named_unrestricted() {
 }
 
 #[test]
+fn global_function_variables_do_not_collide_with_actor_fields() {
+    let program = global_function_program(
+        r#"
+            fn increment(int cycles) -> int {
+                int result = cycles + 1;
+                return result;
+            }
+        "#,
+        "increment(cycles) > cycles",
+    );
+    let out_dir = std::env::temp_dir().join(format!("argent-global-function-scope-test-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&out_dir);
+
+    emit_build(&program, &out_dir).expect("global function with actor-field name collisions builds");
+    let sil = fs::read_to_string(out_dir.join("sil/Counter.sil")).expect("generated Counter Sil exists");
+    assert!(sil.contains("function increment(int gen__glob_cycles) : int"), "{sil}");
+    assert!(sil.contains("int gen__glob_result = gen__glob_cycles + 1;"), "{sil}");
+    assert!(sil.contains("return gen__glob_result;"), "{sil}");
+    assert!(sil.contains("require(increment(cycles) > cycles);"), "{sil}");
+
+    let _ = fs::remove_dir_all(out_dir);
+}
+
+#[test]
+fn global_function_bare_names_do_not_capture_actor_fields() {
+    let program = global_function_program(
+        r#"
+            fn read_cycles() -> int {
+                return cycles;
+            }
+        "#,
+        "read_cycles() >= 0",
+    );
+    let model = Model::from_program(&program).expect("program models");
+    let counter = model.actor("Counter").expect("Counter exists");
+    let sil = emit_actor(counter, &model).expect("actor source emits");
+    assert!(sil.contains("return gen__glob_cycles;"), "{sil}");
+
+    let out_dir = std::env::temp_dir().join(format!("argent-global-function-capture-test-{}", std::process::id()));
+    let err = emit_build(&program, &out_dir).expect_err("undeclared global-function name must not capture an actor field");
+    assert!(err.to_string().contains("failed to compile"), "unexpected error: {err}");
+}
+
+fn global_function_program(function: &str, requirement: &str) -> Program {
+    let path = PathBuf::from("global-function-scope.ag");
+    let source = format!(
+        r#"
+            state CounterState {{
+                int cycles;
+            }}
+
+            {function}
+
+            actor Counter owns CounterState {{
+                entry check() emits none {{
+                    require({requirement});
+                }}
+            }}
+
+            app CounterApp {{
+                actor Counter;
+            }}
+        "#
+    );
+    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source).expect("scope test source parses");
+    Program { root: path, modules: vec![module] }
+}
+
+#[test]
 fn rejects_duplicate_app_declarations() {
     let mut program = test_program();
     let mut duplicate = empty_module("second.ag");

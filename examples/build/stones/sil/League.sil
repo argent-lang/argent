@@ -55,43 +55,43 @@ contract League(
         int losses;
     }
 
-    // :: shared helper functions
-    function player_ref(byte[32] owner_, byte[32] player_id_) : byte[32] {
-        return blake2b(byte[](owner_ + player_id_));
+    // :: global shared functions (vars prefixed with gen__glob_ for creating a unique namespace)
+    function player_ref(byte[32] gen__glob_owner, byte[32] gen__glob_player_id) : byte[32] {
+        return blake2b(byte[](gen__glob_owner + gen__glob_player_id));
     }
-    function side_player(int side_, byte[32] a_ref_, byte[32] b_ref_) : byte[32] {
-        require(side_ == SIDE_A || side_ == SIDE_B);
-        byte[32] result_ = b_ref_;
-        if (side_ == SIDE_A) {
-            result_ = a_ref_;
+    function side_player(int gen__glob_side, byte[32] gen__glob_a_ref, byte[32] gen__glob_b_ref) : byte[32] {
+        require(gen__glob_side == SIDE_A || gen__glob_side == SIDE_B);
+        byte[32] gen__glob_result = gen__glob_b_ref;
+        if (gen__glob_side == SIDE_A) {
+            gen__glob_result = gen__glob_a_ref;
         }
-        return result_;
+        return gen__glob_result;
     }
-    function other_side(int side_) : int {
-        require(side_ == SIDE_A || side_ == SIDE_B);
-        int result_ = SIDE_A;
-        if (side_ == SIDE_A) {
-            result_ = SIDE_B;
+    function other_side(int gen__glob_side) : int {
+        require(gen__glob_side == SIDE_A || gen__glob_side == SIDE_B);
+        int gen__glob_result = SIDE_A;
+        if (gen__glob_side == SIDE_A) {
+            gen__glob_result = SIDE_B;
         }
-        return result_;
+        return gen__glob_result;
     }
-    function win_status(int side_) : int {
-        require(side_ == SIDE_A || side_ == SIDE_B);
-        int result_ = B_WIN;
-        if (side_ == SIDE_A) {
-            result_ = A_WIN;
+    function win_status(int gen__glob_side) : int {
+        require(gen__glob_side == SIDE_A || gen__glob_side == SIDE_B);
+        int gen__glob_result = B_WIN;
+        if (gen__glob_side == SIDE_A) {
+            gen__glob_result = A_WIN;
         }
-        return result_;
+        return gen__glob_result;
     }
-    function invocation_uid(byte[] domain_) : byte[32] {
-        require(domain_.length > 0);
+    function invocation_uid(byte[] gen__glob_domain) : byte[32] {
+        require(gen__glob_domain.length > 0);
 
-        byte[36] outpoint_ = byte[36](
+        byte[36] gen__glob_outpoint = byte[36](
             OpOutpointTxId(this.activeInputIndex)
                 + (OpOutpointIndex(this.activeInputIndex) as byte[4])
         );
 
-        return blake2bWithKey(byte[](outpoint_), domain_);
+        return blake2bWithKey(byte[](gen__glob_outpoint), gen__glob_domain);
     }
 
     // :: route templates
