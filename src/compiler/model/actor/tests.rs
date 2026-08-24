@@ -18,7 +18,12 @@ fn entry(name: &str) -> EntryDecl {
 
 #[test]
 fn indexes_entries_without_changing_source_order() {
-    let actor = ActorDecl { name: "Worker".to_string(), state: "WorkerState".to_string(), entries: vec![entry("z"), entry("a")] };
+    let actor = ActorDecl {
+        name: "Worker".to_string(),
+        state: "WorkerState".to_string(),
+        functions: Vec::new(),
+        entries: vec![entry("z"), entry("a")],
+    };
     let model = ActorModel::build(&actor, &BTreeMap::new()).expect("actor model");
 
     assert_eq!(model.entries().map(|entry| entry.source().name.as_str()).collect::<Vec<_>>(), ["z", "a"]);
@@ -27,8 +32,12 @@ fn indexes_entries_without_changing_source_order() {
 
 #[test]
 fn rejects_duplicate_entry_names() {
-    let actor =
-        ActorDecl { name: "Worker".to_string(), state: "WorkerState".to_string(), entries: vec![entry("step"), entry("step")] };
+    let actor = ActorDecl {
+        name: "Worker".to_string(),
+        state: "WorkerState".to_string(),
+        functions: Vec::new(),
+        entries: vec![entry("step"), entry("step")],
+    };
 
     let err = ActorModel::build(&actor, &BTreeMap::new()).expect_err("duplicate entries must be rejected");
 

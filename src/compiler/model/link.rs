@@ -133,7 +133,7 @@ pub(crate) fn link_imported_actors(
             }
         }
 
-        let decl = ActorDecl { name: reference.clone(), state: actor.state.clone(), entries: Vec::new() };
+        let decl = ActorDecl { name: reference.clone(), state: actor.state.clone(), functions: Vec::new(), entries: Vec::new() };
         let linked = LinkedActor {
             app,
             actor: actor.name.clone(),

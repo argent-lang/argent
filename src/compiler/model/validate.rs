@@ -185,6 +185,12 @@ impl Model<'_> {
         }
         for actor in self.actors_by_name.values() {
             reject_reserved_identifier(word::ACTOR, &actor.name)?;
+            for function in &actor.functions {
+                reject_reserved_function_identifier(&function.name)?;
+                for param in &function.params {
+                    reject_reserved_identifier(&format!("actor function `{}::{}` parameter", actor.name, function.name), &param.name)?;
+                }
+            }
             for entry in &actor.entries {
                 reject_reserved_identifier(&format!("entry `{}::{}`", actor.name, entry.name), &entry.name)?;
                 for param in &entry.params {

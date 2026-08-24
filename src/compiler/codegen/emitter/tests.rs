@@ -326,7 +326,12 @@ fn rejects_duplicate_state_declarations() {
 fn rejects_duplicate_actor_declarations() {
     let mut program = test_program();
     let mut duplicate = empty_module("second.ag");
-    duplicate.actors.push(ActorDecl { name: "Player".to_string(), state: "PlayerState".to_string(), entries: Vec::new() });
+    duplicate.actors.push(ActorDecl {
+        name: "Player".to_string(),
+        state: "PlayerState".to_string(),
+        functions: Vec::new(),
+        entries: Vec::new(),
+    });
     program.modules.push(duplicate);
 
     let err = Model::from_program(&program).expect_err("duplicate actor declaration must be rejected");
@@ -6281,6 +6286,7 @@ fn test_program() -> Program {
                 ActorDecl {
                     name: "Player".to_string(),
                     state: "PlayerState".to_string(),
+                    functions: Vec::new(),
                     entries: vec![EntryDecl {
                         kind: EntryKind::Leader,
                         name: "step".to_string(),
@@ -6298,7 +6304,7 @@ fn test_program() -> Program {
                         terminal_route_sets: Vec::new(),
                     }],
                 },
-                ActorDecl { name: "Game".to_string(), state: "GameState".to_string(), entries: Vec::new() },
+                ActorDecl { name: "Game".to_string(), state: "GameState".to_string(), functions: Vec::new(), entries: Vec::new() },
             ],
             actor_enums: Vec::new(),
             apps: vec![AppDecl { name: "Test".to_string(), actors: vec!["Player".to_string(), "Game".to_string()] }],
