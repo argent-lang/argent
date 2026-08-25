@@ -1800,6 +1800,10 @@ fn state_expansion_uses_base_storage_layout() {
     let (sil, artifact) = emit_fixture("state_expansion", "Forager");
 
     assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/state_expansion/Forager.sil"));
+    assert!(sil.contains("ForagerStrategy strategy;"), "{sil}");
+    assert!(sil.contains("byte[32] strategy;"), "{sil}");
+    assert!(sil.contains("validateOutputState(gen__next_output_idx, next_state);"), "{sil}");
+    assert!(!sil.contains("validateOutputStateWithTemplate"), "{sil}");
 
     let expansion = artifact.argent.state_expansions.first().expect("state expansion is recorded");
     assert_eq!(expansion.state, "ForagerState");
@@ -1816,6 +1820,17 @@ fn state_expansion_uses_base_storage_layout() {
     let contract = artifact.sil_abi.contract("Forager").expect("Forager Sil ABI exists");
     assert_eq!(contract.runtime_state.source, "ForagerState");
     assert_eq!(contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["strategy", "energy"]);
+    assert_eq!(contract.compiled.template_hash_hex, "621070c8650ccdf05b31451f1811bc9537ca5a6f09016bd173bc05224af5ecd3");
+    assert!(runtime_state_plan(&artifact, "Forager").is_none());
+    let template = artifact
+        .argent
+        .template_plan
+        .templates
+        .iter()
+        .find(|template| template.actor == "Forager")
+        .expect("Forager template receipt exists");
+    assert!(template.actor_type_handle.context_fields.is_empty());
+    assert_eq!(template.sil_template_hash, contract.compiled.template_hash_hex);
     let hold = contract.entry("hold").expect("hold ABI exists");
     assert_eq!(hold.params.iter().map(|param| param.name.as_str()).collect::<Vec<_>>(), ["gen__strategy_forager_strategy_preimage"]);
     assert_eq!(hold.params[0].ty, TypeArtifact::FixedBytes { len: 8 });
@@ -1836,10 +1851,60 @@ fn expanded_actor_records_sil_and_capsule_template_cuts() {
     assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/capsule_route_context/ReserveAsset.sil"));
     assert_eq!(wallet_sil, include_str!("../../../../tests/fixtures/emit/capsule_route_context/WalletAsset.sil"));
     assert!(sil.contains("byte[32] gen__wallet_asset_template"), "{sil}");
+    assert!(sil.contains("validateOutputState(gen__next_output_idx, next_asset);"), "{sil}");
+    assert!(sil.contains("validateOutputStateWithTemplate("), "{sil}");
+
+    // Migration debt: exact continuation is still recognized from the
+    // textual `CurrentActor(self.state)` route shape.
+    assert!(wallet_sil.contains("tx.outputs[gen__next_output_idx].scriptPubKey"), "{wallet_sil}");
+    assert!(wallet_sil.contains("== tx.inputs[this.activeInputIndex].scriptPubKey"), "{wallet_sil}");
+    assert!(!wallet_sil.contains("validateOutputState"), "{wallet_sil}");
 
     let contract = artifact.sil_abi.contract("ReserveAsset").expect("ReserveAsset Sil ABI exists");
+    assert_eq!(
+        contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        ["gen__reserve_asset_template", "gen__wallet_asset_template", "owner_kind", "owner_id", "policy", "balance"]
+    );
+    assert_eq!(contract.compiled.template_hash_hex, "461bc42e59fb2a8c5079458bd5d09ce4b4c3e654f2540fdfa500851627ebf294");
+    let wallet_contract = artifact.sil_abi.contract("WalletAsset").expect("WalletAsset Sil ABI exists");
+    assert_eq!(
+        wallet_contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        ["gen__reserve_asset_template", "gen__wallet_asset_template", "owner_kind", "owner_id", "policy", "balance"]
+    );
+    assert_eq!(wallet_contract.compiled.template_hash_hex, "7fcc79baaa34f0dce572b2d915ddd4697b487baab7f53d1e930d6aac0d82fedc");
+
+    let source_state =
+        artifact.argent.states.iter().find(|state| state.name == "ReserveAssetState").expect("ReserveAssetState exists");
+    assert_eq!(
+        source_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        ["owner_kind", "owner_id", "policy", "balance"]
+    );
+    assert!(source_state.fields[2].virtual_slot);
+
+    let wallet_actor = artifact.argent.actors.iter().find(|actor| actor.name == "WalletAsset").expect("WalletAsset actor exists");
+    let hold = wallet_actor.entries.iter().find(|entry| entry.name == "hold").expect("WalletAsset hold entry exists");
+    assert_eq!(hold.routes[0].state_expr, "self.state");
+
     let runtime_plan = runtime_state_plan(&artifact, "ReserveAsset").expect("route context is recorded");
-    assert!(!runtime_plan.field_roles.is_empty());
+    assert_eq!(
+        runtime_plan.field_roles.iter().map(|field| (field.name.as_str(), field.role.clone())).collect::<Vec<_>>(),
+        [
+            ("gen__reserve_asset_template", RuntimeFieldRoleArtifact::Template { contract: "ReserveAsset".to_string() },),
+            ("gen__wallet_asset_template", RuntimeFieldRoleArtifact::Template { contract: "WalletAsset".to_string() },),
+        ]
+    );
+    assert_eq!(
+        runtime_state_plan(&artifact, "WalletAsset")
+            .expect("WalletAsset route context is recorded")
+            .field_roles
+            .iter()
+            .map(|field| (field.name.as_str(), field.role.clone()))
+            .collect::<Vec<_>>(),
+        [
+            ("gen__reserve_asset_template", RuntimeFieldRoleArtifact::Template { contract: "ReserveAsset".to_string() },),
+            ("gen__wallet_asset_template", RuntimeFieldRoleArtifact::Template { contract: "WalletAsset".to_string() },),
+        ]
+    );
     let receipt = artifact
         .argent
         .template_plan
@@ -2599,6 +2664,23 @@ fn in_app_observed_templates_use_shared_actor_witnesses() {
     let (sil, artifact) = emit_fixture("observed_template_witnesses", "Local");
 
     assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/observed_template_witnesses/Local.sil"));
+    assert!(sil.contains("ForeignState gen__asset_src_state = readInputStateWithTemplate("), "{sil}");
+    assert!(sil.contains("validateOutputStateWithInputTemplate("), "{sil}");
+
+    let foreign_state = artifact.argent.states.iter().find(|state| state.name == "ForeignState").expect("ForeignState exists");
+    assert_eq!(foreign_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["count"]);
+    let local_state = artifact.argent.states.iter().find(|state| state.name == "LocalState").expect("LocalState exists");
+    assert_eq!(local_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["target_id"]);
+
+    let foreign_contract = artifact.sil_abi.contract("Foreign").expect("Foreign contract exists");
+    assert_eq!(foreign_contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["count"]);
+    assert_eq!(foreign_contract.compiled.template_hash_hex, "464dd0aa5c6a60a35f5a1f3e54be4822991b4578cfe58e5a266cb8650e524c94");
+    let local_contract = artifact.sil_abi.contract("Local").expect("Local contract exists");
+    assert_eq!(
+        local_contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        ["gen__foreign_template", "target_id"]
+    );
+    assert_eq!(local_contract.compiled.template_hash_hex, "ed3b4d44f4911b5dc91a4ad26acb9bb1d61526f3082e976b1de506969dccf81d");
 
     assert_eq!(
         runtime_state_plan(&artifact, "Local")
@@ -2672,6 +2754,34 @@ fn consumed_route_reuses_input_template() {
     let (sil, artifact) = emit_fixture("input_template_route_reuse", "Controller");
 
     assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/input_template_route_reuse/Controller.sil"));
+    assert!(sil.contains("PeerState peer = readInputStateWithTemplate("), "{sil}");
+    assert!(sil.contains("validateOutputStateWithInputTemplate("), "{sil}");
+
+    let controller_state =
+        artifact.argent.states.iter().find(|state| state.name == "ControllerState").expect("ControllerState exists");
+    assert_eq!(controller_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["tick"]);
+    let peer_state = artifact.argent.states.iter().find(|state| state.name == "PeerState").expect("PeerState exists");
+    assert_eq!(peer_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["count"]);
+
+    let controller_contract = artifact.sil_abi.contract("Controller").expect("Controller contract exists");
+    assert_eq!(
+        controller_contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        ["gen__peer_template", "tick"]
+    );
+    assert_eq!(controller_contract.compiled.template_hash_hex, "3091c3cb1b9eac52e3f7be3661e80720b5d2be1c0b9569e76f440a493ce53413");
+    let peer_contract = artifact.sil_abi.contract("Peer").expect("Peer contract exists");
+    assert_eq!(peer_contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["count"]);
+    assert_eq!(peer_contract.compiled.template_hash_hex, "7cbdc27a4fffbaad655bcd7565a7d85682469203db07d26b953f665640f4271f");
+
+    assert_eq!(
+        runtime_state_plan(&artifact, "Controller")
+            .expect("Controller runtime state role overlay exists")
+            .field_roles
+            .iter()
+            .map(|field| (field.name.as_str(), field.role.clone()))
+            .collect::<Vec<_>>(),
+        [("gen__peer_template", RuntimeFieldRoleArtifact::Template { contract: "Peer".to_string() })]
+    );
 
     let controller = artifact.argent.actors.iter().find(|actor| actor.name == "Controller").expect("Controller actor exists");
     let step = controller.entries.iter().find(|entry| entry.name == "step").expect("step entry exists");
@@ -2695,6 +2805,22 @@ fn single_actor_self_consume_is_pinned() {
     assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/single_actor_self_consume/Counter.sil"));
     assert!(sil.contains("State other = readInputState(gen__other_input_idx);"), "{sil}");
     assert!(!sil.contains("readInputStateWithTemplate"), "{sil}");
+    assert!(sil.contains("validateOutputState(gen__next_output_idx, next);"), "{sil}");
+
+    let source_state = artifact.argent.states.iter().find(|state| state.name == "CounterState").expect("CounterState exists");
+    assert_eq!(source_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["count"]);
+    let contract = artifact.sil_abi.contract("Counter").expect("Counter contract exists");
+    assert_eq!(contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["count"]);
+    assert_eq!(contract.compiled.template_hash_hex, "a7b02624738e66c0f5c0923250c6cc28bdfb3606782a1689954095633a6f938a");
+    let template = artifact
+        .argent
+        .template_plan
+        .templates
+        .iter()
+        .find(|template| template.actor == "Counter")
+        .expect("Counter template receipt exists");
+    assert!(template.actor_type_handle.context_fields.is_empty());
+    assert_eq!(template.sil_template_hash, contract.compiled.template_hash_hex);
 
     let counter = artifact.argent.actors.iter().find(|actor| actor.name == "Counter").expect("Counter actor exists");
     let merge = counter.entries.iter().find(|entry| entry.name == "merge").expect("merge entry exists");
