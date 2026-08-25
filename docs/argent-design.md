@@ -14,6 +14,8 @@ those pieces usable from Argent.
 - User state is declared once with `state`.
 - Each source state remains available as an authored Sil struct. A contract's
   physical `State` may additionally contain compiler-generated fields.
+- [State layout boundary](state-layout-boundary.md) defines how
+  authored values cross into physical contract state.
 - `actor` owns persistent covenant state.
 - `entry` declares callable transition paths.
 - `emits` declares authorized output shape.
@@ -184,7 +186,7 @@ actor value. Its valid and reserved members are:
 self.value  // Native KAS value of the UTXO consumed by the active input.
             // Type: int.
 self.state  // Complete typed source-level state owned by the actor.
-            // Type: the state named in the actor's owns clause.
+            // Source type: the state in `owns`; backed by physical State.
 self.cov_id // Covenant ID carried by the active input. Type: cov_id.
             // Lowers to OpInputCovenantId(this.activeInputIndex).
 self.type   // Reserved.
