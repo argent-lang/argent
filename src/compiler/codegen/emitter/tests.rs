@@ -1342,8 +1342,8 @@ fn state_valued_functions_are_characterized_in_aligned_and_augmented_contexts() 
     let templates = &artifact.argent.template_plan.templates;
     let aligned_template = templates.iter().find(|template| template.actor == "Aligned").expect("Aligned template exists");
     let routed_template = templates.iter().find(|template| template.actor == "Routed").expect("Routed template exists");
-    assert_eq!(aligned_template.sil_template_hash, "9bff615cfd8b17ceab4136e3942fcdb7e94532235c2450c41f99c749ab27fbae");
-    assert_eq!(routed_template.sil_template_hash, "74c9dee54f99c1d4fae770244ad71f0f119baca44a6422f751fdb2a843967647");
+    assert_eq!(aligned_template.sil_template_hash, "40ac8c7df2abfbfce7852ef48fee259831c5cd31b38beb57e2a9fd4c4015bd73");
+    assert_eq!(routed_template.sil_template_hash, "054d2a7b9d72546cb35dcda1820701701621154ffb24da6ea8e23266e1a9402a");
     assert!(aligned_template.actor_type_handle.context_fields.is_empty());
     assert_eq!(routed_template.actor_type_handle.context_fields, ["gen__foreign_template"]);
 }
