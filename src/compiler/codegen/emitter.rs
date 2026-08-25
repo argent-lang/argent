@@ -25,7 +25,8 @@ use silverscript_lang::ast::Expr as SilExpr;
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract};
 
 use super::sil::{
-    ContractFunctionPlan, EntryInputStatePlan, GlobalFunctionLowerer, lower_entry_body, lower_entry_expr, plan_entry_input_states,
+    ContractStateValuePlan, EntryInputStatePlan, GlobalFunctionLowerer, lower_entry_body, lower_entry_expr, plan_entry_input_states,
+    validate_actor_function_captures,
 };
 
 #[cfg(test)]
@@ -93,8 +94,9 @@ fn emit_build_selected(
 
 fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
     verify_state_lowering_plan(actor, model)?;
+    validate_actor_function_captures(actor, model)?;
     let state = model.storage_state(&actor.state)?;
-    let function_plan = ContractFunctionPlan::new(actor, model)?;
+    let state_values = ContractStateValuePlan::new(actor, model)?;
     let input_state_plans =
         actor.entries.iter().map(|entry| plan_entry_input_states(actor, entry, model)).collect::<Result<Vec<_>>>()?;
     let emitted_entries = actor
@@ -103,7 +105,7 @@ fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
         .zip(&input_state_plans)
         .map(|(entry, input_states)| {
             let mut out = String::new();
-            emit_entry(&mut out, actor, entry, model, input_states, &function_plan)?;
+            emit_entry(&mut out, actor, entry, model, input_states, &state_values)?;
             Ok(out)
         })
         .collect::<Result<Vec<_>>>()?;
@@ -123,8 +125,8 @@ fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
     emit_shared_constants(&mut out, model)?;
     emit_imported_template_constants(&mut out, &imported_template_specs_for_actor(actor, model));
     emit_state_layouts(&mut out, actor, model, &input_state_plans)?;
-    emit_global_functions(&mut out, model, &function_plan)?;
-    emit_actor_functions(&mut out, actor, model, &function_plan)?;
+    emit_global_functions(&mut out, model, &state_values)?;
+    emit_actor_functions(&mut out, actor, model, &state_values)?;
 
     emit_section_header(&mut out, "Route templates");
     emit_route_template_table(&mut out, actor, model);
@@ -353,24 +355,29 @@ fn emit_planned_physical_struct(out: &mut String, sil_type: &str, layout: &Physi
     out.push_str("    }\n");
 }
 
-fn emit_global_functions(out: &mut String, model: &Model<'_>, function_plan: &ContractFunctionPlan) -> Result<()> {
+fn emit_global_functions(out: &mut String, model: &Model<'_>, state_values: &ContractStateValuePlan) -> Result<()> {
     if !model.functions.is_empty() {
         emit_section_header(out, "Global functions (isolated using the gen__glob_ namespace)");
         let lowerer = GlobalFunctionLowerer::new(model);
         for function in &model.functions {
             let function = lowerer.lower(function)?;
-            let signature = function_plan.signature(function.name).expect("global function has a contract-local signature plan");
+            let signature = state_values.signature(function.name).expect("global function has a contract-local signature plan");
             let params = function
                 .params
                 .iter()
                 .enumerate()
                 .map(|(index, param)| {
-                    let ty = signature.param_sil_type(index).map(str::to_string).unwrap_or_else(|| lower_type_ref(param.ty, model));
+                    let ty = signature
+                        .param(index)
+                        .map(|value| state_values.sil_type(value))
+                        .unwrap_or_else(|| lower_type_ref(param.ty, model));
                     format!("{ty} {}", param.name)
                 })
                 .collect::<Vec<_>>();
-            let return_type =
-                signature.result_sil_type().map(str::to_string).or_else(|| function.return_ty.map(|ty| lower_type_ref(ty, model)));
+            let return_type = signature
+                .result()
+                .map(|value| state_values.sil_type(value))
+                .or_else(|| function.return_ty.map(|ty| lower_type_ref(ty, model)));
             emit_function(out, function.name, &params, return_type.as_deref(), &function.body);
         }
         out.push('\n');
@@ -378,7 +385,7 @@ fn emit_global_functions(out: &mut String, model: &Model<'_>, function_plan: &Co
     Ok(())
 }
 
-fn emit_actor_functions(out: &mut String, actor: &ActorDecl, model: &Model<'_>, function_plan: &ContractFunctionPlan) -> Result<()> {
+fn emit_actor_functions(out: &mut String, actor: &ActorDecl, model: &Model<'_>, state_values: &ContractStateValuePlan) -> Result<()> {
     let actor_model = model.actor_model(&actor.name)?;
     if actor.functions.is_empty() {
         return Ok(());
@@ -386,19 +393,22 @@ fn emit_actor_functions(out: &mut String, actor: &ActorDecl, model: &Model<'_>, 
 
     emit_section_header(out, "Actor functions");
     for function in actor_model.functions() {
-        let signature = function_plan.signature(&function.name).expect("actor function has a contract-local signature plan");
+        let signature = state_values.signature(&function.name).expect("actor function has a contract-local signature plan");
         let params = function
             .params
             .iter()
             .enumerate()
             .map(|(index, param)| {
-                let ty = signature.param_sil_type(index).map(str::to_string).unwrap_or_else(|| lower_type_ref(&param.ty, model));
+                let ty = signature
+                    .param(index)
+                    .map(|value| state_values.sil_type(value))
+                    .unwrap_or_else(|| lower_type_ref(&param.ty, model));
                 format!("{ty} {}", param.name)
             })
             .collect::<Vec<_>>();
         let return_type = signature
-            .result_sil_type()
-            .map(str::to_string)
+            .result()
+            .map(|value| state_values.sil_type(value))
             .or_else(|| function.return_ty.as_ref().map(|ty| lower_type_ref(ty, model)));
         emit_function(out, &function.name, &params, return_type.as_deref(), &function.body);
     }
@@ -419,11 +429,11 @@ fn emit_entry(
     entry: &EntryDecl,
     model: &Model<'_>,
     input_states: &EntryInputStatePlan,
-    function_plan: &ContractFunctionPlan,
+    state_values: &ContractStateValuePlan,
 ) -> Result<()> {
-    let lowered_body = lower_entry_body(actor, entry, model, input_states, function_plan)?;
+    let lowered_body = lower_entry_body(actor, entry, model, input_states, state_values)?;
     let witness_specs = entry_witness_specs(actor, entry, model)?;
-    let sil_params = lower_entry_params(entry, &witness_specs, model, function_plan);
+    let sil_params = lower_entry_params(entry, &witness_specs, model, state_values);
     match entry.kind {
         EntryKind::Leader => {
             let shape = if entry.consumes.is_empty() { "1:N" } else { "M:N" };
@@ -1027,18 +1037,11 @@ fn lower_entry_params(
     entry: &EntryDecl,
     witness_specs: &EntryWitnessSpecs,
     model: &Model<'_>,
-    function_plan: &ContractFunctionPlan,
+    state_values: &ContractStateValuePlan,
 ) -> Vec<String> {
     let mut out = Vec::new();
     for param in &entry.params {
-        let ty = if param.ty.array.is_none() {
-            function_plan
-                .authored_scalar_sil_type(&param.ty.name)
-                .map(str::to_string)
-                .unwrap_or_else(|| lower_type_ref(&param.ty, model))
-        } else {
-            lower_type_ref(&param.ty, model)
-        };
+        let ty = state_values.sil_type_for_type_ref(&param.ty).unwrap_or_else(|| lower_type_ref(&param.ty, model));
         out.push(format!("{ty} {}", param.name));
     }
     for spec in &witness_specs.templates {

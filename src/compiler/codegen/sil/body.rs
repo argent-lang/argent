@@ -22,8 +22,8 @@ use silverscript_lang::ast::{
 // Body lowering uses the surrounding Sil emitter's shared witness plans,
 // layout helpers, and generated names.
 use super::super::emitter::*;
-use super::functions::ContractFunctionPlan;
 use super::state_boundary::{EntryInputStatePlan, SourceStateAccess};
+use super::state_values::{ContractStateValuePlan, PlannedStateValue};
 use super::token_refs::{RefReplacements, count_qualified_ref};
 
 pub(in crate::compiler::codegen) struct LoweredEntryBody {
@@ -35,9 +35,9 @@ pub(in crate::compiler::codegen) fn lower_entry_body(
     entry: &EntryDecl,
     model: &Model<'_>,
     input_states: &EntryInputStatePlan,
-    function_plan: &ContractFunctionPlan,
+    state_values: &ContractStateValuePlan,
 ) -> Result<LoweredEntryBody> {
-    BodyLowerer::new(actor, entry, model, Some(input_states), function_plan)?.lower()
+    BodyLowerer::new(actor, entry, model, Some(input_states), state_values)?.lower()
 }
 
 /// Source details needed while lowering one non-current covenant output.
@@ -82,7 +82,7 @@ struct BodyLowerer<'a, 'm, 'p> {
     entry: &'a EntryDecl,
     model: &'m Model<'a>,
     input_states: Option<&'p EntryInputStatePlan>,
-    function_plan: &'p ContractFunctionPlan,
+    state_values: &'p ContractStateValuePlan,
     bindings: BodyBindings,
     /// Entry-wide candidates; the current binding decides selector visibility.
     selector_catalog: BTreeMap<String, TemplateSelector>,
@@ -100,18 +100,19 @@ struct PlannedStateArgument {
 }
 
 struct StateArgumentCollector<'a> {
-    function_plan: &'a ContractFunctionPlan,
+    state_values: &'a ContractStateValuePlan,
     arguments: Vec<PlannedStateArgument>,
 }
 
 impl<'i> AstVisitorMut<'i> for StateArgumentCollector<'_> {
     fn visit_expr(&mut self, expr: &mut SilExpr<'i>) {
         if let SilExprKind::Call { name, args, .. } = &expr.kind
-            && let Some(signature) = self.function_plan.signature(name)
+            && let Some(signature) = self.state_values.signature(name)
         {
             for (index, arg) in args.iter().enumerate() {
-                if let Some(source) = signature.param(index) {
-                    self.arguments.push(PlannedStateArgument { span: arg.span.start()..arg.span.end(), source: source.clone() });
+                if let Some(value) = signature.param(index).filter(|value| value.shape().is_scalar()) {
+                    self.arguments
+                        .push(PlannedStateArgument { span: arg.span.start()..arg.span.end(), source: value.source().clone() });
                 }
             }
         }
@@ -126,21 +127,32 @@ struct BodyBindingId(usize);
 struct BodyBinding {
     source_type: Option<String>,
     lowered_type: Option<String>,
+    state_value: Option<PlannedStateValue>,
     selector: Option<TemplateSelector>,
     state_access: Option<SourceStateAccess>,
 }
 
 impl BodyBinding {
-    fn typed(source_type: impl Into<String>, lowered_type: impl Into<String>) -> Self {
-        Self { source_type: Some(source_type.into()), lowered_type: Some(lowered_type.into()), selector: None, state_access: None }
+    fn typed(source_type: impl Into<String>, lowered_type: impl Into<String>, state_values: &ContractStateValuePlan) -> Self {
+        let source_type = source_type.into();
+        let state_value = state_values.plan_sil_type(&source_type);
+        Self {
+            source_type: Some(source_type),
+            lowered_type: Some(lowered_type.into()),
+            state_value,
+            selector: None,
+            state_access: None,
+        }
     }
 
-    fn source_typed(source_type: impl Into<String>) -> Self {
-        Self { source_type: Some(source_type.into()), lowered_type: None, selector: None, state_access: None }
+    fn source_typed(source_type: impl Into<String>, state_values: &ContractStateValuePlan) -> Self {
+        let source_type = source_type.into();
+        let state_value = state_values.plan_sil_type(&source_type);
+        Self { source_type: Some(source_type), lowered_type: None, state_value, selector: None, state_access: None }
     }
 
     fn lowered_typed(lowered_type: impl Into<String>) -> Self {
-        Self { source_type: None, lowered_type: Some(lowered_type.into()), selector: None, state_access: None }
+        Self { source_type: None, lowered_type: Some(lowered_type.into()), state_value: None, selector: None, state_access: None }
     }
 
     fn with_selector(mut self, selector: TemplateSelector) -> Self {
@@ -227,6 +239,11 @@ impl BodyBindings {
         array_element_type(self.source_type(root)?).map(str::to_string)
     }
 
+    fn scalar_state(&self, name: &str) -> Option<&SourceStateId> {
+        let value = self.get(name)?.value.state_value.as_ref()?;
+        value.shape().is_scalar().then(|| value.source())
+    }
+
     fn state_access_for_expr(&self, expr: &str) -> Option<&SourceStateAccess> {
         self.get(strip_outer_parentheses(expr)).and_then(|binding| binding.value.state_access.as_ref())
     }
@@ -290,7 +307,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         entry: &'a EntryDecl,
         model: &'m Model<'a>,
         input_states: Option<&'p EntryInputStatePlan>,
-        function_plan: &'p ContractFunctionPlan,
+        state_values: &'p ContractStateValuePlan,
     ) -> Result<Self> {
         let selector_catalog = model.template_selectors_for_entry(actor, entry)?;
         let mut bindings = BodyBindings::new();
@@ -299,16 +316,19 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             if expanded_digest_fields.contains(field.name.as_str()) {
                 continue;
             }
-            bindings.declare(field.name.clone(), BodyBinding::typed(source_type_ref(&field.ty), lower_type_ref(&field.ty, model)));
+            bindings.declare(
+                field.name.clone(),
+                BodyBinding::typed(source_type_ref(&field.ty), lower_type_ref(&field.ty, model), state_values),
+            );
         }
         if let Some(expansion) = model.state(&actor.state)?.expansion.as_ref() {
             for digest in &expansion.digests {
-                bindings.declare(digest.field.clone(), BodyBinding::source_typed(digest.state.clone()));
+                bindings.declare(digest.field.clone(), BodyBinding::source_typed(digest.state.clone(), state_values));
             }
         }
         for param in &entry.params {
-            let ty = lower_type_ref(&param.ty, model);
-            let mut binding = BodyBinding::typed(source_type_ref(&param.ty), ty);
+            let ty = state_values.sil_type_for_type_ref(&param.ty).unwrap_or_else(|| lower_type_ref(&param.ty, model));
+            let mut binding = BodyBinding::typed(source_type_ref(&param.ty), ty, state_values);
             if param.ty.array.is_none()
                 && let Some(selector) = selector_catalog.get(&param.name)
                 && selector.actor_enum == param.ty.name
@@ -319,11 +339,14 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         }
         for observe in &entry.observes {
             for (binding, state) in observed_open_bindings(observe) {
-                bindings.declare(binding.to_string(), BodyBinding::typed(format!("{}<{state}>", word::ACTOR_TYPE), "byte[32]"));
+                bindings.declare(
+                    binding.to_string(),
+                    BodyBinding::typed(format!("{}<{state}>", word::ACTOR_TYPE), "byte[32]", state_values),
+                );
             }
         }
         for spawn in &entry.spawns {
-            bindings.declare(spawn.covenant.clone(), BodyBinding::typed(word::COVENANT_ID, "byte[32]"));
+            bindings.declare(spawn.covenant.clone(), BodyBinding::typed(word::COVENANT_ID, "byte[32]", state_values));
         }
 
         let mut input_names = BTreeSet::new();
@@ -334,12 +357,12 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                 let access = input.access();
                 bindings.declare(
                     input.source_ref().to_string(),
-                    BodyBinding::typed(access.source_type(), access.physical_type()).with_state_access(access.clone()),
+                    BodyBinding::typed(access.source_type(), access.physical_type(), state_values).with_state_access(access.clone()),
                 );
             } else {
                 let state = model.actor(&consume.actor)?.state.clone();
                 let ty = contract_state_type_for_actor(&consume.actor, actor, model)?;
-                bindings.declare(consume.name.clone(), BodyBinding::typed(state, ty));
+                bindings.declare(consume.name.clone(), BodyBinding::typed(state, ty, state_values));
             }
         }
         let mut input_state_refs = input_states.map(EntryInputStatePlan::reference_replacements).unwrap_or_default();
@@ -352,7 +375,8 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                     let access = input.access();
                     bindings.declare(
                         input.source_ref().to_string(),
-                        BodyBinding::typed(access.source_type(), access.physical_type()).with_state_access(access.clone()),
+                        BodyBinding::typed(access.source_type(), access.physical_type(), state_values)
+                            .with_state_access(access.clone()),
                     );
                     bindings.declare(lowered_ref, BodyBinding::lowered_typed(access.physical_type()));
                 } else {
@@ -363,7 +387,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                         model.actor(&input.actor)?.state.clone()
                     };
                     let ty = contract_state_type_for_observed_actor(actor, entry, observe, input, model)?;
-                    bindings.declare(source_ref, BodyBinding::typed(state, ty.clone()));
+                    bindings.declare(source_ref, BodyBinding::typed(state, ty.clone(), state_values));
                     bindings.declare(lowered_ref, BodyBinding::lowered_typed(ty));
                 }
             }
@@ -398,7 +422,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             entry,
             model,
             input_states,
-            function_plan,
+            state_values,
             bindings,
             selector_catalog,
             output_values,
@@ -579,7 +603,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let lowered = self.lower_typed_local_initializer(source_ty, &lowered_ty, &expr, indent)?;
         push_indent(out, indent);
         out.push_str(&format!("{emitted_type} {name} = {lowered};\n"));
-        let mut binding = BodyBinding::typed(source_ty, lowered_ty);
+        let mut binding = BodyBinding::typed(source_ty, lowered_ty, self.state_values);
         if let Some(selector) = self.selector_catalog.get(name)
             && selector.actor_enum == source_ty
         {
@@ -654,13 +678,13 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             return None;
         };
         let range = (expr.span.start() - prefix.len())..(expr.span.end() - prefix.len());
-        let expected_state = self.bindings.source_type(name).filter(|ty| self.model.has_state(ty)).map(str::to_string);
+        let expected_state = self.bindings.scalar_state(name).map(|source| source.as_str().to_string());
         Some((range, expected_state))
     }
 
     fn declare_sil_binding(&mut self, binding: &EntryBinding) {
         let lowered_type = self.lower_local_type(&binding.source_type);
-        self.bindings.declare(&binding.name, BodyBinding::typed(&binding.source_type, lowered_type));
+        self.bindings.declare(&binding.name, BodyBinding::typed(&binding.source_type, lowered_type, self.state_values));
     }
 
     fn validate_unrestricted_output_value(&self, value: &str) -> Result<()> {
@@ -690,8 +714,10 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         }
         self.validate_actor_type_initializer(name, expr, &selector)?;
         self.materialize_selector_template(out, indent, &selector)?;
-        let id =
-            self.bindings.declare(name, BodyBinding::source_typed(format!("{}<{state}>", word::ACTOR_TYPE)).with_selector(selector));
+        let id = self.bindings.declare(
+            name,
+            BodyBinding::source_typed(format!("{}<{state}>", word::ACTOR_TYPE), self.state_values).with_selector(selector),
+        );
         self.bindings.mark_selector_materialized(id);
         Ok(())
     }
@@ -1083,7 +1109,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let lowered = self.lower_expr(expr, Some(&source_state), indent)?;
         push_indent(out, indent);
         out.push_str(&format!("{source_state} {name} = {lowered};\n"));
-        self.bindings.declare(name.clone(), BodyBinding::typed(source_state.clone(), source_state));
+        self.bindings.declare(name.clone(), BodyBinding::typed(source_state.clone(), source_state, self.state_values));
         Ok(name)
     }
 
@@ -1351,14 +1377,15 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let SilExprKind::Call { name, .. } = parsed.kind else {
             return None;
         };
-        self.function_plan.signature(&name)?.result()
+        let value = self.state_values.signature(&name)?.result()?;
+        value.shape().is_scalar().then(|| value.source())
     }
 
     fn lower_function_state_args(&self, expr: &str, indent: usize) -> Result<String> {
         if !self.contains_state_argument_call(expr)? {
             return Ok(expr.to_string());
         }
-        let mut collector = StateArgumentCollector { function_plan: self.function_plan, arguments: Vec::new() };
+        let mut collector = StateArgumentCollector { state_values: self.state_values, arguments: Vec::new() };
         if let Ok(mut parsed) = parse_expression_ast(expr) {
             collector.visit_expr(&mut parsed);
         } else {
@@ -1400,7 +1427,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             let [Token { kind: TokenKind::Ident(name), .. }, Token { kind: TokenKind::Symbol('('), .. }] = tokens else {
                 return false;
             };
-            self.function_plan.signature(name).is_some_and(|signature| signature.has_authored_state_param())
+            self.state_values.signature(name).is_some_and(|signature| signature.has_scalar_state_param())
         }))
     }
 
@@ -1593,7 +1620,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         if source_ty == word::COVENANT_ID {
             return "byte[32]".to_string();
         }
-        self.function_plan.authored_scalar_sil_type(source_ty).unwrap_or(source_ty).to_string()
+        self.state_values.sil_type_for_sil_type(source_ty).unwrap_or_else(|| source_ty.to_string())
     }
 
     fn source_state_for_local_type(&self, source_ty: &str) -> Option<String> {
@@ -1788,8 +1815,8 @@ pub(in crate::compiler::codegen) fn lower_entry_expr(
     expr: &str,
     expected_ty: Option<&str>,
 ) -> Result<String> {
-    let function_plan = ContractFunctionPlan::new(actor, model)?;
-    BodyLowerer::new(actor, entry, model, None, &function_plan)?.lower_expr(expr, expected_ty, 8)
+    let state_values = ContractStateValuePlan::new(actor, model)?;
+    BodyLowerer::new(actor, entry, model, None, &state_values)?.lower_expr(expr, expected_ty, 8)
 }
 
 fn generated_state_name(route: &RouteCall, state_ty: &str) -> String {
