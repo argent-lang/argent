@@ -4,9 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use crate::compiler::model::{
-    ActorTarget, CompilerRouteTransition, CovenantGroup, EntryInteraction, InteractionSource, Model, RouteFamily, SourceStateId,
-    StaticActorTarget, TemplateSelector, actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding,
-    observed_open_bindings, observed_open_state_for_decl, parse_actor_enum_selector, parse_actor_enum_variant, spawn_target_state,
+    ActorTarget, CovenantGroup, EntryInteraction, InteractionSource, Model, RouteFamily, StaticActorTarget, TemplateSelector,
+    actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding, observed_open_bindings,
+    observed_open_state_for_decl, parse_actor_enum_selector, parse_actor_enum_variant, spawn_target_state,
 };
 use crate::compiler::naming::to_snake;
 use crate::compiler::syntax::body::{EntryBinding, EntryLocalDecl, EntryRoute, EntryStatement, EntryStructDestructure};
@@ -23,8 +23,8 @@ use silverscript_lang::ast::{
 // layout helpers, and generated names.
 use super::super::emitter::*;
 use super::state_boundary::{
-    EntryInputStatePlan, SourceStateAccess, plan_actor_output_state, plan_open_output_state, plan_selector_output_state,
-    plan_static_actor_output_state,
+    AuthoredStateExpr, EntryInputStatePlan, OutputStateTarget, SourceStateAccess, materialize_output_state, plan_actor_output_state,
+    plan_open_output_state, plan_selector_output_state, plan_static_actor_output_state, preserve_exact_self,
 };
 use super::state_values::{ContractStateValuePlan, PlannedStateValue};
 use super::token_refs::{RefReplacements, count_qualified_ref};
@@ -262,15 +262,6 @@ impl BodyBindings {
 
     fn source_type(&self, name: &str) -> Option<&str> {
         self.get(name).and_then(|binding| binding.value.source_type.as_deref())
-    }
-
-    fn source_type_for_expr(&self, expr: &str) -> Option<String> {
-        let expr = strip_outer_parentheses(expr);
-        if let Some(ty) = self.source_type(expr) {
-            return Some(ty.to_string());
-        }
-        let root = indexed_root_binding(expr)?;
-        array_element_type(self.source_type(root)?).map(str::to_string)
     }
 
     fn state_value(&self, name: &str) -> Option<&PlannedStateValue> {
@@ -940,12 +931,6 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             CovenantOutputContext::Genesis { .. } => self.model.resolve_static_actor_target(target),
         };
         let local_actor = static_target.and_then(|target| target.in_app_actor()).map(|actor| actor.name.as_str());
-        let transition = match local_actor.filter(|target| *target != self.actor.name) {
-            Some(target) => Some(self.model.route_transition(&self.actor.name, target).ok_or_else(|| {
-                self.error(format!("entry model has no route transition from `{}` to in-app target `{target}`", self.actor.name))
-            })?),
-            None => None,
-        };
         let state_name = match (context, static_target) {
             (_, Some(target)) => target.state().to_string(),
             (CovenantOutputContext::Existing { observe, output }, None) => {
@@ -962,22 +947,12 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             None => plan_open_output_state(self.actor, &state_name, self.model)?,
         };
         let state_ty = output_target.physical_type().to_string();
-        let state_expr = self.materialize_route_source_state(out, indent, &route)?;
-        let state_expr = state_expr.as_str();
-        let packs_family = transition.is_some_and(|transition| !transition.families_to_pack.is_empty());
-        let state_arg = if !packs_family && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
-            self.lower_expr(state_expr, Some(&state_ty), indent)?
-        } else {
-            let name = generated_state_name(&route, &state_ty);
-            let lowered = if static_target.is_some() {
-                self.lower_state_expr_for_actor(actor_expr, &state_ty, transition, state_expr, indent)?
-            } else {
-                self.lower_state_expr_for_dynamic_state(&state_name, &state_ty, state_expr, indent)?
-            };
-            push_indent(out, indent);
-            out.push_str(&format!("{state_ty} {name} = {lowered};\n"));
-            name
-        };
+        let authored = self.require_route_authored_state(out, indent, &route, &output_target)?;
+        let state_arg = materialize_output_state(&output_target, authored, self.model, indent)?.into_argument(
+            out,
+            indent,
+            generated_state_name(&route, &state_ty),
+        );
 
         let observed_spec = match context {
             CovenantOutputContext::Existing { observe, output } => {
@@ -1115,114 +1090,35 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         Ok(hidden_observed_actor_template_name(spec))
     }
 
-    fn lower_state_expr_for_actor(
-        &self,
-        actor: &str,
-        state_ty: &str,
-        transition: Option<&CompilerRouteTransition>,
-        expr: &str,
+    /// Produce one stable authored value before crossing the storage boundary.
+    fn require_route_authored_state(
+        &mut self,
+        out: &mut String,
         indent: usize,
-    ) -> Result<String> {
-        let state_name = &self.model.actor(actor)?.state;
-        let generated_fields = hidden_template_object_fields_for_actor(self.actor, actor, transition, self.model);
-        let force_materialization = transition.is_some_and(|transition| !transition.families_to_pack.is_empty());
-        self.lower_state_expr_for_layout(state_name, state_ty, generated_fields, force_materialization, expr, indent)
-    }
-
-    fn lower_state_expr_for_dynamic_state(&self, state_name: &str, state_ty: &str, expr: &str, indent: usize) -> Result<String> {
-        let generated_fields = hidden_template_object_fields(self.actor, RouteFieldKind::None, &[], self.model);
-        self.lower_state_expr_for_layout(state_name, state_ty, generated_fields, false, expr, indent)
-    }
-
-    /// Bind an authored state before projecting its fields into a route layout.
-    /// This evaluates function calls once and handles indexed expanded values
-    /// that Sil cannot traverse directly.
-    fn materialize_route_source_state(&mut self, out: &mut String, indent: usize, route: &RouteCall) -> Result<String> {
+        route: &RouteCall,
+        target: &OutputStateTarget,
+    ) -> Result<AuthoredStateExpr> {
         let expr = strip_outer_parentheses(route.state.trim());
-        let source_state = if let Some(source_state) = self.function_state_result(expr) {
-            Some(source_state.as_str().to_string())
-        } else if indexed_root_binding(expr).is_some() {
-            // Sil flattens struct arrays, but cannot directly traverse a nested
-            // struct field through an array index. Bind that element first.
-            let Some(source_state) = self.bindings.source_type_for_expr(expr) else {
-                return Ok(expr.to_string());
-            };
-            (self.bindings.lowered_type_for_expr(expr).as_deref() == Some(source_state.as_str())
-                && self.model.state(&source_state)?.expansion.is_some())
-            .then_some(source_state)
-        } else {
-            None
-        };
-        let Some(source_state) = source_state else {
-            return Ok(expr.to_string());
-        };
-
+        let source_state = target.source_type().to_string();
+        let authored = target.require_authored_value(|expected| self.lower_expr(expr, Some(expected), indent))?;
+        let lowered = authored.sil().to_string();
+        if let Ok(parsed) = parse_expression_ast(&lowered)
+            && let SilExprKind::Identifier(name) = &parsed.kind
+        {
+            if self.bindings.lowered_type(name) == Some(source_state.as_str()) {
+                return Ok(authored.rebound(name.as_str()));
+            }
+            if self.bindings.lowered_type(name).is_some() {
+                return Err(self.error(format!(
+                    "route state `{name}` is not an authored `{source_state}` value; construct `{source_state} {{ ... }}` explicitly"
+                )));
+            }
+        }
         let name = format!("{RESERVED_GENERATED_PREFIX}source_{}_{}", to_snake(&route.output), to_snake(&source_state));
-        let lowered = self.lower_expr(expr, Some(&source_state), indent)?;
         push_indent(out, indent);
         out.push_str(&format!("{source_state} {name} = {lowered};\n"));
         self.bindings.declare(name.clone(), BodyBinding::typed(source_state.clone(), source_state, self.state_values));
-        Ok(name)
-    }
-
-    fn lower_state_expr_for_layout(
-        &self,
-        state_name: &str,
-        state_ty: &str,
-        generated_fields: Vec<(String, String)>,
-        force_materialization: bool,
-        expr: &str,
-        indent: usize,
-    ) -> Result<String> {
-        let expr = strip_outer_parentheses(expr.trim());
-        if !force_materialization && self.bindings.lowered_type_for_expr(expr).is_some_and(|ty| ty == state_ty) {
-            return self.lower_expr(expr, Some(state_ty), indent);
-        }
-        // A source expression may be caller-controlled. Materialization copies
-        // only authored fields from it; generated fields come from the route context.
-        if let Some((source_state, body)) = split_state_constructor(expr) {
-            if self.model.storage_state_name(source_state)? != self.model.storage_state_name(state_name)? {
-                return Err(ArgentError::new(format!("state `{source_state}` cannot initialize contract state `{state_name}`")));
-            }
-            return self.lower_state_object(source_state, state_ty, body, generated_fields, indent);
-        }
-
-        let source_state = if expr == "self.state" {
-            Some(self.actor.state.clone())
-        } else {
-            self.bindings.source_type_for_expr(expr).filter(|source_ty| self.model.has_state(source_ty))
-        };
-        if let Some(source_state) = source_state {
-            if self.model.storage_state_name(&source_state)? != self.model.storage_state_name(state_name)? {
-                return Err(ArgentError::new(format!("state `{source_state}` cannot initialize contract state `{state_name}`")));
-            }
-            let source_uses_authored_layout = expr != "self.state"
-                && self.bindings.lowered_type_for_expr(expr).as_deref() == Some(source_state.as_str())
-                && self.model.state(&source_state)?.expansion.is_some();
-            let fields = self
-                .model
-                .storage_state(state_name)?
-                .fields
-                .iter()
-                .map(|field| {
-                    let value = if expr == "self.state" { field.name.clone() } else { format!("{expr}.{}", field.name) };
-                    let value = if source_uses_authored_layout {
-                        self.model
-                            .state(&source_state)?
-                            .expansion
-                            .as_ref()
-                            .and_then(|expansion| expansion.digests.iter().find(|digest| digest.field == field.name))
-                            .map_or(Ok(value.clone()), |digest| state_payload_digest_expr(&digest.state, &value, self.model))?
-                    } else {
-                        value
-                    };
-                    Ok((field.name.clone(), value))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            return self.render_state_object(state_name, state_ty, &fields, generated_fields, indent);
-        }
-
-        self.lower_expr(expr, Some(state_ty), indent)
+        Ok(authored.rebound(name))
     }
 
     fn lower_route(&mut self, out: &mut String, indent: usize, route: RouteCall) -> Result<()> {
@@ -1241,32 +1137,18 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         if validation == RouteValidationKind::ExactScriptPublicKey {
             push_indent(out, indent);
             out.push_str(&format!("// :: become {}\n", route.actor));
-            push_generated_binary_require(
-                out,
-                indent,
-                &format!("tx.outputs[{output_idx}].scriptPubKey"),
-                "==",
-                "tx.inputs[this.activeInputIndex].scriptPubKey",
-            );
+            preserve_exact_self(out, indent, &output_idx);
             return Ok(());
         }
 
-        let transition = (route.actor != self.actor.name).then(|| {
-            self.model.route_transition(&self.actor.name, &route.actor).expect("validated non-self route has a planned cut transition")
-        });
-        let state_ty = plan_actor_output_state(self.actor, &route.actor, self.model)?.physical_type().to_string();
-        let state_expr = self.materialize_route_source_state(out, indent, &route)?;
-        let state_expr = state_expr.as_str();
-        let packs_family = transition.is_some_and(|transition| !transition.families_to_pack.is_empty());
-        let state_arg = if !packs_family && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
-            self.lower_expr(state_expr, Some(&state_ty), indent)?
-        } else {
-            let name = generated_state_name(&route, &state_ty);
-            let lowered = self.lower_state_expr_for_actor(&route.actor, &state_ty, transition, state_expr, indent)?;
-            push_indent(out, indent);
-            out.push_str(&format!("{state_ty} {name} = {lowered};\n"));
-            name
-        };
+        let output_target = plan_actor_output_state(self.actor, &route.actor, self.model)?;
+        let state_ty = output_target.physical_type().to_string();
+        let authored = self.require_route_authored_state(out, indent, &route, &output_target)?;
+        let state_arg = materialize_output_state(&output_target, authored, self.model, indent)?.into_argument(
+            out,
+            indent,
+            generated_state_name(&route, &state_ty),
+        );
 
         push_indent(out, indent);
         out.push_str(&format!("// :: become {}\n", route.actor));
@@ -1320,28 +1202,14 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             .ok_or_else(|| ArgentError::new(format!("unknown actor handle `{}`", route.actor)))?
             .clone();
         let output_idx = hidden_output_idx_name(&route.output);
-        let state_ty = plan_selector_output_state(self.actor, &selector, self.model)?.physical_type().to_string();
-        let layout_actor = selector.variants.first().expect("validated actor selector has at least one variant");
-        let transition = self
-            .model
-            .route_transition(&self.actor.name, layout_actor)
-            .expect("validated selector route has a planned cut transition");
-        debug_assert!(
-            selector.variants.iter().skip(1).all(|actor| self.model.route_transition(&self.actor.name, actor) == Some(transition)),
-            "selector variants must use one cut transition"
+        let output_target = plan_selector_output_state(self.actor, &selector, self.model)?;
+        let state_ty = output_target.physical_type().to_string();
+        let authored = self.require_route_authored_state(out, indent, &route, &output_target)?;
+        let state_arg = materialize_output_state(&output_target, authored, self.model, indent)?.into_argument(
+            out,
+            indent,
+            generated_state_name(&route, &state_ty),
         );
-        let state_expr = self.materialize_route_source_state(out, indent, &route)?;
-        let state_expr = state_expr.as_str();
-        let packs_family = !transition.families_to_pack.is_empty();
-        let state_arg = if !packs_family && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
-            self.lower_expr(state_expr, Some(&state_ty), indent)?
-        } else {
-            let name = generated_state_name(&route, &state_ty);
-            let lowered = self.lower_state_expr_for_actor(layout_actor, &state_ty, Some(transition), state_expr, indent)?;
-            push_indent(out, indent);
-            out.push_str(&format!("{state_ty} {name} = {lowered};\n"));
-            name
-        };
 
         let template = self.ensure_selector_template(out, indent, &route.actor)?;
         push_indent(out, indent);
@@ -1511,15 +1379,6 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             self.state_values.sil_type(actual),
             self.state_values.sil_type(expected)
         ))
-    }
-
-    fn function_state_result(&self, expr: &str) -> Option<&SourceStateId> {
-        let parsed = parse_expression_ast(expr).ok()?;
-        let SilExprKind::Call { name, .. } = parsed.kind else {
-            return None;
-        };
-        let value = self.state_values.signature(&name)?.result()?;
-        value.shape().is_scalar().then(|| value.source())
     }
 
     fn lower_nested_state_values(&self, expr: &str, indent: usize) -> Result<String> {

@@ -6,6 +6,7 @@ use std::{
 use kaspa_txscript::opcodes::codes::OpPushData1;
 
 use super::*;
+use crate::compiler::model::CompilerRouteTransition;
 use crate::routing::{CommitmentNode, RouteGraph, SelectorRequirement};
 
 #[test]
@@ -1532,7 +1533,8 @@ fn routed_current_state_array_entry_param_uses_source_state_type() {
     assert!(sil.contains("struct NoteState"), "{sil}");
     assert!(sil.contains("entry choose(NoteState[2] notes)"), "{sil}");
     assert!(sil.contains("gen__archive_template: gen__archive_template"), "{sil}");
-    assert!(sil.contains("nonce: notes[1].nonce"), "{sil}");
+    assert!(sil.contains("NoteState gen__source_next_note_state = notes[1];"), "{sil}");
+    assert!(sil.contains("nonce: gen__source_next_note_state.nonce"), "{sil}");
 
     let choose = artifact.sil_abi.contract("Note").expect("Note Sil ABI exists").entry("choose").expect("choose entry exists");
     assert_eq!(
@@ -2135,6 +2137,90 @@ fn static_output_to_a_foreign_expanded_state_declares_the_planned_physical_type(
     assert!(!source_sil.contains("struct Gen__TargetState {"), "{source_sil}");
     assert!(source_sil.contains("Gen__PhysicalExpandedState gen__state_next_gen__physical_expanded_state"), "{source_sil}");
     emit_artifact(&program, &model, &actor_sil).expect("planned expanded output type compiles");
+}
+
+#[test]
+fn expanded_output_payload_calls_are_evaluated_once_before_digest_lowering() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "expanded-output-single-evaluation",
+        r#"
+            state Capsule {
+                int nonce;
+                virtual detail;
+            }
+
+            state Details {
+                int count;
+                int limit;
+            }
+
+            state Expanded expands Capsule {
+                detail: Details;
+            }
+
+            actor Vault owns Expanded {
+                fn make_details() -> Details {
+                    return Details {
+                        count: 1,
+                        limit: 2,
+                    };
+                }
+
+                entry advance() emits next: Vault {
+                    unrestricted(next.value);
+                    become next <- Vault(Expanded {
+                        nonce: nonce + 1,
+                        detail: make_details(),
+                    });
+                }
+            }
+
+            app Test {
+                actor Vault;
+            }
+        "#,
+    );
+    let sil = &actor_sil["Vault"];
+
+    assert_eq!(sil.matches("detail: make_details(),").count(), 1, "{sil}");
+    assert!(sil.contains("Expanded gen__source_next_expanded = Expanded {"), "{sil}");
+    assert!(sil.contains("gen__source_next_expanded.detail.count"), "{sil}");
+    assert!(sil.contains("gen__source_next_expanded.detail.limit"), "{sil}");
+    assert!(!sil.contains("make_details().count"), "{sil}");
+    assert!(!sil.contains("make_details().limit"), "{sil}");
+}
+
+#[test]
+fn physical_state_locals_are_not_authored_route_values() {
+    let path = PathBuf::from("physical-route-source.ag");
+    let module = crate::compiler::syntax::parser::parse_module(
+        path.clone(),
+        r#"
+            state SharedState { int count; }
+
+            actor Current owns SharedState {
+                entry advance() emits next: Current {
+                    State next_state = { count: count + 1 };
+                    unrestricted(next.value);
+                    become next <- Current(next_state);
+                }
+            }
+
+            actor Peer owns SharedState {
+                entry hold() emits none { require(count >= 0); }
+            }
+
+            app Test { actor Current; actor Peer; }
+        "#
+        .to_string(),
+    )
+    .expect("source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let model = Model::from_program(&program).expect("physical local source plans");
+    let err = emit_actor(model.actor("Current").expect("Current exists"), &model)
+        .expect_err("physical State must not cross the authored route boundary");
+
+    assert!(err.to_string().contains("is not an authored `SharedState` value"), "unexpected error: {err}");
 }
 
 #[test]

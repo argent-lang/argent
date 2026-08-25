@@ -236,7 +236,7 @@ impl SourceStorageRelation {
         })
     }
 
-    fn fields(&self) -> &[SourceFieldLowering] {
+    pub(crate) fn fields(&self) -> &[SourceFieldLowering] {
         match self {
             Self::Identity { fields } | Self::Expanded { fields } => fields,
         }
@@ -244,13 +244,13 @@ impl SourceStorageRelation {
 }
 
 impl SourceFieldLowering {
-    fn source(&self) -> &SourceFieldId {
+    pub(crate) fn source(&self) -> &SourceFieldId {
         match self {
             Self::Identity { source, .. } | Self::Digest { source, .. } => source,
         }
     }
 
-    fn storage(&self) -> &StorageFieldId {
+    pub(crate) fn storage(&self) -> &StorageFieldId {
         match self {
             Self::Identity { storage, .. } | Self::Digest { storage, .. } => storage,
         }
@@ -258,6 +258,13 @@ impl SourceFieldLowering {
 
     fn is_identity(&self) -> bool {
         matches!(self, Self::Identity { .. })
+    }
+
+    pub(crate) fn expanded_state(&self) -> Option<&SourceStateId> {
+        match self {
+            Self::Identity { .. } => None,
+            Self::Digest { expanded_state, .. } => Some(expanded_state),
+        }
     }
 }
 
@@ -452,7 +459,6 @@ pub(crate) struct OutputPhysicalTypePlan {
 }
 
 impl OutputPhysicalTypePlan {
-    #[cfg(test)]
     pub(crate) fn target(&self) -> &PhysicalTargetId {
         &self.target
     }

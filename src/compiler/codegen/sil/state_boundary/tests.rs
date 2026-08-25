@@ -156,3 +156,37 @@ fn selector_output_uses_the_actor_domain_plan_and_its_selected_type() {
     assert!(matches!(output.canonical_target(), PhysicalTargetId::Actor(actor) if actor.actor() == "Pawn"));
     assert_eq!(output.physical_type(), "State");
 }
+
+#[test]
+fn augmented_output_materialization_injects_only_planned_generated_fields() {
+    let program = program(include_str!("../../../../../tests/fixtures/state_layout/function_contexts/app.ag"));
+    let model = Model::from_program(&program).expect("function context fixture plans");
+    let (actor, _) = actor_entry(&model, "Routed", "advance");
+    let target = plan_actor_output_state(actor, "Routed", &model).expect("self output plans");
+    let physical =
+        materialize_output_state(&target, target.authored_value("next_state"), &model, 8).expect("authored output materializes");
+    let mut sil = String::new();
+    let argument = physical.into_argument(&mut sil, 8, "gen__next");
+
+    assert_eq!(argument, "gen__next");
+    assert!(sil.contains("gen__foreign_template: gen__foreign_template,"), "{sil}");
+    assert!(sil.contains("left: next_state.left,"), "{sil}");
+    assert!(sil.contains("right: next_state.right,"), "{sil}");
+    assert!(!sil.contains("next_state.gen__"), "generated fields must not come from the authored value: {sil}");
+}
+
+#[test]
+fn expanded_output_lowers_authored_values_to_digest_storage_before_physical_state() {
+    let program = program(include_str!("../../../../../tests/fixtures/emit/state_expansion/app.ag"));
+    let model = Model::from_program(&program).expect("expanded state fixture plans");
+    let (actor, _) = actor_entry(&model, "Forager", "hold");
+    let target = plan_actor_output_state(actor, "Forager", &model).expect("expanded self output plans");
+    let physical =
+        materialize_output_state(&target, target.authored_value("next_state"), &model, 8).expect("expanded output materializes");
+    let mut sil = String::new();
+    physical.into_argument(&mut sil, 8, "gen__next");
+
+    assert!(sil.contains("State gen__next = State {"), "{sil}");
+    assert!(sil.contains("strategy: blake3(byte[](((next_state.strategy.hunger) as byte[8]))),"), "{sil}");
+    assert!(sil.contains("energy: next_state.energy,"), "{sil}");
+}

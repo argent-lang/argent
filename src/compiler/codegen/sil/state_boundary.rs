@@ -3,8 +3,9 @@
 use std::collections::BTreeMap;
 
 use crate::compiler::model::{
-    ContractStateLowering, Model, OutputPhysicalTypePlan, PhysicalFieldId, PhysicalStateLayout, PhysicalTargetId, SilStateType,
-    SourcePhysicalField, SourceStateId, StaticActorTarget, TargetPhysicalPlan, TemplateSelector,
+    CompilerRouteTransition, ContractStateLowering, GeneratedFieldId, Model, OutputPhysicalTypePlan, PhysicalFieldId,
+    PhysicalStateLayout, PhysicalTargetId, SilStateType, SourcePhysicalField, SourceStateId, StaticActorTarget, TargetPhysicalPlan,
+    TemplateSelector,
 };
 use crate::compiler::syntax::{ActorDecl, EntryDecl};
 use crate::error::{ArgentError, Result};
@@ -15,14 +16,14 @@ use super::token_refs::count_qualified_ref;
 #[cfg(test)]
 mod tests;
 
-/// Rendered output type and optional named layout selected from one physical target plan.
+/// Output layout, rendered type, and compiler-owned field sources selected as one plan.
 pub(in crate::compiler::codegen) struct OutputStateTarget {
-    #[cfg(test)]
-    target: PhysicalTargetId,
     #[cfg(test)]
     canonical_target: PhysicalTargetId,
     sil_type: String,
     named_physical_layout: Option<PhysicalStateLayout>,
+    physical: TargetPhysicalPlan,
+    generated_fields: BTreeMap<GeneratedFieldId, String>,
 }
 
 impl OutputStateTarget {
@@ -34,9 +35,25 @@ impl OutputStateTarget {
         self.named_physical_layout.as_ref().map(|layout| (self.sil_type.as_str(), layout))
     }
 
+    pub(in crate::compiler::codegen) fn source_type(&self) -> &str {
+        self.physical.source().as_str()
+    }
+
+    pub(in crate::compiler::codegen) fn require_authored_value(
+        &self,
+        lower: impl FnOnce(&str) -> Result<String>,
+    ) -> Result<AuthoredStateExpr> {
+        Ok(AuthoredStateExpr { source: self.physical.source().clone(), sil: lower(self.source_type())? })
+    }
+
+    #[cfg(test)]
+    pub(in crate::compiler::codegen) fn authored_value(&self, sil: impl Into<String>) -> AuthoredStateExpr {
+        AuthoredStateExpr { source: self.physical.source().clone(), sil: sil.into() }
+    }
+
     #[cfg(test)]
     pub(in crate::compiler::codegen) fn target(&self) -> &PhysicalTargetId {
-        &self.target
+        self.physical.id()
     }
 
     #[cfg(test)]
@@ -54,7 +71,8 @@ pub(in crate::compiler::codegen) fn plan_actor_output_state(
     let target = lowering
         .output_type_for_actor(target_actor)
         .ok_or_else(|| ArgentError::new(format!("actor `{}` has no output state target plan for `{target_actor}`", actor.name)))?;
-    output_state_target(target, lowering)
+    let transition = output_transition_for_actor(actor, target_actor, model)?;
+    output_state_target(actor, target, lowering, &transition, model)
 }
 
 pub(in crate::compiler::codegen) fn plan_static_actor_output_state(
@@ -63,14 +81,18 @@ pub(in crate::compiler::codegen) fn plan_static_actor_output_state(
     model: &Model<'_>,
 ) -> Result<OutputStateTarget> {
     let lowering = model.state_lowering(&actor.name)?;
-    let target = match target_actor {
-        StaticActorTarget::InApp(target) => lowering.output_type_for_actor(&target.name),
-        StaticActorTarget::CrossApp(target) => lowering.output_type_for_compiled_actor(&target.app, &target.actor),
-    }
-    .ok_or_else(|| {
+    let (target, transition) = match target_actor {
+        StaticActorTarget::InApp(target) => {
+            (lowering.output_type_for_actor(&target.name), output_transition_for_actor(actor, &target.name, model)?)
+        }
+        StaticActorTarget::CrossApp(target) => {
+            (lowering.output_type_for_compiled_actor(&target.app, &target.actor), CompilerRouteTransition::default())
+        }
+    };
+    let target = target.ok_or_else(|| {
         ArgentError::new(format!("actor `{}` has no output state target plan for `{}`", actor.name, target_actor.artifact_reference()))
     })?;
-    output_state_target(target, lowering)
+    output_state_target(actor, target, lowering, &transition, model)
 }
 
 pub(in crate::compiler::codegen) fn plan_open_output_state(
@@ -82,7 +104,7 @@ pub(in crate::compiler::codegen) fn plan_open_output_state(
     let target = lowering
         .output_type_for_open_state(&SourceStateId::new(state))
         .ok_or_else(|| ArgentError::new(format!("actor `{}` has no open output state target plan for `{state}`", actor.name)))?;
-    output_state_target(target, lowering)
+    output_state_target(actor, target, lowering, &CompilerRouteTransition::default(), model)
 }
 
 pub(in crate::compiler::codegen) fn plan_selector_output_state(
@@ -94,10 +116,37 @@ pub(in crate::compiler::codegen) fn plan_selector_output_state(
     let target = lowering.output_type_for_actor_domain(&SourceStateId::new(&selector.state), &selector.variants).ok_or_else(|| {
         ArgentError::new(format!("actor `{}` has no output state target plan for selector `{}`", actor.name, selector.name))
     })?;
-    output_state_target(target, lowering)
+    let mut transitions = selector.variants.iter().map(|variant| output_transition_for_actor(actor, variant, model));
+    let transition = transitions
+        .next()
+        .transpose()?
+        .ok_or_else(|| ArgentError::new(format!("actor selector `{}` has no variants", selector.name)))?;
+    for candidate in transitions {
+        if candidate? != transition {
+            return Err(ArgentError::new(format!("actor selector `{}` variants do not share one route transition", selector.name)));
+        }
+    }
+    output_state_target(actor, target, lowering, &transition, model)
 }
 
-fn output_state_target(plan: &OutputPhysicalTypePlan, lowering: &ContractStateLowering) -> Result<OutputStateTarget> {
+fn output_transition_for_actor(source_actor: &ActorDecl, target_actor: &str, model: &Model<'_>) -> Result<CompilerRouteTransition> {
+    if target_actor == source_actor.name || model.linked_actor(target_actor).is_some() {
+        return Ok(CompilerRouteTransition::default());
+    }
+    model.route_transition(&source_actor.name, target_actor).cloned().ok_or_else(|| {
+        ArgentError::new(format!("entry model has no route transition from `{}` to in-app target `{target_actor}`", source_actor.name))
+    })
+}
+
+fn output_state_target(
+    source_actor: &ActorDecl,
+    plan: &OutputPhysicalTypePlan,
+    lowering: &ContractStateLowering,
+    transition: &CompilerRouteTransition,
+    model: &Model<'_>,
+) -> Result<OutputStateTarget> {
+    let physical =
+        lowering.target(plan.target()).ok_or_else(|| ArgentError::new("output target has no physical layout plan"))?.clone();
     let named_physical_layout = match plan.sil_type() {
         SilStateType::State | SilStateType::Source(_) => None,
         SilStateType::StoragePhysical(_) | SilStateType::TargetPhysical(_) => Some(
@@ -108,14 +157,59 @@ fn output_state_target(plan: &OutputPhysicalTypePlan, lowering: &ContractStateLo
                 .clone(),
         ),
     };
+    let generated_fields = plan_generated_fields(source_actor, &physical, transition, model)?;
     Ok(OutputStateTarget {
-        #[cfg(test)]
-        target: plan.target().clone(),
         #[cfg(test)]
         canonical_target: plan.canonical_target().clone(),
         sil_type: render_sil_state_type(plan.sil_type())?,
         named_physical_layout,
+        physical,
+        generated_fields,
     })
+}
+
+fn plan_generated_fields(
+    source_actor: &ActorDecl,
+    target: &TargetPhysicalPlan,
+    transition: &CompilerRouteTransition,
+    model: &Model<'_>,
+) -> Result<BTreeMap<GeneratedFieldId, String>> {
+    let mut families_to_pack = transition.families_to_pack.clone();
+    let generated = target
+        .storage_to_physical()
+        .generated_fields()
+        .iter()
+        .map(|id| {
+            let field = target
+                .physical()
+                .field(&PhysicalFieldId::Generated(id.clone()))
+                .ok_or_else(|| ArgentError::new("generated output field is missing from its physical layout"))?;
+            let expr = match id {
+                GeneratedFieldId::Template(_) | GeneratedFieldId::RouteFamilyTable { .. } => field.sil_name().to_string(),
+                GeneratedFieldId::RouteFamilyDigest { family, .. } => {
+                    let Some(index) = families_to_pack.iter().position(|candidate| candidate == family) else {
+                        return Ok((id.clone(), field.sil_name().to_string()));
+                    };
+                    families_to_pack.remove(index);
+                    let family = model
+                        .route_family(family)
+                        .ok_or_else(|| ArgentError::new(format!("output transition references unknown route family `{family}`")))?;
+                    if model.route_family_for_actor(&source_actor.name).is_some_and(|source_family| source_family.id == family.id) {
+                        format!("blake3(byte[]({}))", hidden_route_family_table_name(family))
+                    } else {
+                        let preimage =
+                            family.table_actors().iter().map(|actor| hidden_template_name(actor)).collect::<Vec<_>>().join(" + ");
+                        format!("blake3(byte[]({preimage}))")
+                    }
+                }
+            };
+            Ok((id.clone(), expr))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    if let Some(family) = families_to_pack.first() {
+        return Err(ArgentError::new(format!("output transition packs route family `{family}` without a generated target field")));
+    }
+    Ok(generated)
 }
 
 #[derive(Clone)]
@@ -178,6 +272,118 @@ impl AuthoredStateExpr {
     pub(in crate::compiler::codegen) fn into_sil(self) -> String {
         self.sil
     }
+
+    pub(in crate::compiler::codegen) fn sil(&self) -> &str {
+        &self.sil
+    }
+
+    pub(in crate::compiler::codegen) fn rebound(mut self, sil: impl Into<String>) -> Self {
+        self.sil = sil.into();
+        self
+    }
+}
+
+/// A complete physical value accepted by an output-state builtin.
+pub(in crate::compiler::codegen) struct PhysicalStateExpr {
+    sil_type: String,
+    sil: String,
+    materialized: bool,
+}
+
+impl PhysicalStateExpr {
+    pub(in crate::compiler::codegen) fn into_argument(self, out: &mut String, indent: usize, binding: impl AsRef<str>) -> String {
+        if !self.materialized {
+            return self.sil;
+        }
+        let binding = binding.as_ref();
+        push_indent(out, indent);
+        out.push_str(&format!("{} {binding} = {};\n", self.sil_type, self.sil));
+        binding.to_string()
+    }
+}
+
+/// Lower one complete authored value through storage into its target layout.
+pub(in crate::compiler::codegen) fn materialize_output_state(
+    target: &OutputStateTarget,
+    authored: AuthoredStateExpr,
+    model: &Model<'_>,
+    indent: usize,
+) -> Result<PhysicalStateExpr> {
+    if authored.source != *target.physical.source() {
+        return Err(ArgentError::new(format!(
+            "authored state `{}` cannot initialize physical target `{}`",
+            authored.source.as_str(),
+            target.physical.source().as_str()
+        )));
+    }
+    if target.physical.source_to_storage().is_identity()
+        && target.physical.storage_to_physical().is_identity()
+        && target.sil_type == authored.source.as_str()
+    {
+        return Ok(PhysicalStateExpr { sil_type: target.sil_type.clone(), sil: authored.sil, materialized: false });
+    }
+
+    let mut physical_fields = BTreeMap::new();
+    for field in target.physical.source_to_storage().fields() {
+        let physical = target
+            .physical
+            .storage_to_physical()
+            .physical_field(field.storage())
+            .ok_or_else(|| ArgentError::new("authored output field has no physical target mapping"))?
+            .clone();
+        let source_expr = format!("{}.{}", authored.sil, field.source().field());
+        let storage_expr = match field.expanded_state() {
+            Some(expanded) => state_payload_digest_expr(expanded.as_str(), &source_expr, model)?,
+            None => source_expr,
+        };
+        if physical_fields.insert(physical, storage_expr).is_some() {
+            return Err(ArgentError::new("authored output fields map to the same physical target field"));
+        }
+    }
+    for (id, expr) in &target.generated_fields {
+        if physical_fields.insert(PhysicalFieldId::Generated(id.clone()), expr.clone()).is_some() {
+            return Err(ArgentError::new("generated output field overlaps an authored storage field"));
+        }
+    }
+
+    let field_indent = " ".repeat(indent + 4);
+    let close_indent = " ".repeat(indent);
+    let mut out = format!("{} {{\n", target.sil_type);
+    let mut emitted_generated_header = false;
+    let mut emitted_storage_header = false;
+    for field in target.physical.physical().fields() {
+        match field.id() {
+            PhysicalFieldId::Generated(_) if !emitted_generated_header => {
+                out.push_str(&format!("{field_indent}// :: generated fields\n"));
+                emitted_generated_header = true;
+            }
+            PhysicalFieldId::Storage(_) if !emitted_storage_header => {
+                out.push_str(&format!("{field_indent}// :: user declared fields\n"));
+                emitted_storage_header = true;
+            }
+            PhysicalFieldId::Generated(_) | PhysicalFieldId::Storage(_) => {}
+        }
+        let expr = physical_fields
+            .remove(field.id())
+            .ok_or_else(|| ArgentError::new(format!("physical output field `{}` has no materialization source", field.sil_name())))?;
+        out.push_str(&format!("{field_indent}{}: {expr},\n", field.sil_name()));
+    }
+    if !physical_fields.is_empty() {
+        return Err(ArgentError::new("output materialization contains fields outside its physical target layout"));
+    }
+    out.push_str(&close_indent);
+    out.push('}');
+    Ok(PhysicalStateExpr { sil_type: target.sil_type.clone(), sil: out, materialized: true })
+}
+
+pub(in crate::compiler::codegen) fn preserve_exact_self(out: &mut String, indent: usize, output_index: &str) {
+    push_generated_binary_require(
+        out,
+        indent,
+        &format!("tx.outputs[{output_index}].scriptPubKey"),
+        "==",
+        "tx.inputs[this.activeInputIndex].scriptPubKey",
+    );
 }
 
 impl SourceStateAccess {

@@ -10,11 +10,10 @@ use crate::artifact::*;
 use crate::codec::encode_hex;
 use crate::compiler::model::link::LinkedActor;
 use crate::compiler::model::{
-    ClauseActorTypeRef, CompilerRouteTransition, CovenantGroup, CovenantIdSource, EntryModel, GeneratedFieldId, InteractionSource,
-    Model, PhysicalFieldId, PhysicalStateLayout, RouteFamily, RouteRootLeaf, SilStateType, SourceStateId, StaticActorTarget,
-    actor_enum_variant_const_expr, clause_actor_type_ref, lower_layout_type, observed_is_dynamic_binding,
-    observed_open_state_for_decl, packed_field_len, packed_layout_field_len, resolve_observe_covenant_id_source,
-    source_actor_type_state_for_expr, spawn_target_state,
+    ClauseActorTypeRef, CovenantGroup, CovenantIdSource, EntryModel, GeneratedFieldId, InteractionSource, Model, PhysicalFieldId,
+    PhysicalStateLayout, RouteFamily, RouteRootLeaf, SilStateType, SourceStateId, StaticActorTarget, actor_enum_variant_const_expr,
+    clause_actor_type_ref, lower_layout_type, observed_is_dynamic_binding, observed_open_state_for_decl, packed_field_len,
+    packed_layout_field_len, resolve_observe_covenant_id_source, source_actor_type_state_for_expr, spawn_target_state,
 };
 use crate::compiler::naming::{is_identifier, to_snake};
 use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, TokenKind, lex};
@@ -3435,31 +3434,12 @@ pub(super) fn hidden_template_object_fields_for_state(
     );
     if !same_storage {
         // A named state carries payload fields, not any app actor's route cut.
-        return hidden_template_object_fields(source_actor, RouteFieldKind::None, &[], model);
+        return hidden_template_object_fields(RouteFieldKind::None);
     }
-    hidden_template_object_fields(source_actor, route_field_kind_for_actor(&source_actor.name, model), &[], model)
+    hidden_template_object_fields(route_field_kind_for_actor(&source_actor.name, model))
 }
 
-pub(super) fn hidden_template_object_fields_for_actor(
-    source_actor: &ActorDecl,
-    target_actor: &str,
-    transition: Option<&CompilerRouteTransition>,
-    model: &Model<'_>,
-) -> Vec<(String, String)> {
-    hidden_template_object_fields(
-        source_actor,
-        route_field_kind_for_actor(target_actor, model),
-        transition.map_or(&[], |transition| transition.families_to_pack.as_slice()),
-        model,
-    )
-}
-
-pub(super) fn hidden_template_object_fields(
-    source_actor: &ActorDecl,
-    target_fields: RouteFieldKind<'_>,
-    families_to_pack: &[String],
-    model: &Model<'_>,
-) -> Vec<(String, String)> {
+fn hidden_template_object_fields(target_fields: RouteFieldKind<'_>) -> Vec<(String, String)> {
     match target_fields {
         RouteFieldKind::None => Vec::new(),
         RouteFieldKind::Direct { actor_templates, family_commitments } => {
@@ -3468,10 +3448,8 @@ pub(super) fn hidden_template_object_fields(
                 .map(|actor| (hidden_template_name(actor), hidden_template_name(actor)))
                 .collect::<Vec<_>>();
             fields.extend(family_commitments.into_iter().map(|family| {
-                (
-                    hidden_route_family_commitment_name(family),
-                    hidden_route_family_commitment_expr(source_actor, family, families_to_pack, model),
-                )
+                let name = hidden_route_family_commitment_name(family);
+                (name.clone(), name)
             }));
             fields
         }
@@ -3481,10 +3459,8 @@ pub(super) fn hidden_template_object_fields(
                 .map(|actor| (hidden_template_name(actor), hidden_template_name(actor)))
                 .collect::<Vec<_>>();
             fields.extend(family_commitments.into_iter().map(|family| {
-                (
-                    hidden_route_family_commitment_name(family),
-                    hidden_route_family_commitment_expr(source_actor, family, families_to_pack, model),
-                )
+                let name = hidden_route_family_commitment_name(family);
+                (name.clone(), name)
             }));
             for family in families {
                 let table_expr = hidden_route_family_table_name(family);
@@ -3496,24 +3472,6 @@ pub(super) fn hidden_template_object_fields(
             fields
         }
     }
-}
-
-fn hidden_route_family_commitment_expr(
-    source_actor: &ActorDecl,
-    family: &RouteFamily,
-    families_to_pack: &[String],
-    model: &Model<'_>,
-) -> String {
-    if !families_to_pack.contains(&family.id) {
-        return hidden_route_family_commitment_name(family);
-    }
-
-    if model.route_family_for_actor(&source_actor.name).is_some_and(|source_family| source_family.id == family.id) {
-        return format!("blake3(byte[]({}))", hidden_route_family_table_name(family));
-    }
-
-    let preimage = family.table_actors().iter().map(|actor| hidden_template_name(actor)).collect::<Vec<_>>().join(" + ");
-    format!("blake3(byte[]({preimage}))")
 }
 
 fn template_receipt_id(actor: &str) -> String {

@@ -2649,7 +2649,7 @@ fn same_template_shortcut_redeems_self_transition_and_rejects_changed_template()
             actor Foo owns FooState {
                 entry bump(int amount) emits next: Foo {
                     unrestricted(next.value);
-                    State next_state = {
+                    FooState next_state = {
                         count: count + amount,
                     };
                     become next <- Foo(next_state);
