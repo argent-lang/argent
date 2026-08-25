@@ -29,13 +29,13 @@ contract Forager(
         int generation;
     }
 
-    // :: shared helper functions
-    function abs1(int value) : int {
-        int result = value;
-        if (value < 0) {
-            result = 0 - value;
+    // :: global shared functions (vars prefixed with gen__glob_ for creating a unique namespace)
+    function abs1(int gen__glob_value) : int {
+        int gen__glob_result = gen__glob_value;
+        if (gen__glob_value < 0) {
+            gen__glob_result = 0 - gen__glob_value;
         }
-        return result;
+        return gen__glob_result;
     }
 
     // :: route templates

@@ -28,9 +28,12 @@ those pieces usable from Argent.
 - Named actor flows use a leader-auth output pattern by default.
 - True cov-output N:M transitions are singleton per covenant id per transaction;
   ordinary named actor flows use auth-output coordination instead.
-- Helper function bodies are expected to already be valid Silverscript-shaped
-  code. Silverscript remains responsible for final helper/body validity where
-  Argent has not lowered the expression itself.
+- Top-level helper functions are global. They may use their parameters and
+  locals, shared constants, other functions, and explicit runtime context, but
+  cannot capture actor constructor or state fields through bare names.
+- Helper bodies are expected to otherwise be valid Silverscript-shaped code.
+  Silverscript remains responsible for final helper/body validity where Argent
+  has not lowered the expression itself.
 
 ## Application and covenant domains
 

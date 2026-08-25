@@ -23,7 +23,7 @@ use crate::error::{ArgentError, Result};
 use silverscript_lang::ast::Expr as SilExpr;
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract};
 
-use super::sil::{lower_entry_body, lower_entry_expr};
+use super::sil::{GlobalFunctionLowerer, lower_entry_body, lower_entry_expr};
 
 #[cfg(test)]
 mod tests;
@@ -115,7 +115,7 @@ fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
     emit_shared_constants(&mut out, model)?;
     emit_imported_template_constants(&mut out, &imported_template_specs_for_actor(actor, model));
     emit_state_layouts(&mut out, actor, model)?;
-    emit_shared_functions(&mut out, model);
+    emit_shared_functions(&mut out, model)?;
 
     emit_section_header(&mut out, "Route templates");
     emit_route_template_table(&mut out, actor, model);
@@ -320,23 +320,26 @@ fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model
     Ok(())
 }
 
-fn emit_shared_functions(out: &mut String, model: &Model<'_>) {
+fn emit_shared_functions(out: &mut String, model: &Model<'_>) -> Result<()> {
     if !model.functions.is_empty() {
-        emit_section_header(out, "Shared helper functions");
+        emit_section_header(out, "Global shared functions (vars prefixed with gen__glob_ for creating a unique namespace)");
+        let lowerer = GlobalFunctionLowerer::new(model);
         for function in &model.functions {
+            let function = lowerer.lower(function)?;
             let params = function
                 .params
                 .iter()
-                .map(|param| format!("{} {}", lower_type_ref(&param.ty, model), param.name))
+                .map(|param| format!("{} {}", lower_type_ref(param.ty, model), param.name))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let return_type = function.return_ty.as_ref().map(|ty| format!(" : {}", lower_type_ref(ty, model))).unwrap_or_default();
+            let return_type = function.return_ty.map(|ty| format!(" : {}", lower_type_ref(ty, model))).unwrap_or_default();
             out.push_str(&format!("    function {}({}){return_type} {{\n", function.name, params));
             out.push_str(&indent_block_body(&function.body, 8));
             out.push_str("    }\n");
         }
         out.push('\n');
     }
+    Ok(())
 }
 
 fn emit_entry(out: &mut String, actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Result<()> {

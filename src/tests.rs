@@ -161,8 +161,8 @@ fn build_inline_loads_explicit_standard_module() {
     let sil = std::fs::read_to_string(out_dir.join("sil/Issuer.sil")).expect("generated Issuer Sil exists");
 
     assert!(artifact.modules.iter().any(|module| module == "std::core"));
-    assert!(sil.contains("function invocation_uid(byte[] domain_) : byte[32]"), "{sil}");
-    assert!(sil.contains("return blake2bWithKey(byte[](outpoint_), domain_);"), "{sil}");
+    assert!(sil.contains("function invocation_uid(byte[] gen__glob_domain) : byte[32]"), "{sil}");
+    assert!(sil.contains("return blake2bWithKey(byte[](gen__glob_outpoint), gen__glob_domain);"), "{sil}");
     assert!(sil.contains("byte[32] uid = invocation_uid(domain);"), "{sil}");
 
     let _ = std::fs::remove_dir_all(out_dir);
