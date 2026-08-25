@@ -73,14 +73,20 @@ contract Cell(
             gen__remote_observed_agent_suffix_len,
             observed_agent
         );
-        State next_cell = State {
+        CellState next_cell = CellState {
             // :: user declared fields
             agent_covid: agent_covid,
             agent_type: agent_type,
             tick: tick + 1,
         };
+        State gen__state_cell_state = State {
+            // :: user declared fields
+            agent_covid: next_cell.agent_covid,
+            agent_type: next_cell.agent_type,
+            tick: next_cell.tick,
+        };
         // :: become Cell
-        validateOutputState(gen__cell_output_idx, next_cell);
+        validateOutputState(gen__cell_output_idx, gen__state_cell_state);
     }
 
 }

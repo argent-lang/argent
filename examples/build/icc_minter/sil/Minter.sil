@@ -13,8 +13,8 @@ contract Minter(
     byte constant IDENTIFIER_COVENANT_ID = 0x02;
 
     // :: linked templates
-    byte[32] constant gen__kcc20_asset__kcc20_template_const = byte[32](0x2acc1d722544817061d8833bd251a9a1728ee987305630f4d9da12130aa1ce84);
-    byte[32] constant gen__kcc20_asset__minter_proxy_template_const = byte[32](0x7c7eae3f0d65a401154f7f2466796b92e36efda73e1454159ea5e42a516b3551);
+    byte[32] constant gen__kcc20_asset__kcc20_template_const = byte[32](0x311704734d411a4bab6a5e623f668669ed9f14995fa2748ccbceb2db2d40a387);
+    byte[32] constant gen__kcc20_asset__minter_proxy_template_const = byte[32](0x860430b9c0de58816ec9d8f097c0f19fbc0dfef6979b9cddfce3bb95fb5464ad);
 
     // :: state layouts
     struct MinterState {
@@ -112,15 +112,22 @@ contract Minter(
             gen__kcc20_asset__kcc20_suffix,
             gen__kcc20_asset__kcc20_template
         );
-        State next_controller = State {
+        MinterState next_controller = MinterState {
             // :: user declared fields
             owner: owner,
             kcc20_covid: kcc20_covid,
             amount: amount - minted_amount,
             initialized: initialized,
         };
+        State gen__state_controller_state = State {
+            // :: user declared fields
+            owner: next_controller.owner,
+            kcc20_covid: next_controller.kcc20_covid,
+            amount: next_controller.amount,
+            initialized: next_controller.initialized,
+        };
         // :: become Minter
-        validateOutputState(gen__controller_output_idx, next_controller);
+        validateOutputState(gen__controller_output_idx, gen__state_controller_state);
     }
 
 }

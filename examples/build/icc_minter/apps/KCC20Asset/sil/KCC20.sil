@@ -45,14 +45,20 @@ contract KCC20(
         } else {
             require(false);
         }
-        State next_state = State {
+        KCC20State next_state = KCC20State {
             // :: user declared fields
             owner_identifier: new_owner_identifier,
             identifier_type: new_identifier_type,
             amount: amount,
         };
+        State gen__state_next_state = State {
+            // :: user declared fields
+            owner_identifier: next_state.owner_identifier,
+            identifier_type: next_state.identifier_type,
+            amount: next_state.amount,
+        };
         // :: become KCC20
-        validateOutputState(gen__next_output_idx, next_state);
+        validateOutputState(gen__next_output_idx, gen__state_next_state);
     }
 
 }

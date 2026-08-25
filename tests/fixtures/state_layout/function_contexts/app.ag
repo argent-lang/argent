@@ -34,10 +34,20 @@ actor Aligned owns SharedState {
 
     entry inspect(SharedState value, SharedState[2] fixed, SharedState[] dynamic) emits none {
         SharedState scalar = actor_identity(global_identity(value));
+        SharedState constructed = SharedState {
+            left: scalar.left,
+            right: scalar.right,
+        };
+        SharedState reassigned = constructed;
+        reassigned = global_identity(value);
+        SharedState {
+            left: int extracted_left,
+            right: int extracted_right,
+        } = reassigned;
         SharedState[2] fixed_result = actor_fixed(global_fixed(fixed));
         SharedState[] dynamic_result = actor_dynamic(global_dynamic(dynamic));
 
-        require(scalar.left + scalar.right >= 0);
+        require(scalar.left + scalar.right + extracted_left + extracted_right >= 0);
         require(fixed_result[0].left >= 0);
         require(dynamic_result.length >= 0);
     }
@@ -58,9 +68,14 @@ actor Routed owns SharedState {
 
     entry advance(SharedState value, SharedState[2] fixed, SharedState[] dynamic) emits next: Routed {
         SharedState scalar = actor_identity(global_identity(value));
+        SharedState constructed = SharedState {
+            left: scalar.left,
+            right: scalar.right,
+        };
         SharedState[2] fixed_result = actor_fixed(global_fixed(fixed));
         SharedState[] dynamic_result = actor_dynamic(global_dynamic(dynamic));
 
+        require(constructed.left + constructed.right >= 0);
         require(fixed_result[0].left >= 0);
         require(dynamic_result.length >= 0);
         unrestricted(next.value);

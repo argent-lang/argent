@@ -27,13 +27,18 @@ contract Asset(
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Asset
 
         require(checkSig(s, p));
-        State next_state = State {
+        AssetState next_state = AssetState {
             // :: user declared fields
             owner: new_owner,
             amount: amount,
         };
+        State gen__state_next_state = State {
+            // :: user declared fields
+            owner: next_state.owner,
+            amount: next_state.amount,
+        };
         // :: become Asset
-        validateOutputState(gen__next_output_idx, next_state);
+        validateOutputState(gen__next_output_idx, gen__state_next_state);
     }
 
     // :: leader entry (1:N)
@@ -48,20 +53,30 @@ contract Asset(
         require(checkSig(s, p));
         require(amount_a > 0);
         require(amount_a < amount);
-        State first = State {
+        AssetState first = AssetState {
             // :: user declared fields
             owner: owner_a,
             amount: amount_a,
         };
-        State second = State {
+        AssetState second = AssetState {
             // :: user declared fields
             owner: owner,
             amount: amount - amount_a,
         };
+        State gen__state_part_a_state = State {
+            // :: user declared fields
+            owner: first.owner,
+            amount: first.amount,
+        };
         // :: become Asset
-        validateOutputState(gen__part_a_output_idx, first);
+        validateOutputState(gen__part_a_output_idx, gen__state_part_a_state);
+        State gen__state_part_b_state = State {
+            // :: user declared fields
+            owner: second.owner,
+            amount: second.amount,
+        };
         // :: become Asset
-        validateOutputState(gen__part_b_output_idx, second);
+        validateOutputState(gen__part_b_output_idx, gen__state_part_b_state);
     }
 
     // :: leader entry (M:N)
@@ -80,13 +95,18 @@ contract Asset(
         int gen__merged_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
         require(checkSig(s, p));
-        State next_state = State {
+        AssetState next_state = AssetState {
             // :: user declared fields
             owner: owner,
             amount: amount + other.amount,
         };
+        State gen__state_merged_state = State {
+            // :: user declared fields
+            owner: next_state.owner,
+            amount: next_state.amount,
+        };
         // :: become Asset
-        validateOutputState(gen__merged_output_idx, next_state);
+        validateOutputState(gen__merged_output_idx, gen__state_merged_state);
     }
 
 }

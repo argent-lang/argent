@@ -1,11 +1,12 @@
 //! Lowers structured Argent entry bodies into generated Sil source.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 
 use crate::compiler::model::{
-    ActorTarget, CompilerRouteTransition, CovenantGroup, EntryInteraction, InteractionSource, Model, RouteFamily, StaticActorTarget,
-    TemplateSelector, actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding, observed_open_bindings,
-    observed_open_state_for_decl, parse_actor_enum_selector, parse_actor_enum_variant, spawn_target_state,
+    ActorTarget, CompilerRouteTransition, CovenantGroup, EntryInteraction, InteractionSource, Model, RouteFamily, SourceStateId,
+    StaticActorTarget, TemplateSelector, actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding,
+    observed_open_bindings, observed_open_state_for_decl, parse_actor_enum_selector, parse_actor_enum_variant, spawn_target_state,
 };
 use crate::compiler::naming::to_snake;
 use crate::compiler::syntax::body::{EntryBinding, EntryLocalDecl, EntryRoute, EntryStatement, EntryStructDestructure};
@@ -13,10 +14,15 @@ use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, Span, Token, Tok
 use crate::compiler::syntax::word;
 use crate::compiler::syntax::*;
 use crate::error::{ArgentError, Result};
+use silverscript_lang::ast::visit::{AstVisitorMut, visit_function_mut, walk_expr_mut};
+use silverscript_lang::ast::{
+    Expr as SilExpr, ExprKind as SilExprKind, Statement as SilStatement, parse_expression_ast, parse_function_ast,
+};
 
 // Body lowering uses the surrounding Sil emitter's shared witness plans,
 // layout helpers, and generated names.
 use super::super::emitter::*;
+use super::functions::ContractFunctionPlan;
 use super::state_boundary::{EntryInputStatePlan, SourceStateAccess};
 use super::token_refs::{RefReplacements, count_qualified_ref};
 
@@ -29,8 +35,9 @@ pub(in crate::compiler::codegen) fn lower_entry_body(
     entry: &EntryDecl,
     model: &Model<'_>,
     input_states: &EntryInputStatePlan,
+    function_plan: &ContractFunctionPlan,
 ) -> Result<LoweredEntryBody> {
-    BodyLowerer::new(actor, entry, model, Some(input_states))?.lower()
+    BodyLowerer::new(actor, entry, model, Some(input_states), function_plan)?.lower()
 }
 
 /// Source details needed while lowering one non-current covenant output.
@@ -75,6 +82,7 @@ struct BodyLowerer<'a, 'm, 'p> {
     entry: &'a EntryDecl,
     model: &'m Model<'a>,
     input_states: Option<&'p EntryInputStatePlan>,
+    function_plan: &'p ContractFunctionPlan,
     bindings: BodyBindings,
     /// Entry-wide candidates; the current binding decides selector visibility.
     selector_catalog: BTreeMap<String, TemplateSelector>,
@@ -84,6 +92,31 @@ struct BodyLowerer<'a, 'm, 'p> {
     validated_spawns: BTreeSet<String>,
     conditional_depth: usize,
     current_statement: Option<Span>,
+}
+
+struct PlannedStateArgument {
+    span: Range<usize>,
+    source: SourceStateId,
+}
+
+struct StateArgumentCollector<'a> {
+    function_plan: &'a ContractFunctionPlan,
+    arguments: Vec<PlannedStateArgument>,
+}
+
+impl<'i> AstVisitorMut<'i> for StateArgumentCollector<'_> {
+    fn visit_expr(&mut self, expr: &mut SilExpr<'i>) {
+        if let SilExprKind::Call { name, args, .. } = &expr.kind
+            && let Some(signature) = self.function_plan.signature(name)
+        {
+            for (index, arg) in args.iter().enumerate() {
+                if let Some(source) = signature.param(index) {
+                    self.arguments.push(PlannedStateArgument { span: arg.span.start()..arg.span.end(), source: source.clone() });
+                }
+            }
+        }
+        walk_expr_mut(self, expr);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -257,6 +290,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         entry: &'a EntryDecl,
         model: &'m Model<'a>,
         input_states: Option<&'p EntryInputStatePlan>,
+        function_plan: &'p ContractFunctionPlan,
     ) -> Result<Self> {
         let selector_catalog = model.template_selectors_for_entry(actor, entry)?;
         let mut bindings = BodyBindings::new();
@@ -364,6 +398,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             entry,
             model,
             input_states,
+            function_plan,
             bindings,
             selector_catalog,
             output_values,
@@ -502,8 +537,13 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         body: &EntryStatement,
     ) -> Result<()> {
         let header = self.entry.body.span_text(header).trim();
+        let header = split_top_level_commas(header)
+            .into_iter()
+            .map(|component| self.lower_expr(component.trim(), None, indent))
+            .collect::<Result<Vec<_>>>()?
+            .join(", ");
         push_indent(out, indent);
-        out.push_str(&format!("for ({}) {{\n", self.lower_expr(header, None, indent)?));
+        out.push_str(&format!("for ({header}) {{\n"));
 
         self.conditional_depth += 1;
         self.bindings.enter_scope();
@@ -532,13 +572,11 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             self.lower_actor_type_statement(out, indent, state, name, &expr)?;
             return Ok(());
         }
-        let initializer_ty =
-            if self.model.has_state(source_ty) { self.lowered_type_for_local_initializer(source_ty, expr.trim()) } else { None };
-        let lowered_ty = initializer_ty.clone().unwrap_or_else(|| self.lower_local_type(source_ty));
+        let lowered_ty = self.lower_local_type(source_ty);
         let declared_type = self.entry.body.span_text(declaration.declared_type).trim();
         let type_suffix = declared_type.strip_prefix(source_ty).expect("declared type starts with its parsed source type");
         let emitted_type = format!("{lowered_ty}{type_suffix}");
-        let lowered = self.lower_typed_local_initializer(source_ty, &lowered_ty, initializer_ty.as_deref(), &expr, indent)?;
+        let lowered = self.lower_typed_local_initializer(source_ty, &lowered_ty, &expr, indent)?;
         push_indent(out, indent);
         out.push_str(&format!("{emitted_type} {name} = {lowered};\n"));
         let mut binding = BodyBinding::typed(source_ty, lowered_ty);
@@ -561,14 +599,26 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     ) -> Result<()> {
         let source = self.entry.body.span_text(span).trim();
         let mut statement = source.strip_suffix(';').ok_or_else(|| self.error("unterminated statement"))?.trim().to_string();
+        let mut value_lowered = false;
 
         if let Some(destructuring) = destructuring {
             let source_type = self.entry.body.span_text(destructuring.declared_type);
             let value = self.entry.body.span_text(destructuring.value).trim();
-            let lowered_type = self.bindings.lowered_type_for_expr(value).unwrap_or_else(|| source_type.to_string());
-            let relative_start = destructuring.declared_type.start - span.start;
-            let relative_end = destructuring.declared_type.end - span.start;
-            statement.replace_range(relative_start..relative_end, &lowered_type);
+            let authored_state = self.model.has_state(source_type).then_some(source_type);
+            let lowered_type = authored_state
+                .map(|state| self.lower_local_type(state))
+                .or_else(|| self.bindings.lowered_type_for_expr(value))
+                .unwrap_or_else(|| source_type.to_string());
+            let lowered_value = self.lower_expr(value, authored_state, indent)?;
+            let relative = (destructuring.value.start - span.start)..(destructuring.value.end - span.start);
+            statement.replace_range(relative, &lowered_value);
+            value_lowered = true;
+            let relative = (destructuring.declared_type.start - span.start)..(destructuring.declared_type.end - span.start);
+            statement.replace_range(relative, &lowered_type);
+        } else if let Some((range, expected_state)) = self.plain_assignment_expr(&statement) {
+            let lowered = self.lower_expr(&statement[range.clone()], expected_state.as_deref(), indent)?;
+            statement.replace_range(range, &lowered);
+            value_lowered = true;
         }
 
         if let Some(value) = parse_unrestricted_output_value(&statement) {
@@ -584,12 +634,28 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         }
 
         push_indent(out, indent);
-        out.push_str(&self.lower_expr(&statement, None, indent)?);
+        let statement = lower_co_spent_calls(&statement, &self.bindings)?;
+        let statement = lower_actor_enum_literals(&statement, self.model)?;
+        let statement = if value_lowered { statement } else { self.lower_function_state_args(&statement, indent)? };
+        let statement = self.lower_refs(&statement)?;
+        out.push_str(&statement);
         out.push_str(";\n");
         for binding in bindings {
             self.declare_sil_binding(binding);
         }
         Ok(())
+    }
+
+    fn plain_assignment_expr(&self, statement: &str) -> Option<(Range<usize>, Option<String>)> {
+        let prefix = "function gen__entry_statement() { ";
+        let source = format!("{prefix}{statement}; }}");
+        let parsed = parse_function_ast(&source).ok()?;
+        let [SilStatement::Assign { name, expr, .. }] = parsed.body.as_slice() else {
+            return None;
+        };
+        let range = (expr.span.start() - prefix.len())..(expr.span.end() - prefix.len());
+        let expected_state = self.bindings.source_type(name).filter(|ty| self.model.has_state(ty)).map(str::to_string);
+        Some((range, expected_state))
     }
 
     fn declare_sil_binding(&mut self, binding: &EntryBinding) {
@@ -995,8 +1061,8 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     /// that Sil cannot traverse directly.
     fn materialize_route_source_state(&mut self, out: &mut String, indent: usize, route: &RouteCall) -> Result<String> {
         let expr = strip_outer_parentheses(route.state.trim());
-        let source_state = if let Some(source_state) = self.authored_state_return_for_call(expr) {
-            Some(source_state)
+        let source_state = if let Some(source_state) = self.function_state_result(expr) {
+            Some(source_state.as_str().to_string())
         } else if indexed_root_binding(expr).is_some() {
             // Sil flattens struct arrays, but cannot directly traverse a nested
             // struct field through an array index. Bind that element first.
@@ -1019,14 +1085,6 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         out.push_str(&format!("{source_state} {name} = {lowered};\n"));
         self.bindings.declare(name.clone(), BodyBinding::typed(source_state.clone(), source_state));
         Ok(name)
-    }
-
-    fn authored_state_return_for_call(&self, expr: &str) -> Option<String> {
-        let function_name = direct_function_call_name(expr)?;
-        let function =
-            self.actor.functions.iter().chain(self.model.functions.iter().copied()).find(|function| function.name == function_name)?;
-        let return_ty = function.return_ty.as_ref()?;
-        (return_ty.array.is_none() && self.model.has_state(&return_ty.name)).then(|| return_ty.name.clone())
     }
 
     fn lower_state_expr_for_layout(
@@ -1249,19 +1307,111 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             return self.lower_digest_expr(value);
         }
         if let Some((state_name, body)) = split_state_constructor(expr) {
+            if let Some(expected_ty) = expected_ty
+                && self.model.has_state(expected_ty)
+                && state_name != expected_ty
+            {
+                return Err(self.error(format!("state constructor `{state_name}` cannot initialize authored `{expected_ty}`")));
+            }
             return self.lower_state_constructor(state_name, expected_ty.unwrap_or(state_name), body, indent);
         }
         if let Some(access) = self.bindings.state_access_for_expr(expr) {
-            if expected_ty == Some(access.source_type()) {
-                return access.require_authored_value(indent).map_err(|err| self.error(err.to_string()));
+            let Some(expected_ty) = expected_ty else {
+                return Err(self.error(format!(
+                    "state input `{expr}` is physical at this boundary and requires an authored `{}` context",
+                    access.source_type()
+                )));
+            };
+            if expected_ty != access.source_type() {
+                return Err(
+                    self.error(format!("state input `{expr}` has authored type `{}`, not `{expected_ty}`", access.source_type()))
+                );
             }
-            return Ok(access.physical_expr().to_string());
+            let authored = access.require_authored_value(indent).map_err(|err| self.error(err.to_string()))?;
+            debug_assert_eq!(authored.source().as_str(), expected_ty);
+            return Ok(authored.into_sil());
         }
-        self.lower_refs(expr)
+        // Normalize Argent-only syntax before asking Sil to classify calls and
+        // their exact argument spans.
+        let expr = lower_co_spent_calls(expr, &self.bindings)?;
+        let expr = lower_actor_enum_literals(&expr, self.model)?;
+        if let Some(expected_ty) = expected_ty
+            && self.model.has_state(expected_ty)
+            && let Some(actual) = self.function_state_result(&expr)
+            && actual.as_str() != expected_ty
+        {
+            return Err(self.error(format!("state function expression has authored type `{}`, not `{expected_ty}`", actual.as_str())));
+        }
+        let expr = self.lower_function_state_args(&expr, indent)?;
+        self.lower_refs(&expr)
+    }
+
+    fn function_state_result(&self, expr: &str) -> Option<&SourceStateId> {
+        let parsed = parse_expression_ast(expr).ok()?;
+        let SilExprKind::Call { name, .. } = parsed.kind else {
+            return None;
+        };
+        self.function_plan.signature(&name)?.result()
+    }
+
+    fn lower_function_state_args(&self, expr: &str, indent: usize) -> Result<String> {
+        if !self.contains_state_argument_call(expr)? {
+            return Ok(expr.to_string());
+        }
+        let mut collector = StateArgumentCollector { function_plan: self.function_plan, arguments: Vec::new() };
+        if let Ok(mut parsed) = parse_expression_ast(expr) {
+            collector.visit_expr(&mut parsed);
+        } else {
+            let prefix = "function gen__entry_statement() { ";
+            let source = format!("{prefix}{expr}; }}");
+            let mut function = parse_function_ast(&source).map_err(|err| {
+                self.error(format!("cannot classify state-valued function arguments in expression or statement `{expr}`: {err}"))
+            })?;
+            visit_function_mut(&mut collector, &mut function);
+            for argument in &mut collector.arguments {
+                argument.span = (argument.span.start - prefix.len())..(argument.span.end - prefix.len());
+            }
+        }
+        collector
+            .arguments
+            .sort_by(|left, right| left.span.start.cmp(&right.span.start).then_with(|| right.span.end.cmp(&left.span.end)));
+
+        let mut outermost: Vec<PlannedStateArgument> = Vec::new();
+        for argument in collector.arguments {
+            if outermost.iter().any(|outer| outer.span.start <= argument.span.start && argument.span.end <= outer.span.end) {
+                continue;
+            }
+            outermost.push(argument);
+        }
+
+        let mut out = expr.to_string();
+        for argument in outermost.into_iter().rev() {
+            let source = &expr[argument.span.clone()];
+            let lowered = self.lower_expr(source, Some(argument.source.as_str()), indent)?;
+            out.replace_range(argument.span, &lowered);
+        }
+        Ok(out)
+    }
+
+    fn contains_state_argument_call(&self, expr: &str) -> Result<bool> {
+        let tokens =
+            lex(expr).map_err(|err| self.error(format!("cannot inspect function calls in expression `{expr}`: {}", err.message)))?;
+        Ok(tokens.windows(2).any(|tokens| {
+            let [Token { kind: TokenKind::Ident(name), .. }, Token { kind: TokenKind::Symbol('('), .. }] = tokens else {
+                return false;
+            };
+            self.function_plan.signature(name).is_some_and(|signature| signature.has_authored_state_param())
+        }))
     }
 
     fn lower_self_state_expr(&self, ty: &str, indent: usize) -> Result<String> {
-        let state_name = if ty == "State" { &self.actor.state } else { ty };
+        if ty != "State" {
+            if ty != self.actor.state {
+                return Err(self.error(format!("`self.state` has authored type `{}`, not `{ty}`", self.actor.state)));
+            }
+            return self.lower_authored_self_state_expr(indent);
+        }
+        let state_name = &self.actor.state;
         let fields = self
             .model
             .storage_state(state_name)?
@@ -1272,8 +1422,39 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         self.render_state_object_for_state(state_name, ty, &fields, indent)
     }
 
+    fn lower_authored_self_state_expr(&self, indent: usize) -> Result<String> {
+        let source = self.model.state(&self.actor.state)?;
+        let storage = self.model.storage_state(&self.actor.state)?;
+        let mut fields = Vec::new();
+        for field in &storage.fields {
+            let value = if let Some(digest) =
+                source.expansion.as_ref().and_then(|expansion| expansion.digests.iter().find(|digest| digest.field == field.name))
+            {
+                let spec = state_expansion_witness_specs_for_actor(self.actor, self.model)
+                    .into_iter()
+                    .find(|spec| spec.field == digest.field)
+                    .expect("active expansion digest has an entry witness plan");
+                let memory_fields = self
+                    .model
+                    .state(&digest.state)?
+                    .fields
+                    .iter()
+                    .map(|memory_field| (memory_field.name.clone(), hidden_state_expansion_field_name(&spec, &memory_field.name)))
+                    .collect::<Vec<_>>();
+                self.render_state_object(&digest.state, &digest.state, &memory_fields, Vec::new(), indent + 4)?
+            } else {
+                field.name.clone()
+            };
+            fields.push((field.name.clone(), value));
+        }
+        self.render_state_object(&self.actor.state, &self.actor.state, &fields, Vec::new(), indent)
+    }
+
     fn lower_state_constructor(&self, state_name: &str, sil_type: &str, body: &str, indent: usize) -> Result<String> {
         self.model.state(state_name)?;
+        if sil_type == state_name {
+            return self.lower_authored_state_object(state_name, sil_type, body, indent);
+        }
         self.lower_state_object_for_state(state_name, sil_type, body, indent)
     }
 
@@ -1286,50 +1467,22 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         state_payload_digest_expr(state_name, value, self.model)
     }
 
-    fn lower_typed_local_initializer(
-        &self,
-        source_ty: &str,
-        lowered_ty: &str,
-        initializer_ty: Option<&str>,
-        expr: &str,
-        indent: usize,
-    ) -> Result<String> {
+    fn lower_typed_local_initializer(&self, source_ty: &str, lowered_ty: &str, expr: &str, indent: usize) -> Result<String> {
         if self.model.actor_enums.contains_key(source_ty) {
             return self.lower_actor_enum_initializer(source_ty, expr, indent);
         }
         if let Some(state_name) = self.source_state_for_local_type(source_ty)
             && let Some(body) = split_state_object_literal(expr)
         {
-            if lowered_ty == source_ty && self.model.state(&state_name)?.expansion.is_some() {
+            if lowered_ty == source_ty {
                 return self.lower_authored_state_object(&state_name, lowered_ty, body, indent);
             }
             return self.lower_state_object_for_state(&state_name, lowered_ty, body, indent);
         }
-        if lowered_ty == source_ty
-            && let Some(access) = self.bindings.state_access_for_expr(expr)
-            && access.source_type() == source_ty
-        {
-            return access.require_authored_value(indent).map_err(|err| self.error(err.to_string()));
-        }
-        if self.model.has_state(source_ty) && initializer_ty.is_none_or(|ty| ty != lowered_ty) {
-            let lowered_expr = self.lower_expr(expr, None, indent)?;
-            let fields = self
-                .model
-                .storage_state(source_ty)?
-                .fields
-                .iter()
-                .map(|field| (field.name.clone(), format!("{lowered_expr}.{}", field.name)))
-                .collect::<Vec<_>>();
-            let generated_fields = hidden_template_object_fields_for_state(self.actor, source_ty, self.model);
-            return self.render_state_object(source_ty, lowered_ty, &fields, generated_fields, indent);
+        if self.model.has_state(source_ty) {
+            return self.lower_expr(expr, Some(source_ty), indent);
         }
         self.lower_expr(expr, Some(lowered_ty), indent)
-    }
-
-    fn lowered_type_for_local_initializer(&self, source_ty: &str, expr: &str) -> Option<String> {
-        self.bindings
-            .lowered_type_for_expr(expr)
-            .or_else(|| self.authored_state_return_for_call(expr).filter(|return_ty| return_ty == source_ty))
     }
 
     fn lower_actor_enum_initializer(&self, actor_enum_name: &str, expr: &str, indent: usize) -> Result<String> {
@@ -1366,9 +1519,50 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     }
 
     fn lower_authored_state_object(&self, state_name: &str, sil_type: &str, body: &str, indent: usize) -> Result<String> {
+        if let Some(expansion) = self.model.state(state_name)?.expansion.as_ref() {
+            let fields = parse_state_fields(body);
+            let mut pending = fields.iter().cloned().collect::<BTreeMap<_, _>>();
+            if pending.len() != fields.len() {
+                return Err(ArgentError::new(format!("state `{state_name}` constructor contains duplicate fields")));
+            }
+            let mut lowered_fields = Vec::new();
+            for field in &self.model.storage_state(state_name)?.fields {
+                let Some(raw_expr) = pending.remove(&field.name) else {
+                    if field.virtual_slot {
+                        continue;
+                    }
+                    return Err(ArgentError::new(format!("state `{state_name}` constructor is missing field `{}`", field.name)));
+                };
+                let lowered = if let Some(digest) = expansion.digests.iter().find(|digest| digest.field == field.name) {
+                    if split_state_object_literal(&raw_expr).is_some() {
+                        return Err(ArgentError::new(format!(
+                            "state `{state_name}` constructor slot `{}` must use `{} {{ ... }}`",
+                            digest.field, digest.state
+                        )));
+                    }
+                    self.lower_expr(&raw_expr, Some(&digest.state), indent + 4)?
+                } else {
+                    self.lower_expr(&raw_expr, None, indent + 4)?
+                };
+                lowered_fields.push((field.name.clone(), lowered));
+            }
+            if let Some(extra) = pending.keys().next() {
+                return Err(ArgentError::new(format!("state `{state_name}` constructor has unknown field `{extra}`")));
+            }
+            return self.render_state_object(state_name, sil_type, &lowered_fields, Vec::new(), indent);
+        }
+        let state = self.model.storage_state(state_name)?;
         let fields = parse_state_fields(body)
             .into_iter()
-            .map(|(name, expr)| self.lower_expr(&expr, None, indent + 4).map(|lowered| (name, lowered)))
+            .map(|(name, expr)| {
+                let expected = state
+                    .fields
+                    .iter()
+                    .find(|field| field.name == name)
+                    .filter(|field| field.ty.array.is_none() && self.model.has_state(&field.ty.name))
+                    .map(|field| field.ty.name.as_str());
+                self.lower_expr(&expr, expected, indent + 4).map(|lowered| (name, lowered))
+            })
             .collect::<Result<Vec<_>>>()?;
         self.render_state_object(state_name, sil_type, &fields, Vec::new(), indent)
     }
@@ -1399,11 +1593,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         if source_ty == word::COVENANT_ID {
             return "byte[32]".to_string();
         }
-        let same_storage = match (self.model.storage_state_name(&self.actor.state), self.model.storage_state_name(source_ty)) {
-            (Ok(current_storage), Ok(source_storage)) => current_storage == source_storage,
-            _ => false,
-        };
-        if source_ty == self.actor.state || same_storage { "State".to_string() } else { source_ty.to_string() }
+        self.function_plan.authored_scalar_sil_type(source_ty).unwrap_or(source_ty).to_string()
     }
 
     fn source_state_for_local_type(&self, source_ty: &str) -> Option<String> {
@@ -1574,13 +1764,10 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     }
 
     fn lower_refs(&self, expr: &str) -> Result<String> {
-        // Lower source-level co-spend calls before general reference rewrites.
-        let out = lower_co_spent_calls(expr, &self.bindings)?;
         if let Some(input_states) = self.input_states {
-            input_states.reject_unavailable_field_refs(&out).map_err(|err| self.error(err.to_string()))?;
+            input_states.reject_unavailable_field_refs(expr).map_err(|err| self.error(err.to_string()))?;
         }
-        let out = self.ref_replacements.rewrite(&out)?;
-        lower_actor_enum_literals(&out, self.model)
+        self.ref_replacements.rewrite(expr)
     }
 
     fn error(&self, message: impl Into<String>) -> ArgentError {
@@ -1601,7 +1788,8 @@ pub(in crate::compiler::codegen) fn lower_entry_expr(
     expr: &str,
     expected_ty: Option<&str>,
 ) -> Result<String> {
-    BodyLowerer::new(actor, entry, model, None)?.lower_expr(expr, expected_ty, 8)
+    let function_plan = ContractFunctionPlan::new(actor, model)?;
+    BodyLowerer::new(actor, entry, model, None, &function_plan)?.lower_expr(expr, expected_ty, 8)
 }
 
 fn generated_state_name(route: &RouteCall, state_ty: &str) -> String {
@@ -1631,19 +1819,6 @@ fn split_state_object_literal(expr: &str) -> Option<&str> {
 fn parse_digest_call(expr: &str) -> Option<&str> {
     let expr = expr.trim();
     expr.strip_prefix("digest(")?.strip_suffix(')').map(str::trim)
-}
-
-fn direct_function_call_name(expr: &str) -> Option<&str> {
-    let expr = strip_outer_parentheses(expr.trim());
-    let tokens = lex(expr).ok()?;
-    if !matches!(tokens.first()?.kind, TokenKind::Ident(_)) || !is_symbol(&tokens, 1, '(') {
-        return None;
-    }
-    let close = matching_symbol(&tokens, 1, '(', ')')?;
-    if !matches!(tokens.get(close + 1)?.kind, TokenKind::Eof) {
-        return None;
-    }
-    Some(&expr[tokens[0].span.start..tokens[0].span.end])
 }
 
 fn parse_state_fields(body: &str) -> Vec<(String, String)> {

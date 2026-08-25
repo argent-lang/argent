@@ -30,7 +30,7 @@ fn active_input_state_remains_physical_and_uses_the_covenant_domain_proof() {
     assert_eq!(input.physical_type(), "State");
     assert!(matches!(input.access(), SourceStateAccess::Projected(_)));
     assert_eq!(
-        input.access().require_authored_value(8).expect("identity projection materializes"),
+        input.access().require_authored_value(8).expect("identity projection materializes").into_sil(),
         "CounterState {\n            // :: user declared fields\n            count: other.count,\n        }"
     );
 }
@@ -46,7 +46,9 @@ fn named_identity_input_is_already_an_authored_source_value() {
     assert!(!input.uses_covenant_domain_proof());
     assert_eq!(input.physical_type(), "PeerState");
     assert!(matches!(input.access(), SourceStateAccess::Authored { .. }));
-    assert_eq!(input.access().require_authored_value(8).expect("named input is authored"), "peer");
+    let authored = input.access().require_authored_value(8).expect("named input is authored");
+    assert_eq!(authored.source().as_str(), "PeerState");
+    assert_eq!(authored.into_sil(), "peer");
 }
 
 #[test]
@@ -76,7 +78,7 @@ fn augmented_input_projects_only_user_fields_from_its_actor_keyed_type() {
     let (actor, entry) = actor_entry(&model, "Left", "shift");
     let plan = plan_entry_input_states(actor, entry, &model).expect("input states plan");
     let input = plan.consumed("peer").expect("peer input exists");
-    let authored = input.access().require_authored_value(8).expect("identity user fields materialize");
+    let authored = input.access().require_authored_value(8).expect("identity user fields materialize").into_sil();
 
     assert_eq!(input.physical_type(), "Gen__RightState");
     assert!(matches!(input.access(), SourceStateAccess::Projected(_)));

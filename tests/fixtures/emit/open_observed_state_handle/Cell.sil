@@ -70,14 +70,20 @@ contract Cell(
             gen__actor_type_self_agent_type_suffix_len,
             agent_type
         );
-        State next_cell = State {
+        CellState next_cell = CellState {
             // :: user declared fields
             agent_covid: agent_covid,
             agent_type: agent_type,
             tick: tick + 1,
         };
+        State gen__state_cell_state = State {
+            // :: user declared fields
+            agent_covid: next_cell.agent_covid,
+            agent_type: next_cell.agent_type,
+            tick: next_cell.tick,
+        };
         // :: become Cell
-        validateOutputState(gen__cell_output_idx, next_cell);
+        validateOutputState(gen__cell_output_idx, gen__state_cell_state);
     }
 
 }

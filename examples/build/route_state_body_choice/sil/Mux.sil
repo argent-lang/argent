@@ -32,12 +32,16 @@ contract Mux(
         // :: output next: MoveActor
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
-        State next_board = State {
+        BoardState next_board = BoardState {
+            // :: user declared fields
+            ply: ply + 1,
+        };
+        State gen__state_next_state = State {
             // :: generated fields
             gen__mux_template: gen__mux_template,
             gen__mux_routes: gen__mux_routes,
             // :: user declared fields
-            ply: ply + 1,
+            ply: next_board.ply,
         };
         int gen__target_selector = target;
         require(gen__target_selector >= 0);
@@ -48,7 +52,7 @@ contract Mux(
         // :: become target
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            next_board,
+            gen__state_next_state,
             gen__target_prefix,
             gen__target_suffix,
             gen__target_template

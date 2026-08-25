@@ -47,9 +47,7 @@ contract Issuer(
         require(checkSig(admin_sig, admin_pk));
         int serial = next_serial;
         byte[32] owner = blake2b(byte[](owner_pk));
-        State next_issuer = State {
-            // :: generated fields
-            gen__ticket_template: gen__ticket_template,
+        IssuerState next_issuer = IssuerState {
             // :: user declared fields
             admin: admin,
             next_serial: next_serial + 1,
@@ -62,8 +60,15 @@ contract Issuer(
         };
         require(tx.outputs[gen__issuer_output_idx].value == tx.inputs[this.activeInputIndex].value);
         require(tx.outputs[gen__ticket_output_idx].value > 0);
+        State gen__state_issuer_state = State {
+            // :: generated fields
+            gen__ticket_template: gen__ticket_template,
+            // :: user declared fields
+            admin: next_issuer.admin,
+            next_serial: next_issuer.next_serial,
+        };
         // :: become Issuer
-        validateOutputState(gen__issuer_output_idx, next_issuer);
+        validateOutputState(gen__issuer_output_idx, gen__state_issuer_state);
         // :: become Ticket
         validateOutputStateWithTemplate(
             gen__ticket_output_idx,

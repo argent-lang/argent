@@ -59,6 +59,23 @@ pub(in crate::compiler::codegen) enum SourceStateAccess {
     Projected(ProjectedSourceAccess),
 }
 
+/// A complete expression in one nominal authored state representation.
+#[derive(Debug)]
+pub(in crate::compiler::codegen) struct AuthoredStateExpr {
+    source: SourceStateId,
+    sil: String,
+}
+
+impl AuthoredStateExpr {
+    pub(in crate::compiler::codegen) fn source(&self) -> &SourceStateId {
+        &self.source
+    }
+
+    pub(in crate::compiler::codegen) fn into_sil(self) -> String {
+        self.sil
+    }
+}
+
 impl SourceStateAccess {
     pub(in crate::compiler::codegen) fn source_type(&self) -> &str {
         match self {
@@ -71,6 +88,7 @@ impl SourceStateAccess {
         self.physical().sil_type.as_str()
     }
 
+    #[cfg(test)]
     pub(in crate::compiler::codegen) fn physical_expr(&self) -> &str {
         self.physical().expr.as_str()
     }
@@ -113,9 +131,9 @@ impl SourceStateAccess {
     }
 
     /// Produce a complete named source value, never a physical `State` alias.
-    pub(in crate::compiler::codegen) fn require_authored_value(&self, indent: usize) -> Result<String> {
-        match self {
-            Self::Authored { physical, .. } => Ok(physical.expr.clone()),
+    pub(in crate::compiler::codegen) fn require_authored_value(&self, indent: usize) -> Result<AuthoredStateExpr> {
+        let (source, sil) = match self {
+            Self::Authored { source, physical } => (source.clone(), physical.expr.clone()),
             Self::Projected(access) => {
                 if let Some(field) = access.fields.iter().find(|field| !field.is_identity()) {
                     return Err(ArgentError::new(format!(
@@ -141,9 +159,10 @@ impl SourceStateAccess {
                 }
                 out.push_str(&close_indent);
                 out.push('}');
-                Ok(out)
+                (access.source.clone(), out)
             }
-        }
+        };
+        Ok(AuthoredStateExpr { source, sil })
     }
 }
 

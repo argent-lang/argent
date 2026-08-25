@@ -111,7 +111,7 @@ contract Controller(
             // :: user declared fields
             amount: third_right_amount,
         };
-        State next = State {
+        ControllerState next = ControllerState {
             // :: user declared fields
             pair_type: pair_type,
             launches: launches + 3,
@@ -156,8 +156,13 @@ contract Controller(
             gen__actor_type_self_pair_type_suffix,
             pair_type
         );
+        State gen__state_next_state = State {
+            // :: user declared fields
+            pair_type: next.pair_type,
+            launches: next.launches,
+        };
         // :: become Controller
-        validateOutputState(gen__next_output_idx, next);
+        validateOutputState(gen__next_output_idx, gen__state_next_state);
     }
 
 }

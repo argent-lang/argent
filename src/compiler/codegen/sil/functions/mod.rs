@@ -3,18 +3,128 @@
 //! Sil classifies names and their source spans; Argent resolves which names
 //! belong to the isolated global-function namespace.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-use crate::compiler::model::Model;
-use crate::compiler::syntax::{FunctionDecl, TypeRef};
-use crate::error::Result;
+use crate::compiler::model::{Model, SilStateType, SourceStateId};
+use crate::compiler::syntax::{ActorDecl, FunctionDecl, TypeRef};
+use crate::error::{ArgentError, Result};
 
-use self::bindings::prefix_ranges;
+use self::bindings::{prefix_ranges, reject_expanded_field_captures};
 
 mod bindings;
 
 const VARIABLE_PREFIX: &str = "gen__glob_";
+
+/// One emitted contract's scalar function signatures and authored state types.
+pub(in crate::compiler::codegen) struct ContractFunctionPlan {
+    authored_states: BTreeMap<String, String>,
+    signatures: BTreeMap<String, FunctionSignaturePlan>,
+}
+
+pub(in crate::compiler::codegen) struct FunctionSignaturePlan {
+    params: Vec<FunctionValuePlan>,
+    result: Option<FunctionValuePlan>,
+}
+
+struct FunctionValuePlan {
+    authored_state: Option<SourceStateId>,
+    sil_type: Option<String>,
+}
+
+impl ContractFunctionPlan {
+    pub(in crate::compiler::codegen) fn new(actor: &ActorDecl, model: &Model<'_>) -> Result<Self> {
+        if let Some(expansion) = model.state(&actor.state)?.expansion.as_ref() {
+            let expanded_fields = expansion.digests.iter().map(|digest| digest.field.clone()).collect::<BTreeSet<_>>();
+            for function in &actor.functions {
+                let (source, body_span) = standalone_sil_function(function);
+                reject_expanded_field_captures(&source, body_span, &expanded_fields, &actor.name, &function.name)?;
+            }
+        }
+        let lowering = model.state_lowering(&actor.name)?;
+        let authored_states = lowering
+            .source_representations()
+            .iter()
+            .map(|(source, representation)| {
+                let sil_type = match representation.sil_type() {
+                    SilStateType::Source(planned) if planned == source => source.as_str().to_string(),
+                    SilStateType::State => {
+                        return Err(ArgentError::new(format!(
+                            "source state `{}` selected equivalent `State` before the contract-wide optimization in actor `{}`",
+                            source.as_str(),
+                            actor.name
+                        )));
+                    }
+                    SilStateType::Source(planned) => {
+                        return Err(ArgentError::new(format!(
+                            "source state `{}` uses unrelated authored SIL type `{}` in actor `{}`",
+                            source.as_str(),
+                            planned.as_str(),
+                            actor.name
+                        )));
+                    }
+                    SilStateType::StoragePhysical(_) | SilStateType::TargetPhysical(_) => {
+                        return Err(ArgentError::new(format!(
+                            "source state `{}` uses a physical SIL type at a function boundary in actor `{}`",
+                            source.as_str(),
+                            actor.name
+                        )));
+                    }
+                };
+                Ok((source.as_str().to_string(), sil_type))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let signatures = model
+            .functions
+            .iter()
+            .copied()
+            .chain(actor.functions.iter())
+            .map(|function| {
+                let params = function.params.iter().map(|param| plan_value(&param.ty, &authored_states)).collect();
+                let result = function.return_ty.as_ref().map(|ty| plan_value(ty, &authored_states));
+                (function.name.clone(), FunctionSignaturePlan { params, result })
+            })
+            .collect();
+        Ok(Self { authored_states, signatures })
+    }
+
+    pub(in crate::compiler::codegen) fn signature(&self, name: &str) -> Option<&FunctionSignaturePlan> {
+        self.signatures.get(name)
+    }
+
+    pub(in crate::compiler::codegen) fn authored_scalar_sil_type(&self, source: &str) -> Option<&str> {
+        self.authored_states.get(source).map(String::as_str)
+    }
+}
+
+impl FunctionSignaturePlan {
+    pub(in crate::compiler::codegen) fn has_authored_state_param(&self) -> bool {
+        self.params.iter().any(|param| param.authored_state.is_some())
+    }
+
+    pub(in crate::compiler::codegen) fn param(&self, index: usize) -> Option<&SourceStateId> {
+        self.params.get(index)?.authored_state.as_ref()
+    }
+
+    pub(in crate::compiler::codegen) fn result(&self) -> Option<&SourceStateId> {
+        self.result.as_ref()?.authored_state.as_ref()
+    }
+
+    pub(in crate::compiler::codegen) fn param_sil_type(&self, index: usize) -> Option<&str> {
+        self.params.get(index)?.sil_type.as_deref()
+    }
+
+    pub(in crate::compiler::codegen) fn result_sil_type(&self) -> Option<&str> {
+        self.result.as_ref()?.sil_type.as_deref()
+    }
+}
+
+fn plan_value(ty: &TypeRef, authored_states: &BTreeMap<String, String>) -> FunctionValuePlan {
+    let authored_state =
+        ty.array.is_none().then(|| SourceStateId::new(&ty.name)).filter(|source| authored_states.contains_key(source.as_str()));
+    let sil_type = authored_state.as_ref().and_then(|source| authored_states.get(source.as_str()).cloned());
+    FunctionValuePlan { authored_state, sil_type }
+}
 
 pub(in crate::compiler::codegen) struct GlobalFunctionLowerer {
     constants: BTreeSet<String>,

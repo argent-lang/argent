@@ -613,9 +613,11 @@ Replace `entry_param_sil_type` checks, direct-call recognition, authored-local p
 
 For plain global and actor function text, use Sil's AST and exact source spans. Extend its visitor with typed `TypeRef` visitation if the current API cannot identify every type and constructor occurrence. Do not add textual `LocalState -> State` replacement or an Argent-side Sil lexer.
 
-In the fully aligned case, where both relations are identity and the relevant physical plan uses active `State`, apply a coherent contract-wide lowering: parameters, results, compatible locals, arrays, constructors, and consumed inputs may all use SIL `State` directly. Do not emit a duplicate source-named struct solely for that state. In augmented, expanded, or physically incompatible cases, retain the planned authored representation and cross to the selected physical type only through the boundary.
+During the scalar and array migration legs, keep every authored value in its named source type. This removes the tactical physical aliases and initializer-shape exceptions without selecting the equivalent-`State` optimization at the same time. In augmented, expanded, or physically incompatible cases, authored values remain named permanently and cross to the selected physical type only through the boundary.
 
-Generated SIL changes are expected here where the tactical actor-function representation is replaced or a fully aligned contract switches coherently to `State`. Review those diffs semantically; do not require byte-for-byte preservation of the tactical form.
+After the boundary migration is complete, the fully aligned case may select one coherent contract-wide optimization: when both relations are identity and the relevant physical plan uses active `State`, parameters, results, compatible locals, arrays, constructors, and consumed inputs may all use SIL `State` directly. Apply that as a distinct reviewed change, and do not emit a duplicate source-named struct solely for an optimized state.
+
+Generated SIL changes are expected here where tactical physical locals return to named authored types. Review those diffs semantically; do not require byte-for-byte preservation of the tactical form. Generated changes from selecting equivalent `State` belong to the later optimization review.
 
 Implement this surface as separate reviewable commits for scalar/function lowering and array lowering. Array type substitution does not imply element-wise conversion: converting a dynamic array requires a compiler-known maximum, and an unbounded conversion must be rejected. Any required Sil visitor extension should remain an isolated dependency commit.
 

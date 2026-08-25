@@ -98,6 +98,44 @@ pub(super) fn prefix_ranges(
     Ok(ranges)
 }
 
+pub(super) fn reject_expanded_field_captures(
+    source: &str,
+    body_span: Range<usize>,
+    expanded_fields: &BTreeSet<String>,
+    actor: &str,
+    function_name: &str,
+) -> Result<()> {
+    let mut function = parse_function_ast(source).map_err(|err| {
+        ArgentError::new(format!("actor function `{actor}::{function_name}` could not be parsed as Silverscript: {err}"))
+    })?;
+    let mut collector = NameCollector::default();
+    visit_function_mut(&mut collector, &mut function);
+    let bindings = collector
+        .occurrences
+        .iter()
+        .filter(|occurrence| is_binding(occurrence.kind))
+        .map(|occurrence| occurrence.name.clone())
+        .collect::<BTreeSet<_>>();
+    let capture = collector.occurrences.into_iter().find(|occurrence| {
+        matches!(occurrence.kind, NameKind::IdentifierExpr | NameKind::AssignmentTarget)
+            && expanded_fields.contains(&occurrence.name)
+            && !bindings.contains(occurrence.name.as_str())
+            && occurrence.span.start >= body_span.start
+            && occurrence.span.end <= body_span.end
+    });
+    let Some(capture) = capture else {
+        return Ok(());
+    };
+    Err(ArgentError::in_source(
+        &source[body_span.clone()],
+        capture.span.start - body_span.start,
+        format!(
+            "actor function `{actor}::{function_name}` cannot capture expanded field `{}`; pass an authored state value as a parameter",
+            capture.name
+        ),
+    ))
+}
+
 fn is_binding(kind: NameKind) -> bool {
     matches!(kind, NameKind::Parameter | NameKind::LocalBinding | NameKind::LoopBinding | NameKind::StateBinding)
 }

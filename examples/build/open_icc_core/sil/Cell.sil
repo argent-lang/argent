@@ -107,7 +107,7 @@ contract Cell(
             gen__actor_type_self_occupant_agent_type_suffix_len,
             occupant_agent_type
         );
-        State next_cell = State {
+        CellState next_cell = CellState {
             // :: user declared fields
             world_id: world_id,
             x: x,
@@ -117,8 +117,18 @@ contract Cell(
             occupant_agent_type: occupant_agent_type,
             occupant_caps_digest: occupant_caps_digest,
         };
+        State gen__state_cell_state = State {
+            // :: user declared fields
+            world_id: next_cell.world_id,
+            x: next_cell.x,
+            y: next_cell.y,
+            food: next_cell.food,
+            occupant_agent_covid: next_cell.occupant_agent_covid,
+            occupant_agent_type: next_cell.occupant_agent_type,
+            occupant_caps_digest: next_cell.occupant_caps_digest,
+        };
         // :: become Cell
-        validateOutputState(gen__cell_output_idx, next_cell);
+        validateOutputState(gen__cell_output_idx, gen__state_cell_state);
     }
 
     // :: leader entry (M:N)
@@ -189,7 +199,7 @@ contract Cell(
             energy: prev_state.energy - 1,
             generation: prev_state.generation,
         };
-        State next_source = State {
+        CellState next_source = CellState {
             // :: user declared fields
             world_id: world_id,
             x: x,
@@ -199,7 +209,7 @@ contract Cell(
             occupant_agent_type: empty_agent_type,
             occupant_caps_digest: empty_caps_digest,
         };
-        State next_target = State {
+        CellState next_target = CellState {
             // :: user declared fields
             world_id: target_cell.world_id,
             x: target_cell.x,
@@ -218,10 +228,30 @@ contract Cell(
             gen__actor_type_self_occupant_agent_type_suffix_len,
             occupant_agent_type
         );
+        State gen__state_source_cell_state = State {
+            // :: user declared fields
+            world_id: next_source.world_id,
+            x: next_source.x,
+            y: next_source.y,
+            food: next_source.food,
+            occupant_agent_covid: next_source.occupant_agent_covid,
+            occupant_agent_type: next_source.occupant_agent_type,
+            occupant_caps_digest: next_source.occupant_caps_digest,
+        };
         // :: become Cell
-        validateOutputState(gen__source_cell_output_idx, next_source);
+        validateOutputState(gen__source_cell_output_idx, gen__state_source_cell_state);
+        State gen__state_target_cell_state = State {
+            // :: user declared fields
+            world_id: next_target.world_id,
+            x: next_target.x,
+            y: next_target.y,
+            food: next_target.food,
+            occupant_agent_covid: next_target.occupant_agent_covid,
+            occupant_agent_type: next_target.occupant_agent_type,
+            occupant_caps_digest: next_target.occupant_caps_digest,
+        };
         // :: become Cell
-        validateOutputState(gen__target_cell_output_idx, next_target);
+        validateOutputState(gen__target_cell_output_idx, gen__state_target_cell_state);
     }
 
 }

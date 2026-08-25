@@ -2,16 +2,27 @@ state CounterState {
     int count;
 }
 
+fn global_identity(CounterState value) -> CounterState {
+    return value;
+}
+
 actor Counter owns CounterState {
+    fn actor_identity(CounterState value) -> CounterState {
+        return global_identity(value);
+    }
+
     entry merge()
     consumes {
         other: Counter,
     }
     emits next: Counter {
+        CounterState copied = actor_identity(global_identity(other));
+        copied = global_identity(other);
         CounterState next = {
-            count: count + other.count,
+            count: count + copied.count,
         };
 
+        require(other.count >= 0);
         unrestricted(next.value);
         become next <- Counter(next);
     }

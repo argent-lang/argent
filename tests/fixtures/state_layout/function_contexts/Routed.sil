@@ -55,8 +55,14 @@ contract Routed(
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Routed
 
         SharedState scalar = actor_identity(global_identity(value));
+        SharedState constructed = SharedState {
+            // :: user declared fields
+            left: scalar.left,
+            right: scalar.right,
+        };
         SharedState[2] fixed_result = actor_fixed(global_fixed(fixed));
         SharedState[] dynamic_result = actor_dynamic(global_dynamic(dynamic));
+        require(constructed.left + constructed.right >= 0);
         require(fixed_result[0].left >= 0);
         require(dynamic_result.length >= 0);
         SharedState gen__source_next_shared_state = actor_identity(scalar);
