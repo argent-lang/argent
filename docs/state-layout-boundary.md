@@ -585,7 +585,8 @@ Move consumed and observed input lowering behind `bind_input_state`:
 
 - preserve the existing security rule for `readInputState` versus `readInputStateWithTemplate`;
 - select the result type from the authenticated target's physical plan;
-- return a direct source-level `State` binding only when both layout relations are identity and the authenticated target's physical plan uses active `State`;
+- keep authenticated physical `State` distinct from authored source values until the equivalent-`State` optimization is selected;
+- return a direct authored binding only when the input already uses its named source type and both layout relations are identity;
 - otherwise return a projected binding with a stable field map;
 - distinguish direct field projection from whole authored-value materialization;
 - require the existing validated expansion preimages before materializing an expanded authored value;
@@ -593,7 +594,9 @@ Move consumed and observed input lowering behind `bind_input_state`:
 
 Do not migrate output materialization yet.
 
-Exit condition: input-related generated SIL is unchanged, all existing negative template tests still fail, and no input read call site chooses a physical state type independently.
+Exit condition: all existing negative template tests still fail and no input read call site chooses a physical state type independently.
+Generated input SIL should remain stable where the old type choice agrees with the plan; when an earlier equivalent-`State` shortcut
+disagrees, use the plan's named physical type and review the resulting SIL and artifact changes rather than reproducing the shortcut.
 
 ### Commit 4: Migrate all state-valued expressions and function boundaries
 

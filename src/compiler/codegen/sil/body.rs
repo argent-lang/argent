@@ -17,6 +17,7 @@ use crate::error::{ArgentError, Result};
 // Body lowering uses the surrounding Sil emitter's shared witness plans,
 // layout helpers, and generated names.
 use super::super::emitter::*;
+use super::state_boundary::{EntryInputStatePlan, SourceStateAccess};
 use super::token_refs::{RefReplacements, count_qualified_ref};
 
 pub(in crate::compiler::codegen) struct LoweredEntryBody {
@@ -27,8 +28,9 @@ pub(in crate::compiler::codegen) fn lower_entry_body(
     actor: &ActorDecl,
     entry: &EntryDecl,
     model: &Model<'_>,
+    input_states: &EntryInputStatePlan,
 ) -> Result<LoweredEntryBody> {
-    BodyLowerer::new(actor, entry, model)?.lower()
+    BodyLowerer::new(actor, entry, model, Some(input_states))?.lower()
 }
 
 /// Source details needed while lowering one non-current covenant output.
@@ -68,10 +70,11 @@ impl<'a> CovenantOutputContext<'a> {
     }
 }
 
-struct BodyLowerer<'a, 'm> {
+struct BodyLowerer<'a, 'm, 'p> {
     actor: &'a ActorDecl,
     entry: &'a EntryDecl,
     model: &'m Model<'a>,
+    input_states: Option<&'p EntryInputStatePlan>,
     bindings: BodyBindings,
     /// Entry-wide candidates; the current binding decides selector visibility.
     selector_catalog: BTreeMap<String, TemplateSelector>,
@@ -91,23 +94,29 @@ struct BodyBinding {
     source_type: Option<String>,
     lowered_type: Option<String>,
     selector: Option<TemplateSelector>,
+    state_access: Option<SourceStateAccess>,
 }
 
 impl BodyBinding {
     fn typed(source_type: impl Into<String>, lowered_type: impl Into<String>) -> Self {
-        Self { source_type: Some(source_type.into()), lowered_type: Some(lowered_type.into()), selector: None }
+        Self { source_type: Some(source_type.into()), lowered_type: Some(lowered_type.into()), selector: None, state_access: None }
     }
 
     fn source_typed(source_type: impl Into<String>) -> Self {
-        Self { source_type: Some(source_type.into()), lowered_type: None, selector: None }
+        Self { source_type: Some(source_type.into()), lowered_type: None, selector: None, state_access: None }
     }
 
     fn lowered_typed(lowered_type: impl Into<String>) -> Self {
-        Self { source_type: None, lowered_type: Some(lowered_type.into()), selector: None }
+        Self { source_type: None, lowered_type: Some(lowered_type.into()), selector: None, state_access: None }
     }
 
     fn with_selector(mut self, selector: TemplateSelector) -> Self {
         self.selector = Some(selector);
+        self
+    }
+
+    fn with_state_access(mut self, access: SourceStateAccess) -> Self {
+        self.state_access = Some(access);
         self
     }
 }
@@ -185,6 +194,10 @@ impl BodyBindings {
         array_element_type(self.source_type(root)?).map(str::to_string)
     }
 
+    fn state_access_for_expr(&self, expr: &str) -> Option<&SourceStateAccess> {
+        self.get(strip_outer_parentheses(expr)).and_then(|binding| binding.value.state_access.as_ref())
+    }
+
     fn selector(&self, name: &str) -> Option<(BodyBindingId, &TemplateSelector)> {
         let binding = self.get(name)?;
         Some((binding.id, binding.value.selector.as_ref()?))
@@ -211,7 +224,7 @@ fn entry_ref_replacements(
     model: &Model<'_>,
     input_names: BTreeSet<String>,
     output_values: &[OutputValueRef],
-    observed_input_state_refs: Vec<(String, String)>,
+    input_state_refs: Vec<(String, String)>,
 ) -> Result<RefReplacements> {
     assert_eq!(word::SELF, "self");
     assert_eq!(word::VALUE, "value");
@@ -230,7 +243,7 @@ fn entry_ref_replacements(
     for field in &model.storage_state(&actor.state)?.fields {
         replacements.push((format!("self.{}", field.name), field.name.clone()));
     }
-    replacements.extend(observed_input_state_refs);
+    replacements.extend(input_state_refs);
     replacements.extend(output_values.iter().map(|output| (output.source.clone(), output.lowered.clone())));
     replacements.extend(
         input_names.into_iter().map(|name| (format!("{name}.value"), format!("tx.inputs[{}].value", hidden_input_idx_name(&name)))),
@@ -238,8 +251,13 @@ fn entry_ref_replacements(
     RefReplacements::new(replacements)
 }
 
-impl<'a, 'm> BodyLowerer<'a, 'm> {
-    fn new(actor: &'a ActorDecl, entry: &'a EntryDecl, model: &'m Model<'a>) -> Result<Self> {
+impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
+    fn new(
+        actor: &'a ActorDecl,
+        entry: &'a EntryDecl,
+        model: &'m Model<'a>,
+        input_states: Option<&'p EntryInputStatePlan>,
+    ) -> Result<Self> {
         let selector_catalog = model.template_selectors_for_entry(actor, entry)?;
         let mut bindings = BodyBindings::new();
         let expanded_digest_fields = state_expansion_digest_fields_for_state(&actor.state, model);
@@ -277,24 +295,43 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         let mut input_names = BTreeSet::new();
         for consume in &entry.consumes {
             input_names.insert(consume.name.clone());
-            let state = model.actor(&consume.actor)?.state.clone();
-            let ty = contract_state_type_for_actor(&consume.actor, actor, model)?;
-            bindings.declare(consume.name.clone(), BodyBinding::typed(state, ty));
+            if let Some(input_states) = input_states {
+                let input = input_states.consumed(&consume.name)?;
+                let access = input.access();
+                bindings.declare(
+                    input.source_ref().to_string(),
+                    BodyBinding::typed(access.source_type(), access.physical_type()).with_state_access(access.clone()),
+                );
+            } else {
+                let state = model.actor(&consume.actor)?.state.clone();
+                let ty = contract_state_type_for_actor(&consume.actor, actor, model)?;
+                bindings.declare(consume.name.clone(), BodyBinding::typed(state, ty));
+            }
         }
-        let mut observed_input_state_refs = Vec::new();
+        let mut input_state_refs = input_states.map(EntryInputStatePlan::reference_replacements).unwrap_or_default();
         for observe in &entry.observes {
             for input in &observe.inputs {
                 let source_ref = format!("{}.inputs.{}.state", observe.name, input.name);
                 let lowered_ref = hidden_observed_input_state_name(&observe.name, &input.name);
-                observed_input_state_refs.push((source_ref.clone(), lowered_ref.clone()));
-                let state = if let Some(state) = observed_open_state_for_decl(actor, entry, observe, input, model)? {
-                    state.to_string()
+                if let Some(input_states) = input_states {
+                    let input = input_states.observed(&observe.name, &input.name)?;
+                    let access = input.access();
+                    bindings.declare(
+                        input.source_ref().to_string(),
+                        BodyBinding::typed(access.source_type(), access.physical_type()).with_state_access(access.clone()),
+                    );
+                    bindings.declare(lowered_ref, BodyBinding::lowered_typed(access.physical_type()));
                 } else {
-                    model.actor(&input.actor)?.state.clone()
-                };
-                let ty = contract_state_type_for_observed_actor(actor, entry, observe, input, model)?;
-                bindings.declare(source_ref, BodyBinding::typed(state, ty.clone()));
-                bindings.declare(lowered_ref, BodyBinding::lowered_typed(ty));
+                    input_state_refs.push((source_ref.clone(), lowered_ref.clone()));
+                    let state = if let Some(state) = observed_open_state_for_decl(actor, entry, observe, input, model)? {
+                        state.to_string()
+                    } else {
+                        model.actor(&input.actor)?.state.clone()
+                    };
+                    let ty = contract_state_type_for_observed_actor(actor, entry, observe, input, model)?;
+                    bindings.declare(source_ref, BodyBinding::typed(state, ty.clone()));
+                    bindings.declare(lowered_ref, BodyBinding::lowered_typed(ty));
+                }
             }
         }
 
@@ -319,13 +356,14 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         // Preserve most-specific-first ordering in value-policy diagnostics.
         output_values.sort_by(|left, right| right.source.len().cmp(&left.source.len()).then_with(|| left.source.cmp(&right.source)));
 
-        let ref_replacements = entry_ref_replacements(actor, model, input_names, &output_values, observed_input_state_refs)?;
+        let ref_replacements = entry_ref_replacements(actor, model, input_names, &output_values, input_state_refs)?;
         let observed_output_fields = observed_output_field_witness_specs(actor, entry, model);
 
         Ok(Self {
             actor,
             entry,
             model,
+            input_states,
             bindings,
             selector_catalog,
             output_values,
@@ -1213,6 +1251,12 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         if let Some((state_name, body)) = split_state_constructor(expr) {
             return self.lower_state_constructor(state_name, expected_ty.unwrap_or(state_name), body, indent);
         }
+        if let Some(access) = self.bindings.state_access_for_expr(expr) {
+            if expected_ty == Some(access.source_type()) {
+                return access.require_authored_value(indent).map_err(|err| self.error(err.to_string()));
+            }
+            return Ok(access.physical_expr().to_string());
+        }
         self.lower_refs(expr)
     }
 
@@ -1260,6 +1304,12 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                 return self.lower_authored_state_object(&state_name, lowered_ty, body, indent);
             }
             return self.lower_state_object_for_state(&state_name, lowered_ty, body, indent);
+        }
+        if lowered_ty == source_ty
+            && let Some(access) = self.bindings.state_access_for_expr(expr)
+            && access.source_type() == source_ty
+        {
+            return access.require_authored_value(indent).map_err(|err| self.error(err.to_string()));
         }
         if self.model.has_state(source_ty) && initializer_ty.is_none_or(|ty| ty != lowered_ty) {
             let lowered_expr = self.lower_expr(expr, None, indent)?;
@@ -1526,6 +1576,9 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     fn lower_refs(&self, expr: &str) -> Result<String> {
         // Lower source-level co-spend calls before general reference rewrites.
         let out = lower_co_spent_calls(expr, &self.bindings)?;
+        if let Some(input_states) = self.input_states {
+            input_states.reject_unavailable_field_refs(&out).map_err(|err| self.error(err.to_string()))?;
+        }
         let out = self.ref_replacements.rewrite(&out)?;
         lower_actor_enum_literals(&out, self.model)
     }
@@ -1548,7 +1601,7 @@ pub(in crate::compiler::codegen) fn lower_entry_expr(
     expr: &str,
     expected_ty: Option<&str>,
 ) -> Result<String> {
-    BodyLowerer::new(actor, entry, model)?.lower_expr(expr, expected_ty, 8)
+    BodyLowerer::new(actor, entry, model, None)?.lower_expr(expr, expected_ty, 8)
 }
 
 fn generated_state_name(route: &RouteCall, state_ty: &str) -> String {

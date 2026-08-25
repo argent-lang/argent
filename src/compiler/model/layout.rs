@@ -235,6 +235,30 @@ impl SourceStorageRelation {
             SourceFieldLowering::Identity { .. } | SourceFieldLowering::Digest { .. } => None,
         })
     }
+
+    fn fields(&self) -> &[SourceFieldLowering] {
+        match self {
+            Self::Identity { fields } | Self::Expanded { fields } => fields,
+        }
+    }
+}
+
+impl SourceFieldLowering {
+    fn source(&self) -> &SourceFieldId {
+        match self {
+            Self::Identity { source, .. } | Self::Digest { source, .. } => source,
+        }
+    }
+
+    fn storage(&self) -> &StorageFieldId {
+        match self {
+            Self::Identity { storage, .. } | Self::Digest { storage, .. } => storage,
+        }
+    }
+
+    fn is_identity(&self) -> bool {
+        matches!(self, Self::Identity { .. })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -285,6 +309,33 @@ pub(crate) enum SilStateType {
     Source(SourceStateId),
     StoragePhysical(SourceStateId),
     TargetPhysical(PhysicalTargetId),
+}
+
+/// One authored field's stable projection into a target physical layout.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SourcePhysicalField {
+    source: SourceFieldId,
+    physical: PhysicalFieldId,
+    sil_name: String,
+    identity: bool,
+}
+
+impl SourcePhysicalField {
+    pub(crate) fn source(&self) -> &SourceFieldId {
+        &self.source
+    }
+
+    pub(crate) fn physical(&self) -> &PhysicalFieldId {
+        &self.physical
+    }
+
+    pub(crate) fn sil_name(&self) -> &str {
+        &self.sil_name
+    }
+
+    pub(crate) fn is_identity(&self) -> bool {
+        self.identity
+    }
 }
 
 /// One contract-local authored representation decision.
@@ -359,6 +410,36 @@ impl TargetPhysicalPlan {
     /// Nominal identity remains separate from physical compatibility.
     pub(crate) fn has_source_identity(&self, requested: &SourceStateId) -> bool {
         &self.source == requested
+    }
+
+    /// Resolve authored fields through both layout relations without positions.
+    pub(crate) fn source_fields(&self) -> Result<Vec<SourcePhysicalField>> {
+        self.source_to_storage
+            .fields()
+            .iter()
+            .map(|field| {
+                let physical = self.storage_to_physical.physical_field(field.storage()).ok_or_else(|| {
+                    ArgentError::new(format!(
+                        "source field `{}.{}` has no physical target mapping",
+                        field.source().state().as_str(),
+                        field.source().field()
+                    ))
+                })?;
+                let layout_field = self.physical.field(physical).ok_or_else(|| {
+                    ArgentError::new(format!(
+                        "source field `{}.{}` maps outside its physical target layout",
+                        field.source().state().as_str(),
+                        field.source().field()
+                    ))
+                })?;
+                Ok(SourcePhysicalField {
+                    source: field.source().clone(),
+                    physical: physical.clone(),
+                    sil_name: layout_field.sil_name().to_string(),
+                    identity: field.is_identity(),
+                })
+            })
+            .collect()
     }
 }
 

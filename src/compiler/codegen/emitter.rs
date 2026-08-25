@@ -24,7 +24,7 @@ use crate::error::{ArgentError, Result};
 use silverscript_lang::ast::Expr as SilExpr;
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract};
 
-use super::sil::{GlobalFunctionLowerer, lower_entry_body, lower_entry_expr};
+use super::sil::{EntryInputStatePlan, GlobalFunctionLowerer, lower_entry_body, lower_entry_expr, plan_entry_input_states};
 
 #[cfg(test)]
 mod tests;
@@ -92,12 +92,15 @@ fn emit_build_selected(
 fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
     verify_state_lowering_plan(actor, model)?;
     let state = model.storage_state(&actor.state)?;
+    let input_state_plans =
+        actor.entries.iter().map(|entry| plan_entry_input_states(actor, entry, model)).collect::<Result<Vec<_>>>()?;
     let emitted_entries = actor
         .entries
         .iter()
-        .map(|entry| {
+        .zip(&input_state_plans)
+        .map(|(entry, input_states)| {
             let mut out = String::new();
-            emit_entry(&mut out, actor, entry, model)?;
+            emit_entry(&mut out, actor, entry, model, input_states)?;
             Ok(out)
         })
         .collect::<Result<Vec<_>>>()?;
@@ -116,7 +119,7 @@ fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
 
     emit_shared_constants(&mut out, model)?;
     emit_imported_template_constants(&mut out, &imported_template_specs_for_actor(actor, model));
-    emit_state_layouts(&mut out, actor, model)?;
+    emit_state_layouts(&mut out, actor, model, &input_state_plans)?;
     emit_global_functions(&mut out, model)?;
     emit_actor_functions(&mut out, actor, model)?;
 
@@ -180,7 +183,12 @@ fn emit_imported_template_constants(out: &mut String, specs: &[ImportedTemplateS
     out.push('\n');
 }
 
-fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model<'_>) -> Result<()> {
+fn emit_state_layouts(
+    out: &mut String,
+    current_actor: &ActorDecl,
+    model: &Model<'_>,
+    input_state_plans: &[EntryInputStatePlan],
+) -> Result<()> {
     emit_section_header(out, "State layouts");
     let mut emitted = BTreeSet::new();
     // Every declared state keeps its authored name alongside the current
@@ -249,16 +257,25 @@ fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model
         out.push_str("    }\n");
     }
 
+    let lowering = model.state_lowering(&current_actor.name)?;
+    let mut named_physical_layouts = BTreeMap::new();
+    for input_states in input_state_plans {
+        for input in input_states.bindings() {
+            let sil_type = input.physical_type();
+            if sil_type == "State" {
+                continue;
+            }
+            let target = lowering.target(input.physical_target()).ok_or_else(|| {
+                ArgentError::new(format!("input physical type `{sil_type}` has no target layout in actor `{}`", current_actor.name))
+            })?;
+            insert_named_physical_layout(&mut named_physical_layouts, sil_type, target.physical(), current_actor)?;
+        }
+    }
+
     let mut referenced_actors = BTreeSet::new();
     for entry in &current_actor.entries {
-        referenced_actors.extend(entry.consumes.iter().map(|consume| consume.actor.clone()));
-        referenced_actors.extend(
-            entry
-                .observes
-                .iter()
-                .flat_map(|observe| observe.inputs.iter().chain(observe.outputs.iter()))
-                .map(|observed| observed.actor.clone()),
-        );
+        referenced_actors
+            .extend(entry.observes.iter().flat_map(|observe| observe.outputs.iter()).map(|observed| observed.actor.clone()));
         referenced_actors.extend(entry.spawns.iter().flat_map(|spawn| &spawn.outputs).map(|output| output.actor.clone()));
         for route in &entry.routes {
             referenced_actors.extend(model.route_targets(current_actor, entry, route)?);
@@ -269,47 +286,68 @@ fn emit_state_layouts(out: &mut String, current_actor: &ActorDecl, model: &Model
             continue;
         };
         let state_type = contract_state_type_for_actor(&actor_name, current_actor, model)?;
-        if state_type == hidden_storage_state_type_name(target.state()) {
-            physical_states.insert(target.state().to_string());
+        if state_type == "State" || state_type == target.state() {
             continue;
         }
-        let Some(actor) = target.in_app_actor() else {
-            continue;
-        };
-        if state_type != hidden_actor_state_type_name(&actor.name) {
-            continue;
-        }
-        let state = model.storage_state(&actor.state)?;
-        out.push_str(&format!("    struct {} {{\n", hidden_actor_state_type_name(&actor.name)));
-        let mut generated_fields = String::new();
-        emit_hidden_template_fields_for_actor(&mut generated_fields, &actor.name, model, 8);
-        if !generated_fields.is_empty() {
-            out.push_str("        // :: generated fields\n");
-            out.push_str(&generated_fields);
-        }
-        if !state.fields.is_empty() {
-            out.push_str("        // :: user declared fields\n");
-            for field in &state.fields {
-                out.push_str(&format!("        {} {};\n", lower_type_ref(&field.ty, model), field.name));
-            }
-        }
-        out.push_str("    }\n");
+        let plan = lowering.target_for_actor(&actor_name).ok_or_else(|| {
+            ArgentError::new(format!("actor `{actor_name}` has no physical target layout in actor `{}`", current_actor.name))
+        })?;
+        insert_named_physical_layout(&mut named_physical_layouts, &state_type, plan.physical(), current_actor)?;
     }
     // Expanded source structs expose nested authored values. Physical states
     // without app-local route context use one state-qualified digest layout.
     for state_name in physical_states {
-        let storage_state = model.storage_state(&state_name)?;
-        out.push_str(&format!("    struct {} {{\n", hidden_storage_state_type_name(&state_name)));
-        if !storage_state.fields.is_empty() {
-            out.push_str("        // :: user declared fields\n");
-            for field in &storage_state.fields {
-                out.push_str(&format!("        {} {};\n", lower_type_ref(&field.ty, model), field.name));
-            }
+        let sil_type = hidden_storage_state_type_name(&state_name);
+        let plan = lowering.open_state_target(&SourceStateId::new(&state_name)).ok_or_else(|| {
+            ArgentError::new(format!("open state `{state_name}` has no physical target layout in actor `{}`", current_actor.name))
+        })?;
+        insert_named_physical_layout(&mut named_physical_layouts, &sil_type, plan.physical(), current_actor)?;
+    }
+    for (sil_type, layout) in named_physical_layouts {
+        if !emitted.insert(sil_type.clone()) {
+            continue;
         }
-        out.push_str("    }\n");
+        emit_planned_physical_struct(out, &sil_type, &layout);
     }
     out.push('\n');
     Ok(())
+}
+
+fn insert_named_physical_layout(
+    layouts: &mut BTreeMap<String, PhysicalStateLayout>,
+    sil_type: &str,
+    layout: &PhysicalStateLayout,
+    actor: &ActorDecl,
+) -> Result<()> {
+    if let Some(existing) = layouts.get(sil_type)
+        && !layout.is_sil_compatible_with(existing)
+    {
+        return Err(ArgentError::new(format!(
+            "physical type `{sil_type}` names incompatible target layouts in actor `{}`",
+            actor.name
+        )));
+    }
+    layouts.insert(sil_type.to_string(), layout.clone());
+    Ok(())
+}
+
+fn emit_planned_physical_struct(out: &mut String, sil_type: &str, layout: &PhysicalStateLayout) {
+    out.push_str(&format!("    struct {sil_type} {{\n"));
+    let generated = layout.fields().iter().filter(|field| matches!(field.id(), PhysicalFieldId::Generated(_))).collect::<Vec<_>>();
+    if !generated.is_empty() {
+        out.push_str("        // :: generated fields\n");
+        for field in generated {
+            out.push_str(&format!("        {} {};\n", field.sil_type(), field.sil_name()));
+        }
+    }
+    let storage = layout.fields().iter().filter(|field| matches!(field.id(), PhysicalFieldId::Storage(_))).collect::<Vec<_>>();
+    if !storage.is_empty() {
+        out.push_str("        // :: user declared fields\n");
+        for field in storage {
+            out.push_str(&format!("        {} {};\n", field.sil_type(), field.sil_name()));
+        }
+    }
+    out.push_str("    }\n");
 }
 
 fn emit_global_functions(out: &mut String, model: &Model<'_>) -> Result<()> {
@@ -350,8 +388,14 @@ fn emit_function(out: &mut String, name: &str, params: &[String], return_ty: Opt
     out.push_str("    }\n");
 }
 
-fn emit_entry(out: &mut String, actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Result<()> {
-    let lowered_body = lower_entry_body(actor, entry, model)?;
+fn emit_entry(
+    out: &mut String,
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    model: &Model<'_>,
+    input_states: &EntryInputStatePlan,
+) -> Result<()> {
+    let lowered_body = lower_entry_body(actor, entry, model, input_states)?;
     let witness_specs = entry_witness_specs(actor, entry, model)?;
     let sil_params = lower_entry_params(entry, &witness_specs, model);
     match entry.kind {
@@ -406,8 +450,6 @@ fn emit_entry(out: &mut String, actor: &ActorDecl, entry: &EntryDecl, model: &Mo
         for (idx, consume) in entry.consumes.iter().enumerate() {
             let cov_index = slot_offset + idx;
             let input_idx = hidden_input_idx_name(&consume.name);
-            let state_struct = contract_state_type_for_actor(&consume.actor, actor, model)?;
-            let _state = model.actor_state(&consume.actor)?;
             push_generated_statement_with_comment(
                 out,
                 8,
@@ -418,29 +460,17 @@ fn emit_entry(out: &mut String, actor: &ActorDecl, entry: &EntryDecl, model: &Mo
             // only for a self-consume in a single-actor covenant domain. The domain
             // restricts every input with this covenant ID to one of its contracts.
             // With one actor, every group input has this contract's template.
-            if model.app_actors.is_singleton_actor_self_target(&actor.name, &consume.actor) {
+            let input_state = input_states.consumed(&consume.name)?;
+            if input_state.uses_covenant_domain_proof() {
                 out.push_str("        // :: direct input state (single-actor covenant has one template)\n");
-                push_generated_call(out, 8, &format!("{state_struct} {} = ", consume.name), "readInputState", &[input_idx]);
-            } else {
-                push_generated_call(
-                    out,
-                    8,
-                    &format!("{state_struct} {} = ", consume.name),
-                    "readInputStateWithTemplate",
-                    &[
-                        input_idx,
-                        hidden_witness_prefix_len_name(&consume.actor),
-                        hidden_witness_suffix_len_name(&consume.actor),
-                        hidden_template_name(&consume.actor),
-                    ],
-                );
             }
+            input_state.emit_read(out, 8);
         }
         out.push('\n');
     }
 
     if !entry.observes.is_empty() {
-        emit_observed_inputs(out, actor, entry, model)?;
+        emit_observed_inputs(out, actor, entry, model, input_states)?;
     }
 
     emit_state_expansion_prelude(out, actor, model)?;
@@ -590,7 +620,13 @@ fn emit_state_expansion_prelude(out: &mut String, actor: &ActorDecl, model: &Mod
     Ok(())
 }
 
-fn emit_observed_inputs(out: &mut String, actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Result<()> {
+fn emit_observed_inputs(
+    out: &mut String,
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    model: &Model<'_>,
+    input_states: &EntryInputStatePlan,
+) -> Result<()> {
     out.push_str("        // :: observed covenants\n");
     for observe in &entry.observes {
         let cov_id = hidden_observe_cov_id_name(&observe.name);
@@ -609,41 +645,14 @@ fn emit_observed_inputs(out: &mut String, actor: &ActorDecl, entry: &EntryDecl, 
             out.push_str(&format!("        byte[32] {} = {};\n", output.actor, hidden_observed_actor_template_name(&spec)));
         }
         for (idx, input) in observe.inputs.iter().enumerate() {
-            let input_spec = observed_input_spec(actor, entry, observe, input, model)?;
-            let static_target = static_observed_actor_target(actor, entry, observe, input, model)?;
-            let in_app_target = static_target.and_then(|target| target.in_app_actor());
             let input_idx = hidden_observed_input_idx_name(&observe.name, &input.name);
-            let state_name = hidden_observed_input_state_name(&observe.name, &input.name);
-            let state_struct = contract_state_type_for_observed_actor(actor, entry, observe, input, model)?;
             push_generated_statement_with_comment(
                 out,
                 8,
                 &format!("int {input_idx} = OpCovInputIdx({cov_id}, {idx})"),
                 &format!("observed input {}.{}: {}", observe.name, input.name, input.actor),
             );
-            if in_app_target.is_some_and(|target| model.app_actors.is_singleton_actor_self_target(&actor.name, &target.name)) {
-                push_generated_call(out, 8, &format!("{state_struct} {state_name} = "), "readInputState", &[input_idx]);
-            } else {
-                let target_reference = static_target.map(|target| target.artifact_reference());
-                let prefix_len = target_reference
-                    .as_deref()
-                    .map_or_else(|| hidden_observed_actor_prefix_len_name(&input_spec), hidden_witness_prefix_len_name);
-                let suffix_len = target_reference
-                    .as_deref()
-                    .map_or_else(|| hidden_observed_actor_suffix_len_name(&input_spec), hidden_witness_suffix_len_name);
-                push_generated_call(
-                    out,
-                    8,
-                    &format!("{state_struct} {state_name} = "),
-                    "readInputStateWithTemplate",
-                    &[
-                        input_idx,
-                        prefix_len,
-                        suffix_len,
-                        observed_actor_template_expr_for_entry(actor, entry, model, observe, input, &input_spec)?,
-                    ],
-                );
-            }
+            input_states.observed(&observe.name, &input.name)?.emit_read(out, 8);
         }
         for (idx, output) in observe.outputs.iter().enumerate() {
             let output_idx = hidden_observed_output_idx_name(&observe.name, &output.name);
@@ -1472,7 +1481,7 @@ pub(super) fn observed_is_source_actor_type(
     Ok(source_actor_type_state_for_expr(&observed.actor, actor, entry, model)?.is_some())
 }
 
-fn observed_actor_template_expr_for_entry(
+pub(super) fn observed_actor_template_expr_for_entry(
     actor: &ActorDecl,
     entry: &EntryDecl,
     model: &Model<'_>,
@@ -3163,11 +3172,11 @@ fn hidden_actor_suffix(actor: &str) -> String {
     to_snake(&actor.replace(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_', "_"))
 }
 
-fn hidden_actor_state_type_name(actor: &str) -> String {
+pub(super) fn hidden_actor_state_type_name(actor: &str) -> String {
     format!("{RESERVED_GENERATED_TYPE_PREFIX}{}State", to_upper_camel(actor))
 }
 
-fn hidden_storage_state_type_name(state: &str) -> String {
+pub(super) fn hidden_storage_state_type_name(state: &str) -> String {
     format!("{RESERVED_GENERATED_TYPE_PREFIX}Physical{}", to_upper_camel(state))
 }
 
@@ -3359,43 +3368,6 @@ fn emit_route_template_table(out: &mut String, actor: &ActorDecl, model: &Model<
                     family.table_byte_len(),
                     hidden_route_family_table_name(family),
                     hidden_route_family_table_init_name(family)
-                ));
-            }
-        }
-    }
-}
-
-fn emit_hidden_template_fields_for_actor(out: &mut String, actor: &str, model: &Model<'_>, indent: usize) {
-    emit_hidden_template_fields_for_kind(out, route_field_kind_for_actor(actor, model), indent);
-}
-
-fn emit_hidden_template_fields_for_kind(out: &mut String, fields: RouteFieldKind<'_>, indent: usize) {
-    let field_indent = " ".repeat(indent);
-    match fields {
-        RouteFieldKind::None => {}
-        RouteFieldKind::Direct { actor_templates, family_commitments } => {
-            for actor in actor_templates {
-                out.push_str(&format!("{field_indent}byte[32] {};\n", hidden_template_name(actor)));
-            }
-            for family in family_commitments {
-                out.push_str(&format!("{field_indent}byte[32] {};\n", hidden_route_family_commitment_name(family)));
-            }
-        }
-        RouteFieldKind::FamilyTables { actor_templates, family_commitments, families } => {
-            for actor in actor_templates {
-                out.push_str(&format!("{field_indent}byte[32] {};\n", hidden_template_name(actor)));
-            }
-            for family in family_commitments {
-                out.push_str(&format!("{field_indent}byte[32] {};\n", hidden_route_family_commitment_name(family)));
-            }
-            for family in families {
-                for actor in family.direct_template_actors() {
-                    out.push_str(&format!("{field_indent}byte[32] {};\n", hidden_template_name(actor)));
-                }
-                out.push_str(&format!(
-                    "{field_indent}byte[{}] {};\n",
-                    family.table_byte_len(),
-                    hidden_route_family_table_name(family)
                 ));
             }
         }

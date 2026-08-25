@@ -1502,9 +1502,46 @@ fn expanded_entry_params_keep_the_authored_nested_layout() {
     );
 
     let reader_sil = &actor_sil["Reader"];
-    assert!(reader_sil.contains("struct Gen__VaultState {"), "{reader_sil}");
+    assert!(reader_sil.contains("struct Gen__PhysicalExpanded {"), "{reader_sil}");
     assert!(reader_sil.contains("byte[32] detail;"), "{reader_sil}");
-    assert!(reader_sil.contains("Gen__VaultState vault = readInputStateWithTemplate("), "{reader_sil}");
+    assert!(reader_sil.contains("Gen__PhysicalExpanded vault = readInputStateWithTemplate("), "{reader_sil}");
+}
+
+#[test]
+fn expanded_input_fields_require_validated_preimages() {
+    let path = PathBuf::from("expanded-input-projection.ag");
+    let module = crate::compiler::syntax::parser::parse_module(
+        path.clone(),
+        r#"
+            state Capsule { int nonce; virtual detail; }
+            state Details { int count; }
+            state Expanded expands Capsule { detail: Details; }
+
+            actor Vault owns Expanded {
+                entry hold() emits none { require(nonce >= 0); }
+            }
+
+            state ReaderState { int nonce; }
+            actor Reader owns ReaderState {
+                entry inspect() consumes { vault: Vault, } emits next: Reader {
+                    require(vault.detail.count >= 0);
+                    unrestricted(next.value);
+                    become next <- Reader(self.state);
+                }
+            }
+
+            app Test { actor Vault; actor Reader; }
+        "#
+        .to_string(),
+    )
+    .expect("source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let model = Model::from_program(&program).expect("expanded input plans");
+
+    let err = emit_actor(model.actor("Reader").expect("Reader exists"), &model)
+        .expect_err("a stored expansion digest cannot expose its authored payload");
+    assert!(err.to_string().contains("expanded input field `detail`"), "unexpected error: {err}");
+    assert!(err.to_string().contains("validated preimage"), "unexpected error: {err}");
 }
 
 #[test]
