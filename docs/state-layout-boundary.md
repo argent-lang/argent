@@ -14,7 +14,7 @@ The immediate goals are:
 - centralize every conversion between user state and physical contract state;
 - let layout-aligned codegen use Silverscript's native `State` object directly;
 - replace the special meaning of `self.state` with an explicit `become self` transition;
-- preserve the current route security rules and physical ABI;
+- preserve the current route security rules and physical state encoding;
 - make future state-layout changes local and auditable.
 
 This is primarily an internal compiler architecture change. Except for replacing `self.state` with `self` in exact continuations, it should not change Argent application semantics, artifact-visible user state, or the runtime's physical state encoding.
@@ -95,7 +95,7 @@ Each relation can be either identity or transformed.
 - Storage and physical are identical when the actor has no compiler-owned route fields.
 - Source and physical are identical only when both relations are identity.
 
-Direct source-level use of SIL `State` requires source and physical state to be identical, so both relations must be identity. Within an emitted contract, the target physical layout must also be compatible with that contract's active `State` type. Storage-level pass-through to a target physical representation requires only storage-to-physical identity; whether that representation is `State` or a named struct is a separate target/active compatibility decision. The usual active, no-route, non-expanded case satisfies all conditions.
+Direct source-level use of SIL `State` requires source and physical state to be identical, so both relations must be identity. It also requires nominal source identity: the value must represent the same `SourceStateId` as the source type being requested. Two actors that share one source state can satisfy this condition; two distinct state declarations with identical fields cannot. Within an emitted contract, the target physical layout must also be compatible with that contract's active `State` type. Storage-level pass-through to a target physical representation requires only storage-to-physical identity; whether that representation is `State` or a named struct is a separate target/active compatibility decision. The usual active, no-route, non-expanded case satisfies all conditions.
 
 ## 3. Language semantics
 
@@ -156,8 +156,9 @@ require(next.value == self.value);
 
 ### 3.3 Resolution rules for `self`
 
-- `become self;` is valid only when the current `become` statement has one unambiguous emitted output handle and that output permits the current actor.
-- `output <- self` explicitly selects the output handle and is valid only when that output permits the current actor.
+- `become self;` is valid only when exactly one emitted singleton output handle permits the current actor. Other emitted outputs do not make it ambiguous.
+- `output <- self` explicitly selects the output handle and is valid only when that output is singleton and permits the current actor.
+- Ranged output handles cannot use exact self-continuation until the language defines element selection for that case.
 - `self` is invalid as a local value, function argument, state constructor value, observed target, spawn target, or ordinary expression.
 - Exact self-continuation is valid regardless of whether route fields exist. It preserves the physical script without inspecting its layout.
 
@@ -225,7 +226,19 @@ struct ContractStateLowering {
     target_physical: Map<PhysicalTargetId, TargetPhysicalPlan>,
 }
 
+struct SourceRepresentationPlan {
+    source_to_storage: SourceStorageRelation,
+    sil: SourceSilRepresentation,
+}
+
+enum SourceSilRepresentation {
+    ActiveState,
+    Named(SilType),
+}
+
 struct TargetPhysicalPlan {
+    source: SourceStateId,
+    storage_to_physical: StoragePhysicalRelation,
     physical: PhysicalStateLayout,
     sil_type: SilType, // `State` or a named physical struct in this contract
 }
@@ -253,7 +266,9 @@ enum StoragePhysicalRelation {
 }
 ```
 
-`PhysicalTargetId` identifies a concrete actor target or a dynamic target capability with a known physical layout. Target plans are actor-context keyed, not source-state keyed: two actors can own the same source state while carrying different route cuts. Conversely, a different template can use `State` when its complete physical layout is identical to the active contract's layout.
+`PhysicalTargetId` identifies a concrete actor target or a dynamic target capability with a known physical layout. A dynamic capability is valid only when all of its variants have one canonical physical layout and SIL type. Reject a capability whose variants have incompatible route cuts; selector-discriminated materialization is outside this design. Target plans are actor-context keyed, not source-state keyed: two actors can own the same source state while carrying different route cuts. Conversely, a different template can use `State` when its complete physical layout is identical to the active contract's layout.
+
+Physical compatibility is semantic, not merely byte compatibility. It compares ordered field identities, SIL types, and generated-field roles. Two layouts with the same packed widths but different route-field meaning are not compatible.
 
 The target plan therefore owns one further compatibility decision:
 
@@ -320,7 +335,9 @@ struct PhysicalStateExpr {
 }
 ```
 
-`SourceStateAccess::Authored(State)` does not expose route fields to Argent. It records that both layout relations are identity and the target physical layout can use the active contract's `State` type. `SourceStateAccess::View` supports projections only; `require_authored_value` must either materialize a complete source value under the expansion rules or report that the required preimages are unavailable.
+The concrete API should also carry opaque evidence such as `AuthenticatedPhysicalInput`, `ExpansionOpenings`, `PhysicalMaterializationPlan`, and `GeneratedFieldSource`. A materialization plan maps every generated field exactly once to current compiler context, an authenticated input, linked template context, or a route-transition derivation. Ordinary codegen must not be able to construct these proofs or a trusted physical value directly.
+
+`SourceStateAccess::Authored(State)` does not expose route fields to Argent. It records nominal source identity, both identity relations, and compatibility with the active contract's `State` type. `SourceStateAccess::View` supports projections only; `require_authored_value` must either materialize a complete source value under the expansion rules or report that the required preimages are unavailable.
 
 ### 4.4 Physical layout is confined to boundary operations
 
@@ -354,11 +371,24 @@ fn target_uses_active_state(
 ) -> bool {
     target.physical.is_sil_compatible_with(active)
 }
+
+fn physical_can_serve_as_source(
+    requested: SourceStateId,
+    source: &SourceRepresentationPlan,
+    target: &TargetPhysicalPlan,
+    active: &PhysicalStateLayout,
+) -> bool {
+    requested == target.source
+        && source.sil == SourceSilRepresentation::ActiveState
+        && source.source_to_storage == SourceStorageRelation::Identity
+        && target.storage_to_physical == StoragePhysicalRelation::Identity
+        && target_uses_active_state(active, target)
+}
 ```
 
 `storage_is_physical_identity` means that an already-lowered storage payload can be passed to physical-state builtins without adding route fields. It does not mean that physical `State` is a valid authored source value.
 
-`source_is_physical_identity` establishes that a physical value is also an authored value. `target_uses_active_state` establishes that the physical value may use this emitted contract's SIL `State` type. Only their conjunction permits `SourceStateAccess::Authored(State)` and makes all source-level operations no-ops:
+`source_is_physical_identity` establishes that a layout's physical value has its own authored layout. `target_uses_active_state` establishes that the physical value may use this emitted contract's SIL `State` type. `physical_can_serve_as_source` additionally requires nominal identity with the requested source state and confirms that the contract-wide source representation actually selected active `State`. Keeping the target's source identity inside `TargetPhysicalPlan` prevents a caller from pairing a physical target with an unrelated source type. Only that complete predicate permits `SourceStateAccess::Authored(State)` and makes all source-level operations no-ops:
 
 ```text
 project_to_source(State)     -> State
@@ -404,6 +434,8 @@ The following invariants are mandatory:
 6. In the fully aligned case only—both identity relations plus target/active physical compatibility—a coherent contract-wide lowering may represent authored state values as SIL `State`. In all other cases, authored and physical categories stay distinct even if a particular expression can be projected cheaply.
 
 Global functions are planned independently for each contract into which they are emitted. Actor functions use their owning contract's plan. This preserves the namespace and ownership semantics of the pending branches while removing their initializer-shape special cases.
+
+Actor functions may capture ordinary actor fields, but cannot directly project through a virtual field whose physical representation is only a digest. For example, `strategy.hunger` inside an actor function is rejected when `strategy` is expansion-backed. Argent lowering must report this against the field access span and identify the owning actor function; it must not defer the failure to Silverscript type checking. The opened authored value must instead be supplied explicitly as a function parameter. Adding hidden opening parameters or entry-context inlining is outside the initial implementation.
 
 ### 4.7 Structured SIL type rewriting
 
@@ -475,7 +507,7 @@ The target is not a second codegen implementation. It is a small layout plan plu
 
 7. **The aligned path uses SIL naturally.** If the relevant layouts are identical, use Silverscript's `State` object directly rather than manufacturing an equivalent struct.
 
-8. **The physical ABI remains stable unless deliberately changed.** This refactor should preserve physical field order, encodings, generated witness recipes, artifacts, and template hashes whenever generated SIL is semantically and textually unchanged.
+8. **Physical encoding remains stable unless deliberately changed.** This refactor preserves physical field order, encodings, and generated witness recipes. Coherent aligned lowering may deliberately change generated SIL parameter type names, dispatch tags, scripts, template hashes, and artifact IDs; every such change must be identified and reviewed.
 
 9. **No fallback textual recognition.** Codegen must not recognize special transitions by compacting or comparing source strings.
 
@@ -483,11 +515,11 @@ The target is not a second codegen implementation. It is a small layout plan plu
 
 11. **Function representation is contextual, not syntactic.** Choose it once per emitted contract and state type. Never infer it from an initializer being a direct call, a parameter originating at an entry, or a result immediately feeding a route.
 
-12. **Evaluation count is semantic.** A state-producing expression is evaluated once even if conversion projects multiple fields, lowers expansion payloads, or materializes multiple physical components.
+12. **Evaluation behavior is semantic.** A state-producing expression is evaluated once and in its original order even if conversion projects multiple fields, lowers expansion payloads, or materializes multiple physical components. Conversion must not hoist work across a conditional or short-circuit boundary.
 
 ## 6. Gradual implementation plan
 
-This section is a migration plan, not a permanent API specification. The sequence is designed as seven independently reviewable commits on top of `actor_functions`, itself stacked on `global_fn_namespace`. Preserve the two branches' user-facing function features and namespace guarantees, but do not preserve their tactical representation special cases merely because fixtures currently encode them.
+This section is a migration plan, not a permanent API specification. The sequence is designed as independently reviewable commits on top of `actor_functions`, itself stacked on `global_fn_namespace`. Preserve the two branches' user-facing function features and namespace guarantees, but do not preserve their tactical representation special cases merely because fixtures currently encode them.
 
 ### Commit 1: Characterize the existing representation behavior
 
@@ -532,8 +564,11 @@ Build plans from the existing source/storage state model and route planner. Init
 - assert identical storage widths and field encodings;
 - assert one representation decision for each state type within each emitted contract;
 - assert one physical layout and SIL type for every referenced actor or dynamic target;
+- reject dynamic targets whose variants do not share one canonical physical layout and SIL type;
+- require nominal `SourceStateId` equality before a physical value serves directly as authored state;
 - cover actors that share one source state but carry different route cuts;
 - cover a different template whose physical layout can use the active `State`;
+- distinguish byte-compatible layouts whose generated fields have different semantic roles;
 - assert global functions receive the destination contract's decision rather than a source-global decision.
 
 Keep existing codegen authoritative for this commit. The new plan runs in parallel only as a checked model.
@@ -567,7 +602,7 @@ Replace `entry_param_sil_type` checks, direct-call recognition, authored-local p
 - consumed or observed physical state -> projected field or materialized authored function parameter;
 - function result -> local -> `become`;
 - nested global and actor function calls;
-- function parameters and results, local and destructuring declarations, constructors, and genuine type expressions;
+- function parameters and results, local and destructuring declarations, assignments and reassignments, constructors, and genuine type expressions;
 - scalar state types plus fixed- and dynamic-array state element types;
 - single evaluation of every state-returning call.
 
@@ -576,6 +611,8 @@ For plain global and actor function text, use Sil's AST and exact source spans. 
 In the fully aligned case, where both relations are identity and the relevant physical plan uses active `State`, apply a coherent contract-wide lowering: parameters, results, compatible locals, arrays, constructors, and consumed inputs may all use SIL `State` directly. Do not emit a duplicate source-named struct solely for that state. In augmented, expanded, or physically incompatible cases, retain the planned authored representation and cross to the selected physical type only through the boundary.
 
 Generated SIL changes are expected here where the tactical actor-function representation is replaced or a fully aligned contract switches coherently to `State`. Review those diffs semantically; do not require byte-for-byte preservation of the tactical form.
+
+Implement this surface as separate reviewable commits for scalar/function lowering and array lowering. Array type substitution does not imply element-wise conversion: converting a dynamic array requires a compiler-known maximum, and an unbounded conversion must be rejected. Any required Sil visitor extension should remain an isolated dependency commit.
 
 Exit condition: every call and callee agrees by construction; no result representation depends on initializer shape; expanded no-route states never masquerade as authored `State`; namespace isolation and actor ownership tests from PRs #49 and #50 still pass; and state-producing calls evaluate once.
 
@@ -643,7 +680,7 @@ Regenerate tracked fixtures once, review every generated SIL and artifact diff, 
 
 Keep `entry-ranges-part1` paused during this commit. Document the shared array element rules it must consume when later resumed.
 
-Exit condition: `./check.sh --full` passes; every representation switch, including functions and arrays, is reachable through the typed boundary; documentation describes `become self`; and physical ABI changes, if any, are explicitly enumerated rather than incidental.
+Exit condition: `./check.sh --full` passes; every representation switch, including functions and arrays, is reachable through the typed boundary; documentation describes `become self`; and generated Sil ABI or contract-identity changes, if any, are explicitly enumerated rather than incidental.
 
 ## 7. Sanity checks during the migration
 
@@ -699,6 +736,7 @@ The following invariants deserve explicit attention throughout the sequence.
 - Existing artifacts still build equivalent UTXOs and transactions.
 - Hidden witness recipes remain complete and ordered.
 - Artifact dependency IDs and interface fingerprints change only if their documented inputs intentionally change.
+- Generated dispatch tags, scripts, template hashes, and artifact IDs may change when an aligned entry signature deliberately lowers to `State`; record the cause of each change.
 - Do not bump the artifact schema merely for internal Rust types. Bump it only if serialized artifact meaning or shape changes.
 
 ### 7.6 Function and evaluation stability
@@ -708,7 +746,8 @@ The following invariants deserve explicit attention throughout the sequence.
 - A global function compiled into different actor contracts may have different lowered SIL state types, while keeping one authored signature and behavior.
 - Callers and callees agree for state parameters, results, destructuring, constructors, and nested array elements.
 - No direct-call or initializer-shape branch survives as a representation decision.
-- A state-returning call is emitted once, then its bound result is projected or converted as needed.
+- A state-returning call is emitted once in its original evaluation position, then its bound result is projected or converted as needed.
+- Conversion does not hoist indexed or state-producing expressions across conditional or short-circuit boundaries.
 
 ## 8. End-state test strategy
 
@@ -727,6 +766,9 @@ Test layout relation calculation without generating SIL:
 - field maps preserve declared ordering and packed widths.
 - actors sharing a source state can retain different target physical layouts;
 - a target uses active `State` exactly when its complete physical layout is compatible.
+- nominally different source states remain distinct even when their field layouts match;
+- byte-compatible physical layouts with different generated-field roles are not compatible;
+- dynamic target variants with incompatible route cuts are rejected.
 
 Add property-style tests for the core algebra:
 
@@ -748,7 +790,8 @@ Positive cases:
 
 Negative cases:
 
-- ambiguous `become self;` with multiple emitted outputs;
+- ambiguous `become self;` with multiple singleton outputs that permit the current actor;
+- exact self on a ranged output handle;
 - `output <- self` when the output cannot become the current actor;
 - `self` in an ordinary expression;
 - `self` as a state constructor value;
@@ -764,10 +807,12 @@ Exercise both global and actor functions in aligned, augmented, and expanded con
 - validated consumed or observed state -> projected field and whole authored parameter;
 - function result -> local -> `become`;
 - nested function calls;
+- state assignments and reassignments across compatible and incompatible representations;
 - scalar, fixed-array, and dynamic-array state values;
 - a state-returning call whose result feeds more than one projection, proving single evaluation;
 - the same global function emitted into two contracts with different state-layout relations;
 - expanded whole-value passage with valid payload preimages, and rejection when only a digest is available.
+- direct capture of an expansion-backed actor field receives an Argent diagnostic at the field access, while an explicitly supplied authored parameter works.
 
 Assert type occurrences structurally: parameters, results, locals, destructuring declarations, arrays, and constructors. Include decoy occurrences of the state spelling as a variable, field, function, comment, and string so an unsafe textual rewrite cannot pass.
 
@@ -950,7 +995,8 @@ Expected:
 - a current state with both relations identity lowers to SIL `State` directly;
 - an expanded current state without route fields does not lower to source-level `State`, despite storage-to-physical identity;
 - augmented current state uses a source/user representation and materializes only at a physical boundary;
-- source-level call syntax and artifact parameter type remain the same;
+- source-level call syntax and accepted authored argument shape remain the same;
+- aligned `State` substitution may change the generated Sil signature, dispatch tag, script, template hash, and artifact ID;
 - field access produces the same result in both contexts.
 
 ### V9: Expanded state isolation
@@ -981,7 +1027,7 @@ Expected:
 
 - exact self applies only to `current`;
 - the peer route follows ordinary materialization and template validation;
-- bare `become self;` is rejected as ambiguous in this entry;
+- bare `become self;` resolves to `current` because it is the only output that permits the active actor;
 - swapping the two output roles fails the existing output-shape checks.
 
 ### V11: Invalid source-boundary access
@@ -1049,10 +1095,10 @@ The change is complete when:
 - exact self is represented explicitly in the semantic IR and lowers directly to P2SH script-public-key equality;
 - every emitted contract owns one typed state-lowering environment with source representations and actor-keyed target physical plans;
 - all user-to-physical layout transitions go through the SIL state boundary;
-- authored codegen uses Silverscript `State` directly only when both identity relations hold and the target physical layout is compatible with active `State`;
+- authored codegen uses Silverscript `State` directly only when nominal source identity and both layout identities hold and the target physical layout is compatible with active `State`;
 - global and actor function parameters, results, locals, destructuring, constructors, calls, and state arrays use one per-contract representation decision;
 - projected field views are not mistaken for whole authored values, and expanded whole values require validated preimages;
-- state-returning calls are evaluated exactly once;
+- state-returning calls are evaluated exactly once and in their original order;
 - SIL state-type rewriting uses classified AST/type spans rather than textual replacement;
 - augmented and expanded cases preserve their current security and runtime behavior;
 - physical route fields remain inaccessible from Argent source;
