@@ -1228,6 +1228,22 @@ fn self_transition_uses_same_template_shortcut() {
 }
 
 #[test]
+fn route_validation_kind_characterizes_current_representation_decisions() {
+    let program = test_program();
+    let actor = &program.modules[0].actors[0];
+
+    let exact = RouteCall { output: "next".to_string(), actor: actor.name.clone(), state: " self.state ".to_string() };
+    let spaced_exact = RouteCall { output: "next".to_string(), actor: actor.name.clone(), state: "self . state".to_string() };
+    let changed = RouteCall { output: "next".to_string(), actor: actor.name.clone(), state: "next_state".to_string() };
+    let foreign = RouteCall { output: "next".to_string(), actor: "Game".to_string(), state: "next_game".to_string() };
+
+    assert_eq!(route_validation_kind(actor, &exact), RouteValidationKind::ExactScriptPublicKey);
+    assert_eq!(route_validation_kind(actor, &spaced_exact), RouteValidationKind::SameTemplate);
+    assert_eq!(route_validation_kind(actor, &changed), RouteValidationKind::SameTemplate);
+    assert_eq!(route_validation_kind(actor, &foreign), RouteValidationKind::ForeignTemplate);
+}
+
+#[test]
 fn state_returning_function_initializes_an_authored_local_once() {
     let (actor_sil, _) = inline_actor_sil_and_artifact(
         "state-function-local",
@@ -1264,6 +1280,72 @@ fn state_returning_function_initializes_an_authored_local_once() {
     assert!(!sil.contains("successor().right"), "{sil}");
     assert!(sil.contains("left: candidate.left"), "{sil}");
     assert!(sil.contains("right: candidate.right"), "{sil}");
+}
+
+#[test]
+fn state_valued_functions_are_characterized_in_aligned_and_augmented_contexts() {
+    let fixture = "tests/fixtures/state_layout/function_contexts/app.ag";
+    let (aligned_sil, artifact) = emit_selected_fixture(fixture, "Test", "Aligned");
+    let (routed_sil, _) = emit_selected_fixture(fixture, "Test", "Routed");
+
+    assert_eq!(aligned_sil, include_str!("../../../../tests/fixtures/state_layout/function_contexts/Aligned.sil"));
+    assert_eq!(routed_sil, include_str!("../../../../tests/fixtures/state_layout/function_contexts/Routed.sil"));
+
+    // Migration debt: the aligned contract still uses authored state types
+    // instead of one coherent direct-State representation.
+    for sil in [&aligned_sil, &routed_sil] {
+        assert!(sil.contains("function global_identity(SharedState gen__glob_value) : SharedState"), "{sil}");
+        assert!(sil.contains("function global_fixed(SharedState[2] gen__glob_values) : SharedState[2]"), "{sil}");
+        assert!(sil.contains("function global_dynamic(SharedState[] gen__glob_values) : SharedState[]"), "{sil}");
+        assert!(sil.contains("function actor_identity(SharedState value) : SharedState"), "{sil}");
+        assert!(sil.contains("function actor_fixed(SharedState[2] values) : SharedState[2]"), "{sil}");
+        assert!(sil.contains("function actor_dynamic(SharedState[] values) : SharedState[]"), "{sil}");
+    }
+
+    let advance = routed_sil
+        .split_once("entry advance")
+        .map(|(_, tail)| tail)
+        .and_then(|tail| tail.split_once("// :: leader entry (1:N)\n    entry export").map(|(body, _)| body))
+        .expect("advance entry is delimited in the generated SIL");
+    assert_eq!(advance.matches("actor_identity(global_identity(value))").count(), 1, "{advance}");
+    assert_eq!(advance.matches("actor_fixed(global_fixed(fixed))").count(), 1, "{advance}");
+    assert_eq!(advance.matches("actor_dynamic(global_dynamic(dynamic))").count(), 1, "{advance}");
+    assert_eq!(advance.matches("actor_identity(scalar)").count(), 1, "{advance}");
+    assert!(!advance.contains("actor_identity(scalar).left"), "{advance}");
+    assert!(!advance.contains("actor_identity(scalar).right"), "{advance}");
+    assert!(advance.contains("SharedState gen__source_next_shared_state = actor_identity(scalar);"), "{advance}");
+    assert!(advance.contains("validateOutputState(gen__next_output_idx, gen__state_next_state);"), "{advance}");
+    assert!(routed_sil.contains("validateOutputStateWithTemplate("), "{routed_sil}");
+
+    let shared = artifact.argent.states.iter().find(|state| state.name == "SharedState").expect("SharedState is recorded");
+    assert_eq!(shared.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["left", "right"]);
+
+    let aligned = artifact.sil_abi.contract("Aligned").expect("Aligned contract exists");
+    assert_eq!(aligned.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["left", "right"]);
+    assert!(runtime_state_plan(&artifact, "Aligned").is_none());
+
+    let routed = artifact.sil_abi.contract("Routed").expect("Routed contract exists");
+    assert_eq!(
+        routed.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        ["gen__foreign_template", "left", "right"]
+    );
+    assert_eq!(
+        runtime_state_plan(&artifact, "Routed")
+            .expect("Routed physical plan exists")
+            .field_roles
+            .iter()
+            .map(|field| (field.name.as_str(), field.role.clone()))
+            .collect::<Vec<_>>(),
+        [("gen__foreign_template", RuntimeFieldRoleArtifact::Template { contract: "Foreign".to_string() })]
+    );
+
+    let templates = &artifact.argent.template_plan.templates;
+    let aligned_template = templates.iter().find(|template| template.actor == "Aligned").expect("Aligned template exists");
+    let routed_template = templates.iter().find(|template| template.actor == "Routed").expect("Routed template exists");
+    assert_eq!(aligned_template.sil_template_hash, "9bff615cfd8b17ceab4136e3942fcdb7e94532235c2450c41f99c749ab27fbae");
+    assert_eq!(routed_template.sil_template_hash, "74c9dee54f99c1d4fae770244ad71f0f119baca44a6422f751fdb2a843967647");
+    assert!(aligned_template.actor_type_handle.context_fields.is_empty());
+    assert_eq!(routed_template.actor_type_handle.context_fields, ["gen__foreign_template"]);
 }
 
 #[test]

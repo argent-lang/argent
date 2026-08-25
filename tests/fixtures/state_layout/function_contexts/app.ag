@@ -1,0 +1,90 @@
+state SharedState {
+    int left;
+    int right;
+}
+
+state ForeignState {
+    int marker;
+}
+
+fn global_identity(SharedState value) -> SharedState {
+    return value;
+}
+
+fn global_fixed(SharedState[2] values) -> SharedState[2] {
+    return values;
+}
+
+fn global_dynamic(SharedState[] values) -> SharedState[] {
+    return values;
+}
+
+actor Aligned owns SharedState {
+    fn actor_identity(SharedState value) -> SharedState {
+        return global_identity(value);
+    }
+
+    fn actor_fixed(SharedState[2] values) -> SharedState[2] {
+        return global_fixed(values);
+    }
+
+    fn actor_dynamic(SharedState[] values) -> SharedState[] {
+        return global_dynamic(values);
+    }
+
+    entry inspect(SharedState value, SharedState[2] fixed, SharedState[] dynamic) emits none {
+        SharedState scalar = actor_identity(global_identity(value));
+        SharedState[2] fixed_result = actor_fixed(global_fixed(fixed));
+        SharedState[] dynamic_result = actor_dynamic(global_dynamic(dynamic));
+
+        require(scalar.left + scalar.right >= 0);
+        require(fixed_result[0].left >= 0);
+        require(dynamic_result.length >= 0);
+    }
+}
+
+actor Routed owns SharedState {
+    fn actor_identity(SharedState value) -> SharedState {
+        return global_identity(value);
+    }
+
+    fn actor_fixed(SharedState[2] values) -> SharedState[2] {
+        return global_fixed(values);
+    }
+
+    fn actor_dynamic(SharedState[] values) -> SharedState[] {
+        return global_dynamic(values);
+    }
+
+    entry advance(SharedState value, SharedState[2] fixed, SharedState[] dynamic) emits next: Routed {
+        SharedState scalar = actor_identity(global_identity(value));
+        SharedState[2] fixed_result = actor_fixed(global_fixed(fixed));
+        SharedState[] dynamic_result = actor_dynamic(global_dynamic(dynamic));
+
+        require(fixed_result[0].left >= 0);
+        require(dynamic_result.length >= 0);
+        unrestricted(next.value);
+        become next <- Routed(actor_identity(scalar));
+    }
+
+    entry export() emits next: Foreign {
+        ForeignState next_state = {
+            marker: left + right,
+        };
+
+        unrestricted(next.value);
+        become next <- Foreign(next_state);
+    }
+}
+
+actor Foreign owns ForeignState {
+    entry hold() emits none {
+        require(marker >= 0);
+    }
+}
+
+app Test {
+    actor Aligned;
+    actor Routed;
+    actor Foreign;
+}
