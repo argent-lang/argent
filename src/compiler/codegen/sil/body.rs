@@ -94,27 +94,53 @@ struct BodyLowerer<'a, 'm, 'p> {
     current_statement: Option<Span>,
 }
 
-struct PlannedStateArgument {
+struct PlannedStateValueSite {
     span: Range<usize>,
-    source: SourceStateId,
+    expected: PlannedStateValue,
 }
 
-struct StateArgumentCollector<'a> {
+struct StateValueSiteCollector<'a> {
     state_values: &'a ContractStateValuePlan,
-    arguments: Vec<PlannedStateArgument>,
+    bindings: &'a BodyBindings,
+    sites: Vec<PlannedStateValueSite>,
 }
 
-impl<'i> AstVisitorMut<'i> for StateArgumentCollector<'_> {
+impl<'i> AstVisitorMut<'i> for StateValueSiteCollector<'_> {
     fn visit_expr(&mut self, expr: &mut SilExpr<'i>) {
-        if let SilExprKind::Call { name, args, .. } = &expr.kind
-            && let Some(signature) = self.state_values.signature(name)
-        {
-            for (index, arg) in args.iter().enumerate() {
-                if let Some(value) = signature.param(index).filter(|value| value.shape().is_scalar()) {
-                    self.arguments
-                        .push(PlannedStateArgument { span: arg.span.start()..arg.span.end(), source: value.source().clone() });
+        match &expr.kind {
+            SilExprKind::Call { name, args, .. } => {
+                if let Some(signature) = self.state_values.signature(name) {
+                    for (index, arg) in args.iter().enumerate() {
+                        if let Some(expected) = signature.param(index) {
+                            self.sites
+                                .push(PlannedStateValueSite { span: arg.span.start()..arg.span.end(), expected: expected.clone() });
+                        }
+                    }
                 }
             }
+            SilExprKind::Array { type_ref, values } => {
+                if let Some(element) =
+                    self.state_values.plan_ast_type_ref(type_ref, Some(values.len())).and_then(|value| value.element())
+                {
+                    self.sites.extend(
+                        values.iter().map(|value| PlannedStateValueSite {
+                            span: value.span.start()..value.span.end(),
+                            expected: element.clone(),
+                        }),
+                    );
+                }
+            }
+            SilExprKind::Append { source, args, .. } => {
+                if let Some(element) =
+                    planned_state_value_for_expr(source, self.state_values, self.bindings).and_then(|value| value.element())
+                {
+                    self.sites.extend(
+                        args.iter()
+                            .map(|arg| PlannedStateValueSite { span: arg.span.start()..arg.span.end(), expected: element.clone() }),
+                    );
+                }
+            }
+            _ => {}
         }
         walk_expr_mut(self, expr);
     }
@@ -162,6 +188,11 @@ impl BodyBinding {
 
     fn with_state_access(mut self, access: SourceStateAccess) -> Self {
         self.state_access = Some(access);
+        self
+    }
+
+    fn with_planned_state_value(mut self, state_value: Option<PlannedStateValue>) -> Self {
+        self.state_value = state_value;
         self
     }
 }
@@ -239,9 +270,8 @@ impl BodyBindings {
         array_element_type(self.source_type(root)?).map(str::to_string)
     }
 
-    fn scalar_state(&self, name: &str) -> Option<&SourceStateId> {
-        let value = self.get(name)?.value.state_value.as_ref()?;
-        value.shape().is_scalar().then(|| value.source())
+    fn state_value(&self, name: &str) -> Option<&PlannedStateValue> {
+        self.get(name)?.value.state_value.as_ref()
     }
 
     fn state_access_for_expr(&self, expr: &str) -> Option<&SourceStateAccess> {
@@ -259,6 +289,21 @@ impl BodyBindings {
 
     fn mark_selector_materialized(&mut self, id: BodyBindingId) {
         self.scopes.last_mut().expect("body bindings retain a root scope").materialized_selectors.insert(id);
+    }
+}
+
+fn planned_state_value_for_expr(
+    expr: &SilExpr<'_>,
+    state_values: &ContractStateValuePlan,
+    bindings: &BodyBindings,
+) -> Option<PlannedStateValue> {
+    match &expr.kind {
+        SilExprKind::Identifier(name) => bindings.state_value(name).cloned(),
+        SilExprKind::Call { name, .. } => state_values.signature(name)?.result().cloned(),
+        SilExprKind::Array { type_ref, values } => state_values.plan_ast_type_ref(type_ref, Some(values.len())),
+        SilExprKind::Append { source, args, .. } => planned_state_value_for_expr(source, state_values, bindings)?.appended(args.len()),
+        SilExprKind::ArrayIndex { source, .. } => planned_state_value_for_expr(source, state_values, bindings)?.element(),
+        _ => None,
     }
 }
 
@@ -603,7 +648,10 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let lowered = self.lower_typed_local_initializer(source_ty, &lowered_ty, &expr, indent)?;
         push_indent(out, indent);
         out.push_str(&format!("{emitted_type} {name} = {lowered};\n"));
-        let mut binding = BodyBinding::typed(source_ty, lowered_ty, self.state_values);
+        let initializer_state_value =
+            parse_expression_ast(&lowered).ok().and_then(|initializer| self.planned_state_value_for_expr(&initializer));
+        let planned_state_value = self.state_values.plan_initialized_sil_type(source_ty, initializer_state_value.as_ref());
+        let mut binding = BodyBinding::typed(source_ty, lowered_ty, self.state_values).with_planned_state_value(planned_state_value);
         if let Some(selector) = self.selector_catalog.get(name)
             && selector.actor_enum == source_ty
         {
@@ -640,7 +688,8 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             let relative = (destructuring.declared_type.start - span.start)..(destructuring.declared_type.end - span.start);
             statement.replace_range(relative, &lowered_type);
         } else if let Some((range, expected_state)) = self.plain_assignment_expr(&statement) {
-            let lowered = self.lower_expr(&statement[range.clone()], expected_state.as_deref(), indent)?;
+            let expected_type = expected_state.as_ref().map(|value| self.state_values.sil_type(value));
+            let lowered = self.lower_expr(&statement[range.clone()], expected_type.as_deref(), indent)?;
             statement.replace_range(range, &lowered);
             value_lowered = true;
         }
@@ -660,7 +709,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         push_indent(out, indent);
         let statement = lower_co_spent_calls(&statement, &self.bindings)?;
         let statement = lower_actor_enum_literals(&statement, self.model)?;
-        let statement = if value_lowered { statement } else { self.lower_function_state_args(&statement, indent)? };
+        let statement = if value_lowered { statement } else { self.lower_nested_state_values(&statement, indent)? };
         let statement = self.lower_refs(&statement)?;
         out.push_str(&statement);
         out.push_str(";\n");
@@ -670,7 +719,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         Ok(())
     }
 
-    fn plain_assignment_expr(&self, statement: &str) -> Option<(Range<usize>, Option<String>)> {
+    fn plain_assignment_expr(&self, statement: &str) -> Option<(Range<usize>, Option<PlannedStateValue>)> {
         let prefix = "function gen__entry_statement() { ";
         let source = format!("{prefix}{statement}; }}");
         let parsed = parse_function_ast(&source).ok()?;
@@ -678,7 +727,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             return None;
         };
         let range = (expr.span.start() - prefix.len())..(expr.span.end() - prefix.len());
-        let expected_state = self.bindings.scalar_state(name).map(|source| source.as_str().to_string());
+        let expected_state = self.bindings.state_value(name).cloned();
         Some((range, expected_state))
     }
 
@@ -1325,6 +1374,10 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
 
     fn lower_expr(&self, expr: &str, expected_ty: Option<&str>, indent: usize) -> Result<String> {
         let expr = expr.trim();
+        let expected_state_value = expected_ty.and_then(|ty| self.state_values.plan_sil_type(ty));
+        if let Some(expected) = expected_state_value.as_ref().filter(|value| !value.shape().is_scalar()) {
+            return self.lower_authored_state_array_expr(expr, expected, indent);
+        }
         if expr == "self.state" {
             let ty = expected_ty.ok_or_else(|| ArgentError::new("`self.state` requires a target state type during lowering"))?;
             return self.lower_self_state_expr(ty, indent);
@@ -1361,15 +1414,100 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         // their exact argument spans.
         let expr = lower_co_spent_calls(expr, &self.bindings)?;
         let expr = lower_actor_enum_literals(&expr, self.model)?;
-        if let Some(expected_ty) = expected_ty
-            && self.model.has_state(expected_ty)
-            && let Some(actual) = self.function_state_result(&expr)
-            && actual.as_str() != expected_ty
-        {
-            return Err(self.error(format!("state function expression has authored type `{}`, not `{expected_ty}`", actual.as_str())));
+        if let Some(expected) = expected_state_value.as_ref() {
+            let parsed = parse_expression_ast(&expr).ok();
+            if let Some(actual) = parsed.as_ref().and_then(|expr| self.planned_state_value_for_expr(expr))
+                && actual.is_proven_incompatible_with(expected)
+            {
+                return Err(self.state_value_mismatch(&actual, expected));
+            }
+            if let Some(parsed) = parsed.as_ref()
+                && matches!(parsed.kind, SilExprKind::ArrayIndex { .. })
+            {
+                return self.lower_authored_state_array_index(&expr, parsed, expected, indent);
+            }
         }
-        let expr = self.lower_function_state_args(&expr, indent)?;
+        let expr = self.lower_nested_state_values(&expr, indent)?;
         self.lower_refs(&expr)
+    }
+
+    fn lower_authored_state_array_expr(&self, expr: &str, expected: &PlannedStateValue, indent: usize) -> Result<String> {
+        debug_assert!(!expected.shape().is_scalar());
+        let expr = lower_co_spent_calls(expr, &self.bindings)?;
+        let expr = lower_actor_enum_literals(&expr, self.model)?;
+        let mut parsed = parse_expression_ast(&expr).map_err(|err| {
+            self.error(format!(
+                "cannot classify authored state-array expression `{expr}` as `{}`: {err}",
+                self.state_values.sil_type(expected)
+            ))
+        })?;
+        let actual = self.planned_state_value_for_expr(&parsed).ok_or_else(|| {
+            self.error(format!(
+                "unsupported authored state-array expression `{expr}` for `{}`; use a named array, a state-array function result, a typed array literal, or `append(...)`",
+                self.state_values.sil_type(expected)
+            ))
+        })?;
+        if actual.is_proven_incompatible_with(expected) {
+            return Err(self.state_value_mismatch(&actual, expected));
+        }
+
+        if !matches!(
+            &parsed.kind,
+            SilExprKind::Array { .. } | SilExprKind::Append { .. } | SilExprKind::Identifier(_) | SilExprKind::Call { .. }
+        ) {
+            return Err(self.error(format!(
+                "unsupported authored state-array expression shape in `{expr}` for `{}`",
+                self.state_values.sil_type(expected)
+            )));
+        }
+        let mut collector = StateValueSiteCollector { state_values: self.state_values, bindings: &self.bindings, sites: Vec::new() };
+        collector.visit_expr(&mut parsed);
+        let lowered = self.lower_planned_state_value_sites(&expr, collector.sites, indent)?;
+        self.lower_refs(&lowered)
+    }
+
+    fn lower_authored_state_array_index(
+        &self,
+        expr: &str,
+        parsed: &SilExpr<'_>,
+        expected: &PlannedStateValue,
+        indent: usize,
+    ) -> Result<String> {
+        debug_assert!(expected.shape().is_scalar());
+        let SilExprKind::ArrayIndex { source, index } = &parsed.kind else {
+            unreachable!("array index lowering requires an array index expression");
+        };
+        let source_plan = self
+            .planned_state_value_for_expr(source)
+            .ok_or_else(|| self.error(format!("cannot classify the authored state-array source indexed by `{expr}`")))?;
+        let Some(element) = source_plan.element() else {
+            return Err(self.error(format!("state value `{}` is scalar and cannot be indexed", source_plan.source().as_str())));
+        };
+        if element.is_proven_incompatible_with(expected) {
+            return Err(self.state_value_mismatch(&element, expected));
+        }
+
+        let source_type = self.state_values.sil_type(&source_plan);
+        let source_span = source.span.start()..source.span.end();
+        let index_span = index.span.start()..index.span.end();
+        let replacements = vec![
+            (source_span.clone(), self.lower_expr(&expr[source_span], Some(&source_type), indent)?),
+            (index_span.clone(), self.lower_expr(&expr[index_span], None, indent)?),
+        ];
+        let lowered = apply_expr_replacements(expr, replacements);
+        self.lower_refs(&lowered)
+    }
+
+    fn planned_state_value_for_expr(&self, expr: &SilExpr<'_>) -> Option<PlannedStateValue> {
+        planned_state_value_for_expr(expr, self.state_values, &self.bindings)
+    }
+
+    fn state_value_mismatch(&self, actual: &PlannedStateValue, expected: &PlannedStateValue) -> ArgentError {
+        self.error(format!(
+            "authored state value has type `{}`, not `{}`",
+            self.state_values.sil_type(actual),
+            self.state_values.sil_type(expected)
+        ))
     }
 
     fn function_state_result(&self, expr: &str) -> Option<&SourceStateId> {
@@ -1381,11 +1519,11 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         value.shape().is_scalar().then(|| value.source())
     }
 
-    fn lower_function_state_args(&self, expr: &str, indent: usize) -> Result<String> {
-        if !self.contains_state_argument_call(expr)? {
+    fn lower_nested_state_values(&self, expr: &str, indent: usize) -> Result<String> {
+        if !self.contains_state_value_context(expr)? {
             return Ok(expr.to_string());
         }
-        let mut collector = StateArgumentCollector { state_values: self.state_values, arguments: Vec::new() };
+        let mut collector = StateValueSiteCollector { state_values: self.state_values, bindings: &self.bindings, sites: Vec::new() };
         if let Ok(mut parsed) = parse_expression_ast(expr) {
             collector.visit_expr(&mut parsed);
         } else {
@@ -1395,39 +1533,43 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                 self.error(format!("cannot classify state-valued function arguments in expression or statement `{expr}`: {err}"))
             })?;
             visit_function_mut(&mut collector, &mut function);
-            for argument in &mut collector.arguments {
-                argument.span = (argument.span.start - prefix.len())..(argument.span.end - prefix.len());
+            for site in &mut collector.sites {
+                site.span = (site.span.start - prefix.len())..(site.span.end - prefix.len());
             }
         }
-        collector
-            .arguments
-            .sort_by(|left, right| left.span.start.cmp(&right.span.start).then_with(|| right.span.end.cmp(&left.span.end)));
+        self.lower_planned_state_value_sites(expr, collector.sites, indent)
+    }
 
-        let mut outermost: Vec<PlannedStateArgument> = Vec::new();
-        for argument in collector.arguments {
-            if outermost.iter().any(|outer| outer.span.start <= argument.span.start && argument.span.end <= outer.span.end) {
+    fn lower_planned_state_value_sites(&self, expr: &str, mut sites: Vec<PlannedStateValueSite>, indent: usize) -> Result<String> {
+        sites.sort_by(|left, right| left.span.start.cmp(&right.span.start).then_with(|| right.span.end.cmp(&left.span.end)));
+
+        let mut outermost: Vec<PlannedStateValueSite> = Vec::new();
+        for site in sites {
+            if outermost.iter().any(|outer| outer.span.start <= site.span.start && site.span.end <= outer.span.end) {
                 continue;
             }
-            outermost.push(argument);
+            outermost.push(site);
         }
 
         let mut out = expr.to_string();
-        for argument in outermost.into_iter().rev() {
-            let source = &expr[argument.span.clone()];
-            let lowered = self.lower_expr(source, Some(argument.source.as_str()), indent)?;
-            out.replace_range(argument.span, &lowered);
+        for site in outermost.into_iter().rev() {
+            let source = &expr[site.span.clone()];
+            let expected_type = self.state_values.sil_type(&site.expected);
+            let lowered = self.lower_expr(source, Some(&expected_type), indent)?;
+            out.replace_range(site.span, &lowered);
         }
         Ok(out)
     }
 
-    fn contains_state_argument_call(&self, expr: &str) -> Result<bool> {
+    fn contains_state_value_context(&self, expr: &str) -> Result<bool> {
         let tokens =
             lex(expr).map_err(|err| self.error(format!("cannot inspect function calls in expression `{expr}`: {}", err.message)))?;
         Ok(tokens.windows(2).any(|tokens| {
-            let [Token { kind: TokenKind::Ident(name), .. }, Token { kind: TokenKind::Symbol('('), .. }] = tokens else {
-                return false;
-            };
-            self.state_values.signature(name).is_some_and(|signature| signature.has_scalar_state_param())
+            matches!(tokens, [Token { kind: TokenKind::Symbol('.'), .. }, Token { kind: TokenKind::Ident(name), .. }] if name == "append")
+                || matches!(tokens, [Token { kind: TokenKind::Ident(name), .. }, Token { kind: TokenKind::Symbol('('), .. }]
+                    if self.state_values.signature(name).is_some_and(|signature| signature.has_state_param()))
+                || matches!(tokens, [Token { kind: TokenKind::Ident(name), .. }, Token { kind: TokenKind::Symbol('['), .. }]
+                    if self.state_values.plan_sil_type(name).is_some())
         }))
     }
 
@@ -1569,7 +1711,8 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                     }
                     self.lower_expr(&raw_expr, Some(&digest.state), indent + 4)?
                 } else {
-                    self.lower_expr(&raw_expr, None, indent + 4)?
+                    let expected = self.state_values.plan_type_ref(&field.ty).map(|value| self.state_values.sil_type(&value));
+                    self.lower_expr(&raw_expr, expected.as_deref(), indent + 4)?
                 };
                 lowered_fields.push((field.name.clone(), lowered));
             }
@@ -1586,9 +1729,9 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                     .fields
                     .iter()
                     .find(|field| field.name == name)
-                    .filter(|field| field.ty.array.is_none() && self.model.has_state(&field.ty.name))
-                    .map(|field| field.ty.name.as_str());
-                self.lower_expr(&expr, expected, indent + 4).map(|lowered| (name, lowered))
+                    .and_then(|field| self.state_values.plan_type_ref(&field.ty))
+                    .map(|value| self.state_values.sil_type(&value));
+                self.lower_expr(&expr, expected.as_deref(), indent + 4).map(|lowered| (name, lowered))
             })
             .collect::<Result<Vec<_>>>()?;
         self.render_state_object(state_name, sil_type, &fields, Vec::new(), indent)
@@ -2070,6 +2213,16 @@ fn strip_outer_parentheses(mut expr: &str) -> &str {
         }
         expr = expr[tokens[0].span.end..tokens[close].span.start].trim();
     }
+}
+
+fn apply_expr_replacements(source: &str, mut replacements: Vec<(Range<usize>, String)>) -> String {
+    replacements.sort_by_key(|(span, _)| span.start);
+    debug_assert!(replacements.windows(2).all(|pair| pair[0].0.end <= pair[1].0.start));
+    let mut out = source.to_string();
+    for (span, replacement) in replacements.into_iter().rev() {
+        out.replace_range(span, &replacement);
+    }
+    out
 }
 
 /// Return the bound root when the entire expression is one index access.

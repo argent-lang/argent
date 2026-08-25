@@ -98,8 +98,32 @@ actor Foreign owns ForeignState {
     }
 }
 
+actor Reader owns ForeignState {
+    entry inspect(SharedState value, SharedState[2] fixed, SharedState[] dynamic)
+    consumes {
+        peer: Routed,
+    }
+    emits none {
+        SharedState[2] fixed_from_peer = SharedState[_]{ value, peer };
+        SharedState[] dynamic_from_peer = SharedState[]{ peer };
+        SharedState[3] fixed_appended = fixed.append(peer);
+        SharedState[] appended = dynamic.append(peer);
+        appended = appended.append(peer);
+        SharedState indexed = global_fixed(fixed)[0];
+        SharedState passed = global_identity(global_dynamic(dynamic)[0]);
+
+        require(fixed_from_peer[1].left + dynamic_from_peer[0].right >= 0);
+        require(fixed_appended[2].right >= 0);
+        require(appended.length >= dynamic.length);
+        require(dynamic.append(peer).length > dynamic.length);
+        require(SharedState[]{ peer }.length == 1);
+        require(indexed.left + passed.right + marker >= 0);
+    }
+}
+
 app Test {
     actor Aligned;
     actor Routed;
     actor Foreign;
+    actor Reader;
 }

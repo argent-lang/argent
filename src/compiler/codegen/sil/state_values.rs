@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use silverscript_lang::ast::{ArrayDim as SilArrayDim, TypeBase as SilTypeBase, parse_type_ref as parse_sil_type_ref};
+use silverscript_lang::ast::{
+    ArrayDim as SilArrayDim, TypeBase as SilTypeBase, TypeRef as SilTypeRef, parse_type_ref as parse_sil_type_ref,
+};
 
 use crate::compiler::model::{Model, SilStateType, SourceStateId};
 use crate::compiler::syntax::{ActorDecl, ArrayDim, TypeRef};
@@ -19,8 +21,15 @@ pub(in crate::compiler::codegen) struct PlannedStateValue {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::compiler::codegen) enum StateValueShape {
     Scalar,
-    FixedArray(usize),
+    FixedArray(FixedArrayLength),
     DynamicArray,
+}
+
+/// What Argent can prove about one authored fixed-array length.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::compiler::codegen) enum FixedArrayLength {
+    Known(usize),
+    Unresolved,
 }
 
 /// State-valued positions in one contract-local callable signature.
@@ -43,6 +52,26 @@ impl PlannedStateValue {
     pub(in crate::compiler::codegen) fn shape(&self) -> StateValueShape {
         self.shape
     }
+
+    pub(in crate::compiler::codegen) fn element(&self) -> Option<Self> {
+        (!self.shape.is_scalar()).then(|| Self { source: self.source.clone(), shape: StateValueShape::Scalar })
+    }
+
+    pub(in crate::compiler::codegen) fn appended(&self, count: usize) -> Option<Self> {
+        let shape = match self.shape {
+            StateValueShape::Scalar => return None,
+            StateValueShape::FixedArray(FixedArrayLength::Known(len)) => {
+                StateValueShape::FixedArray(FixedArrayLength::Known(len.checked_add(count)?))
+            }
+            StateValueShape::FixedArray(FixedArrayLength::Unresolved) => StateValueShape::FixedArray(FixedArrayLength::Unresolved),
+            StateValueShape::DynamicArray => StateValueShape::DynamicArray,
+        };
+        Some(Self { source: self.source.clone(), shape })
+    }
+
+    pub(in crate::compiler::codegen) fn is_proven_incompatible_with(&self, expected: &Self) -> bool {
+        self.source != expected.source || self.shape.is_proven_incompatible_with(expected.shape)
+    }
 }
 
 impl StateValueShape {
@@ -50,10 +79,22 @@ impl StateValueShape {
         self == Self::Scalar
     }
 
+    fn is_proven_incompatible_with(self, expected: Self) -> bool {
+        match (self, expected) {
+            (Self::Scalar, Self::Scalar) | (Self::DynamicArray, Self::DynamicArray) => false,
+            (Self::FixedArray(FixedArrayLength::Known(actual)), Self::FixedArray(FixedArrayLength::Known(expected))) => {
+                actual != expected
+            }
+            (Self::FixedArray(_), Self::FixedArray(_)) => false,
+            _ => true,
+        }
+    }
+
     fn render(self, element_type: &str) -> String {
         match self {
             Self::Scalar => element_type.to_string(),
-            Self::FixedArray(len) => format!("{element_type}[{len}]"),
+            Self::FixedArray(FixedArrayLength::Known(len)) => format!("{element_type}[{len}]"),
+            Self::FixedArray(FixedArrayLength::Unresolved) => format!("{element_type}[_]"),
             Self::DynamicArray => format!("{element_type}[]"),
         }
     }
@@ -118,16 +159,28 @@ impl ContractStateValuePlan {
 
     pub(in crate::compiler::codegen) fn plan_sil_type(&self, ty: &str) -> Option<PlannedStateValue> {
         let ty = parse_sil_type_ref(ty).ok()?;
-        let SilTypeBase::Custom(name) = ty.base else {
+        self.plan_ast_type_ref(&ty, None)
+    }
+
+    pub(in crate::compiler::codegen) fn plan_ast_type_ref(
+        &self,
+        ty: &SilTypeRef,
+        inferred_len: Option<usize>,
+    ) -> Option<PlannedStateValue> {
+        let SilTypeBase::Custom(name) = &ty.base else {
             return None;
         };
         let shape = match ty.array_dims.as_slice() {
             [] => StateValueShape::Scalar,
-            [SilArrayDim::Fixed(len)] => StateValueShape::FixedArray(*len),
+            [SilArrayDim::Fixed(len)] => StateValueShape::FixedArray(FixedArrayLength::Known(*len)),
             [SilArrayDim::Dynamic] => StateValueShape::DynamicArray,
+            [SilArrayDim::Inferred] => {
+                StateValueShape::FixedArray(inferred_len.map_or(FixedArrayLength::Unresolved, FixedArrayLength::Known))
+            }
+            [SilArrayDim::Constant(_)] => StateValueShape::FixedArray(FixedArrayLength::Unresolved),
             _ => return None,
         };
-        let source = SourceStateId::new(name);
+        let source = SourceStateId::new(name.clone());
         self.authored_sil_types.contains_key(&source).then_some(PlannedStateValue { source, shape })
     }
 
@@ -141,13 +194,32 @@ impl ContractStateValuePlan {
     }
 
     pub(in crate::compiler::codegen) fn sil_type_for_sil_type(&self, ty: &str) -> Option<String> {
-        self.plan_sil_type(ty).map(|value| self.sil_type(&value))
+        self.plan_sil_type(ty).map(|value| match value.shape() {
+            StateValueShape::FixedArray(FixedArrayLength::Unresolved) => ty.to_string(),
+            _ => self.sil_type(&value),
+        })
+    }
+
+    pub(in crate::compiler::codegen) fn plan_initialized_sil_type(
+        &self,
+        declared_ty: &str,
+        initializer: Option<&PlannedStateValue>,
+    ) -> Option<PlannedStateValue> {
+        let ty = parse_sil_type_ref(declared_ty).ok()?;
+        let declared = self.plan_ast_type_ref(&ty, None)?;
+        if !matches!(ty.array_dims.as_slice(), [SilArrayDim::Inferred]) {
+            return Some(declared);
+        }
+        initializer
+            .filter(|value| value.source() == declared.source() && matches!(value.shape(), StateValueShape::FixedArray(_)))
+            .cloned()
+            .or(Some(declared))
     }
 }
 
 impl CallableSignaturePlan {
-    pub(in crate::compiler::codegen) fn has_scalar_state_param(&self) -> bool {
-        self.params.iter().flatten().any(|value| value.shape().is_scalar())
+    pub(in crate::compiler::codegen) fn has_state_param(&self) -> bool {
+        self.params.iter().any(Option::is_some)
     }
 
     pub(in crate::compiler::codegen) fn param(&self, index: usize) -> Option<&PlannedStateValue> {
@@ -163,7 +235,7 @@ fn plan_type_ref(ty: &TypeRef, authored_sil_types: &BTreeMap<SourceStateId, Stri
     let source = SourceStateId::new(&ty.name);
     let shape = match ty.array {
         None => StateValueShape::Scalar,
-        Some(ArrayDim::Fixed(len)) => StateValueShape::FixedArray(len),
+        Some(ArrayDim::Fixed(len)) => StateValueShape::FixedArray(FixedArrayLength::Known(len)),
         Some(ArrayDim::Dynamic) => StateValueShape::DynamicArray,
     };
     authored_sil_types.contains_key(&source).then_some(PlannedStateValue { source, shape })
@@ -184,7 +256,7 @@ mod tests {
         );
         assert_eq!(
             plan_type_ref(&TypeRef::array("PeerState", 3), &authored_sil_types),
-            Some(PlannedStateValue { source: source.clone(), shape: StateValueShape::FixedArray(3) })
+            Some(PlannedStateValue { source: source.clone(), shape: StateValueShape::FixedArray(FixedArrayLength::Known(3)) })
         );
         assert_eq!(
             plan_type_ref(&TypeRef::dynamic_array("PeerState"), &authored_sil_types),
@@ -194,10 +266,31 @@ mod tests {
 
         let plan = ContractStateValuePlan { authored_sil_types, signatures: BTreeMap::new() };
         let fixed = plan.plan_sil_type("PeerState[3]").expect("fixed body binding is planned");
-        assert_eq!(fixed.shape(), StateValueShape::FixedArray(3));
+        assert_eq!(fixed.shape(), StateValueShape::FixedArray(FixedArrayLength::Known(3)));
         assert_eq!(plan.sil_type(&fixed), "PeerState[3]");
+        assert_eq!(fixed.element().expect("fixed array has elements").shape(), StateValueShape::Scalar);
+        assert_eq!(
+            fixed.appended(2).expect("fixed array can append").shape(),
+            StateValueShape::FixedArray(FixedArrayLength::Known(5))
+        );
         let dynamic = plan.plan_sil_type("PeerState[]").expect("dynamic body binding is planned");
         assert_eq!(dynamic.shape(), StateValueShape::DynamicArray);
         assert_eq!(plan.sil_type(&dynamic), "PeerState[]");
+        assert_eq!(dynamic.appended(2).expect("dynamic array can append").shape(), StateValueShape::DynamicArray);
+
+        let inferred = parse_sil_type_ref("PeerState[_]").expect("inferred Sil array type parses");
+        assert_eq!(
+            plan.plan_ast_type_ref(&inferred, Some(4)).expect("literal length resolves inferred shape").shape(),
+            StateValueShape::FixedArray(FixedArrayLength::Known(4))
+        );
+        let constant = plan.plan_sil_type("PeerState[COUNT]").expect("constant length remains a state array");
+        assert_eq!(constant.shape(), StateValueShape::FixedArray(FixedArrayLength::Unresolved));
+        assert_eq!(plan.sil_type_for_sil_type("PeerState[COUNT]").as_deref(), Some("PeerState[COUNT]"));
+        assert!(!constant.is_proven_incompatible_with(&fixed));
+        assert!(constant.is_proven_incompatible_with(&dynamic));
+
+        let inferred_local =
+            plan.plan_initialized_sil_type("PeerState[_]", Some(&fixed)).expect("an inferred local uses its fixed initializer shape");
+        assert_eq!(inferred_local, fixed);
     }
 }

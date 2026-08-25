@@ -1288,9 +1288,11 @@ fn state_valued_functions_are_characterized_in_aligned_and_augmented_contexts() 
     let fixture = "tests/fixtures/state_layout/function_contexts/app.ag";
     let (aligned_sil, artifact) = emit_selected_fixture(fixture, "Test", "Aligned");
     let (routed_sil, _) = emit_selected_fixture(fixture, "Test", "Routed");
+    let (reader_sil, _) = emit_selected_fixture(fixture, "Test", "Reader");
 
     assert_eq!(aligned_sil, include_str!("../../../../tests/fixtures/state_layout/function_contexts/Aligned.sil"));
     assert_eq!(routed_sil, include_str!("../../../../tests/fixtures/state_layout/function_contexts/Routed.sil"));
+    assert_eq!(reader_sil, include_str!("../../../../tests/fixtures/state_layout/function_contexts/Reader.sil"));
 
     // Authored values stay nominally named until the distinct equivalent-State
     // optimization is selected for the whole contract surface.
@@ -1321,6 +1323,21 @@ fn state_valued_functions_are_characterized_in_aligned_and_augmented_contexts() 
     assert!(advance.contains("SharedState gen__source_next_shared_state = actor_identity(scalar);"), "{advance}");
     assert!(advance.contains("validateOutputState(gen__next_output_idx, gen__state_next_state);"), "{advance}");
     assert!(routed_sil.contains("validateOutputStateWithTemplate("), "{routed_sil}");
+
+    let inspect = reader_sil.split_once("entry inspect").map(|(_, body)| body).expect("Reader inspect entry is emitted");
+    assert_eq!(inspect.matches("readInputStateWithTemplate(").count(), 1, "{inspect}");
+    assert!(inspect.contains("SharedState[2] fixed_from_peer = SharedState[_]{ value, SharedState {"), "{inspect}");
+    assert!(inspect.contains("SharedState[] dynamic_from_peer = SharedState[]{ SharedState {"), "{inspect}");
+    assert!(inspect.contains("SharedState[3] fixed_appended = fixed.append(SharedState {"), "{inspect}");
+    assert!(inspect.contains("SharedState[] appended = dynamic.append(SharedState {"), "{inspect}");
+    assert!(inspect.contains("appended = appended.append(SharedState {"), "{inspect}");
+    assert!(!inspect.contains("dynamic.append(peer)"), "{inspect}");
+    assert!(inspect.contains("require(dynamic.append(SharedState {"), "{inspect}");
+    assert!(inspect.contains("require(SharedState[]{ SharedState {"), "{inspect}");
+    assert_eq!(inspect.matches("global_fixed(fixed)").count(), 1, "{inspect}");
+    assert_eq!(inspect.matches("global_dynamic(dynamic)").count(), 1, "{inspect}");
+    assert!(inspect.contains("SharedState indexed = global_fixed(fixed)[0];"), "{inspect}");
+    assert!(inspect.contains("SharedState passed = global_identity(global_dynamic(dynamic)[0]);"), "{inspect}");
 
     let shared = artifact.argent.states.iter().find(|state| state.name == "SharedState").expect("SharedState is recorded");
     assert_eq!(shared.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["left", "right"]);
@@ -1382,6 +1399,94 @@ fn current_state_array_entry_param_uses_authored_state_type() {
         inspect.params[0].ty,
         TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Struct { name: "NoteState".to_string() }), len: 2 }
     );
+}
+
+#[test]
+fn rejects_mismatched_authored_state_array_shapes_at_function_boundaries() {
+    let path = PathBuf::from("state-array-shape-mismatch.ag");
+    let module = crate::compiler::syntax::parser::parse_module(
+        path.clone(),
+        r#"
+            state NoteState {
+                int nonce;
+            }
+
+            fn fixed(NoteState[2] values) -> NoteState[2] {
+                return values;
+            }
+
+            actor Note owns NoteState {
+                entry inspect(NoteState[] values) emits none {
+                    NoteState[2] invalid = fixed(values);
+                    require(invalid[0].nonce >= 0);
+                }
+            }
+
+            app Test {
+                actor Note;
+            }
+        "#
+        .to_string(),
+    )
+    .expect("source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let model = Model::from_program(&program).expect("model validates");
+    let err = emit_actor(model.actor("Note").expect("Note exists"), &model).expect_err("array shapes must agree at the call boundary");
+
+    assert!(err.to_string().contains("authored state value has type `NoteState[]`, not `NoteState[2]`"), "unexpected error: {err}");
+}
+
+#[test]
+fn constant_sized_state_array_local_remains_planned() {
+    let sil = emit_unresolved_fixed_state_array_local("constant-state-array-local", "const int COUNT = 2;", "COUNT");
+
+    assert!(sil.contains("int constant COUNT = 2;"), "{sil}");
+    assert!(sil.contains("NoteState[COUNT] values = NoteState[COUNT]{"), "{sil}");
+    assert!(sil.contains("NoteState indexed = values[0];"), "{sil}");
+    assert!(sil.contains("NoteState[2] result = fixed(values);"), "{sil}");
+}
+
+#[test]
+fn inferred_state_array_local_uses_initializer_shape() {
+    let sil = emit_unresolved_fixed_state_array_local("inferred-state-array-local", "", "_");
+
+    assert!(sil.contains("NoteState[_] values = NoteState[_]{"), "{sil}");
+    assert!(sil.contains("NoteState indexed = values[0];"), "{sil}");
+    assert!(sil.contains("NoteState[2] result = fixed(values);"), "{sil}");
+}
+
+fn emit_unresolved_fixed_state_array_local(case: &str, constant: &str, dimension: &str) -> String {
+    let source = r#"
+        __CONSTANT__
+
+        state NoteState {
+            int nonce;
+        }
+
+        fn fixed(NoteState[2] values) -> NoteState[2] {
+            return values;
+        }
+
+        actor Note owns NoteState {
+            entry inspect() emits none {
+                NoteState[__DIMENSION__] values = NoteState[__DIMENSION__]{
+                    NoteState { nonce: 1 },
+                    NoteState { nonce: 2 },
+                };
+                NoteState indexed = values[0];
+                NoteState[2] result = fixed(values);
+                require(indexed.nonce + result[0].nonce >= 0);
+            }
+        }
+
+        app Test {
+            actor Note;
+        }
+    "#
+    .replace("__CONSTANT__", constant)
+    .replace("__DIMENSION__", dimension);
+    let (actors, _) = inline_actor_sil_and_artifact(case, &source);
+    actors.get("Note").expect("Note emits").clone()
 }
 
 #[test]
