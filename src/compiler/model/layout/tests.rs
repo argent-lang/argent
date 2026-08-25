@@ -68,6 +68,11 @@ fn compatible_foreign_template_stays_named_until_state_equivalence_is_selected()
     assert!(second.storage_to_physical().is_identity());
     assert_eq!(second.sil_type(), &SilStateType::Source(SourceStateId::new("SharedState")));
     assert_ne!(second.sil_type(), &SilStateType::State);
+
+    let output = lowering.output_type_for_actor("Second").expect("Second output target exists");
+    assert_eq!(output.target(), second.id());
+    assert_eq!(output.canonical_target(), second.id());
+    assert_eq!(output.sil_type(), &SilStateType::State);
 }
 
 #[test]
@@ -132,8 +137,58 @@ fn open_actor_type_targets_have_a_state_keyed_storage_cut() {
     let target = lowering.open_state_target(&remote).expect("open state target exists");
 
     assert_eq!(target.id(), &PhysicalTargetId::OpenState(remote.clone()));
-    assert_eq!(target.sil_type(), &SilStateType::Source(remote));
+    assert_eq!(target.sil_type(), &SilStateType::Source(remote.clone()));
     assert!(target.storage_to_physical().is_identity());
+    assert!(!target.active_compatible());
+
+    let output = lowering.output_type_for_open_state(&remote).expect("open output type exists");
+    assert_eq!(output.sil_type(), &SilStateType::Source(remote));
+    assert_ne!(output.sil_type(), &SilStateType::State);
+}
+
+#[test]
+fn same_source_open_output_does_not_inherit_active_generated_fields() {
+    let program = program(
+        r#"
+            state SharedState {
+                actor_type<SharedState> peer;
+                int count;
+            }
+
+            actor Current owns SharedState {
+                entry send() emits next: Peer {
+                    SharedState next_state = SharedState {
+                        peer: peer,
+                        count: count + 1,
+                    };
+                    unrestricted(next.value);
+                    become next <- Peer(next_state);
+                }
+            }
+
+            actor Peer owns SharedState {
+                entry hold() emits none { require(count >= 0); }
+            }
+
+            app Test {
+                actor Current;
+                actor Peer;
+            }
+        "#,
+    );
+    let model = Model::from_program(&program).expect("same-source open target plans");
+    let lowering = model.state_lowering("Current").expect("Current lowering exists");
+    let shared = SourceStateId::new("SharedState");
+    let target = lowering.open_state_target(&shared).expect("same-source open target exists");
+
+    assert!(lowering.active().physical().fields().iter().any(|field| matches!(field.id(), PhysicalFieldId::Generated(_))));
+    assert!(target.storage_to_physical().is_identity());
+    assert!(target.physical().fields().iter().all(|field| matches!(field.id(), PhysicalFieldId::Storage(_))));
+    assert!(!target.active_compatible());
+
+    let output = lowering.output_type_for_open_state(&shared).expect("same-source open output type exists");
+    assert_eq!(output.sil_type(), &SilStateType::Source(shared));
+    assert_ne!(output.sil_type(), &SilStateType::State);
 }
 
 #[test]
@@ -194,4 +249,20 @@ fn dynamic_actor_domains_reject_incompatible_semantic_layouts() {
 
     let err = canonical_domain_plan(&domain, &variants, &active, &plans).expect_err("semantic role mismatch is rejected");
     assert!(err.to_string().contains("semantic physical layout"), "unexpected error: {err}");
+}
+
+#[test]
+fn actor_domain_output_records_its_target_and_canonical_type_owner() {
+    let program = program(include_str!("../../../../examples/route_state_body_choice.ag"));
+    let model = Model::from_program(&program).expect("selector example plans");
+    let lowering = model.state_lowering("Mux").expect("Mux lowering exists");
+    let variants = vec!["Pawn".to_string(), "Knight".to_string()];
+    let output =
+        lowering.output_type_for_actor_domain(&SourceStateId::new("BoardState"), &variants).expect("selector domain output exists");
+
+    assert!(
+        matches!(output.target(), PhysicalTargetId::ActorDomain { state, actors } if state.as_str() == "BoardState" && actors.len() == 2)
+    );
+    assert!(matches!(output.canonical_target(), PhysicalTargetId::Actor(actor) if actor.actor() == "Pawn"));
+    assert_eq!(output.sil_type(), &SilStateType::State);
 }

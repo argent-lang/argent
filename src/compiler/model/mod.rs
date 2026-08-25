@@ -28,9 +28,9 @@ pub(crate) use entry::{
     resolve_observe_covenant_id_source, source_actor_type_state_for_expr, spawn_target_state,
 };
 pub(crate) use layout::{
-    ContractStateLowering, GeneratedFieldId, PhysicalFieldId, PhysicalStateLayout, PhysicalTargetId, SilStateType,
-    SourcePhysicalField, SourceStateId, TargetPhysicalPlan, build_contract_state_lowerings, lower_layout_type, packed_field_len,
-    packed_layout_field_len,
+    ContractStateLowering, GeneratedFieldId, OutputPhysicalTypePlan, PhysicalFieldId, PhysicalStateLayout, PhysicalTargetId,
+    SilStateType, SourcePhysicalField, SourceStateId, TargetPhysicalPlan, build_contract_state_lowerings, lower_layout_type,
+    packed_field_len, packed_layout_field_len,
 };
 
 /// The selected application's compiler-wide source and routing model.

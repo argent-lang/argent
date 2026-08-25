@@ -443,6 +443,30 @@ impl TargetPhysicalPlan {
     }
 }
 
+/// Output-only SIL type selection for one physical target identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OutputPhysicalTypePlan {
+    target: PhysicalTargetId,
+    canonical_target: PhysicalTargetId,
+    sil_type: SilStateType,
+}
+
+impl OutputPhysicalTypePlan {
+    #[cfg(test)]
+    pub(crate) fn target(&self) -> &PhysicalTargetId {
+        &self.target
+    }
+
+    /// Target owning the named type when the active `State` is not selected.
+    pub(crate) fn canonical_target(&self) -> &PhysicalTargetId {
+        &self.canonical_target
+    }
+
+    pub(crate) fn sil_type(&self) -> &SilStateType {
+        &self.sil_type
+    }
+}
+
 /// Active source, storage, and physical layouts for one emitted contract.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ContractStateLayout {
@@ -486,6 +510,7 @@ pub(crate) struct ContractStateLowering {
     active: ContractStateLayout,
     source_representations: BTreeMap<SourceStateId, SourceRepresentationPlan>,
     target_physical: BTreeMap<PhysicalTargetId, TargetPhysicalPlan>,
+    output_physical_types: BTreeMap<PhysicalTargetId, OutputPhysicalTypePlan>,
     actor_targets: BTreeMap<String, PhysicalTargetId>,
 }
 
@@ -516,6 +541,29 @@ impl ContractStateLowering {
 
     pub(crate) fn open_state_target(&self, state: &SourceStateId) -> Option<&TargetPhysicalPlan> {
         self.target(&PhysicalTargetId::OpenState(state.clone()))
+    }
+
+    pub(crate) fn output_type_for_actor(&self, actor: &str) -> Option<&OutputPhysicalTypePlan> {
+        self.actor_targets.get(actor).and_then(|id| self.output_physical_types.get(id))
+    }
+
+    pub(crate) fn output_type_for_compiled_actor(&self, app: &str, actor: &str) -> Option<&OutputPhysicalTypePlan> {
+        self.output_physical_types.get(&PhysicalTargetId::Actor(CompiledActorId { app: app.to_string(), actor: actor.to_string() }))
+    }
+
+    pub(crate) fn output_type_for_open_state(&self, state: &SourceStateId) -> Option<&OutputPhysicalTypePlan> {
+        self.output_physical_types.get(&PhysicalTargetId::OpenState(state.clone()))
+    }
+
+    pub(crate) fn output_type_for_actor_domain(&self, state: &SourceStateId, actors: &[String]) -> Option<&OutputPhysicalTypePlan> {
+        let actors = actors
+            .iter()
+            .map(|actor| match self.actor_targets.get(actor)? {
+                PhysicalTargetId::Actor(actor) => Some(actor.clone()),
+                PhysicalTargetId::OpenState(_) | PhysicalTargetId::ActorDomain { .. } => None,
+            })
+            .collect::<Option<Vec<_>>>()?;
+        self.output_physical_types.get(&PhysicalTargetId::ActorDomain { state: state.clone(), actors })
     }
 }
 
@@ -563,6 +611,7 @@ fn build_contract_state_lowering(active_actor: &str, model: &Model<'_>) -> Resul
     }
 
     let mut target_physical = BTreeMap::new();
+    let mut canonical_domain_targets = BTreeMap::new();
     let mut actor_targets = BTreeMap::new();
     for actor in model.app_actors.iter().chain(model.linked_actors.keys()) {
         let plan = concrete_target_plan(actor, active_actor, &active_physical, model)?;
@@ -592,17 +641,32 @@ fn build_contract_state_lowering(active_actor: &str, model: &Model<'_>) -> Resul
             if target_physical.contains_key(&id) {
                 continue;
             }
-            let plan = canonical_domain_plan(&id, &variant_ids, &active_physical, &target_physical).map_err(|err| {
-                ArgentError::new(format!(
-                    "entry `{}::{}` actor selector `{}` has incompatible target layouts: {err}",
-                    actor.name, entry.name, selector.name
-                ))
-            })?;
+            let (plan, canonical_target) =
+                canonical_domain_plan(&id, &variant_ids, &active_physical, &target_physical).map_err(|err| {
+                    ArgentError::new(format!(
+                        "entry `{}::{}` actor selector `{}` has incompatible target layouts: {err}",
+                        actor.name, entry.name, selector.name
+                    ))
+                })?;
+            canonical_domain_targets.insert(id.clone(), canonical_target);
             target_physical.insert(id, plan);
         }
     }
 
-    Ok(ContractStateLowering { active, source_representations, target_physical, actor_targets })
+    let output_physical_types = target_physical
+        .iter()
+        .map(|(id, target)| {
+            let canonical_target = canonical_domain_targets.get(id).unwrap_or(id).clone();
+            let sil_type = if target.active_compatible() {
+                SilStateType::State
+            } else {
+                target_physical.get(&canonical_target).expect("output canonical target retains its physical plan").sil_type().clone()
+            };
+            (id.clone(), OutputPhysicalTypePlan { target: id.clone(), canonical_target, sil_type })
+        })
+        .collect();
+
+    Ok(ContractStateLowering { active, source_representations, target_physical, output_physical_types, actor_targets })
 }
 
 fn source_state_id(state: &str) -> SourceStateId {
@@ -760,7 +824,7 @@ fn canonical_domain_plan(
     variants: &[PhysicalTargetId],
     active_physical: &PhysicalStateLayout,
     plans: &BTreeMap<PhysicalTargetId, TargetPhysicalPlan>,
-) -> Result<TargetPhysicalPlan> {
+) -> Result<(TargetPhysicalPlan, PhysicalTargetId)> {
     let first_id = variants.first().ok_or_else(|| ArgentError::new("actor domain has no variants"))?;
     let first = plans.get(first_id).ok_or_else(|| ArgentError::new("actor domain variant has no physical plan"))?;
     for variant in &variants[1..] {
@@ -777,15 +841,18 @@ fn canonical_domain_plan(
         }
     }
     let sil_type = conservative_named_type(id, &first.source, &first.source_to_storage, &first.storage_to_physical);
-    Ok(TargetPhysicalPlan {
-        id: id.clone(),
-        source: first.source.clone(),
-        source_to_storage: first.source_to_storage.clone(),
-        storage_to_physical: first.storage_to_physical.clone(),
-        physical: first.physical.clone(),
-        sil_type,
-        active_compatible: first.physical.is_sil_compatible_with(active_physical),
-    })
+    Ok((
+        TargetPhysicalPlan {
+            id: id.clone(),
+            source: first.source.clone(),
+            source_to_storage: first.source_to_storage.clone(),
+            storage_to_physical: first.storage_to_physical.clone(),
+            physical: first.physical.clone(),
+            sil_type,
+            active_compatible: first.physical.is_sil_compatible_with(active_physical),
+        },
+        first_id.clone(),
+    ))
 }
 
 fn conservative_named_type(

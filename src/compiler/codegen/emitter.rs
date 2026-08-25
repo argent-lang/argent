@@ -25,8 +25,8 @@ use silverscript_lang::ast::Expr as SilExpr;
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract};
 
 use super::sil::{
-    ContractStateValuePlan, EntryInputStatePlan, GlobalFunctionLowerer, lower_entry_body, lower_entry_expr, plan_entry_input_states,
-    validate_actor_function_captures,
+    ContractStateValuePlan, EntryInputStatePlan, GlobalFunctionLowerer, lower_entry_body, lower_entry_expr, plan_actor_output_state,
+    plan_entry_input_states, plan_open_output_state, plan_selector_output_state, validate_actor_function_captures,
 };
 
 #[cfg(test)]
@@ -200,15 +200,20 @@ fn emit_state_layouts(
     // contract's physical `State`.
     let mut state_names = model.actors.iter().map(|actor| actor.state.clone()).collect::<Vec<_>>();
     state_names.extend(model.states.keys().cloned());
-    let mut physical_states = BTreeSet::new();
+    let mut open_output_states = BTreeSet::new();
     for entry in &current_actor.entries {
         for observe in &entry.observes {
-            for observed in observe.inputs.iter().chain(observe.outputs.iter()) {
+            for observed in &observe.inputs {
                 if let Some(state) = observed_open_state_for_decl(current_actor, entry, observe, observed, model)? {
                     state_names.push(state.to_string());
-                    if state != current_actor.state && model.state(&state)?.expansion.is_some() {
-                        physical_states.insert(state.to_string());
-                    }
+                } else {
+                    state_names.push(model.actor(&observed.actor)?.state.clone());
+                }
+            }
+            for observed in &observe.outputs {
+                if let Some(state) = observed_open_state_for_decl(current_actor, entry, observe, observed, model)? {
+                    state_names.push(state.to_string());
+                    open_output_states.insert(state.to_string());
                 } else {
                     state_names.push(model.actor(&observed.actor)?.state.clone());
                 }
@@ -221,11 +226,8 @@ fn emit_state_layouts(
                 };
                 let state = spawn_target_state(interaction.target(), &output.actor, current_actor, entry, model)?
                     .expect("spawn target checked during model validation");
-                if model.resolve_static_actor_target(interaction.target()).is_none()
-                    && state != current_actor.state
-                    && model.state(&state)?.expansion.is_some()
-                {
-                    physical_states.insert(state.clone());
+                if model.resolve_static_actor_target(interaction.target()).is_none() {
+                    open_output_states.insert(state.clone());
                 }
                 state_names.push(state);
             }
@@ -282,31 +284,37 @@ fn emit_state_layouts(
         referenced_actors
             .extend(entry.observes.iter().flat_map(|observe| observe.outputs.iter()).map(|observed| observed.actor.clone()));
         referenced_actors.extend(entry.spawns.iter().flat_map(|spawn| &spawn.outputs).map(|output| output.actor.clone()));
+        let selectors = model.entry_model(current_actor, entry)?.template_selectors();
         for route in &entry.routes {
-            referenced_actors.extend(model.route_targets(current_actor, entry, route)?);
+            if !selectors.contains_key(&route.actor) {
+                referenced_actors.insert(route.actor.clone());
+            }
         }
     }
     for actor_name in referenced_actors {
-        let Some(target) = model.static_actor_target(&actor_name) else {
-            continue;
-        };
-        let state_type = contract_state_type_for_actor(&actor_name, current_actor, model)?;
-        if state_type == "State" || state_type == target.state() {
+        if model.static_actor_target(&actor_name).is_none() {
             continue;
         }
-        let plan = lowering.target_for_actor(&actor_name).ok_or_else(|| {
-            ArgentError::new(format!("actor `{actor_name}` has no physical target layout in actor `{}`", current_actor.name))
-        })?;
-        insert_named_physical_layout(&mut named_physical_layouts, &state_type, plan.physical(), current_actor)?;
+        let output = plan_actor_output_state(current_actor, &actor_name, model)?;
+        if let Some((sil_type, layout)) = output.named_physical_layout() {
+            insert_named_physical_layout(&mut named_physical_layouts, sil_type, layout, current_actor)?;
+        }
     }
-    // Expanded source structs expose nested authored values. Physical states
-    // without app-local route context use one state-qualified digest layout.
-    for state_name in physical_states {
-        let sil_type = hidden_storage_state_type_name(&state_name);
-        let plan = lowering.open_state_target(&SourceStateId::new(&state_name)).ok_or_else(|| {
-            ArgentError::new(format!("open state `{state_name}` has no physical target layout in actor `{}`", current_actor.name))
-        })?;
-        insert_named_physical_layout(&mut named_physical_layouts, &sil_type, plan.physical(), current_actor)?;
+
+    for entry in &current_actor.entries {
+        for selector in model.entry_model(current_actor, entry)?.template_selectors().values() {
+            let output = plan_selector_output_state(current_actor, selector, model)?;
+            if let Some((sil_type, layout)) = output.named_physical_layout() {
+                insert_named_physical_layout(&mut named_physical_layouts, sil_type, layout, current_actor)?;
+            }
+        }
+    }
+
+    for state_name in open_output_states {
+        let output = plan_open_output_state(current_actor, &state_name, model)?;
+        if let Some((sil_type, layout)) = output.named_physical_layout() {
+            insert_named_physical_layout(&mut named_physical_layouts, sil_type, layout, current_actor)?;
+        }
     }
     for (sil_type, layout) in named_physical_layouts {
         if !emitted.insert(sil_type.clone()) {

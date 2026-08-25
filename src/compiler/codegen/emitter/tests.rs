@@ -2079,6 +2079,183 @@ fn state_expansion_uses_base_storage_layout() {
 }
 
 #[test]
+fn static_output_to_a_foreign_expanded_state_declares_the_planned_physical_type() {
+    let path = PathBuf::from("static-expanded-output.ag");
+    let module = crate::compiler::syntax::parser::parse_module(
+        path.clone(),
+        r#"
+            state SourceState {
+                int nonce;
+            }
+
+            state ExpandedStorage {
+                int amount;
+                virtual detail;
+            }
+
+            state Details {
+                int count;
+            }
+
+            state ExpandedState expands ExpandedStorage {
+                detail: Details;
+            }
+
+            actor Source owns SourceState {
+                entry send() emits next: Target {
+                    ExpandedState next_state = ExpandedState {
+                        amount: nonce,
+                        detail: Details { count: nonce },
+                    };
+                    unrestricted(next.value);
+                    become next <- Target(next_state);
+                }
+            }
+
+            actor Target owns ExpandedState {
+                entry hold() emits none {
+                    require(amount >= 0);
+                }
+            }
+
+            app Test {
+                actor Source;
+                actor Target;
+            }
+        "#
+        .to_string(),
+    )
+    .expect("source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let model = Model::from_program(&program).expect("expanded target plans");
+    let actor_sil = actor_sil_for_model(&model);
+    let source_sil = &actor_sil["Source"];
+
+    assert!(source_sil.contains("struct Gen__PhysicalExpandedState {"), "{source_sil}");
+    assert!(!source_sil.contains("struct Gen__TargetState {"), "{source_sil}");
+    assert!(source_sil.contains("Gen__PhysicalExpandedState gen__state_next_gen__physical_expanded_state"), "{source_sil}");
+    emit_artifact(&program, &model, &actor_sil).expect("planned expanded output type compiles");
+}
+
+#[test]
+fn non_active_selector_declares_and_uses_its_canonical_named_type() {
+    use crate::compiler::model::PhysicalTargetId;
+    use crate::routing::{CommitmentForest, CommitmentPlan, Cut, FamilyPlan, NodePath, RoutePlan};
+
+    let path = PathBuf::from("non-active-selector-output.ag");
+    let module = crate::compiler::syntax::parser::parse_module(
+        path.clone(),
+        r#"
+            state BoardState { int ply; }
+
+            actor enum MoveActor {
+                Alpha;
+                Beta;
+            }
+
+            actor Mux owns BoardState {
+                entry choose(MoveActor target) emits next: MoveActor {
+                    BoardState next_state = BoardState { ply: ply + 1 };
+                    unrestricted(next.value);
+                    become next <- target(next_state);
+                }
+            }
+
+            actor Alpha owns BoardState {
+                entry advance() emits next: Tail {
+                    BoardState next_state = BoardState { ply: ply + 1 };
+                    unrestricted(next.value);
+                    become next <- Tail(next_state);
+                }
+            }
+
+            actor Beta owns BoardState {
+                entry advance() emits next: Tail {
+                    BoardState next_state = BoardState { ply: ply + 1 };
+                    unrestricted(next.value);
+                    become next <- Tail(next_state);
+                }
+            }
+
+            actor Tail owns BoardState {
+                entry hold() emits none { require(ply >= 0); }
+            }
+
+            actor Extra owns BoardState {
+                entry hold() emits none { require(ply >= 0); }
+            }
+
+            app Test {
+                actor Mux;
+                actor Alpha;
+                actor Beta;
+                actor Tail;
+                actor Extra;
+            }
+        "#
+        .to_string(),
+    )
+    .expect("source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let leaf = |actor: &str| CommitmentNode::Leaf { actor: actor.to_string() };
+    let cut = |paths: &[&[usize]]| paths.iter().map(|path| NodePath::new(path.to_vec())).collect::<Cut>();
+    // Default selector cohorts align these cuts; inject a valid asymmetric
+    // plan to exercise the canonical named-type fallback.
+    let crafted_plan = RoutePlan {
+        families: vec![FamilyPlan {
+            domain: "BoardState".to_string(),
+            rep: "Mux".to_string(),
+            members: ["Mux", "Alpha", "Beta", "Tail"].into_iter().map(str::to_string).collect(),
+            gates: vec!["Mux".to_string()],
+            table: ["Alpha", "Beta"].into_iter().map(str::to_string).collect(),
+        }],
+        commitments: CommitmentPlan {
+            forest: CommitmentForest {
+                roots: vec![
+                    leaf("Mux"),
+                    CommitmentNode::Branch { children: vec![leaf("Alpha"), leaf("Beta")] },
+                    leaf("Tail"),
+                    leaf("Extra"),
+                ],
+            },
+            cuts: BTreeMap::from([
+                ("Mux".to_string(), cut(&[&[1, 0], &[1, 1], &[2], &[3]])),
+                ("Alpha".to_string(), cut(&[&[1, 0], &[1, 1], &[2]])),
+                ("Beta".to_string(), cut(&[&[1, 0], &[1, 1], &[2]])),
+                ("Tail".to_string(), Cut::new()),
+                ("Extra".to_string(), Cut::new()),
+            ]),
+        },
+    };
+    let injected_planner = move |_graph: &RouteGraph,
+                                 _domains: &BTreeMap<String, Vec<String>>,
+                                 selectors: &[SelectorRequirement]|
+          -> crate::error::Result<RoutePlan> {
+        assert_eq!(selectors.len(), 1);
+        Ok(crafted_plan.clone())
+    };
+    let model = Model::from_program_with_route_planner(&program, &injected_planner).expect("non-active selector plans");
+    let mux = model.actor("Mux").expect("Mux exists");
+    let choose = mux.entries.iter().find(|entry| entry.name == "choose").expect("choose entry exists");
+    let selector = model
+        .entry_model(mux, choose)
+        .expect("entry model exists")
+        .template_selectors()
+        .get("target")
+        .expect("target selector exists");
+    let output = plan_selector_output_state(mux, selector, &model).expect("selector output state plans");
+
+    assert!(matches!(output.canonical_target(), PhysicalTargetId::Actor(actor) if actor.actor() == "Alpha"));
+    assert_eq!(output.physical_type(), "Gen__AlphaState");
+    let actor_sil = actor_sil_for_model(&model);
+    let mux_sil = &actor_sil["Mux"];
+    assert!(mux_sil.contains("struct Gen__AlphaState {"), "{mux_sil}");
+    assert!(!mux_sil.contains("struct Gen__BetaState {"), "{mux_sil}");
+    assert!(mux_sil.contains("Gen__AlphaState gen__state_next_gen__alpha_state"), "{mux_sil}");
+    emit_artifact(&program, &model, &actor_sil).expect("canonical selector output type compiles");
+}
+
+#[test]
 fn expanded_actor_records_sil_and_capsule_template_cuts() {
     let (sil, artifact) = emit_fixture("capsule_route_context", "ReserveAsset");
     let (wallet_sil, _) = emit_fixture("capsule_route_context", "WalletAsset");

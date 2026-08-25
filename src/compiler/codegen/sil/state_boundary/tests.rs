@@ -136,3 +136,23 @@ fn observed_input_binding_owns_its_source_to_physical_reference() {
     assert_eq!(input.access().physical_expr(), "gen__asset_src_state");
     assert!(matches!(input.access(), SourceStateAccess::Authored { .. }));
 }
+
+#[test]
+fn selector_output_uses_the_actor_domain_plan_and_its_selected_type() {
+    let program = program(include_str!("../../../../../examples/route_state_body_choice.ag"));
+    let model = Model::from_program(&program).expect("selector example plans");
+    let (actor, entry) = actor_entry(&model, "Mux", "choose");
+    let selector = model
+        .entry_model(actor, entry)
+        .expect("entry model exists")
+        .template_selectors()
+        .get("target")
+        .expect("target selector exists");
+    let output = plan_selector_output_state(actor, selector, &model).expect("selector output state plans");
+
+    assert!(
+        matches!(output.target(), PhysicalTargetId::ActorDomain { state, actors } if state.as_str() == "BoardState" && actors.len() == 2)
+    );
+    assert!(matches!(output.canonical_target(), PhysicalTargetId::Actor(actor) if actor.actor() == "Pawn"));
+    assert_eq!(output.physical_type(), "State");
+}

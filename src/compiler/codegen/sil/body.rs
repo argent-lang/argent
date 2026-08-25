@@ -22,7 +22,10 @@ use silverscript_lang::ast::{
 // Body lowering uses the surrounding Sil emitter's shared witness plans,
 // layout helpers, and generated names.
 use super::super::emitter::*;
-use super::state_boundary::{EntryInputStatePlan, SourceStateAccess};
+use super::state_boundary::{
+    EntryInputStatePlan, SourceStateAccess, plan_actor_output_state, plan_open_output_state, plan_selector_output_state,
+    plan_static_actor_output_state,
+};
 use super::state_values::{ContractStateValuePlan, PlannedStateValue};
 use super::token_refs::{RefReplacements, count_qualified_ref};
 
@@ -954,11 +957,11 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                     .expect("spawn target checked during model validation")
             }
         };
-        let state_ty = if static_target.is_some() {
-            contract_state_type_for_actor(actor_expr, self.actor, self.model)?
-        } else {
-            contract_state_type_for_dynamic_state(&state_name, self.actor, self.model)?
+        let output_target = match static_target {
+            Some(target) => plan_static_actor_output_state(self.actor, target, self.model)?,
+            None => plan_open_output_state(self.actor, &state_name, self.model)?,
         };
+        let state_ty = output_target.physical_type().to_string();
         let state_expr = self.materialize_route_source_state(out, indent, &route)?;
         let state_expr = state_expr.as_str();
         let packs_family = transition.is_some_and(|transition| !transition.families_to_pack.is_empty());
@@ -967,7 +970,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         } else {
             let name = generated_state_name(&route, &state_ty);
             let lowered = if static_target.is_some() {
-                self.lower_state_expr_for_actor(actor_expr, transition, state_expr, indent)?
+                self.lower_state_expr_for_actor(actor_expr, &state_ty, transition, state_expr, indent)?
             } else {
                 self.lower_state_expr_for_dynamic_state(&state_name, &state_ty, state_expr, indent)?
             };
@@ -1115,15 +1118,15 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     fn lower_state_expr_for_actor(
         &self,
         actor: &str,
+        state_ty: &str,
         transition: Option<&CompilerRouteTransition>,
         expr: &str,
         indent: usize,
     ) -> Result<String> {
         let state_name = &self.model.actor(actor)?.state;
-        let state_ty = contract_state_type_for_actor(actor, self.actor, self.model)?;
         let generated_fields = hidden_template_object_fields_for_actor(self.actor, actor, transition, self.model);
         let force_materialization = transition.is_some_and(|transition| !transition.families_to_pack.is_empty());
-        self.lower_state_expr_for_layout(state_name, &state_ty, generated_fields, force_materialization, expr, indent)
+        self.lower_state_expr_for_layout(state_name, state_ty, generated_fields, force_materialization, expr, indent)
     }
 
     fn lower_state_expr_for_dynamic_state(&self, state_name: &str, state_ty: &str, expr: &str, indent: usize) -> Result<String> {
@@ -1251,7 +1254,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let transition = (route.actor != self.actor.name).then(|| {
             self.model.route_transition(&self.actor.name, &route.actor).expect("validated non-self route has a planned cut transition")
         });
-        let state_ty = contract_state_type_for_actor(&route.actor, self.actor, self.model)?;
+        let state_ty = plan_actor_output_state(self.actor, &route.actor, self.model)?.physical_type().to_string();
         let state_expr = self.materialize_route_source_state(out, indent, &route)?;
         let state_expr = state_expr.as_str();
         let packs_family = transition.is_some_and(|transition| !transition.families_to_pack.is_empty());
@@ -1259,7 +1262,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             self.lower_expr(state_expr, Some(&state_ty), indent)?
         } else {
             let name = generated_state_name(&route, &state_ty);
-            let lowered = self.lower_state_expr_for_actor(&route.actor, transition, state_expr, indent)?;
+            let lowered = self.lower_state_expr_for_actor(&route.actor, &state_ty, transition, state_expr, indent)?;
             push_indent(out, indent);
             out.push_str(&format!("{state_ty} {name} = {lowered};\n"));
             name
@@ -1317,6 +1320,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             .ok_or_else(|| ArgentError::new(format!("unknown actor handle `{}`", route.actor)))?
             .clone();
         let output_idx = hidden_output_idx_name(&route.output);
+        let state_ty = plan_selector_output_state(self.actor, &selector, self.model)?.physical_type().to_string();
         let layout_actor = selector.variants.first().expect("validated actor selector has at least one variant");
         let transition = self
             .model
@@ -1326,7 +1330,6 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             selector.variants.iter().skip(1).all(|actor| self.model.route_transition(&self.actor.name, actor) == Some(transition)),
             "selector variants must use one cut transition"
         );
-        let state_ty = contract_state_type_for_actor(layout_actor, self.actor, self.model)?;
         let state_expr = self.materialize_route_source_state(out, indent, &route)?;
         let state_expr = state_expr.as_str();
         let packs_family = !transition.families_to_pack.is_empty();
@@ -1334,7 +1337,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             self.lower_expr(state_expr, Some(&state_ty), indent)?
         } else {
             let name = generated_state_name(&route, &state_ty);
-            let lowered = self.lower_state_expr_for_actor(layout_actor, Some(transition), state_expr, indent)?;
+            let lowered = self.lower_state_expr_for_actor(layout_actor, &state_ty, Some(transition), state_expr, indent)?;
             push_indent(out, indent);
             out.push_str(&format!("{state_ty} {name} = {lowered};\n"));
             name

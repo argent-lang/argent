@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use crate::compiler::model::{
-    Model, PhysicalFieldId, PhysicalTargetId, SilStateType, SourcePhysicalField, SourceStateId, TargetPhysicalPlan,
+    ContractStateLowering, Model, OutputPhysicalTypePlan, PhysicalFieldId, PhysicalStateLayout, PhysicalTargetId, SilStateType,
+    SourcePhysicalField, SourceStateId, StaticActorTarget, TargetPhysicalPlan, TemplateSelector,
 };
 use crate::compiler::syntax::{ActorDecl, EntryDecl};
 use crate::error::{ArgentError, Result};
@@ -13,6 +14,109 @@ use super::token_refs::count_qualified_ref;
 
 #[cfg(test)]
 mod tests;
+
+/// Rendered output type and optional named layout selected from one physical target plan.
+pub(in crate::compiler::codegen) struct OutputStateTarget {
+    #[cfg(test)]
+    target: PhysicalTargetId,
+    #[cfg(test)]
+    canonical_target: PhysicalTargetId,
+    sil_type: String,
+    named_physical_layout: Option<PhysicalStateLayout>,
+}
+
+impl OutputStateTarget {
+    pub(in crate::compiler::codegen) fn physical_type(&self) -> &str {
+        &self.sil_type
+    }
+
+    pub(in crate::compiler::codegen) fn named_physical_layout(&self) -> Option<(&str, &PhysicalStateLayout)> {
+        self.named_physical_layout.as_ref().map(|layout| (self.sil_type.as_str(), layout))
+    }
+
+    #[cfg(test)]
+    pub(in crate::compiler::codegen) fn target(&self) -> &PhysicalTargetId {
+        &self.target
+    }
+
+    #[cfg(test)]
+    pub(in crate::compiler::codegen) fn canonical_target(&self) -> &PhysicalTargetId {
+        &self.canonical_target
+    }
+}
+
+pub(in crate::compiler::codegen) fn plan_actor_output_state(
+    actor: &ActorDecl,
+    target_actor: &str,
+    model: &Model<'_>,
+) -> Result<OutputStateTarget> {
+    let lowering = model.state_lowering(&actor.name)?;
+    let target = lowering
+        .output_type_for_actor(target_actor)
+        .ok_or_else(|| ArgentError::new(format!("actor `{}` has no output state target plan for `{target_actor}`", actor.name)))?;
+    output_state_target(target, lowering)
+}
+
+pub(in crate::compiler::codegen) fn plan_static_actor_output_state(
+    actor: &ActorDecl,
+    target_actor: StaticActorTarget<'_>,
+    model: &Model<'_>,
+) -> Result<OutputStateTarget> {
+    let lowering = model.state_lowering(&actor.name)?;
+    let target = match target_actor {
+        StaticActorTarget::InApp(target) => lowering.output_type_for_actor(&target.name),
+        StaticActorTarget::CrossApp(target) => lowering.output_type_for_compiled_actor(&target.app, &target.actor),
+    }
+    .ok_or_else(|| {
+        ArgentError::new(format!("actor `{}` has no output state target plan for `{}`", actor.name, target_actor.artifact_reference()))
+    })?;
+    output_state_target(target, lowering)
+}
+
+pub(in crate::compiler::codegen) fn plan_open_output_state(
+    actor: &ActorDecl,
+    state: &str,
+    model: &Model<'_>,
+) -> Result<OutputStateTarget> {
+    let lowering = model.state_lowering(&actor.name)?;
+    let target = lowering
+        .output_type_for_open_state(&SourceStateId::new(state))
+        .ok_or_else(|| ArgentError::new(format!("actor `{}` has no open output state target plan for `{state}`", actor.name)))?;
+    output_state_target(target, lowering)
+}
+
+pub(in crate::compiler::codegen) fn plan_selector_output_state(
+    actor: &ActorDecl,
+    selector: &TemplateSelector,
+    model: &Model<'_>,
+) -> Result<OutputStateTarget> {
+    let lowering = model.state_lowering(&actor.name)?;
+    let target = lowering.output_type_for_actor_domain(&SourceStateId::new(&selector.state), &selector.variants).ok_or_else(|| {
+        ArgentError::new(format!("actor `{}` has no output state target plan for selector `{}`", actor.name, selector.name))
+    })?;
+    output_state_target(target, lowering)
+}
+
+fn output_state_target(plan: &OutputPhysicalTypePlan, lowering: &ContractStateLowering) -> Result<OutputStateTarget> {
+    let named_physical_layout = match plan.sil_type() {
+        SilStateType::State | SilStateType::Source(_) => None,
+        SilStateType::StoragePhysical(_) | SilStateType::TargetPhysical(_) => Some(
+            lowering
+                .target(plan.canonical_target())
+                .ok_or_else(|| ArgentError::new("output type owner has no physical target layout"))?
+                .physical()
+                .clone(),
+        ),
+    };
+    Ok(OutputStateTarget {
+        #[cfg(test)]
+        target: plan.target().clone(),
+        #[cfg(test)]
+        canonical_target: plan.canonical_target().clone(),
+        sil_type: render_sil_state_type(plan.sil_type())?,
+        named_physical_layout,
+    })
+}
 
 #[derive(Clone)]
 enum InputTemplateProof {
@@ -316,7 +420,7 @@ fn input_binding(
     }
     let physical = AuthenticatedPhysicalInput {
         expr: physical_expr,
-        sil_type: input_sil_type(target.sil_type())?,
+        sil_type: render_sil_state_type(target.sil_type())?,
         target: target.id().clone(),
         input_index,
         proof,
@@ -333,7 +437,7 @@ fn input_binding(
     Ok(InputStateBinding { source_ref, access })
 }
 
-fn input_sil_type(ty: &SilStateType) -> Result<String> {
+fn render_sil_state_type(ty: &SilStateType) -> Result<String> {
     Ok(match ty {
         SilStateType::State => "State".to_string(),
         SilStateType::Source(source) => source.as_str().to_string(),
