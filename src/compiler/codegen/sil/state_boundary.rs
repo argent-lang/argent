@@ -7,7 +7,7 @@ use crate::compiler::model::{
     PhysicalStateLayout, PhysicalTargetId, SilStateType, SourcePhysicalField, SourceStateId, StaticActorTarget, TargetPhysicalPlan,
     TemplateSelector,
 };
-use crate::compiler::syntax::{ActorDecl, EntryDecl};
+use crate::compiler::syntax::{ActorDecl, EntryDecl, ObserveDecl, ObservedActorDecl};
 use crate::error::{ArgentError, Result};
 
 use super::super::emitter::*;
@@ -291,7 +291,7 @@ pub(in crate::compiler::codegen) struct PhysicalStateExpr {
 }
 
 impl PhysicalStateExpr {
-    pub(in crate::compiler::codegen) fn into_argument(self, out: &mut String, indent: usize, binding: impl AsRef<str>) -> String {
+    fn into_argument(self, out: &mut String, indent: usize, binding: impl AsRef<str>) -> String {
         if !self.materialized {
             return self.sil;
         }
@@ -299,6 +299,55 @@ impl PhysicalStateExpr {
         push_indent(out, indent);
         out.push_str(&format!("{} {binding} = {};\n", self.sil_type, self.sil));
         binding.to_string()
+    }
+}
+
+enum OutputTemplateProof {
+    Current,
+    BoundInput { input_index: String, prefix_len: String, suffix_len: String, template: String },
+    Witnessed { prefix: String, suffix: String, template: String },
+}
+
+/// Physical output and template proof planned as independent validation inputs.
+pub(in crate::compiler::codegen) struct PlannedOutputValidation {
+    output_index: String,
+    physical: PhysicalStateExpr,
+    state_binding: String,
+    proof: OutputTemplateProof,
+}
+
+/// Output validation whose physical value has already been stabilized.
+pub(in crate::compiler::codegen) struct StabilizedOutputValidation {
+    output_index: String,
+    state_argument: String,
+    proof: OutputTemplateProof,
+}
+
+impl PlannedOutputValidation {
+    pub(in crate::compiler::codegen) fn stabilize(self, out: &mut String, indent: usize) -> StabilizedOutputValidation {
+        StabilizedOutputValidation {
+            output_index: self.output_index,
+            state_argument: self.physical.into_argument(out, indent, self.state_binding),
+            proof: self.proof,
+        }
+    }
+}
+
+impl StabilizedOutputValidation {
+    pub(in crate::compiler::codegen) fn emit(self, out: &mut String, indent: usize) {
+        let mut args = vec![self.output_index, self.state_argument];
+        let builtin = match self.proof {
+            OutputTemplateProof::Current => "validateOutputState",
+            OutputTemplateProof::BoundInput { input_index, prefix_len, suffix_len, template } => {
+                args.extend([input_index, prefix_len, suffix_len, template]);
+                "validateOutputStateWithInputTemplate"
+            }
+            OutputTemplateProof::Witnessed { prefix, suffix, template } => {
+                args.extend([prefix, suffix, template]);
+                "validateOutputStateWithTemplate"
+            }
+        };
+        push_generated_call(out, indent, "", builtin, &args);
     }
 }
 
@@ -374,6 +423,135 @@ pub(in crate::compiler::codegen) fn materialize_output_state(
     out.push_str(&close_indent);
     out.push('}');
     Ok(PhysicalStateExpr { sil_type: target.sil_type.clone(), sil: out, materialized: true })
+}
+
+/// Resolved route context from which output authentication is planned.
+pub(in crate::compiler::codegen) enum OutputValidationContext<'a, 'm> {
+    Actor {
+        target: &'a str,
+    },
+    Selector {
+        selector: &'a str,
+        template: String,
+    },
+    Observed {
+        observe: &'a ObserveDecl,
+        output: &'a ObservedActorDecl,
+        static_target: Option<StaticActorTarget<'m>>,
+        witness: &'a ObservedActorWitnessSpec,
+        template: String,
+    },
+    Spawned {
+        static_target: Option<StaticActorTarget<'m>>,
+        witness: &'a SpawnActorWitnessSpec,
+        template: String,
+    },
+}
+
+pub(in crate::compiler::codegen) fn plan_output_validation(
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    context: OutputValidationContext<'_, '_>,
+    output_index: impl Into<String>,
+    physical: PhysicalStateExpr,
+    state_binding: impl Into<String>,
+    model: &Model<'_>,
+) -> Result<PlannedOutputValidation> {
+    let proof = match context {
+        OutputValidationContext::Actor { target } => {
+            if target == actor.name {
+                OutputTemplateProof::Current
+            } else if let Some(input_index) = template_input_index_for_actor(actor, entry, target, model)? {
+                OutputTemplateProof::BoundInput {
+                    input_index,
+                    prefix_len: hidden_witness_prefix_len_name(target),
+                    suffix_len: hidden_witness_suffix_len_name(target),
+                    template: hidden_template_name(target),
+                }
+            } else {
+                OutputTemplateProof::Witnessed {
+                    prefix: hidden_witness_prefix_name(target),
+                    suffix: hidden_witness_suffix_name(target),
+                    template: hidden_template_name(target),
+                }
+            }
+        }
+        OutputValidationContext::Selector { selector, template } => OutputTemplateProof::Witnessed {
+            prefix: hidden_template_selector_prefix_name(selector),
+            suffix: hidden_template_selector_suffix_name(selector),
+            template,
+        },
+        OutputValidationContext::Observed { observe, output, static_target, witness, template } => {
+            if let Some(proof) = fixed_output_template_proof(actor, entry, static_target, &template, model)? {
+                proof
+            } else if observed_reuses_input_template(observe, output) {
+                let input = first_observed_input_for_actor(observe, &output.actor)
+                    .expect("input-template reuse requires a matching observed input");
+                let input_spec = observed_input_spec(actor, entry, observe, input, model)?;
+                OutputTemplateProof::BoundInput {
+                    input_index: hidden_observed_input_idx_name(&observe.name, &input.name),
+                    prefix_len: hidden_observed_actor_prefix_len_name(&input_spec),
+                    suffix_len: hidden_observed_actor_suffix_len_name(&input_spec),
+                    template,
+                }
+            } else {
+                OutputTemplateProof::Witnessed {
+                    prefix: hidden_observed_actor_prefix_name(witness),
+                    suffix: hidden_observed_actor_suffix_name(witness),
+                    template,
+                }
+            }
+        }
+        OutputValidationContext::Spawned { static_target, witness, template } => {
+            fixed_output_template_proof(actor, entry, static_target, &template, model)?.unwrap_or_else(|| {
+                OutputTemplateProof::Witnessed {
+                    prefix: hidden_spawn_actor_prefix_name(witness),
+                    suffix: hidden_spawn_actor_suffix_name(witness),
+                    template,
+                }
+            })
+        }
+    };
+    Ok(planned_output_validation(output_index, physical, state_binding, proof))
+}
+
+fn fixed_output_template_proof(
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    target: Option<StaticActorTarget<'_>>,
+    template: &str,
+    model: &Model<'_>,
+) -> Result<Option<OutputTemplateProof>> {
+    let Some(target) = target else {
+        return Ok(None);
+    };
+    if target.in_app_actor().is_some_and(|target| target.name == actor.name) {
+        return Ok(Some(OutputTemplateProof::Current));
+    }
+    let Some(input_index) = template_input_index_for_target(actor, entry, target, model)? else {
+        let target_reference = target.artifact_reference();
+        return Ok(Some(OutputTemplateProof::Witnessed {
+            prefix: hidden_witness_prefix_name(&target_reference),
+            suffix: hidden_witness_suffix_name(&target_reference),
+            template: template.to_string(),
+        }));
+    };
+    let target_reference = target.artifact_reference();
+    Ok(Some(OutputTemplateProof::BoundInput {
+        input_index,
+        prefix_len: hidden_witness_prefix_len_name(&target_reference),
+        suffix_len: hidden_witness_suffix_len_name(&target_reference),
+        template: template.to_string(),
+    }))
+}
+
+fn planned_output_validation(
+    output_index: impl Into<String>,
+    physical: PhysicalStateExpr,
+    state_binding: impl Into<String>,
+    proof: OutputTemplateProof,
+) -> PlannedOutputValidation {
+    PlannedOutputValidation { output_index: output_index.into(), physical, state_binding: state_binding.into(), proof }
 }
 
 pub(in crate::compiler::codegen) fn preserve_exact_self(out: &mut String, indent: usize, output_index: &str) {

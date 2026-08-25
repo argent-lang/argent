@@ -1017,27 +1017,8 @@ struct EntryWitnessSpecs {
     observed_output_fields: Vec<ObservedOutputFieldWitnessSpec>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum RouteValidationKind {
-    ExactScriptPublicKey,
-    SameTemplate,
-    ForeignTemplate,
-}
-
-pub(super) fn route_validation_kind(actor: &ActorDecl, route: &RouteCall) -> RouteValidationKind {
-    if route.actor == actor.name && compact_expr(&route.state) == "self.state" {
-        return RouteValidationKind::ExactScriptPublicKey;
-    }
-
-    // Concrete actor names denote one compiled template in the current Argent
-    // model, so peer coordination does not by itself require a foreign-template
-    // witness. Future generic/observed actor handles need their own identity
-    // classifier instead of flowing through this named-actor shortcut.
-    if route.actor == actor.name {
-        return RouteValidationKind::SameTemplate;
-    }
-
-    RouteValidationKind::ForeignTemplate
+pub(super) fn is_legacy_exact_self_route(actor: &ActorDecl, route: &RouteCall) -> bool {
+    route.actor == actor.name && compact_expr(&route.state) == "self.state"
 }
 
 fn lower_entry_params(

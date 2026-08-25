@@ -23,8 +23,9 @@ use silverscript_lang::ast::{
 // layout helpers, and generated names.
 use super::super::emitter::*;
 use super::state_boundary::{
-    AuthoredStateExpr, EntryInputStatePlan, OutputStateTarget, SourceStateAccess, materialize_output_state, plan_actor_output_state,
-    plan_open_output_state, plan_selector_output_state, plan_static_actor_output_state, preserve_exact_self,
+    AuthoredStateExpr, EntryInputStatePlan, OutputStateTarget, OutputValidationContext, SourceStateAccess, materialize_output_state,
+    plan_actor_output_state, plan_open_output_state, plan_output_validation, plan_selector_output_state,
+    plan_static_actor_output_state, preserve_exact_self,
 };
 use super::state_values::{ContractStateValuePlan, PlannedStateValue};
 use super::token_refs::{RefReplacements, count_qualified_ref};
@@ -930,7 +931,6 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             }
             CovenantOutputContext::Genesis { .. } => self.model.resolve_static_actor_target(target),
         };
-        let local_actor = static_target.and_then(|target| target.in_app_actor()).map(|actor| actor.name.as_str());
         let state_name = match (context, static_target) {
             (_, Some(target)) => target.state().to_string(),
             (CovenantOutputContext::Existing { observe, output }, None) => {
@@ -948,11 +948,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         };
         let state_ty = output_target.physical_type().to_string();
         let authored = self.require_route_authored_state(out, indent, &route, &output_target)?;
-        let state_arg = materialize_output_state(&output_target, authored, self.model, indent)?.into_argument(
-            out,
-            indent,
-            generated_state_name(&route, &state_ty),
-        );
+        let physical = materialize_output_state(&output_target, authored, self.model, indent)?;
 
         let observed_spec = match context {
             CovenantOutputContext::Existing { observe, output } => {
@@ -987,6 +983,29 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             },
         };
 
+        let output_idx = match context {
+            CovenantOutputContext::Existing { .. } => hidden_observed_output_idx_name(context.group_name(), context.output_name()),
+            CovenantOutputContext::Genesis { .. } => hidden_spawn_output_idx_name(context.group_name(), context.output_name()),
+        };
+        let state_binding = generated_state_name(&route, &state_ty);
+        let validation_context = match context {
+            CovenantOutputContext::Existing { observe, output } => OutputValidationContext::Observed {
+                observe,
+                output,
+                static_target,
+                witness: observed_spec.as_ref().expect("observed output has a witness spec"),
+                template,
+            },
+            CovenantOutputContext::Genesis { .. } => OutputValidationContext::Spawned {
+                static_target,
+                witness: spawn_spec.as_ref().expect("spawn output has a witness spec"),
+                template,
+            },
+        };
+        let validation =
+            plan_output_validation(self.actor, self.entry, validation_context, output_idx, physical, state_binding, self.model)?
+                .stabilize(out, indent);
+
         push_indent(out, indent);
         out.push_str(&format!(
             "// :: {} become {}.{} -> {}\n",
@@ -995,76 +1014,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             context.output_name(),
             actor_expr
         ));
-        let output_idx = match context {
-            CovenantOutputContext::Existing { .. } => hidden_observed_output_idx_name(context.group_name(), context.output_name()),
-            CovenantOutputContext::Genesis { .. } => hidden_spawn_output_idx_name(context.group_name(), context.output_name()),
-        };
-        if local_actor == Some(self.actor.name.as_str()) {
-            push_generated_call(out, indent, "", "validateOutputState", &[output_idx, state_arg]);
-        } else if let Some(target) = static_target
-            && let Some(input_idx) = template_input_index_for_target(self.actor, self.entry, target, self.model)?
-        {
-            let target_reference = target.artifact_reference();
-            push_generated_call(
-                out,
-                indent,
-                "",
-                "validateOutputStateWithInputTemplate",
-                &[
-                    output_idx,
-                    state_arg,
-                    input_idx,
-                    hidden_witness_prefix_len_name(&target_reference),
-                    hidden_witness_suffix_len_name(&target_reference),
-                    template,
-                ],
-            );
-        } else if let CovenantOutputContext::Existing { observe, output } = context
-            && observed_reuses_input_template(observe, output)
-        {
-            let input =
-                first_observed_input_for_actor(observe, actor_expr).expect("input-template reuse requires a matching observed input");
-            let input_spec = observed_input_spec(self.actor, self.entry, observe, input, self.model)?;
-            push_generated_call(
-                out,
-                indent,
-                "",
-                "validateOutputStateWithInputTemplate",
-                &[
-                    output_idx,
-                    state_arg,
-                    hidden_observed_input_idx_name(context.group_name(), &input.name),
-                    hidden_observed_actor_prefix_len_name(&input_spec),
-                    hidden_observed_actor_suffix_len_name(&input_spec),
-                    template,
-                ],
-            );
-        } else {
-            let target_reference = static_target.map(|target| target.artifact_reference());
-            let prefix = target_reference.as_deref().map_or_else(
-                || match (&observed_spec, &spawn_spec) {
-                    (Some(spec), None) => hidden_observed_actor_prefix_name(spec),
-                    (None, Some(spec)) => hidden_spawn_actor_prefix_name(spec),
-                    _ => unreachable!("output context has exactly one witness spec"),
-                },
-                hidden_witness_prefix_name,
-            );
-            let suffix = target_reference.as_deref().map_or_else(
-                || match (&observed_spec, &spawn_spec) {
-                    (Some(spec), None) => hidden_observed_actor_suffix_name(spec),
-                    (None, Some(spec)) => hidden_spawn_actor_suffix_name(spec),
-                    _ => unreachable!("output context has exactly one witness spec"),
-                },
-                hidden_witness_suffix_name,
-            );
-            push_generated_call(
-                out,
-                indent,
-                "",
-                "validateOutputStateWithTemplate",
-                &[output_idx, state_arg, prefix, suffix, template],
-            );
-        }
+        validation.emit(out, indent);
         Ok(())
     }
 
@@ -1132,9 +1082,8 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         }
         self.model.actor_state(&route.actor)?;
         let output_idx = hidden_output_idx_name(&route.output);
-        let validation = route_validation_kind(self.actor, &route);
 
-        if validation == RouteValidationKind::ExactScriptPublicKey {
+        if is_legacy_exact_self_route(self.actor, &route) {
             push_indent(out, indent);
             out.push_str(&format!("// :: become {}\n", route.actor));
             preserve_exact_self(out, indent, &output_idx);
@@ -1144,53 +1093,21 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let output_target = plan_actor_output_state(self.actor, &route.actor, self.model)?;
         let state_ty = output_target.physical_type().to_string();
         let authored = self.require_route_authored_state(out, indent, &route, &output_target)?;
-        let state_arg = materialize_output_state(&output_target, authored, self.model, indent)?.into_argument(
-            out,
-            indent,
+        let physical = materialize_output_state(&output_target, authored, self.model, indent)?;
+        let validation = plan_output_validation(
+            self.actor,
+            self.entry,
+            OutputValidationContext::Actor { target: &route.actor },
+            output_idx,
+            physical,
             generated_state_name(&route, &state_ty),
-        );
+            self.model,
+        )?
+        .stabilize(out, indent);
 
         push_indent(out, indent);
         out.push_str(&format!("// :: become {}\n", route.actor));
-        match validation {
-            RouteValidationKind::ExactScriptPublicKey => unreachable!("exact continuation returned before state lowering"),
-            RouteValidationKind::SameTemplate => {
-                push_generated_call(out, indent, "", "validateOutputState", &[output_idx, state_arg]);
-            }
-            RouteValidationKind::ForeignTemplate => {
-                let template = hidden_template_name(&route.actor);
-                if let Some(input_idx) = template_input_index_for_actor(self.actor, self.entry, &route.actor, self.model)? {
-                    push_generated_call(
-                        out,
-                        indent,
-                        "",
-                        "validateOutputStateWithInputTemplate",
-                        &[
-                            output_idx,
-                            state_arg,
-                            input_idx,
-                            hidden_witness_prefix_len_name(&route.actor),
-                            hidden_witness_suffix_len_name(&route.actor),
-                            template,
-                        ],
-                    );
-                } else {
-                    push_generated_call(
-                        out,
-                        indent,
-                        "",
-                        "validateOutputStateWithTemplate",
-                        &[
-                            output_idx,
-                            state_arg,
-                            hidden_witness_prefix_name(&route.actor),
-                            hidden_witness_suffix_name(&route.actor),
-                            template,
-                        ],
-                    );
-                }
-            }
-        }
+        validation.emit(out, indent);
         Ok(())
     }
 
@@ -1205,28 +1122,23 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let output_target = plan_selector_output_state(self.actor, &selector, self.model)?;
         let state_ty = output_target.physical_type().to_string();
         let authored = self.require_route_authored_state(out, indent, &route, &output_target)?;
-        let state_arg = materialize_output_state(&output_target, authored, self.model, indent)?.into_argument(
-            out,
-            indent,
-            generated_state_name(&route, &state_ty),
-        );
+        let physical = materialize_output_state(&output_target, authored, self.model, indent)?;
 
-        let template = self.ensure_selector_template(out, indent, &route.actor)?;
+        let template = hidden_template_selector_template_name(&selector.name);
+        let validation = plan_output_validation(
+            self.actor,
+            self.entry,
+            OutputValidationContext::Selector { selector: &route.actor, template },
+            output_idx,
+            physical,
+            generated_state_name(&route, &state_ty),
+            self.model,
+        )?
+        .stabilize(out, indent);
+        self.ensure_selector_template(out, indent, &route.actor)?;
         push_indent(out, indent);
         out.push_str(&format!("// :: become {}\n", route.actor));
-        push_generated_call(
-            out,
-            indent,
-            "",
-            "validateOutputStateWithTemplate",
-            &[
-                output_idx,
-                state_arg,
-                hidden_template_selector_prefix_name(&route.actor),
-                hidden_template_selector_suffix_name(&route.actor),
-                template,
-            ],
-        );
+        validation.emit(out, indent);
         Ok(())
     }
 

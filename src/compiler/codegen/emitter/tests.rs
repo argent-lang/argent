@@ -1230,7 +1230,79 @@ fn self_transition_uses_same_template_shortcut() {
 }
 
 #[test]
-fn route_validation_kind_characterizes_current_representation_decisions() {
+fn output_template_proofs_are_independent_of_physical_state_type() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "output-template-proof-matrix",
+        r#"
+            state BoardState { int ply; }
+
+            actor enum MoveActor {
+                Pawn;
+                Knight;
+            }
+
+            actor Mux owns BoardState {
+                entry hold() emits next: Mux {
+                    BoardState next_state = { ply: ply + 1 };
+                    unrestricted(next.value);
+                    become next <- Mux(next_state);
+                }
+
+                entry handoff()
+                consumes {
+                    prior: Pawn,
+                }
+                emits next: Pawn {
+                    BoardState next_state = { ply: prior.ply + 1 };
+                    unrestricted(next.value);
+                    become next <- Pawn(next_state);
+                }
+
+                entry choose(MoveActor target) emits next: MoveActor {
+                    BoardState next_state = { ply: ply + 1 };
+                    unrestricted(next.value);
+                    become next <- target(next_state);
+                }
+            }
+
+            actor Pawn owns BoardState {
+                delegate accept() consumes {
+                    leader: Mux,
+                } {}
+            }
+
+            actor Knight owns BoardState {
+                entry hold() emits none { require(ply >= 0); }
+            }
+
+            app Test {
+                actor Mux;
+                actor Pawn;
+                actor Knight;
+            }
+        "#,
+    );
+    let sil = &actor_sil["Mux"];
+    let hold = sil.split_once("entry hold()").expect("hold entry exists").1.split_once("entry handoff(").expect("handoff follows").0;
+    let handoff =
+        sil.split_once("entry handoff(").expect("handoff entry exists").1.split_once("entry choose(").expect("choose follows").0;
+    let choose = sil.split_once("entry choose(").expect("choose entry exists").1;
+
+    assert!(hold.contains("State gen__state_next_state = State {"), "{hold}");
+    assert!(hold.contains("validateOutputState(gen__next_output_idx, gen__state_next_state);"), "{hold}");
+
+    assert!(handoff.contains("State gen__state_next_state = State {"), "{handoff}");
+    assert!(handoff.contains("Gen__PawnState prior = readInputStateWithTemplate("), "{handoff}");
+    assert!(handoff.contains("validateOutputStateWithInputTemplate("), "{handoff}");
+    assert!(handoff.contains("gen__prior_input_idx,"), "{handoff}");
+
+    assert!(choose.contains("State gen__state_next_state = State {"), "{choose}");
+    assert!(choose.contains("validateOutputStateWithTemplate("), "{choose}");
+    assert!(choose.contains("gen__target_template"), "{choose}");
+}
+
+#[test]
+fn legacy_exact_self_recognition_remains_narrow() {
     let program = test_program();
     let actor = &program.modules[0].actors[0];
 
@@ -1239,10 +1311,10 @@ fn route_validation_kind_characterizes_current_representation_decisions() {
     let changed = RouteCall { output: "next".to_string(), actor: actor.name.clone(), state: "next_state".to_string() };
     let foreign = RouteCall { output: "next".to_string(), actor: "Game".to_string(), state: "next_game".to_string() };
 
-    assert_eq!(route_validation_kind(actor, &exact), RouteValidationKind::ExactScriptPublicKey);
-    assert_eq!(route_validation_kind(actor, &spaced_exact), RouteValidationKind::SameTemplate);
-    assert_eq!(route_validation_kind(actor, &changed), RouteValidationKind::SameTemplate);
-    assert_eq!(route_validation_kind(actor, &foreign), RouteValidationKind::ForeignTemplate);
+    assert!(is_legacy_exact_self_route(actor, &exact));
+    assert!(!is_legacy_exact_self_route(actor, &spaced_exact));
+    assert!(!is_legacy_exact_self_route(actor, &changed));
+    assert!(!is_legacy_exact_self_route(actor, &foreign));
 }
 
 #[test]
@@ -4722,6 +4794,13 @@ fn route_neutral_state_locals_convert_at_actor_routes() {
     assert!(straight_sil["Lobby"].contains("BoardState next_board = BoardState {"), "{}", straight_sil["Lobby"]);
     assert!(
         straight_sil["Lobby"].contains("Gen__MuxState gen__state_next_gen__mux_state = Gen__MuxState {"),
+        "{}",
+        straight_sil["Lobby"]
+    );
+    assert!(
+        straight_sil["Lobby"].contains(
+            "validateOutputStateWithTemplate(\n            gen__next_output_idx,\n            gen__state_next_gen__mux_state,"
+        ),
         "{}",
         straight_sil["Lobby"]
     );
