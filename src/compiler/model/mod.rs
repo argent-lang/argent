@@ -27,7 +27,10 @@ pub(crate) use entry::{
     observed_open_bindings, observed_open_state_for_decl, parse_actor_enum_selector, parse_actor_enum_variant,
     resolve_observe_covenant_id_source, source_actor_type_state_for_expr, spawn_target_state,
 };
-pub(crate) use layout::packed_field_len;
+pub(crate) use layout::{
+    ContractStateLowering, GeneratedFieldId, PhysicalFieldId, PhysicalStateLayout, PhysicalTargetId, SilStateType, SourceStateId,
+    build_contract_state_lowerings, lower_layout_type, packed_field_len, packed_layout_field_len,
+};
 
 /// The selected application's compiler-wide source and routing model.
 #[derive(Debug)]
@@ -52,6 +55,8 @@ pub(crate) struct Model<'a> {
     /// The planned route commitment cut carried by each app actor.
     pub(crate) route_leaves_by_actor: BTreeMap<String, Vec<RouteRootLeaf>>,
     pub(crate) route_transitions: BTreeMap<(String, String), CompilerRouteTransition>,
+    /// Contract-local state representation plans built after route planning.
+    pub(crate) state_lowering_by_actor: BTreeMap<String, ContractStateLowering>,
 }
 
 /// Ordered membership of the selected application's actor domain.
@@ -184,6 +189,13 @@ impl<'m> StaticActorTarget<'m> {
 }
 
 impl Model<'_> {
+    /// Return the immutable state lowering environment for one emitted actor.
+    pub(crate) fn state_lowering(&self, actor: &str) -> Result<&ContractStateLowering> {
+        self.state_lowering_by_actor
+            .get(actor)
+            .ok_or_else(|| ArgentError::new(format!("missing state lowering environment for actor `{actor}`")))
+    }
+
     /// Resolve a local or linked state declaration.
     pub(crate) fn state(&self, name: &str) -> Result<&StateDecl> {
         self.states

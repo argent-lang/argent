@@ -10,10 +10,11 @@ use crate::artifact::*;
 use crate::codec::encode_hex;
 use crate::compiler::model::link::LinkedActor;
 use crate::compiler::model::{
-    ClauseActorTypeRef, CompilerRouteTransition, CovenantGroup, CovenantIdSource, EntryModel, InteractionSource, Model, RouteFamily,
-    RouteRootLeaf, StaticActorTarget, actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding,
-    observed_open_state_for_decl, packed_field_len, resolve_observe_covenant_id_source, source_actor_type_state_for_expr,
-    spawn_target_state,
+    ClauseActorTypeRef, CompilerRouteTransition, CovenantGroup, CovenantIdSource, EntryModel, GeneratedFieldId, InteractionSource,
+    Model, PhysicalFieldId, PhysicalStateLayout, RouteFamily, RouteRootLeaf, SilStateType, SourceStateId, StaticActorTarget,
+    actor_enum_variant_const_expr, clause_actor_type_ref, lower_layout_type, observed_is_dynamic_binding,
+    observed_open_state_for_decl, packed_field_len, packed_layout_field_len, resolve_observe_covenant_id_source,
+    source_actor_type_state_for_expr, spawn_target_state,
 };
 use crate::compiler::naming::{is_identifier, to_snake};
 use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, TokenKind, lex};
@@ -89,6 +90,7 @@ fn emit_build_selected(
 }
 
 fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
+    verify_state_lowering_plan(actor, model)?;
     let state = model.storage_state(&actor.state)?;
     let emitted_entries = actor
         .entries
@@ -2371,6 +2373,176 @@ fn runtime_state_field_defs_for_actor(
         fields.push((field.name.clone(), type_artifact(&field.ty, model), None));
     }
     Ok(fields)
+}
+
+/// Keep the parallel layout model checked against the authoritative physical
+/// encoding until codegen consumes the boundary directly.
+fn verify_state_lowering_plan(actor: &ActorDecl, model: &Model<'_>) -> Result<()> {
+    let lowering = model.state_lowering(&actor.name)?;
+    if lowering.active().actor().app() != model.app_name || lowering.active().actor().actor() != actor.name {
+        return Err(ArgentError::new(format!("actor `{}` has a mismatched active state lowering identity", actor.name)));
+    }
+
+    let active_source = SourceStateId::new(&actor.state);
+    if lowering.active().source().id() != &active_source {
+        return Err(ArgentError::new(format!("actor `{}` has a mismatched active source state plan", actor.name)));
+    }
+    let storage = model.storage_state(&actor.state)?;
+    if lowering.active().storage().id().as_str() != storage.name {
+        return Err(ArgentError::new(format!("actor `{}` has a mismatched storage payload plan", actor.name)));
+    }
+    if lowering.active().source().fields().len() != storage.fields.len()
+        || lowering.active().storage().fields().len() != storage.fields.len()
+    {
+        return Err(ArgentError::new(format!("actor `{}` has an incomplete source/storage field plan", actor.name)));
+    }
+    for field in &storage.fields {
+        let source_field = lowering
+            .active()
+            .source()
+            .field_id(&field.name)
+            .ok_or_else(|| ArgentError::new(format!("actor `{}` source layout is missing field `{}`", actor.name, field.name)))?;
+        if source_field.state() != &active_source {
+            return Err(ArgentError::new(format!("actor `{}` source field identity has the wrong owner", actor.name)));
+        }
+        let storage_field =
+            lowering.active().source_to_storage().storage_field(source_field).ok_or_else(|| {
+                ArgentError::new(format!("actor `{}` source field `{}` has no storage mapping", actor.name, field.name))
+            })?;
+        if lowering.active().storage().field_id(&field.name) != Some(storage_field)
+            || storage_field.state() != lowering.active().storage().id()
+        {
+            return Err(ArgentError::new(format!("actor `{}` storage field `{}` has an unstable identity", actor.name, field.name)));
+        }
+        let physical_field = lowering.active().storage_to_physical().physical_field(storage_field).ok_or_else(|| {
+            ArgentError::new(format!("actor `{}` storage field `{}` has no physical mapping", actor.name, field.name))
+        })?;
+        if lowering.active().physical().field(physical_field).is_none() {
+            return Err(ArgentError::new(format!("actor `{}` physical field map is incomplete", actor.name)));
+        }
+    }
+
+    for state in model.all_states() {
+        let source = SourceStateId::new(&state.name);
+        let representation = lowering.source_representation(&source).ok_or_else(|| {
+            ArgentError::new(format!("actor `{}` has no source representation for state `{}`", actor.name, state.name))
+        })?;
+        if representation.source() != &source || representation.sil_type() != &SilStateType::Source(source.clone()) {
+            return Err(ArgentError::new(format!(
+                "actor `{}` source representation for `{}` is not its named authored type",
+                actor.name, state.name
+            )));
+        }
+        let expected_eligibility = source == active_source
+            && representation.source_to_storage().is_identity()
+            && lowering.active().storage_to_physical().is_identity();
+        if representation.active_state_eligible() != expected_eligibility {
+            return Err(ArgentError::new(format!("actor `{}` has an inconsistent `State` eligibility fact", actor.name)));
+        }
+    }
+    if lowering.active().source_to_storage()
+        != lowering.source_representation(&active_source).expect("active source representation checked above").source_to_storage()
+    {
+        return Err(ArgentError::new(format!("actor `{}` has inconsistent active source/storage relations", actor.name)));
+    }
+    if lowering.source_representations().len() != model.all_states().map(|state| state.name.as_str()).collect::<BTreeSet<_>>().len() {
+        return Err(ArgentError::new(format!("actor `{}` has duplicate or missing source representation decisions", actor.name)));
+    }
+
+    let active_target = lowering
+        .target_for_actor(&actor.name)
+        .ok_or_else(|| ArgentError::new(format!("actor `{}` has no active physical target plan", actor.name)))?;
+    if active_target.sil_type() != &SilStateType::State || !active_target.has_source_identity(&active_source) {
+        return Err(ArgentError::new(format!("actor `{}` active target does not select its physical `State`", actor.name)));
+    }
+
+    verify_planned_physical_fields(
+        &format!("active actor `{}`", actor.name),
+        lowering.active().physical(),
+        &runtime_state_field_defs_for_actor(actor, model)?,
+        model,
+    )?;
+    for actor_ref in model.app_actors.iter().chain(model.linked_actors.keys()) {
+        let target = lowering
+            .target_for_actor(actor_ref)
+            .ok_or_else(|| ArgentError::new(format!("actor `{}` has no physical target plan for `{actor_ref}`", actor.name)))?;
+        verify_planned_physical_fields(
+            &format!("actor `{actor_ref}` as seen from `{}`", actor.name),
+            target.physical(),
+            &runtime_state_field_defs_for_actor(model.actor(actor_ref)?, model)?,
+            model,
+        )?;
+        let generated = target.storage_to_physical().generated_fields();
+        if generated.len()
+            != target.physical().fields().iter().filter(|field| matches!(field.id(), PhysicalFieldId::Generated(_))).count()
+        {
+            return Err(ArgentError::new(format!("target `{actor_ref}` has an inconsistent generated-field map")));
+        }
+    }
+
+    for target in lowering.targets().values() {
+        let source = lowering
+            .source_representation(target.source())
+            .ok_or_else(|| ArgentError::new(format!("target `{:?}` references an unplanned source state", target.id())))?;
+        if target.source_to_storage() != source.source_to_storage() {
+            return Err(ArgentError::new(format!("target `{:?}` has an inconsistent source/storage relation", target.id())));
+        }
+        let compatible = target.physical().is_sil_compatible_with(lowering.active().physical());
+        if target.active_compatible() != compatible {
+            return Err(ArgentError::new(format!("target `{:?}` has an inconsistent active-layout compatibility fact", target.id())));
+        }
+        if matches!(target.id(), crate::compiler::model::PhysicalTargetId::OpenState(_))
+            && lowering.open_state_target(target.source()).is_none()
+        {
+            return Err(ArgentError::new("open-state target lookup is inconsistent"));
+        }
+    }
+    Ok(())
+}
+
+fn verify_planned_physical_fields(
+    label: &str,
+    planned: &PhysicalStateLayout,
+    existing: &[(String, TypeArtifact, Option<RuntimeFieldRoleArtifact>)],
+    model: &Model<'_>,
+) -> Result<()> {
+    if planned.fields().len() != existing.len() {
+        return Err(ArgentError::new(format!("{label} physical field count differs from existing codegen")));
+    }
+    for (field, (name, ty, role)) in planned.fields().iter().zip(existing) {
+        let planned_role = match field.id() {
+            PhysicalFieldId::Storage(_) => None,
+            PhysicalFieldId::Generated(GeneratedFieldId::Template(actor)) => {
+                Some(RuntimeFieldRoleArtifact::Template { contract: actor.actor().to_string() })
+            }
+            PhysicalFieldId::Generated(GeneratedFieldId::RouteFamilyDigest { family, .. }) => {
+                Some(RuntimeFieldRoleArtifact::TemplateDigest { id: family.clone() })
+            }
+            PhysicalFieldId::Generated(GeneratedFieldId::RouteFamilyTable { actors, .. }) => {
+                Some(RuntimeFieldRoleArtifact::TemplateTable {
+                    contracts: actors.iter().map(|actor| actor.actor().to_string()).collect(),
+                })
+            }
+        };
+        if field.sil_name() != name
+            || type_artifact(field.ty(), model) != *ty
+            || field.sil_type() != lower_layout_type(field.ty(), model)
+            || field.sil_type() != lower_type_ref(field.ty(), model)
+            || field.packed_len() != packed_layout_field_len(field.ty(), model)?
+            || planned_role != *role
+        {
+            return Err(ArgentError::new(format!(
+                "{label} field `{name}` differs from existing physical codegen: planned name `{}`, type `{:?}`, width {}, role {:?}; existing type `{:?}`, role {:?}",
+                field.sil_name(),
+                type_artifact(field.ty(), model),
+                field.packed_len(),
+                planned_role,
+                ty,
+                role
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn runtime_state_fields_for_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<Vec<RuntimeFieldArtifact>> {

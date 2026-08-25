@@ -560,7 +560,6 @@ Build plans from the existing source/storage state model and route planner. Init
 
 - assert identical physical field order;
 - assert identical generated field roles;
-- assert identical lowered SIL type choice;
 - assert identical storage widths and field encodings;
 - assert one representation decision for each state type within each emitted contract;
 - assert one physical layout and SIL type for every referenced actor or dynamic target;
@@ -571,7 +570,10 @@ Build plans from the existing source/storage state model and route planner. Init
 - distinguish byte-compatible layouts whose generated fields have different semantic roles;
 - assert global functions receive the destination contract's decision rather than a source-global decision.
 
-Keep existing codegen authoritative for this commit. The new plan runs in parallel only as a checked model.
+Keep existing codegen authoritative for this commit. The new plan runs in parallel only as a checked model. Authored values remain in
+their named source types, and non-active targets retain named physical types; record target/active compatibility without selecting the
+equivalent-`State` optimization yet. Existing codegen may still contain earlier `State` equivalence shortcuts during this parallel phase;
+do not reproduce them as legacy policy in the new plan merely to make the temporary type choices match.
 
 Exit condition: every emitted contract has one lowering environment and characterization outputs remain byte-for-byte unchanged.
 
