@@ -1,4 +1,9 @@
 //! Checked AST-directed lowering of contract-local authored state types.
+//!
+//! Some Sil AST nodes classify a type name without exposing its exact span.
+//! For those nodes, `EquivalentStateLowerer` uses the grammar guarantee that
+//! the name starts the node span. Checked edits, reparsing, and the final audit
+//! make this workaround fail closed if that guarantee changes.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
