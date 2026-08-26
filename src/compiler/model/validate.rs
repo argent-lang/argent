@@ -270,6 +270,15 @@ impl Model<'_> {
 
     fn validate_entry(&self, actor: &ActorDecl, entry: &EntryDecl) -> Result<()> {
         for param in &entry.params {
+            if param.ty.name == "State" {
+                return Err(ArgentError::new(format!(
+                    "entry `{}::{}` parameter `{}` uses compiler-owned physical type `{}`; entry parameters must use an Argent-authored state type",
+                    actor.name,
+                    entry.name,
+                    param.name,
+                    param.ty.to_source()
+                )));
+            }
             if param.ty.is_actor_type() && self.static_actor_target(&param.name).is_some() {
                 return Err(ArgentError::new(format!(
                     "entry `{}::{}` actor_type parameter `{}` shadows an actor reference with the same name; rename the parameter",

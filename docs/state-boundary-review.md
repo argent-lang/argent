@@ -137,11 +137,15 @@ Drive authored struct emission from the named source representations in
 syntax. Cover linked states used only by scalar, fixed-array, and dynamic-array
 entry parameters, functions, constants, and body locals.
 
-### 5. [ ] Reject physical `State` in external entry parameters
+### 5. [x] Reject physical `State` in external entry parameters
 
-**Status:** Confirmed locally. Pre-existing boundary gap.
+**Resolved:** Entry-signature validation rejects scalar, fixed-array, and
+dynamic-array physical `State` parameters with an Argent-authored-state
+diagnostic. This rule does not depend on whether the active contract layout is
+equivalent to `State`. Physical `State` remains valid in locals and global or
+actor helper signatures.
 
-This source compiles:
+This source previously compiled:
 
 ```rust
 entry inspect(State supplied) emits none {

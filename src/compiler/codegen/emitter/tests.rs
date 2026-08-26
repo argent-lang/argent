@@ -820,6 +820,53 @@ fn rejects_reserved_entry_parameter_from_model() {
 }
 
 #[test]
+fn rejects_physical_state_entry_parameters_in_aligned_and_augmented_contracts() {
+    for (layout, actors, emits, body) in [
+        ("aligned", "", "emits none", "require(1 == 1);"),
+        (
+            "augmented",
+            r#"
+                state PeerState { int count; }
+                actor Peer owns PeerState {}
+            "#,
+            "emits next: Peer",
+            r#"
+                unrestricted(next.value);
+                become next <- Peer(PeerState { count: count });
+            "#,
+        ),
+    ] {
+        for ty in ["State", "State[2]", "State[]"] {
+            let source = format!(
+                r#"
+                    state CounterState {{ int count; }}
+
+                    actor Counter owns CounterState {{
+                        entry inspect({ty} supplied) {emits} {{
+                            {body}
+                        }}
+                    }}
+
+                    {actors}
+                    app Test {{ actor Counter; {} }}
+                "#,
+                if layout == "augmented" { "actor Peer;" } else { "" }
+            );
+            let err = parse_and_validate(&source).expect_err("physical State must not cross an external entry boundary");
+            assert!(
+                err.to_string()
+                    .contains(&format!("entry `Counter::inspect` parameter `supplied` uses compiler-owned physical type `{ty}`")),
+                "{layout} {ty}: unexpected error: {err}"
+            );
+            assert!(
+                err.to_string().contains("entry parameters must use an Argent-authored state type"),
+                "{layout} {ty}: unexpected error: {err}"
+            );
+        }
+    }
+}
+
+#[test]
 fn rejects_self_as_an_entry_parameter() {
     let err = parse_and_validate(
         r#"
