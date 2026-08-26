@@ -263,6 +263,11 @@ enum PlannedSourceExpr {
     Struct { sil_type: String, fields: Vec<(String, String)> },
 }
 
+struct PlannedSourceStorageExpr {
+    authored: PlannedSourceExpr,
+    trusted_storage: Option<String>,
+}
+
 impl PlannedSourceExpr {
     fn render(&self, indent: usize) -> String {
         match self {
@@ -294,7 +299,9 @@ impl PlannedSourceExpr {
             .source_representation(state)
             .ok_or_else(|| ArgentError::new(format!("state `{}` has no source-to-storage plan", state.as_str())))?
             .source_to_storage();
-        source_storage_payload_digest(state, relation, lowering, model, |field| self.project_field(field))
+        source_storage_payload_digest(state, relation, lowering, model, |field| {
+            Ok(PlannedSourceStorageExpr { authored: self.project_field(field)?, trusted_storage: None })
+        })
     }
 
     fn project_field(&self, field_name: &str) -> Result<Self> {
@@ -314,7 +321,7 @@ fn source_storage_payload_digest(
     relation: &SourceStorageRelation,
     lowering: &ContractStateLowering,
     model: &Model<'_>,
-    mut source_field: impl FnMut(&str) -> Result<PlannedSourceExpr>,
+    mut source_field: impl FnMut(&str) -> Result<PlannedSourceStorageExpr>,
 ) -> Result<String> {
     let storage = model.storage_state(state.as_str())?;
     let mut parts = Vec::with_capacity(relation.fields().len());
@@ -324,10 +331,11 @@ fn source_storage_payload_digest(
             .iter()
             .find(|candidate| candidate.name == field.storage().field())
             .ok_or_else(|| ArgentError::new("planned source field has no storage field"))?;
-        let authored = source_field(field.source().field())?;
-        let stored = match field.expanded_state() {
-            Some(expanded) => authored.payload_digest_in_contract(expanded, lowering, model)?,
-            None => authored.render(0),
+        let PlannedSourceStorageExpr { authored, trusted_storage } = source_field(field.source().field())?;
+        let stored = match (field.expanded_state(), trusted_storage) {
+            (Some(_), Some(storage)) => storage,
+            (Some(expanded), None) => authored.payload_digest_in_contract(expanded, lowering, model)?,
+            (None, _) => authored.render(0),
         };
         parts.push(packed_field_expr(&storage_field.ty, &stored)?);
     }
@@ -349,6 +357,7 @@ pub(in crate::compiler::codegen) fn authored_state_payload_digest_expr(
 struct PlannedSourceField {
     name: String,
     value: Option<PlannedSourceExpr>,
+    trusted_storage: Option<String>,
 }
 
 /// Opaque source-level access derived from validated input provenance.
@@ -711,6 +720,13 @@ impl SourceStateAccess {
         })
     }
 
+    fn planned_storage_field(&self, field_name: &str) -> Result<PlannedSourceStorageExpr> {
+        let authored = self.planned_field(field_name)?.clone();
+        let trusted_storage =
+            self.fields.iter().find(|field| field.name == field_name).and_then(|field| field.trusted_storage.clone());
+        Ok(PlannedSourceStorageExpr { authored, trusted_storage })
+    }
+
     fn reject_unavailable_field_refs(&self, source_ref: &str, input: &str) -> Result<()> {
         let tokens = crate::compiler::syntax::lexer::lex(input)?;
         for field in self.fields.iter().filter(|field| field.value.is_none()) {
@@ -872,7 +888,7 @@ impl PlannedEntryInputReference {
         // stable fields directly from the authenticated input.
         self.complete_authored_state(0)?;
         source_storage_payload_digest(&self.access.source, &self.access.source_to_storage, lowering, model, |field| {
-            self.access.planned_field(field).cloned()
+            self.access.planned_storage_field(field)
         })
     }
 
@@ -1100,8 +1116,8 @@ fn active_input_reference(
         .into_iter()
         .map(|field| {
             let name = field.source().field().to_string();
-            let value = if field.is_identity() {
-                PlannedSourceExpr::Value(name.clone())
+            let (value, trusted_storage) = if field.is_identity() {
+                (PlannedSourceExpr::Value(name.clone()), None)
             } else {
                 let spec = expansion_specs
                     .iter()
@@ -1120,9 +1136,9 @@ fn active_input_reference(
                     .iter()
                     .map(|field| (field.name.clone(), hidden_state_expansion_field_name(spec, &field.name)))
                     .collect();
-                PlannedSourceExpr::Struct { sil_type, fields }
+                (PlannedSourceExpr::Struct { sil_type, fields }, Some(name.clone()))
             };
-            Ok(PlannedSourceField { name, value: Some(value) })
+            Ok(PlannedSourceField { name, value: Some(value), trusted_storage })
         })
         .collect::<Result<Vec<_>>>()?;
     let access = SourceStateAccess {
@@ -1186,6 +1202,7 @@ fn input_reference(
         .map(|field| PlannedSourceField {
             name: field.source().field().to_string(),
             value: field.is_identity().then(|| PlannedSourceExpr::Value(format!("{physical_expr}.{}", field.sil_name()))),
+            trusted_storage: None,
         })
         .collect::<Vec<_>>();
     let access = SourceStateAccess {

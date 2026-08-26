@@ -2259,9 +2259,15 @@ fn expanded_input_and_named_state_digests_use_the_same_storage_payload() {
             .unwrap_or_else(|| panic!("missing `{binding}` initializer in:\n{sil}"))
     };
 
-    let direct_from_snapshot =
-        initializer("direct").replace("gen__detail_count", "snapshot.detail.count").replace("nonce", "snapshot.nonce");
-    assert_eq!(direct_from_snapshot, initializer("local"), "{sil}");
+    let direct = initializer("direct");
+    let local = initializer("local");
+    assert_ne!(direct, local, "{sil}");
+    assert!(direct.contains("byte[](detail)"), "{sil}");
+    assert!(!direct.contains("gen__detail_count"), "{sil}");
+    assert!(local.contains("snapshot.nonce"), "{sil}");
+    assert!(local.contains("snapshot.detail.count"), "{sil}");
+    assert!(sil.contains("require(blake3(byte[](gen__detail_details_preimage)) == detail);"), "{sil}");
+    assert!(sil.contains("int gen__detail_count = OpBin2Num(gen__detail_details_preimage.slice(0, 8));"), "{sil}");
 }
 
 #[test]
@@ -2721,8 +2727,8 @@ fn expanded_entry_params_keep_the_authored_nested_layout() {
     assert!(sil.contains("Expanded current = Expanded {"), "{sil}");
     assert!(sil.contains("count: gen__detail_count,"), "{sil}");
     assert!(sil.contains("Details copy = Details {"), "{sil}");
-    assert!(sil.contains("byte[32] whole = blake3(byte[](((nonce) as byte[8]) + byte[](blake3(byte[]("), "{sil}");
-    assert!(sil.contains("((gen__detail_count) as byte[8])"), "{sil}");
+    assert!(sil.contains("byte[32] whole = blake3(byte[](((nonce) as byte[8]) + byte[](detail)));"), "{sil}");
+    assert!(sil.contains("int gen__detail_count = OpBin2Num(gen__detail_details_preimage.slice(0, 8));"), "{sil}");
     let inspect = artifact.sil_abi.contract("Vault").expect("Vault contract exists").entry("inspect").expect("inspect entry exists");
     assert_eq!(inspect.params[0].ty, TypeArtifact::Struct { name: "Expanded".to_string() });
     assert_eq!(
@@ -2740,6 +2746,79 @@ fn expanded_entry_params_keep_the_authored_nested_layout() {
     assert!(reader_sil.contains("struct Gen__PhysicalExpanded {"), "{reader_sil}");
     assert!(reader_sil.contains("byte[32] detail;"), "{reader_sil}");
     assert!(reader_sil.contains("Gen__PhysicalExpanded gen__vault_state = readInputStateWithTemplate("), "{reader_sil}");
+}
+
+#[test]
+fn active_expanded_field_projects_as_an_authored_value() {
+    let (actors, _) = inline_actor_sil_and_artifact(
+        "active-expanded-field-value",
+        r#"
+            state Capsule { virtual detail; }
+            state Details { int count; }
+            state Expanded expands Capsule { detail: Details; }
+
+            actor Vault owns Expanded {
+                fn read_detail(Details value) -> int {
+                    return value.count;
+                }
+
+                entry inspect() emits next: Archive {
+                    Details copy = detail;
+                    int opened_count = detail.count;
+                    Details[1] copies = Details[1]{ detail };
+                    require(copy.count == opened_count);
+                    require(copies.length == 1);
+                    require(read_detail(detail) == opened_count);
+
+                    unrestricted(next.value);
+                    become next <- Archive(detail);
+                }
+            }
+
+            actor Archive owns Details {
+                entry hold() emits none {
+                    require(count >= 0);
+                }
+            }
+
+            app Test { actor Vault; actor Archive; }
+        "#,
+    );
+
+    let sil = &actors["Vault"];
+    assert!(sil.contains("Details copy = Details {"), "{sil}");
+    assert!(sil.contains("int opened_count = gen__detail_count;"), "{sil}");
+    assert!(sil.contains("Details[1] copies = Details[1]{ Details {"), "{sil}");
+    assert!(sil.contains("read_detail(Details {"), "{sil}");
+    assert!(sil.contains("Details gen__source_next_details = Details {"), "{sil}");
+    assert_eq!(sil.matches("count: gen__detail_count,").count(), 4, "{sil}");
+}
+
+#[test]
+fn active_expanded_field_rejects_whole_value_destructuring() {
+    let err = emit_inline_error(
+        r#"
+            state Capsule { virtual detail; }
+            state Details { int count; }
+            state Expanded expands Capsule { detail: Details; }
+
+            actor Vault owns Expanded {
+                entry inspect() emits none {
+                    Details { count: int opened_count } = detail;
+                    require(opened_count >= 0);
+                }
+            }
+
+            app Test { actor Vault; }
+        "#,
+    );
+
+    assert!(
+        err.to_string().contains(
+            "active expanded state field `detail` cannot be destructured as a whole value; project its fields directly, for example `int opened_count = detail.count;`"
+        ),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]

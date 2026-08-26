@@ -20,7 +20,10 @@ start with a focused regression test when practical.
 ### 1. [x] Use one source-to-storage digest operation
 
 **Resolved:** Input references, named authored values, and output expansion
-hashing now use one `SourceStorageRelation`-driven operation.
+hashing now use one `SourceStorageRelation`-driven operation. The active input
+reuses an authenticated stored expansion digest after checking that its
+validated opening can reconstruct the complete authored value. Named authored
+values derive the same digest from their nested fields.
 
 Input-reference and named-value digests use different implementations. For an
 expanded state:
@@ -83,9 +86,12 @@ become next <- Counter(CounterState /* authored */ {
 });
 ```
 
-### 3. [ ] Lower bare expanded current fields consistently
+### 3. [x] Lower bare expanded current fields consistently
 
-**Status:** Confirmed locally. High.
+**Resolved:** Bare active fields use the same authenticated projection as
+`self.<field>`. This works in locals, helper arguments, arrays, and successors,
+and follows lexical shadowing. Direct whole-value destructuring is rejected
+with guidance to project the required fields individually.
 
 The active binding table types an expanded field such as `detail` as authored
 `Details`. The opening-backed replacement supports `self.detail` and qualified

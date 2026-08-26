@@ -10,6 +10,20 @@ fn state_constructor_fields_require_names_and_expressions() {
 }
 
 #[test]
+fn active_field_projection_follows_lexical_binding_resolution() {
+    let mut bindings = BodyBindings::new();
+    bindings.declare("detail", BodyBinding::lowered_typed("byte[32]").with_active_field_projection("detail", true));
+    assert!(bindings.active_field_projection("detail").is_some());
+
+    bindings.enter_scope();
+    bindings.declare("detail", BodyBinding::lowered_typed("Details"));
+    assert!(bindings.active_field_projection("detail").is_none());
+    bindings.exit_scope();
+
+    assert!(bindings.active_field_projection("detail").is_some());
+}
+
+#[test]
 fn registry_covers_every_entry_namespace_role() {
     let module = crate::compiler::syntax::parser::parse_module(
         PathBuf::from("entry-namespace.ag"),

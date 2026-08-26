@@ -205,6 +205,14 @@ struct BodyBinding {
     state_value: Option<PlannedStateValue>,
     selector: Option<TemplateSelector>,
     input_scope: Option<EntryInputScopeId>,
+    /// Projection through the authenticated active input for this root field.
+    active_field_projection: Option<ActiveFieldProjection>,
+}
+
+struct ActiveFieldProjection {
+    field: String,
+    /// Whole-value projection reconstructs an authored expansion value.
+    expanded: bool,
 }
 
 impl BodyBinding {
@@ -217,21 +225,43 @@ impl BodyBinding {
             state_value,
             selector: None,
             input_scope: None,
+            active_field_projection: None,
         }
     }
 
     fn source_typed(source_type: impl Into<String>, state_values: &ContractStateValuePlan) -> Self {
         let source_type = source_type.into();
         let state_value = state_values.plan_source_sil_type(&source_type);
-        Self { source_type: Some(source_type), lowered_type: None, state_value, selector: None, input_scope: None }
+        Self {
+            source_type: Some(source_type),
+            lowered_type: None,
+            state_value,
+            selector: None,
+            input_scope: None,
+            active_field_projection: None,
+        }
     }
 
     fn lowered_typed(lowered_type: impl Into<String>) -> Self {
-        Self { source_type: None, lowered_type: Some(lowered_type.into()), state_value: None, selector: None, input_scope: None }
+        Self {
+            source_type: None,
+            lowered_type: Some(lowered_type.into()),
+            state_value: None,
+            selector: None,
+            input_scope: None,
+            active_field_projection: None,
+        }
     }
 
     fn input_root(scope: EntryInputScopeId) -> Self {
-        Self { source_type: None, lowered_type: None, state_value: None, selector: None, input_scope: Some(scope) }
+        Self {
+            source_type: None,
+            lowered_type: None,
+            state_value: None,
+            selector: None,
+            input_scope: Some(scope),
+            active_field_projection: None,
+        }
     }
 
     fn with_selector(mut self, selector: TemplateSelector) -> Self {
@@ -241,6 +271,11 @@ impl BodyBinding {
 
     fn with_planned_state_value(mut self, state_value: Option<PlannedStateValue>) -> Self {
         self.state_value = state_value;
+        self
+    }
+
+    fn with_active_field_projection(mut self, field: impl Into<String>, expanded: bool) -> Self {
+        self.active_field_projection = Some(ActiveFieldProjection { field: field.into(), expanded });
         self
     }
 }
@@ -311,6 +346,10 @@ impl BodyBindings {
 
     fn state_value(&self, name: &str) -> Option<&PlannedStateValue> {
         self.get(name)?.value.state_value.as_ref()
+    }
+
+    fn active_field_projection(&self, name: &str) -> Option<&ActiveFieldProjection> {
+        self.get(name)?.value.active_field_projection.as_ref()
     }
 
     fn input_reference_is_visible(&self, reference: &PlannedEntryInputReference) -> bool {
@@ -497,12 +536,16 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             }
             bindings.declare(
                 field.name.clone(),
-                BodyBinding::typed(source_type_ref(&field.ty), lower_type_ref(&field.ty, model), state_values),
+                BodyBinding::typed(source_type_ref(&field.ty), lower_type_ref(&field.ty, model), state_values)
+                    .with_active_field_projection(&field.name, false),
             );
         }
         if let Some(expansion) = model.state(&actor.state)?.expansion.as_ref() {
             for digest in &expansion.digests {
-                bindings.declare(digest.field.clone(), BodyBinding::source_typed(digest.state.clone(), state_values));
+                bindings.declare(
+                    digest.field.clone(),
+                    BodyBinding::source_typed(digest.state.clone(), state_values).with_active_field_projection(&digest.field, true),
+                );
             }
         }
         for param in &entry.params {
@@ -794,6 +837,27 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         if let Some(destructuring) = destructuring {
             let source_type = self.entry.body.span_text(destructuring.declared_type);
             let value = self.entry.body.span_text(destructuring.value).trim();
+            if self.bindings.active_field_projection(value).is_some_and(|projection| projection.expanded) {
+                let projected_state =
+                    self.bindings.source_type(value).expect("active expanded-field bindings retain their source state");
+                let example = self
+                    .model
+                    .state(projected_state)?
+                    .fields
+                    .first()
+                    .map(|field| {
+                        format!(
+                            "; project its fields directly, for example `{} opened_{} = {value}.{};`",
+                            source_type_ref(&field.ty),
+                            field.name,
+                            field.name,
+                        )
+                    })
+                    .unwrap_or_else(|| "; project its fields directly".to_string());
+                return Err(
+                    self.error(format!("active expanded state field `{value}` cannot be destructured as a whole value{example}"))
+                );
+            }
             let authored_state = self.model.has_state(source_type).then_some(source_type);
             let lowered_type = authored_state
                 .map(|state| self.lower_local_type(state))
@@ -1342,6 +1406,15 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         self.reject_legacy_input_state_members(expr)?;
         self.reject_physical_state_constructors(expr)?;
         let expected_state_value = expected_ty.and_then(|ty| self.state_values.plan_sil_type(ty));
+        if let Some(projection) = self.bindings.active_field_projection(expr) {
+            if let Some(expected) = expected_state_value.as_ref()
+                && let Some(actual) = self.bindings.state_value(expr)
+                && actual.is_proven_incompatible_with(expected)
+            {
+                return Err(self.state_value_mismatch(actual, expected));
+            }
+            return self.active_reference.project_field(&projection.field, indent).map_err(|err| self.error(err.to_string()));
+        }
         if let Some(expected) = expected_state_value.as_ref().filter(|value| !value.shape().is_scalar()) {
             return self.lower_authored_state_array_expr(expr, expected, indent);
         }
