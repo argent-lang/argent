@@ -13,7 +13,8 @@ use super::{InteractionSource, Model, RouteFamily, RouteRootLeaf, observed_open_
 #[cfg(test)]
 mod tests;
 
-/// Nominal identity of one Argent source state declaration.
+/// Canonical identity of one unqualified source-state type in a compiled model.
+/// Equivalent local or linked declarations with the same name share this ID.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct SourceStateId(String);
 

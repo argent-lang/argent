@@ -165,22 +165,14 @@ tests.
 
 ## Decisions and documentation
 
-### 7. [ ] Define `SourceStateId` identity precisely
+### 7. [x] Define `SourceStateId` identity precisely
 
-**Status:** Architecture ambiguity; no incorrect generated code is confirmed.
+**Decision:** State identity follows Argent's unqualified state namespace.
 
-`SourceStateId` contains only the state name. Linked states with the same name
-and definition are coalesced. This is consistent with Argent's current
-unqualified state namespace, but the type documentation calls the ID the
-identity of one declaration.
-
-Choose and document one rule:
-
-- same-name, same-definition linked states are aliases of one canonical source
-  state within a compiled model; or
-- source IDs include application or declaration provenance.
-
-The alias rule matches the current language and is the smaller clarification.
+Same-name, definition-equivalent local or linked states are aliases of one
+canonical source state within a compiled model. Conflicting declarations are
+rejected. Different names remain distinct even when their layouts are equal.
+The rule is recorded in `compiler-design.md` and on `SourceStateId`.
 
 ### 9. [x] Correct small documentation drift
 

@@ -144,6 +144,13 @@ A projection does not construct fields that the expression does not use.
 Complete reconstruction excludes compiler-owned fields and preserves the
 nominal `SourceStateId`.
 
+`SourceStateId` identifies one unqualified state name within a compiled model.
+Equivalent local or linked declarations with the same name are aliases and
+share this identity. Conflicting same-name declarations are rejected. Different
+state names remain distinct even when their layouts are equal. Actor identity
+remains application-qualified because actors can have different templates and
+route context while owning the same source state.
+
 An expanded source field requires a validated opening. A direct projection
 requires only the opening for that field. Complete reconstruction requires
 openings for all expanded fields. The compiler rejects reconstruction when the
