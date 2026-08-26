@@ -17,7 +17,7 @@ The immediate goals are:
 - preserve the current route security rules and physical state encoding;
 - make future state-layout changes local and auditable.
 
-This is primarily an internal compiler architecture change. Except for replacing `Actor(self.state)` with `output <- self` in exact continuations, it should not change Argent application semantics, artifact-visible user state, or the runtime's physical state encoding.
+The state-layout boundary is primarily an internal compiler architecture change. Its completed input-reference follow-up deliberately replaces implicit whole-input values and observed `.state` access with the explicit surface in §3.5; artifact-visible user state and the runtime's physical state encoding remain unchanged.
 
 The invariants and semantic rules in this guide are normative. Rust type names, module names, enum variants, and function signatures are illustrative: an implementation may choose a cleaner API so long as it preserves the boundary and all conformance requirements.
 
@@ -154,12 +154,12 @@ require(next.value == self.value);
 - Bare `become self` is invalid. Exact and constructed successors follow the same output-selection syntax.
 - Ranged output handles cannot use exact self-continuation until the language defines element selection for that case.
 - Bare `self` is not an ordinary value. It is valid only as the exact successor in `output <- self` and, under the
-  uniform input-reference follow-up below, as the reference operand in `state(self)`.
+  uniform input-reference surface below, as the reference operand in `state(self)`.
 - Exact self-continuation is valid regardless of whether route fields exist. It preserves the physical script without inspecting its layout.
 
 ### 3.4 Removal of `self.state`
 
-`self.state` should cease to be a source-level value. Its previously supported role in unchanged continuation is replaced by `output <- self`, which expresses that operation more accurately and compiles more directly. Complete authored-state reconstruction uses the explicit `state(self)` follow-up described below.
+`self.state` is not a source-level value. Its previously supported role in unchanged continuation is replaced by `output <- self`, which expresses that operation more accurately and compiles more directly. Complete authored-state reconstruction uses explicit `state(self)`.
 
 Changed transitions remain explicit. Users read the current fields and construct the new state:
 
@@ -174,9 +174,9 @@ Argent performs no source-level lowering for `self.state`; invalid uses are reje
 
 Removing `self.state` also avoids an otherwise ambiguous question: whether it denotes source state, storage payload, or complete physical state.
 
-### 3.5 Approved follow-up: uniform input references and explicit state reconstruction
+### 3.5 Uniform input references and explicit state reconstruction
 
-The target input surface treats the current input, consumed inputs, and observed inputs as the same kind of reference:
+The input surface treats the current input, consumed inputs, and observed inputs as the same kind of reference:
 
 ```text
 self
@@ -208,7 +208,7 @@ The concrete actor behind an open observed reference may be authenticated at run
 
 Exact continuation remains narrower than the shared read interface. Only `output <- self` preserves the exact active input covenant. Generalizing exact continuation to another input reference is a separate language decision.
 
-This surface intentionally replaces the current implicit and observed-state forms:
+This surface replaces the previous implicit and observed-state forms:
 
 ```text
 helper(peer)                    -> helper(state(peer))
@@ -216,8 +216,6 @@ Actor(peer)                     -> Actor(state(peer))
 asset.inputs.src.state          -> state(asset.inputs.src)
 asset.inputs.src.state.amount   -> asset.inputs.src.amount
 ```
-
-This is an approved follow-up language clarification, not part of the equivalent-`State` optimization currently under review. Until the follow-up is implemented as a complete migration, that optimization must preserve the existing consumed-reference and observed `.state` behavior from master rather than introducing only part of the new surface.
 
 ## 4. Target architecture
 

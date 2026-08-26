@@ -27,7 +27,8 @@ use super::sil::{
     ContractStateValuePlan, EntryInputReferencePlan, EntryInputReferenceView, GlobalFunctionLowerer,
     audit_omitted_equivalent_state_structs, lower_entry_body, lower_entry_expr, lower_expression_state_types,
     lower_function_body_state_types, plan_actor_output_state, plan_entry_input_references, plan_open_output_state,
-    plan_selector_output_state, reject_function_physical_state_constructors, validate_actor_function_captures,
+    plan_selector_output_state, reject_function_input_state_calls, reject_function_physical_state_constructors,
+    validate_actor_function_captures,
 };
 
 #[cfg(test)]
@@ -381,6 +382,7 @@ fn emit_global_functions(out: &mut String, model: &Model<'_>, state_values: &Con
         emit_section_header(out, "Global functions (isolated using the gen__glob_ namespace)");
         let lowerer = GlobalFunctionLowerer::new(model);
         for function in &model.functions {
+            reject_function_input_state_calls(&function.name, &function.body, "global")?;
             reject_function_physical_state_constructors(&function.name, &function.body, "global")?;
             let function = lowerer.lower(function)?;
             let signature = state_values.signature(function.name).expect("global function has a contract-local signature plan");
@@ -416,6 +418,7 @@ fn emit_actor_functions(out: &mut String, actor: &ActorDecl, model: &Model<'_>, 
 
     emit_section_header(out, "Actor functions");
     for function in actor_model.functions() {
+        reject_function_input_state_calls(&function.name, &function.body, &format!("actor `{}`", actor.name))?;
         reject_function_physical_state_constructors(&function.name, &function.body, &format!("actor `{}`", actor.name))?;
         let signature = state_values.signature(&function.name).expect("actor function has a contract-local signature plan");
         let params = function
@@ -749,7 +752,7 @@ where
         parts.push(field_expr(field, offset, len)?);
         offset += len;
     }
-    Ok(parts.join(" + "))
+    Ok(if parts.is_empty() { "0x".to_string() } else { parts.join(" + ") })
 }
 
 fn state_packed_len(state_name: &str, model: &Model<'_>) -> Result<usize> {
@@ -3362,6 +3365,10 @@ fn hidden_spawn_preimage_name(spawn: &str) -> String {
 
 pub(super) fn hidden_observed_input_state_name(observe: &str, handle: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{observe}_{handle}_state")
+}
+
+pub(super) fn hidden_consumed_input_state_name(handle: &str) -> String {
+    format!("{RESERVED_GENERATED_PREFIX}{handle}_state")
 }
 
 fn observed_actor_side_label(side: ObservedActorSideArtifact) -> &'static str {

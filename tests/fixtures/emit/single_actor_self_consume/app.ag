@@ -16,8 +16,8 @@ actor Counter owns CounterState {
         other: Counter,
     }
     emits next: Counter {
-        CounterState copied = actor_identity(global_identity(other));
-        copied = global_identity(other);
+        CounterState copied = actor_identity(global_identity(state(other)));
+        copied = global_identity(state(other));
         CounterState next = {
             count: count + copied.count,
         };

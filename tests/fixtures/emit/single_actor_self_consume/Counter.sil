@@ -31,20 +31,20 @@ contract Counter(
         require(OpCovInputIdx(gen__cov_id, 0) == this.activeInputIndex);
         int gen__other_input_idx = OpCovInputIdx(gen__cov_id, 1); // input Counter at cov[1]
         // :: direct input state (single-actor covenant has one template)
-        State other = readInputState(gen__other_input_idx);
+        State gen__other_state = readInputState(gen__other_input_idx);
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         // :: output next: Counter
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
-        State copied = actor_identity(global_identity(other));
-        copied = global_identity(other);
+        State copied = actor_identity(global_identity(gen__other_state));
+        copied = global_identity(gen__other_state);
         State next = State {
             // :: user declared fields
             count: count + copied.count,
         };
-        require(other.count >= 0);
+        require(gen__other_state.count >= 0);
         // :: become Counter
         validateOutputState(gen__next_output_idx, next);
     }

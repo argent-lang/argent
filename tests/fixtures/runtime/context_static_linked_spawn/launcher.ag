@@ -21,7 +21,7 @@ actor Launcher owns LauncherState {
         }
     }
     emits next: Launcher {
-        ChildState source_state = source.inputs.child.state;
+        ChildState source_state = state(source.inputs.child);
         ChildState child_state = {
             amount: source_state.amount + amount,
         };

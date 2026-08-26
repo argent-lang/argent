@@ -77,7 +77,7 @@ actor Local owns LocalState {
         }
     }
     emits next: Local {
-        ForeignState next_foreign = foreign_identity(remote.inputs.src.state);
+        ForeignState next_foreign = foreign_identity(state(remote.inputs.src));
         require remote.outputs become {
             next <- Foreign(next_foreign),
         };

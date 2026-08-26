@@ -44,7 +44,7 @@ contract Launcher(
         require(OpCovInputCount(gen__cov_id) == 2);
         require(OpCovInputIdx(gen__cov_id, 0) == this.activeInputIndex);
         int gen__source_input_idx = OpCovInputIdx(gen__cov_id, 1); // input Child at cov[1]
-        Gen__ChildState source = readInputStateWithTemplate(
+        Gen__ChildState gen__source_state = readInputStateWithTemplate(
             gen__source_input_idx,
             gen__child_prefix_len,
             gen__child_suffix_len,
@@ -71,7 +71,7 @@ contract Launcher(
 
         ChildState child_state = ChildState {
             // :: user declared fields
-            amount: source.amount + amount,
+            amount: gen__source_state.amount + amount,
         };
         LauncherState next = LauncherState {
             // :: user declared fields

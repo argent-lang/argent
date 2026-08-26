@@ -118,14 +118,14 @@ contract StonesSettle(
         require(OpCovInputCount(gen__cov_id) == 3);
         require(OpCovInputIdx(gen__cov_id, 0) == this.activeInputIndex);
         int gen__player_a_in_input_idx = OpCovInputIdx(gen__cov_id, 1); // input Player at cov[1]
-        Gen__PlayerState player_a_in = readInputStateWithTemplate(
+        Gen__PlayerState gen__player_a_in_state = readInputStateWithTemplate(
             gen__player_a_in_input_idx,
             gen__player_prefix_len,
             gen__player_suffix_len,
             gen__player_template
         );
         int gen__player_b_in_input_idx = OpCovInputIdx(gen__cov_id, 2); // input Player at cov[2]
-        Gen__PlayerState player_b_in = readInputStateWithTemplate(
+        Gen__PlayerState gen__player_b_in_state = readInputStateWithTemplate(
             gen__player_b_in_input_idx,
             gen__player_prefix_len,
             gen__player_suffix_len,
@@ -140,16 +140,16 @@ contract StonesSettle(
         int gen__player_b_out_output_idx = OpAuthOutputIdx(this.activeInputIndex, 1);
 
         require(status == A_WIN || status == B_WIN);
-        byte[32] player_a_ref = player_ref(player_a_in.owner, player_a_in.player_id);
-        byte[32] player_b_ref = player_ref(player_b_in.owner, player_b_in.player_id);
+        byte[32] player_a_ref = player_ref(gen__player_a_in_state.owner, gen__player_a_in_state.player_id);
+        byte[32] player_b_ref = player_ref(gen__player_b_in_state.owner, gen__player_b_in_state.player_id);
         require(player_a_ref == player_a);
         require(player_b_ref == player_b);
-        require(player_a_in.open_games > 0);
-        require(player_b_in.open_games > 0);
-        int player_a_wins = player_a_in.wins;
-        int player_a_losses = player_a_in.losses;
-        int player_b_wins = player_b_in.wins;
-        int player_b_losses = player_b_in.losses;
+        require(gen__player_a_in_state.open_games > 0);
+        require(gen__player_b_in_state.open_games > 0);
+        int player_a_wins = gen__player_a_in_state.wins;
+        int player_a_losses = gen__player_a_in_state.losses;
+        int player_b_wins = gen__player_b_in_state.wins;
+        int player_b_losses = gen__player_b_in_state.losses;
         if (status == A_WIN) {
             player_a_wins = player_a_wins + 1;
             player_b_losses = player_b_losses + 1;
@@ -163,19 +163,19 @@ contract StonesSettle(
         }
         PlayerState next_player_a = PlayerState {
             // :: user declared fields
-            owner: player_a_in.owner,
-            player_id: player_a_in.player_id,
-            open_games: player_a_in.open_games - 1,
-            games: player_a_in.games + 1,
+            owner: gen__player_a_in_state.owner,
+            player_id: gen__player_a_in_state.player_id,
+            open_games: gen__player_a_in_state.open_games - 1,
+            games: gen__player_a_in_state.games + 1,
             wins: player_a_wins,
             losses: player_a_losses,
         };
         PlayerState next_player_b = PlayerState {
             // :: user declared fields
-            owner: player_b_in.owner,
-            player_id: player_b_in.player_id,
-            open_games: player_b_in.open_games - 1,
-            games: player_b_in.games + 1,
+            owner: gen__player_b_in_state.owner,
+            player_id: gen__player_b_in_state.player_id,
+            open_games: gen__player_b_in_state.open_games - 1,
+            games: gen__player_b_in_state.games + 1,
             wins: player_b_wins,
             losses: player_b_losses,
         };

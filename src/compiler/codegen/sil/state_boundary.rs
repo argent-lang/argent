@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 
 use crate::compiler::model::{
     CompilerRouteTransition, ContractStateLowering, GeneratedFieldId, Model, OutputPhysicalTypePlan, PhysicalFieldId,
-    PhysicalStateLayout, PhysicalTargetId, SilStateType, SourceStateId, StaticActorTarget, TargetPhysicalPlan, TemplateSelector,
+    PhysicalStateLayout, PhysicalTargetId, SilStateType, SourceStateId, SourceStorageRelation, StaticActorTarget, TargetPhysicalPlan,
+    TemplateSelector,
 };
 use crate::compiler::syntax::{ActorDecl, EntryDecl, ObserveDecl, ObservedActorDecl, word};
 use crate::error::{ArgentError, Result};
@@ -279,6 +280,21 @@ impl PlannedSourceExpr {
             }
         }
     }
+
+    fn payload_digest(&self, state: &SourceStateId, model: &Model<'_>) -> Result<String> {
+        match self {
+            Self::Value(expr) => state_payload_digest_expr(state.as_str(), expr, model),
+            Self::Struct { fields, .. } => {
+                let bytes = state_packed_bytes_expr(state.as_str(), model, |field, _, _| {
+                    let value = fields.iter().find_map(|(name, value)| (name == &field.name).then_some(value)).ok_or_else(|| {
+                        ArgentError::new(format!("validated `{}` value is missing field `{}`", state.as_str(), field.name))
+                    })?;
+                    packed_field_expr(&field.ty, value)
+                })?;
+                Ok(format!("blake3(byte[]({bytes}))"))
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -291,6 +307,7 @@ struct PlannedSourceField {
 #[derive(Clone)]
 struct SourceStateAccess {
     source: SourceStateId,
+    source_to_storage: SourceStorageRelation,
     authored_sil_type: String,
     complete: Option<String>,
     fields: Vec<PlannedSourceField>,
@@ -620,21 +637,25 @@ impl SourceStateAccess {
         self.complete.is_some()
     }
 
-    fn projected_replacements(&self, source_ref: &str) -> Result<Vec<(String, String)>> {
+    fn projected_replacements(&self, source_ref: &str, indent: usize) -> Result<Vec<(String, String)>> {
         self.fields
             .iter()
-            .filter(|field| matches!(field.value, Some(PlannedSourceExpr::Value(_))))
-            .map(|field| Ok((format!("{source_ref}.{}", field.name), self.project_field(&field.name, 0)?)))
+            .filter_map(|field| field.value.as_ref().map(|_| field))
+            .map(|field| Ok((format!("{source_ref}.{}", field.name), self.project_field(&field.name, indent)?)))
             .collect()
     }
 
     fn project_field(&self, field_name: &str, indent: usize) -> Result<String> {
+        Ok(self.planned_field(field_name)?.render(indent))
+    }
+
+    fn planned_field(&self, field_name: &str) -> Result<&PlannedSourceExpr> {
         let field = self
             .fields
             .iter()
             .find(|field| field.name == field_name)
             .ok_or_else(|| ArgentError::new(format!("state `{}` has no field `{field_name}`", self.source.as_str())))?;
-        field.value.as_ref().map(|value| value.render(indent)).ok_or_else(|| {
+        field.value.as_ref().ok_or_else(|| {
             ArgentError::new(format!(
                 "expanded input field `{field_name}` cannot be projected from authenticated physical state without its validated preimage"
             ))
@@ -674,25 +695,9 @@ struct InputReferenceSpec {
     scope: EntryInputScopeId,
     kind: EntryInputReferenceKind,
     reference: String,
-    compatibility_state_ref: String,
     lexical_root: String,
     physical_expr: String,
     input_index: String,
-}
-
-#[derive(Clone)]
-struct InputReferenceCompatibility {
-    state_ref: Option<String>,
-    replacements: Vec<(String, String)>,
-}
-
-impl InputReferenceCompatibility {
-    fn matches_state_ref(&self, reference: &str, expr: &str) -> bool {
-        self.state_ref.as_deref().is_some_and(|state_ref| {
-            debug_assert!(state_ref == reference || state_ref.strip_prefix(reference) == Some(".state"));
-            state_ref == expr
-        })
-    }
 }
 
 #[derive(Clone)]
@@ -716,7 +721,7 @@ pub(in crate::compiler::codegen) struct PlannedEntryInputReference {
     lowered_sil_type: String,
     access: SourceStateAccess,
     physical: Option<AuthenticatedPhysicalInput>,
-    compatibility: InputReferenceCompatibility,
+    additional_replacements: Vec<(String, String)>,
 }
 
 impl PlannedEntryInputReference {
@@ -728,9 +733,12 @@ impl PlannedEntryInputReference {
         &self.lexical_root
     }
 
-    #[cfg(test)]
-    fn reference(&self) -> &str {
+    pub(in crate::compiler::codegen) fn reference(&self) -> &str {
         &self.reference
+    }
+
+    pub(in crate::compiler::codegen) fn is_active(&self) -> bool {
+        matches!(self.kind, EntryInputReferenceKind::Active)
     }
 
     #[cfg(test)]
@@ -806,26 +814,49 @@ impl PlannedEntryInputReference {
         Ok(AuthoredStateExpr { source: self.access.source.clone(), sil_type: self.access.authored_sil_type.clone(), sil: out })
     }
 
-    /// Compatibility bridge for the current surface; implicit whole-state spellings are removed by 8b.
-    pub(in crate::compiler::codegen) fn compatibility_replacements(&self) -> Vec<(String, String)> {
-        let mut replacements = self.compatibility.replacements.clone();
-        match self.kind {
-            EntryInputReferenceKind::Active => {
-                replacements.push((format!("{}.{}", word::SELF, word::VALUE), self.native_value()));
-                replacements.push((format!("{}.{}", word::SELF, word::COVENANT_ID), self.covenant_id()));
-            }
-            EntryInputReferenceKind::Consumed => {
-                replacements.push((format!("{}.{}", self.reference, word::VALUE), self.native_value()));
-            }
-            EntryInputReferenceKind::Observed => {}
+    pub(in crate::compiler::codegen) fn authored_payload_digest(&self, model: &Model<'_>) -> Result<String> {
+        // Validate complete reconstruction even though the digest can project
+        // stable fields directly from the authenticated input.
+        self.complete_authored_state(0)?;
+        let storage = model.storage_state(self.source_identity())?;
+        let mut parts = Vec::with_capacity(self.access.source_to_storage.fields().len());
+        for lowering in self.access.source_to_storage.fields() {
+            let storage_field = storage
+                .fields
+                .iter()
+                .find(|field| field.name == lowering.storage().field())
+                .ok_or_else(|| ArgentError::new("planned source field has no storage field"))?;
+            let authored = self.access.planned_field(lowering.source().field())?;
+            let stored = match lowering.expanded_state() {
+                Some(expanded) => authored.payload_digest(expanded, model)?,
+                None => authored.render(0),
+            };
+            parts.push(packed_field_expr(&storage_field.ty, &stored)?);
         }
-        replacements
+        let bytes = if parts.is_empty() { "0x".to_string() } else { parts.join(" + ") };
+        Ok(format!("blake3(byte[]({bytes}))"))
+    }
+
+    pub(in crate::compiler::codegen) fn operation_replacements(&self, indent: usize) -> Result<Vec<(String, String)>> {
+        let mut replacements = self.access.projected_replacements(&self.reference, indent)?;
+        replacements.extend(self.additional_replacements.clone());
+        replacements.push((format!("{}.{}", self.reference, word::VALUE), self.native_value()));
+        replacements.push((format!("{}.{}", self.reference, word::COVENANT_ID), self.covenant_id()));
+        Ok(replacements)
     }
 
     pub(in crate::compiler::codegen) fn reject_unavailable_field_refs(&self, input: &str) -> Result<()> {
-        let state_ref =
-            self.compatibility.state_ref.as_deref().expect("only external compatibility references can have unavailable fields");
-        self.access.reject_unavailable_field_refs(state_ref, input)
+        let legacy = format!("{}.{}", self.reference, word::STATE);
+        let tokens = crate::compiler::syntax::lexer::lex(input)?;
+        if count_qualified_ref(&tokens, &legacy) > 0 {
+            return Err(ArgentError::new(format!(
+                "input reference `{}` has no `.state` member; use `{}({})` for complete authored state or project a field directly",
+                self.reference,
+                word::STATE,
+                self.reference
+            )));
+        }
+        self.access.reject_unavailable_field_refs(&self.reference, input)
     }
 }
 
@@ -873,9 +904,11 @@ impl<'a> EntryInputReferenceView<'a> {
         }
     }
 
-    pub(in crate::compiler::codegen) fn compatibility_reference(self, expr: &str) -> Option<&'a PlannedEntryInputReference> {
-        // Migration debt: 8b replaces these implicit whole-state spellings with `state(ref)`.
-        self.external_references().iter().find(|reference| reference.compatibility.matches_state_ref(&reference.reference, expr))
+    pub(in crate::compiler::codegen) fn reference(self, expr: &str) -> Option<&'a PlannedEntryInputReference> {
+        match self {
+            Self::None => None,
+            Self::Complete(plan) => plan.references().iter().find(|reference| reference.reference == expr),
+        }
     }
 }
 
@@ -904,6 +937,10 @@ impl EntryInputReferencePlan {
 
     pub(in crate::compiler::codegen) fn external_references(&self) -> &[PlannedEntryInputReference] {
         &self.references[1..]
+    }
+
+    fn references(&self) -> &[PlannedEntryInputReference] {
+        &self.references
     }
 }
 
@@ -939,9 +976,8 @@ pub(in crate::compiler::codegen) fn plan_entry_input_references(
                 scope,
                 kind: EntryInputReferenceKind::Consumed,
                 reference: consume.name.clone(),
-                compatibility_state_ref: consume.name.clone(),
                 lexical_root: consume.name.clone(),
-                physical_expr: consume.name.clone(),
+                physical_expr: hidden_consumed_input_state_name(&consume.name),
                 input_index: hidden_input_idx_name(&consume.name),
             },
             proof,
@@ -957,7 +993,6 @@ pub(in crate::compiler::codegen) fn plan_entry_input_references(
         next_scope += 1;
         for input in &observe.inputs {
             let reference = format!("{}.inputs.{}", observe.name, input.name);
-            let compatibility_state_ref = format!("{reference}.state");
             let physical_expr = hidden_observed_input_state_name(&observe.name, &input.name);
             let input_index = hidden_observed_input_idx_name(&observe.name, &input.name);
             let open_state = crate::compiler::model::observed_open_state_for_decl(actor, entry, observe, input, model)?;
@@ -994,7 +1029,6 @@ pub(in crate::compiler::codegen) fn plan_entry_input_references(
                     scope,
                     kind: EntryInputReferenceKind::Observed,
                     reference,
-                    compatibility_state_ref,
                     lexical_root: observe.name.clone(),
                     physical_expr,
                     input_index,
@@ -1052,19 +1086,22 @@ fn active_input_reference(
             Ok(PlannedSourceField { name, value: Some(value) })
         })
         .collect::<Result<Vec<_>>>()?;
-    let access =
-        SourceStateAccess { source: target.source().clone(), authored_sil_type, complete: None, fields, target: target.id().clone() };
+    let access = SourceStateAccess {
+        source: target.source().clone(),
+        source_to_storage: target.source_to_storage().clone(),
+        authored_sil_type,
+        complete: None,
+        fields,
+        target: target.id().clone(),
+    };
     let input_index = "this.activeInputIndex".to_string();
-    let mut compatibility_replacements = Vec::new();
+    let mut additional_replacements = Vec::new();
     for spec in &expansion_specs {
         for field in &model.state(&spec.memory_state)?.fields {
             let local = hidden_state_expansion_field_name(spec, &field.name);
-            compatibility_replacements.push((format!("{}.{}.{}", word::SELF, spec.field, field.name), local.clone()));
-            compatibility_replacements.push((format!("{}.{}", spec.field, field.name), local));
+            additional_replacements.push((format!("{}.{}.{}", word::SELF, spec.field, field.name), local.clone()));
+            additional_replacements.push((format!("{}.{}", spec.field, field.name), local));
         }
-    }
-    for field in &model.storage_state(&actor.state)?.fields {
-        compatibility_replacements.push((format!("{}.{}", word::SELF, field.name), field.name.clone()));
     }
     Ok(PlannedEntryInputReference {
         id: EntryInputReferenceId(0),
@@ -1076,7 +1113,7 @@ fn active_input_reference(
         lowered_sil_type: "State".to_string(),
         access,
         physical: None,
-        compatibility: InputReferenceCompatibility { state_ref: None, replacements: compatibility_replacements },
+        additional_replacements,
     })
 }
 
@@ -1086,7 +1123,7 @@ fn input_reference(
     target: &TargetPhysicalPlan,
     lowering: &ContractStateLowering,
 ) -> Result<PlannedEntryInputReference> {
-    let InputReferenceSpec { id, scope, kind, reference, compatibility_state_ref, lexical_root, physical_expr, input_index } = spec;
+    let InputReferenceSpec { id, scope, kind, reference, lexical_root, physical_expr, input_index } = spec;
     let fields = target.source_fields()?;
     if fields.iter().any(|field| !matches!(field.physical(), PhysicalFieldId::Storage(_))) {
         return Err(ArgentError::new("authored input fields cannot map to compiler-generated route fields"));
@@ -1114,15 +1151,11 @@ fn input_reference(
         .collect::<Vec<_>>();
     let access = SourceStateAccess {
         source: target.source().clone(),
+        source_to_storage: target.source_to_storage().clone(),
         authored_sil_type,
         complete: direct_authored.then(|| physical_expr.clone()),
         fields: planned_fields,
         target: target.id().clone(),
-    };
-    let compatibility_replacements = if direct_authored {
-        vec![(compatibility_state_ref.clone(), physical_expr.clone())]
-    } else {
-        access.projected_replacements(&compatibility_state_ref)?
     };
     Ok(PlannedEntryInputReference {
         id,
@@ -1134,10 +1167,7 @@ fn input_reference(
         lowered_sil_type: physical_sil_type,
         access,
         physical: Some(physical),
-        compatibility: InputReferenceCompatibility {
-            state_ref: Some(compatibility_state_ref),
-            replacements: compatibility_replacements,
-        },
+        additional_replacements: Vec::new(),
     })
 }
 

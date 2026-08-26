@@ -24,7 +24,7 @@ impl RefToken {
     }
 }
 
-/// A dotted identifier path such as `self.value` or `remote.inputs.asset.state`.
+/// A dotted identifier path such as `self.value` or `remote.inputs.asset.amount`.
 struct QualifiedRef {
     tokens: Vec<RefToken>,
 }

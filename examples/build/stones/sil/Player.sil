@@ -143,7 +143,7 @@ contract Player(
         require(OpCovInputCount(gen__cov_id) == 2);
         require(OpCovInputIdx(gen__cov_id, 0) == this.activeInputIndex);
         int gen__opponent_input_idx = OpCovInputIdx(gen__cov_id, 1); // input Player at cov[1]
-        State opponent = readInputStateWithTemplate(
+        State gen__opponent_state = readInputStateWithTemplate(
             gen__opponent_input_idx,
             gen__player_prefix_len,
             gen__player_suffix_len,
@@ -161,12 +161,12 @@ contract Player(
 
         require(blake2b(byte[](owner_pk)) == owner);
         require(checkSig(owner_sig, owner_pk));
-        require(opponent.player_id != player_id);
+        require(gen__opponent_state.player_id != player_id);
         require(first_turn == SIDE_A || first_turn == SIDE_B);
         require(pile > 0);
         require(max_take > 0);
         byte[32] self_ref = player_ref(owner, player_id);
-        byte[32] opponent_ref = player_ref(opponent.owner, opponent.player_id);
+        byte[32] opponent_ref = player_ref(gen__opponent_state.owner, gen__opponent_state.player_id);
         PlayerState next_self = PlayerState {
             // :: user declared fields
             owner: owner,
@@ -178,12 +178,12 @@ contract Player(
         };
         PlayerState next_opponent = PlayerState {
             // :: user declared fields
-            owner: opponent.owner,
-            player_id: opponent.player_id,
-            open_games: opponent.open_games + 1,
-            games: opponent.games,
-            wins: opponent.wins,
-            losses: opponent.losses,
+            owner: gen__opponent_state.owner,
+            player_id: gen__opponent_state.player_id,
+            open_games: gen__opponent_state.open_games + 1,
+            games: gen__opponent_state.games,
+            wins: gen__opponent_state.wins,
+            losses: gen__opponent_state.losses,
         };
         GameState next_game = GameState {
             // :: user declared fields
@@ -260,7 +260,7 @@ contract Player(
         require(OpCovInputCount(gen__cov_id) >= 2);
         require(OpCovInputIdx(gen__cov_id, 0) != this.activeInputIndex);
         int gen__starter_input_idx = OpCovInputIdx(gen__cov_id, 0); // input Player at cov[0]
-        State starter = readInputStateWithTemplate(
+        State gen__starter_state = readInputStateWithTemplate(
             gen__starter_input_idx,
             gen__player_prefix_len,
             gen__player_suffix_len,
@@ -272,7 +272,7 @@ contract Player(
 
         require(blake2b(byte[](owner_pk)) == owner);
         require(checkSig(owner_sig, owner_pk));
-        require(starter.player_id != player_id);
+        require(gen__starter_state.player_id != player_id);
     }
 
     // :: delegate entry
@@ -282,7 +282,7 @@ contract Player(
         require(OpCovInputCount(gen__cov_id) >= 2);
         require(OpCovInputIdx(gen__cov_id, 0) != this.activeInputIndex);
         int gen__settle_input_idx = OpCovInputIdx(gen__cov_id, 0); // input StonesSettle at cov[0]
-        Gen__StonesSettleState settle = readInputStateWithTemplate(
+        Gen__StonesSettleState gen__settle_state = readInputStateWithTemplate(
             gen__settle_input_idx,
             gen__stones_settle_prefix_len,
             gen__stones_settle_suffix_len,
@@ -293,7 +293,7 @@ contract Player(
         require(OpAuthOutputCount(this.activeInputIndex) == 0);
 
         byte[32] self_ref = player_ref(owner, player_id);
-        require(self_ref == settle.player_a || self_ref == settle.player_b);
+        require(self_ref == gen__settle_state.player_a || self_ref == gen__settle_state.player_b);
     }
 
     // :: leader entry (1:N)

@@ -24,7 +24,7 @@ actor Cell owns CellState {
     emits {
         cell: Cell,
     } {
-        AgentCapsule prev_state = remote.inputs.agent.state;
+        AgentCapsule prev_state = state(remote.inputs.agent);
 
         require(agent_type == observed_agent);
         require(prev_state.controller_id == self.cov_id);

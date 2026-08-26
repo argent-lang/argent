@@ -29,7 +29,7 @@ pub(crate) use entry::{
 };
 pub(crate) use layout::{
     ContractStateLowering, GeneratedFieldId, OutputPhysicalTypePlan, PhysicalFieldId, PhysicalStateLayout, PhysicalTargetId,
-    SilStateType, SourceStateId, TargetPhysicalPlan, build_contract_state_lowerings, packed_field_len,
+    SilStateType, SourceStateId, SourceStorageRelation, TargetPhysicalPlan, build_contract_state_lowerings, packed_field_len,
 };
 
 /// The selected application's compiler-wide source and routing model.

@@ -385,6 +385,74 @@ fn rejects_function_named_unrestricted() {
 }
 
 #[test]
+fn rejects_global_and_actor_functions_named_state() {
+    for (label, declaration) in [
+        (
+            "global",
+            r#"
+                fn state(int value) -> int { return value; }
+                actor Wallet owns WalletState {}
+            "#,
+        ),
+        (
+            "actor",
+            r#"
+                actor Wallet owns WalletState {
+                    fn state(int value) -> int { return value; }
+                }
+            "#,
+        ),
+    ] {
+        let source = format!(
+            r#"
+                state WalletState {{ int balance; }}
+                {declaration}
+                app Test {{ actor Wallet; }}
+            "#
+        );
+        let err = parse_and_validate(&source).expect_err("state reconstruction builtin must not be shadowed");
+        assert!(
+            err.to_string().contains("function identifier `state` is reserved for authored input-state reconstruction"),
+            "unexpected {label} error: {err}"
+        );
+    }
+}
+
+#[test]
+fn rejects_global_and_actor_functions_named_digest() {
+    for (label, declaration) in [
+        (
+            "global",
+            r#"
+                fn digest(int value) -> int { return value; }
+                actor Wallet owns WalletState {}
+            "#,
+        ),
+        (
+            "actor",
+            r#"
+                actor Wallet owns WalletState {
+                    fn digest(int value) -> int { return value; }
+                }
+            "#,
+        ),
+    ] {
+        let source = format!(
+            r#"
+                state WalletState {{ int balance; }}
+                {declaration}
+                app Test {{ actor Wallet; }}
+            "#
+        );
+        let err = parse_and_validate(&source).expect_err("state digest builtin must not be shadowed");
+        assert!(
+            err.to_string().contains("function identifier `digest` is reserved for authored state digests"),
+            "unexpected {label} error: {err}"
+        );
+    }
+}
+
+#[test]
 fn rejects_global_and_actor_functions_with_the_same_name() {
     let mut program = test_program();
     program.modules[0].actors[0].entries.clear();
@@ -1340,7 +1408,7 @@ fn output_template_proofs_are_independent_of_physical_state_type() {
     assert!(hold.contains("validateOutputState(gen__next_output_idx, gen__state_next_state);"), "{hold}");
 
     assert!(handoff.contains("State gen__state_next_state = State {"), "{handoff}");
-    assert!(handoff.contains("Gen__PawnState prior = readInputStateWithTemplate("), "{handoff}");
+    assert!(handoff.contains("Gen__PawnState gen__prior_state = readInputStateWithTemplate("), "{handoff}");
     assert!(handoff.contains("validateOutputStateWithInputTemplate("), "{handoff}");
     assert!(handoff.contains("gen__prior_input_idx,"), "{handoff}");
 
@@ -1800,7 +1868,7 @@ fn observed_state_reference_can_supply_a_matching_route_state() {
                 }
                 emits none {
                     require asset.outputs become {
-                        dst <- Foreign(asset.inputs.src.state),
+                        dst <- Foreign(state(asset.inputs.src)),
                     };
                 }
 
@@ -1894,12 +1962,236 @@ fn consumed_input_reference_resolution_respects_local_shadowing() {
     let actor_sil = actor_sil_for_model(&model);
     let sil = &actor_sil["Local"];
 
-    // 8a keeps the physical local name for byte parity; Sil still rejects the duplicate after Argent resolves this scope correctly.
+    assert!(sil.contains("PeerState gen__peer_state = readInputStateWithTemplate("), "{sil}");
     assert!(sil.contains("LocalState peer = LocalState {"), "{sil}");
     assert!(sil.contains("LocalState copy = peer;"), "{sil}");
     assert!(sil.contains("require(copy.count == peer.count);"), "{sil}");
-    let err = emit_artifact(&program, &model, &actor_sil).expect_err("Sil retains its existing no-shadowing rule");
-    assert!(err.to_string().contains("variable 'peer' is already defined"), "unexpected error: {err}");
+    assert!(sil.contains("require(gen__peer_state.amount >= 0);"), "{sil}");
+    emit_artifact(&program, &model, &actor_sil).expect("generated input storage permits lexical source shadowing");
+}
+
+#[test]
+fn uniform_input_references_expose_operations_without_implicit_state_values() {
+    let (actors, _) = inline_actor_sil_and_artifact(
+        "uniform-input-references",
+        r#"
+            state LocalState {
+                cov_id remote_id;
+                int count;
+            }
+
+            state PeerState {
+                int amount;
+            }
+
+            fn peer_amount(PeerState value) -> int {
+                return value.amount;
+            }
+
+            actor Local owns LocalState {
+                entry inspect()
+                consumes { peer: Peer, }
+                observes remote by self.remote_id {
+                    inputs { src: Peer, }
+                }
+                emits next: Local {
+                    LocalState current = state(self);
+                    PeerState consumed = state(peer);
+                    PeerState observed = state(remote.inputs.src);
+                    byte[32] consumed_digest = digest(state(peer));
+
+                    require(current.count == self.count);
+                    require(consumed.amount == peer.amount);
+                    require(observed.amount == remote.inputs.src.amount);
+                    require(peer_amount(state(peer)) == peer.amount);
+                    require(self.value + peer.value + remote.inputs.src.value >= 0);
+                    require(self.cov_id == self.cov_id);
+                    require(peer.cov_id == peer.cov_id);
+                    require(remote.inputs.src.cov_id == remote.inputs.src.cov_id);
+                    require(consumed_digest == consumed_digest);
+                    unrestricted(next.value);
+                    become next <- self;
+                }
+            }
+
+            actor Peer owns PeerState {
+                delegate accept() consumes { local: Local, } {}
+            }
+
+            app Test { actor Local; actor Peer; }
+        "#,
+    );
+    let sil = &actors["Local"];
+
+    assert!(sil.contains("PeerState gen__peer_state = readInputStateWithTemplate("), "{sil}");
+    assert!(sil.contains("PeerState gen__remote_src_state = readInputStateWithTemplate("), "{sil}");
+    assert!(sil.contains("PeerState consumed = PeerState {"), "{sil}");
+    assert!(sil.contains("amount: gen__peer_state.amount,"), "{sil}");
+    assert!(sil.contains("PeerState observed = PeerState {"), "{sil}");
+    assert!(sil.contains("amount: gen__remote_src_state.amount,"), "{sil}");
+    assert!(sil.contains("peer_amount(PeerState {"), "{sil}");
+    assert!(sil.contains("byte[32] consumed_digest = blake3(byte[](((gen__peer_state.amount) as byte[8])));"), "{sil}");
+    assert!(sil.contains("tx.inputs[gen__peer_input_idx].value"), "{sil}");
+    assert!(sil.contains("tx.inputs[gen__remote_src_input_idx].value"), "{sil}");
+    assert!(sil.contains("OpInputCovenantId(gen__peer_input_idx)"), "{sil}");
+    assert!(sil.contains("OpInputCovenantId(gen__remote_src_input_idx)"), "{sil}");
+    assert_eq!(sil.matches("Gen__PeerState gen__peer_state = readInputStateWithTemplate(").count(), 1, "{sil}");
+    assert_eq!(sil.matches("Gen__PeerState gen__remote_src_state = readInputStateWithTemplate(").count(), 1, "{sil}");
+    assert!(!sil.contains("state(peer)"), "{sil}");
+    assert!(!sil.contains("remote.inputs.src"), "{sil}");
+}
+
+#[test]
+fn input_references_reject_implicit_and_legacy_whole_state_forms() {
+    let bare = emit_inline_error(
+        r#"
+            state SharedState { int count; }
+            fn read(SharedState value) -> int { return value.count; }
+            actor Counter owns SharedState {
+                entry inspect() consumes { peer: Counter, } emits none {
+                    require(read(peer) >= 0);
+                }
+            }
+            app Test { actor Counter; }
+        "#,
+    );
+    assert!(bare.to_string().contains("use `state(peer)`"), "unexpected error: {bare}");
+
+    let legacy = emit_inline_error(
+        r#"
+            state SharedState { cov_id group_id; int count; }
+            actor Counter owns SharedState {
+                entry inspect()
+                observes remote by self.group_id { inputs { src: Counter, } }
+                emits none {
+                    SharedState value = remote.inputs.src.state;
+                    require(value.count >= 0);
+                }
+            }
+            app Test { actor Counter; }
+        "#,
+    );
+    assert!(legacy.to_string().contains("has no `.state` member"), "unexpected error: {legacy}");
+}
+
+#[test]
+fn input_state_reconstruction_rejects_invalid_calls_and_function_contexts() {
+    for (case, expression, expected) in [
+        ("missing argument", "state()", "requires exactly one input reference"),
+        ("extra argument", "state(self, peer)", "requires exactly one input reference"),
+        ("ordinary value", "state(value)", "requires one visible entry input reference"),
+        ("output handle", "state(next)", "requires one visible entry input reference"),
+    ] {
+        let source = format!(
+            r#"
+                state SharedState {{ int count; }}
+                actor Counter owns SharedState {{
+                    entry inspect(SharedState value)
+                    consumes {{ peer: Counter, }}
+                    emits next: Counter {{
+                        SharedState reconstructed = {expression};
+                        require(reconstructed.count >= 0);
+                        unrestricted(next.value);
+                        become next <- self;
+                    }}
+                }}
+                app Test {{ actor Counter; }}
+            "#
+        );
+        let err = emit_inline_error(&source);
+        assert!(err.to_string().contains(expected), "{case}: unexpected error: {err}");
+    }
+
+    for (context, declaration) in [
+        ("global", "fn reconstruct(SharedState value) -> SharedState { return state(value); }"),
+        (
+            "actor",
+            r#"
+                actor Counter owns SharedState {
+                    fn reconstruct(SharedState value) -> SharedState { return state(value); }
+                    entry inspect() emits none { require(count >= 0); }
+                }
+            "#,
+        ),
+    ] {
+        let actor = if context == "global" {
+            "actor Counter owns SharedState { entry inspect() emits none { require(count >= 0); } }"
+        } else {
+            ""
+        };
+        let source = format!(
+            r#"
+                state SharedState {{ int count; }}
+                {declaration}
+                {actor}
+                app Test {{ actor Counter; }}
+            "#
+        );
+        let err = emit_inline_error(&source);
+        assert!(
+            err.to_string().contains("input-state reconstruction is only available in entry bodies"),
+            "{context}: unexpected error: {err}"
+        );
+    }
+}
+
+#[test]
+fn empty_input_state_digest_uses_explicit_empty_bytes() {
+    let (actors, _) = inline_actor_sil_and_artifact(
+        "empty-input-state-digest",
+        r#"
+            state Empty {}
+            actor EmptyActor owns Empty {
+                entry verify(byte[32] expected) emits none {
+                    require(digest(state(self)) == expected);
+                }
+            }
+            app Test { actor EmptyActor; }
+        "#,
+    );
+    let sil = &actors["EmptyActor"];
+
+    assert!(sil.contains("require(blake3(byte[](0x)) == expected);"), "{sil}");
+}
+
+#[test]
+fn digest_call_uses_ast_spans_for_spacing_comments_and_arity() {
+    for (case, expression) in [("spaced", "digest (state(self))"), ("commented", "digest /* authored state */ (state(self))")] {
+        let source = format!(
+            r#"
+                state Empty {{}}
+                actor EmptyActor owns Empty {{
+                    entry verify(byte[32] expected) emits none {{
+                        require({expression} == expected);
+                    }}
+                }}
+                app Test {{ actor EmptyActor; }}
+            "#
+        );
+        let (actors, _) = inline_actor_sil_and_artifact(case, &source);
+        let sil = &actors["EmptyActor"];
+        assert!(sil.contains("require(blake3(byte[](0x)) == expected);"), "{case}: {sil}");
+    }
+
+    for expression in ["digest()", "digest(state(self), state(self))"] {
+        let source = format!(
+            r#"
+                state Empty {{}}
+                actor EmptyActor owns Empty {{
+                    entry verify() emits none {{
+                        byte[32] invalid = {expression};
+                        require(invalid == invalid);
+                    }}
+                }}
+                app Test {{ actor EmptyActor; }}
+            "#
+        );
+        let err = emit_inline_error(&source);
+        assert!(
+            err.to_string().contains("`digest(...)` requires exactly one authored state value"),
+            "{expression}: unexpected error: {err}"
+        );
+    }
 }
 
 #[test]
@@ -1925,7 +2217,7 @@ fn observed_input_reference_resolution_respects_root_shadowing() {
                     {
                         int asset = 0;
                         require asset.outputs become {
-                            dst <- Foreign(asset.inputs.src.state),
+                            dst <- Foreign(state(asset.inputs.src)),
                         };
                     }
                 }
@@ -1937,7 +2229,7 @@ fn observed_input_reference_resolution_respects_root_shadowing() {
         "#,
     );
 
-    assert!(err.to_string().contains("is not a proven authored `ForeignState` value"), "unexpected error: {err}");
+    assert!(err.to_string().contains("requires one visible entry input reference"), "unexpected error: {err}");
 }
 
 #[test]
@@ -2132,7 +2424,13 @@ fn expanded_entry_params_keep_the_authored_nested_layout() {
             }
 
             actor Vault owns Expanded {
-                entry inspect(Expanded value, Expanded[] values) emits none {
+                entry inspect(Expanded value, Expanded[] values, byte[32] expected_digest) emits none {
+                    Expanded current = state(self);
+                    Details copy = self.detail;
+                    byte[32] whole = digest(state(self));
+                    require(current.detail.count >= 0);
+                    require(copy.count >= 0);
+                    require(whole == expected_digest);
                     require(value.detail.count >= 0);
                     require(values.length >= 0);
                 }
@@ -2169,7 +2467,12 @@ fn expanded_entry_params_keep_the_authored_nested_layout() {
 
     assert!(sil.contains("struct Expanded {"), "{sil}");
     assert!(sil.contains("Details detail;"), "{sil}");
-    assert!(sil.contains("entry inspect(Expanded value, Expanded[] values"), "{sil}");
+    assert!(sil.contains("Expanded value,\n        Expanded[] values,\n        byte[32] expected_digest,"), "{sil}");
+    assert!(sil.contains("Expanded current = Expanded {"), "{sil}");
+    assert!(sil.contains("count: gen__detail_count,"), "{sil}");
+    assert!(sil.contains("Details copy = Details {"), "{sil}");
+    assert!(sil.contains("byte[32] whole = blake3(byte[](((nonce) as byte[8]) + byte[](blake3(byte[]("), "{sil}");
+    assert!(sil.contains("((gen__detail_count) as byte[8])"), "{sil}");
     let inspect = artifact.sil_abi.contract("Vault").expect("Vault contract exists").entry("inspect").expect("inspect entry exists");
     assert_eq!(inspect.params[0].ty, TypeArtifact::Struct { name: "Expanded".to_string() });
     assert_eq!(
@@ -2186,7 +2489,7 @@ fn expanded_entry_params_keep_the_authored_nested_layout() {
     let reader_sil = &actor_sil["Reader"];
     assert!(reader_sil.contains("struct Gen__PhysicalExpanded {"), "{reader_sil}");
     assert!(reader_sil.contains("byte[32] detail;"), "{reader_sil}");
-    assert!(reader_sil.contains("Gen__PhysicalExpanded vault = readInputStateWithTemplate("), "{reader_sil}");
+    assert!(reader_sil.contains("Gen__PhysicalExpanded gen__vault_state = readInputStateWithTemplate("), "{reader_sil}");
 }
 
 #[test]
@@ -2224,6 +2527,34 @@ fn expanded_input_fields_require_validated_preimages() {
         .expect_err("a stored expansion digest cannot expose its authored payload");
     assert!(err.to_string().contains("expanded input field `detail`"), "unexpected error: {err}");
     assert!(err.to_string().contains("validated preimage"), "unexpected error: {err}");
+}
+
+#[test]
+fn expanded_input_state_reconstruction_requires_validated_preimages() {
+    let err = emit_inline_error(
+        r#"
+            state Capsule { int nonce; virtual detail; }
+            state Details { int count; }
+            state Expanded expands Capsule { detail: Details; }
+
+            actor Vault owns Expanded {
+                entry hold() emits none { require(nonce >= 0); }
+            }
+
+            state ReaderState { int nonce; }
+            actor Reader owns ReaderState {
+                entry inspect() consumes { vault: Vault, } emits none {
+                    Expanded copy = state(vault);
+                    require(copy.nonce >= 0);
+                }
+            }
+
+            app Test { actor Vault; actor Reader; }
+        "#,
+    );
+
+    assert!(err.to_string().contains("cannot be materialized without a validated preimage"), "unexpected error: {err}");
+    assert!(err.to_string().contains("field `detail`"), "unexpected error: {err}");
 }
 
 #[test]
@@ -3944,7 +4275,7 @@ fn consumed_route_reuses_input_template() {
     let (sil, artifact) = emit_fixture("input_template_route_reuse", "Controller");
 
     assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/input_template_route_reuse/Controller.sil"));
-    assert!(sil.contains("PeerState peer = readInputStateWithTemplate("), "{sil}");
+    assert!(sil.contains("PeerState gen__peer_state = readInputStateWithTemplate("), "{sil}");
     assert!(sil.contains("validateOutputStateWithInputTemplate("), "{sil}");
 
     let controller_state =
@@ -3993,12 +4324,12 @@ fn single_actor_self_consume_is_pinned() {
     let (sil, artifact) = emit_fixture("single_actor_self_consume", "Counter");
 
     assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/single_actor_self_consume/Counter.sil"));
-    assert!(sil.contains("State other = readInputState(gen__other_input_idx);"), "{sil}");
+    assert!(sil.contains("State gen__other_state = readInputState(gen__other_input_idx);"), "{sil}");
     assert!(!sil.contains("readInputStateWithTemplate"), "{sil}");
     assert!(!sil.contains("CounterState"), "{sil}");
-    assert!(sil.contains("State copied = actor_identity(global_identity(other));"), "{sil}");
+    assert!(sil.contains("State copied = actor_identity(global_identity(gen__other_state));"), "{sil}");
     assert_eq!(sil.matches("actor_identity(global_identity(").count(), 1, "{sil}");
-    assert!(sil.contains("copied = global_identity(other);"), "{sil}");
+    assert!(sil.contains("copied = global_identity(gen__other_state);"), "{sil}");
     assert!(sil.contains("validateOutputState(gen__next_output_idx, next);"), "{sil}");
 
     let source_state = artifact.argent.states.iter().find(|state| state.name == "CounterState").expect("CounterState exists");
@@ -4075,7 +4406,7 @@ fn selected_app_actor_count_controls_self_consume_template_authentication() {
     let actor_sil = actor_sil_for_model(&multi_model);
     let artifact = emit_artifact(&program, &multi_model, &actor_sil).expect("multi-actor artifact emits");
 
-    assert!(sil.contains("State other = readInputStateWithTemplate("), "{sil}");
+    assert!(sil.contains("State gen__other_state = readInputStateWithTemplate("), "{sil}");
     assert!(!sil.contains("// :: direct input state"), "{sil}");
     let counter = artifact.argent.actors.iter().find(|actor| actor.name == "Counter").expect("Counter actor exists");
     let merge = counter.entries.iter().find(|entry| entry.name == "merge").expect("merge entry exists");
@@ -4095,7 +4426,7 @@ fn selected_app_actor_count_controls_self_consume_template_authentication() {
     let actor_sil = actor_sil_for_model(&single_model);
     let artifact = emit_artifact(&program, &single_model, &actor_sil).expect("single-actor artifact emits");
 
-    assert!(sil.contains("State other = readInputState(gen__other_input_idx);"), "{sil}");
+    assert!(sil.contains("State gen__other_state = readInputState(gen__other_input_idx);"), "{sil}");
     assert!(!sil.contains("readInputStateWithTemplate"), "{sil}");
     assert!(runtime_state_plan(&artifact, "Counter").is_none());
 }
@@ -4219,7 +4550,7 @@ fn rejects_input_only_open_observed_actor_binding() {
                     }
                 }
                 emits none {
-                    AgentCapsule prev_state = remote.inputs.agent.state;
+                    AgentCapsule prev_state = state(remote.inputs.agent);
                     require(prev_state.energy >= 0);
                 }
             }
@@ -5102,7 +5433,7 @@ fn in_app_observed_input_uses_a_direct_template_dependency() {
                     }
                 }
                 emits none {
-                    require(remote.inputs.src.state.amount >= 0);
+                    require(remote.inputs.src.amount >= 0);
                 }
             }
 
@@ -5178,7 +5509,7 @@ fn in_app_observed_output_reuses_a_current_input_template() {
                     }
                 }
                 emits none {
-                    ForeignState next = source;
+                    ForeignState next = state(source);
                     require remote.outputs become {
                         next <- Foreign(next),
                     };
@@ -5239,7 +5570,7 @@ fn in_app_current_output_reuses_an_observed_input_template() {
                 }
                 emits next: Foreign {
                     unrestricted(next.value);
-                    ForeignState next = remote.inputs.source.state;
+                    ForeignState next = state(remote.inputs.source);
                     become next <- Foreign(next);
                 }
             }
@@ -6735,7 +7066,7 @@ fn scalar_state_arguments_lower_inside_for_headers() {
                     other: Counter,
                 }
                 emits none {
-                    for (i, 0, read_count(other), 8) {
+                    for (i, 0, read_count(state(other)), 8) {
                         require(i >= 0);
                     }
                 }
@@ -6749,7 +7080,7 @@ fn scalar_state_arguments_lower_inside_for_headers() {
     let sil = actor_sil.get("Counter").expect("Counter emits");
     assert!(!sil.contains("CounterState"), "{sil}");
     assert!(sil.contains("function read_count(State gen__glob_value) : int"), "{sil}");
-    assert!(sil.contains("for (i, 0, read_count(other), 8)"), "{sil}");
+    assert!(sil.contains("for (i, 0, read_count(gen__other_state), 8)"), "{sil}");
 }
 
 #[test]
@@ -6788,7 +7119,7 @@ fn scalar_state_arguments_lower_after_actor_enum_literals() {
                     other: Counter,
                 }
                 emits none {
-                    require(read_count(other) + MoveActor::Knight >= 0);
+                    require(read_count(state(other)) + MoveActor::Knight >= 0);
                 }
             }
 
@@ -6801,9 +7132,9 @@ fn scalar_state_arguments_lower_after_actor_enum_literals() {
     );
     let sil = actor_sil.get("Counter").expect("Counter emits");
     assert!(sil.contains("read_count(CounterState {"), "{sil}");
-    assert!(sil.contains("count: other.count"), "{sil}");
+    assert!(sil.contains("count: gen__other_state.count"), "{sil}");
     assert!(sil.contains("+ 1 /*KNIGHT*/ >= 0"), "{sil}");
-    assert!(!sil.contains("read_count(other)"), "{sil}");
+    assert!(!sil.contains("read_count(state(other))"), "{sil}");
 }
 
 #[test]

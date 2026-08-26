@@ -319,8 +319,9 @@ The route graph does not need multiplicity. Add one graph relation for a range:
 The commitment forest and cut transitions therefore stay unchanged.
 
 The body lowerer needs explicit range bindings. Its current text replacement
-is not sufficient for indexed expressions such as `accounts[i].value` or
-`remote.inputs.assets[i].state`. Add token-aware indexed access lowering. A
+is not sufficient for indexed expressions such as `accounts[i].value`,
+`remote.inputs.assets[i].amount`, or `state(remote.inputs.assets[i])`. Add
+token-aware indexed access lowering. A
 full expression type checker is not required for the first version.
 
 Add structured `for` statement support to the Argent body lowerer. Users need
@@ -389,8 +390,8 @@ part of the compiled template and not its state span.
 
 - Register range handles and their source state types.
 - Lower `.length`, indexed state access, and indexed `.value` access.
-- Lower indexed observed access such as
-  `remote.inputs.assets[i].state`.
+- Lower indexed observed field access and authored reconstruction such as
+  `remote.inputs.assets[i].amount` and `state(remote.inputs.assets[i])`.
 - Lower state arrays for route targets that contain hidden route fields.
 - Add structured `for` statements with compile-time maxima.
 - Add bulk range routes and terminal coverage checks.

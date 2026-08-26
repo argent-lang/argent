@@ -309,8 +309,8 @@ actor Ctrl owns CtrlState {
         }
     }
     emits none {
-        SharedState solo_state = solo.inputs.src.state;
-        SharedState cohort_state = cohort.inputs.src.state;
+        SharedState solo_state = state(solo.inputs.src);
+        SharedState cohort_state = state(cohort.inputs.src);
         require(solo_state.count >= 0);
         require(cohort_state.count >= 0);
     }
@@ -358,8 +358,8 @@ app CtrlApp {
 
     let solo_sil = std::fs::read_to_string(temp.join("build/apps/SoloApp/sil/Shared.sil")).expect("solo Shared Sil exists");
     let cohort_sil = std::fs::read_to_string(temp.join("build/apps/CohortApp/sil/Shared.sil")).expect("cohort Shared Sil exists");
-    assert!(solo_sil.contains("State other = readInputState("), "{solo_sil}");
-    assert!(cohort_sil.contains("State other = readInputStateWithTemplate("), "{cohort_sil}");
+    assert!(solo_sil.contains("State gen__other_state = readInputState("), "{solo_sil}");
+    assert!(cohort_sil.contains("State gen__other_state = readInputStateWithTemplate("), "{cohort_sil}");
 
     let _ = std::fs::remove_dir_all(temp);
 }
@@ -435,7 +435,7 @@ actor Middle owns MiddleState {
     }
     emits next: Middle {
         unrestricted(next.value);
-        LeafState next_leaf = leaf.inputs.src.state;
+        LeafState next_leaf = state(leaf.inputs.src);
         require leaf.outputs become {
             next <- Leaf(next_leaf),
         };
@@ -473,7 +473,7 @@ actor Root owns RootState {
     }
     emits next: Root {
         unrestricted(next.value);
-        MiddleState next_middle = middle.inputs.src.state;
+        MiddleState next_middle = state(middle.inputs.src);
         require middle.outputs become {
             next <- Middle(next_middle),
         };
@@ -569,7 +569,7 @@ actor Left owns LeftState {
         }
     }
     emits none {
-        SharedState current = shared.inputs.src.state;
+        SharedState current = state(shared.inputs.src);
         require(current.n >= 0);
     }
 }
@@ -597,7 +597,7 @@ actor Right owns RightState {
         }
     }
     emits none {
-        SharedState current = shared.inputs.src.state;
+        SharedState current = state(shared.inputs.src);
         require(current.n >= 0);
     }
 }
@@ -725,7 +725,7 @@ actor Controller owns ControllerState {
     }
     emits next: Controller {
         unrestricted(next.value);
-        AssetState current = asset.inputs.src.state;
+        AssetState current = state(asset.inputs.src);
         require(current.tag == ASSET_TAG);
         require asset.outputs become {
             next <- AssetApp::Asset(current),

@@ -120,6 +120,11 @@ struct StateValueSiteCollector<'a> {
     sites: Vec<PlannedStateValueSite>,
 }
 
+struct NamedCallSiteCollector<'a> {
+    name: &'a str,
+    sites: Vec<Range<usize>>,
+}
+
 #[derive(Default)]
 struct PhysicalStateConstructorDetector {
     found: bool,
@@ -175,6 +180,15 @@ impl<'i> AstVisitorMut<'i> for StateValueSiteCollector<'_> {
     }
 }
 
+impl<'i> AstVisitorMut<'i> for NamedCallSiteCollector<'_> {
+    fn visit_expr(&mut self, expr: &mut SilExpr<'i>) {
+        if matches!(&expr.kind, SilExprKind::Call { name, .. } if name == self.name) {
+            self.sites.push(expr.span.start()..expr.span.end());
+        }
+        walk_expr_mut(self, expr);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct BodyBindingId(usize);
 
@@ -216,11 +230,6 @@ impl BodyBinding {
 
     fn with_selector(mut self, selector: TemplateSelector) -> Self {
         self.selector = Some(selector);
-        self
-    }
-
-    fn with_input_scope(mut self, scope: EntryInputScopeId) -> Self {
-        self.input_scope = Some(scope);
         self
     }
 
@@ -299,7 +308,8 @@ impl BodyBindings {
     }
 
     fn input_reference_is_visible(&self, reference: &PlannedEntryInputReference) -> bool {
-        self.get(reference.lexical_root()).and_then(|binding| binding.value.input_scope) == Some(reference.scope())
+        reference.is_active()
+            || self.get(reference.lexical_root()).and_then(|binding| binding.value.input_scope) == Some(reference.scope())
     }
 
     fn selector(&self, name: &str) -> Option<(BodyBindingId, &TemplateSelector)> {
@@ -393,10 +403,8 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
 
         for consume in &entry.consumes {
             if let Some(input) = input_references.consumed(&consume.name)? {
-                bindings.declare(
-                    consume.name.clone(),
-                    BodyBinding::typed(input.source_identity(), input.physical_type(), state_values).with_input_scope(input.scope()),
-                );
+                bindings.declare(consume.name.clone(), BodyBinding::input_root(input.scope()));
+                bindings.declare(hidden_consumed_input_state_name(&consume.name), BodyBinding::lowered_typed(input.physical_type()));
             }
         }
         for observe in &entry.observes {
@@ -698,7 +706,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         } else {
             statement
         };
-        let statement = self.lower_refs(&statement)?;
+        let statement = self.lower_refs(&statement, indent)?;
         out.push_str(&statement);
         out.push_str(";\n");
         for binding in bindings {
@@ -797,8 +805,17 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     }
 
     fn input_reference_for_expr(&self, expr: &str) -> Option<&PlannedEntryInputReference> {
-        let reference = self.input_references.compatibility_reference(strip_outer_parentheses(expr))?;
+        let reference = self.input_references.reference(strip_outer_parentheses(expr))?;
         self.bindings.input_reference_is_visible(reference).then_some(reference)
+    }
+
+    fn input_reference_from_state_call(&self, expr: &str) -> Result<Option<&PlannedEntryInputReference>> {
+        let Some(reference_expr) = parse_state_reference_call(expr).map_err(|err| self.error(err))? else {
+            return Ok(None);
+        };
+        self.input_reference_for_expr(reference_expr).map(Some).ok_or_else(|| {
+            self.error(format!("`{}(...)` requires one visible entry input reference, but `{reference_expr}` is not one", word::STATE))
+        })
     }
 
     fn materialize_selector_template(&self, out: &mut String, indent: usize, selector: &TemplateSelector) -> Result<()> {
@@ -1058,7 +1075,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let parsed_source = parse_expression_ast(expr)
             .map_err(|err| self.error(format!("cannot classify route state `{expr}` as an authored value: {err}")))?;
         let is_matching_input_state =
-            self.input_reference_for_expr(expr).is_some_and(|reference| reference.source_identity() == source_state);
+            self.input_reference_from_state_call(expr)?.is_some_and(|reference| reference.source_identity() == source_state);
         let is_planned_authored_value = self
             .planned_state_value_for_expr(&parsed_source)
             .is_some_and(|value| value.source().as_str() == source_state && value.shape().is_scalar());
@@ -1196,8 +1213,23 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         if let Some(expected) = expected_state_value.as_ref().filter(|value| !value.shape().is_scalar()) {
             return self.lower_authored_state_array_expr(expr, expected, indent);
         }
-        if let Some(value) = parse_digest_call(expr) {
+        if let Some(value) = parse_digest_call(expr).map_err(|err| self.error(err))? {
             return self.lower_digest_expr(value);
+        }
+        if let Some(reference) = self.input_reference_from_state_call(expr)? {
+            let authored = reference.complete_authored_state(indent).map_err(|err| self.error(err.to_string()))?;
+            if let Some(expected) = expected_state_value.as_ref()
+                && (expected.source().as_str() != authored.source().as_str() || !expected.shape().is_scalar())
+            {
+                return Err(self.error(format!(
+                    "`{}({})` has authored type `{}`, not `{}`",
+                    word::STATE,
+                    reference.reference(),
+                    authored.source().as_str(),
+                    self.state_values.sil_type(expected)
+                )));
+            }
+            return Ok(authored.into_sil());
         }
         if let Some((state_name, body)) = split_state_constructor(expr) {
             if let Some(expected) = expected_state_value.as_ref()
@@ -1210,20 +1242,12 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             return self.lower_state_constructor(state_name, body, indent);
         }
         if let Some(reference) = self.input_reference_for_expr(expr) {
-            let Some(expected_ty) = expected_ty else {
-                return Err(self.error(format!(
-                    "state input `{expr}` is physical at this boundary and requires an authored `{}` context",
-                    reference.source_identity()
-                )));
-            };
-            let expected = expected_state_value.as_ref().map(PlannedStateValue::source);
-            if expected.is_none_or(|source| source.as_str() != reference.source_identity()) {
-                return Err(self
-                    .error(format!("state input `{expr}` has authored type `{}`, not `{expected_ty}`", reference.source_identity())));
-            }
-            let authored = reference.complete_authored_state(indent).map_err(|err| self.error(err.to_string()))?;
-            debug_assert_eq!(authored.source(), expected.expect("checked above"));
-            return Ok(authored.into_sil());
+            return Err(self.error(format!(
+                "input reference `{expr}` is not an authored state value; use `{}({})` to reconstruct `{}`",
+                word::STATE,
+                reference.reference(),
+                reference.source_identity()
+            )));
         }
         // Normalize Argent-only syntax before asking Sil to classify calls and
         // their exact argument spans.
@@ -1244,7 +1268,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         }
         let expr = self.lower_nested_state_values(&expr, indent)?;
         let expr = lower_expression_state_types(&expr, self.state_values).map_err(|err| self.error(err.to_string()))?;
-        self.lower_refs(&expr)
+        self.lower_refs(&expr, indent)
     }
 
     fn reject_physical_state_constructors(&self, source: &str) -> Result<()> {
@@ -1287,7 +1311,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         collector.visit_expr(&mut parsed);
         let lowered = self.lower_planned_state_value_sites(&expr, collector.sites, indent)?;
         let lowered = lower_expression_state_types(&lowered, self.state_values).map_err(|err| self.error(err.to_string()))?;
-        self.lower_refs(&lowered)
+        self.lower_refs(&lowered, indent)
     }
 
     fn lower_authored_state_array_index(
@@ -1319,7 +1343,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             (index_span.clone(), self.lower_expr(&expr[index_span], None, indent)?),
         ];
         let lowered = apply_expr_replacements(expr, replacements);
-        self.lower_refs(&lowered)
+        self.lower_refs(&lowered, indent)
     }
 
     fn planned_state_value_for_expr(&self, expr: &SilExpr<'_>) -> Option<PlannedStateValue> {
@@ -1399,13 +1423,22 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
 
     fn lower_digest_expr(&self, value: &str) -> Result<String> {
         let value = value.trim();
-        let state_name = self
-            .bindings
-            .source_type(value)
-            .or_else(|| self.input_reference_for_expr(value).map(PlannedEntryInputReference::source_identity))
-            .ok_or_else(|| {
-                ArgentError::new(format!("`digest(...)` requires a named state value, but `{value}` has no known source type"))
-            })?;
+        if let Some(reference) = self.input_reference_from_state_call(value)? {
+            return reference.authored_payload_digest(self.model).map_err(|err| self.error(err.to_string()));
+        }
+        if let Some(reference) = self.input_reference_for_expr(value) {
+            return Err(self.error(format!(
+                "`{}(...)` requires an authored state value; use `{}({}({}))` for input reference `{}`",
+                word::DIGEST,
+                word::DIGEST,
+                word::STATE,
+                reference.reference(),
+                reference.reference()
+            )));
+        }
+        let state_name = self.bindings.source_type(value).ok_or_else(|| {
+            ArgentError::new(format!("`{}(...)` requires a named state value, but `{value}` has no known source type", word::DIGEST))
+        })?;
         self.model.state(state_name)?;
         state_payload_digest_expr(state_name, value, self.model)
     }
@@ -1559,17 +1592,74 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         }
     }
 
-    fn lower_refs(&self, expr: &str) -> Result<String> {
+    fn lower_refs(&self, expr: &str, indent: usize) -> Result<String> {
+        let expr = self.lower_digest_calls(expr)?;
+        let expr = self.lower_input_state_calls(&expr, indent)?;
         let mut replacements = self.fixed_ref_replacements.clone();
-        replacements.extend(self.active_reference.compatibility_replacements());
+        replacements.extend(self.active_reference.operation_replacements(indent)?);
         for reference in self.input_references.external_references() {
             if !self.bindings.input_reference_is_visible(reference) {
                 continue;
             }
-            reference.reject_unavailable_field_refs(expr).map_err(|err| self.error(err.to_string()))?;
-            replacements.extend(reference.compatibility_replacements());
+            reference.reject_unavailable_field_refs(&expr).map_err(|err| self.error(err.to_string()))?;
+            replacements.extend(reference.operation_replacements(indent)?);
         }
-        RefReplacements::new(replacements)?.rewrite(expr)
+        RefReplacements::new(replacements)?.rewrite(&expr)
+    }
+
+    fn lower_digest_calls(&self, expr: &str) -> Result<String> {
+        if !contains_call_named(expr, word::DIGEST)? {
+            return Ok(expr.to_string());
+        }
+        let mut lowered = expr.to_string();
+        for site in self.named_call_sites(expr, word::DIGEST)?.into_iter().rev() {
+            let call = &expr[site.clone()];
+            let value = parse_digest_call(call)
+                .map_err(|err| self.error(err))?
+                .ok_or_else(|| self.error(format!("cannot classify `{}` call `{call}`", word::DIGEST)))?;
+            lowered.replace_range(site, &self.lower_digest_expr(value)?);
+        }
+        Ok(lowered)
+    }
+
+    fn lower_input_state_calls(&self, expr: &str, indent: usize) -> Result<String> {
+        if !contains_call_named(expr, word::STATE)? {
+            return Ok(expr.to_string());
+        }
+        let mut lowered = expr.to_string();
+        for site in self.named_call_sites(expr, word::STATE)?.into_iter().rev() {
+            let call = &expr[site.clone()];
+            let reference = self.input_reference_from_state_call(call)?.expect("collector found a state call");
+            let authored = reference.complete_authored_state(indent).map_err(|err| self.error(err.to_string()))?;
+            lowered.replace_range(site, authored.sil());
+        }
+        Ok(lowered)
+    }
+
+    fn named_call_sites(&self, expr: &str, name: &str) -> Result<Vec<Range<usize>>> {
+        let mut collector = NamedCallSiteCollector { name, sites: Vec::new() };
+        if let Ok(mut parsed) = parse_expression_ast(expr) {
+            collector.visit_expr(&mut parsed);
+        } else {
+            let prefix = "function gen__entry_named_calls() { ";
+            let source = format!("{prefix}{expr}; }}");
+            let mut function =
+                parse_function_ast(&source).map_err(|err| self.error(format!("cannot classify `{name}` calls in `{expr}`: {err}")))?;
+            visit_function_mut(&mut collector, &mut function);
+            for site in &mut collector.sites {
+                site.start -= prefix.len();
+                site.end -= prefix.len();
+            }
+        }
+        collector.sites.sort_by_key(|site| site.start);
+        let mut outermost = Vec::<Range<usize>>::new();
+        for site in collector.sites {
+            if outermost.iter().any(|outer| outer.start <= site.start && site.end <= outer.end) {
+                continue;
+            }
+            outermost.push(site);
+        }
+        Ok(outermost)
     }
 
     fn error(&self, message: impl Into<String>) -> ArgentError {
@@ -1628,6 +1718,25 @@ pub(in crate::compiler::codegen) fn reject_function_physical_state_constructors(
     Ok(())
 }
 
+pub(in crate::compiler::codegen) fn reject_function_input_state_calls(function_name: &str, body: &str, context: &str) -> Result<()> {
+    if !contains_call_named(body, word::STATE)? {
+        return Ok(());
+    }
+    let source = format!("function gen__input_state_call_check() {{ {body} }}");
+    let Ok(mut function) = parse_function_ast(&source) else {
+        return Ok(());
+    };
+    let mut collector = NamedCallSiteCollector { name: word::STATE, sites: Vec::new() };
+    visit_function_mut(&mut collector, &mut function);
+    if !collector.sites.is_empty() {
+        return Err(ArgentError::new(format!(
+            "`{}(...)` input-state reconstruction is only available in entry bodies, not {context} function `{function_name}`",
+            word::STATE
+        )));
+    }
+    Ok(())
+}
+
 pub(in crate::compiler::codegen) fn lower_entry_expr(
     actor: &ActorDecl,
     entry: &EntryDecl,
@@ -1664,9 +1773,62 @@ fn split_state_object_literal(expr: &str) -> Option<&str> {
     expr.strip_prefix('{')?.strip_suffix('}').map(str::trim)
 }
 
-fn parse_digest_call(expr: &str) -> Option<&str> {
+fn parse_digest_call(expr: &str) -> std::result::Result<Option<&str>, String> {
     let expr = expr.trim();
-    expr.strip_prefix("digest(")?.strip_suffix(')').map(str::trim)
+    if !expr.starts_with(word::DIGEST) {
+        return Ok(None);
+    }
+    let tokens = lex(expr).map_err(|err| err.message)?;
+    if !matches!(tokens.as_slice(), [Token { kind: TokenKind::Ident(name), .. }, Token { kind: TokenKind::Symbol('('), .. }, ..]
+        if name == word::DIGEST)
+    {
+        return Ok(None);
+    }
+    let parsed =
+        parse_expression_ast(expr).map_err(|err| format!("invalid `{}(...)` state-digest expression: {err}", word::DIGEST))?;
+    let SilExprKind::Call { name, args, .. } = &parsed.kind else {
+        return Ok(None);
+    };
+    if name != word::DIGEST {
+        return Ok(None);
+    }
+    let [value] = args.as_slice() else {
+        return Err(format!("`{}(...)` requires exactly one authored state value", word::DIGEST));
+    };
+    Ok(Some(value.span.as_str().trim()))
+}
+
+fn parse_state_reference_call(expr: &str) -> std::result::Result<Option<&str>, String> {
+    let expr = expr.trim();
+    if !expr.starts_with(word::STATE) {
+        return Ok(None);
+    }
+    let tokens = lex(expr).map_err(|err| err.message)?;
+    if !matches!(tokens.as_slice(), [Token { kind: TokenKind::Ident(name), .. }, Token { kind: TokenKind::Symbol('('), .. }, ..]
+        if name == word::STATE)
+    {
+        return Ok(None);
+    }
+    let parsed =
+        parse_expression_ast(expr).map_err(|err| format!("invalid `{}(...)` input-reference expression: {err}", word::STATE))?;
+    let SilExprKind::Call { name, args, .. } = &parsed.kind else {
+        return Ok(None);
+    };
+    if name != word::STATE {
+        return Ok(None);
+    }
+    let [reference] = args.as_slice() else {
+        return Err(format!("`{}(...)` requires exactly one input reference", word::STATE));
+    };
+    Ok(Some(reference.span.as_str().trim()))
+}
+
+fn contains_call_named(expr: &str, name: &str) -> Result<bool> {
+    let tokens = lex(expr)?;
+    Ok(tokens.windows(2).any(|tokens| {
+        matches!(tokens, [Token { kind: TokenKind::Ident(candidate), .. }, Token { kind: TokenKind::Symbol('('), .. }]
+            if candidate == name)
+    }))
 }
 
 fn parse_state_fields(body: &str) -> Vec<(String, String)> {

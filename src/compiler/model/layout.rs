@@ -69,8 +69,7 @@ pub(crate) struct StorageFieldId {
 }
 
 impl StorageFieldId {
-    #[cfg(test)]
-    fn field(&self) -> &str {
+    pub(crate) fn field(&self) -> &str {
         &self.field
     }
 }

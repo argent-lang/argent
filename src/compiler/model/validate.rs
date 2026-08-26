@@ -638,6 +638,15 @@ impl Model<'_> {
 }
 
 fn reject_reserved_function_identifier(name: &str) -> Result<()> {
+    if name == word::DIGEST {
+        return Err(ArgentError::new(format!("function identifier `{}` is reserved for authored state digests", word::DIGEST)));
+    }
+    if name == word::STATE {
+        return Err(ArgentError::new(format!(
+            "function identifier `{}` is reserved for authored input-state reconstruction",
+            word::STATE
+        )));
+    }
     if name == word::UNRESTRICTED {
         return Err(ArgentError::new(format!(
             "function identifier `{}` is reserved for output-value declarations",

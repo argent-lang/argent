@@ -32,6 +32,9 @@ Features:
   ordinary completion.
 - Completion inside entry and delegate bodies includes variables introduced by
   `consumes`, `emits`, `observes`, and `spawns` clauses.
+- Completion documents the uniform input-reference reads and explicit
+  `state(self)`, `state(consumed)`, and `state(observed.inputs.handle)`
+  authored-state reconstruction form.
 - The editor indexer is tolerant of unfinished function and actor bodies.
 - `std::core` is indexed as an imported Argent module. Import paths and
   imported functions navigate to the compiler's standard-library source.

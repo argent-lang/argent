@@ -51,7 +51,7 @@ actor Cell owns CellState {
     emits {
         cell: Cell,
     } {
-        AgentCapsule prev_state = remote.inputs.agent.state;
+        AgentCapsule prev_state = state(remote.inputs.agent);
 
         require(prev_state.world_id == world_id);
         require(prev_state.capabilities_digest == occupant_caps_digest);
@@ -109,7 +109,7 @@ actor Cell owns CellState {
         source_cell: Cell,
         target_cell: Cell,
     } {
-        AgentCapsule prev_state = remote.inputs.agent.state;
+        AgentCapsule prev_state = state(remote.inputs.agent);
 
         int distance = abs1(dx) + abs1(dy);
         require(distance == 1);

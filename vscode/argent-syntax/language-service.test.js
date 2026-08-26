@@ -22,6 +22,16 @@ test('documents exact self successor syntax without restoring self.state', () =>
   assert.match(KEYWORD_DOCUMENTATION.become, /output <- self/);
   assert.match(KEYWORD_DOCUMENTATION.self, /Bare `self`/);
   assert.match(KEYWORD_DOCUMENTATION.self, /`self\.state` is not a value/);
+  assert.match(KEYWORD_DOCUMENTATION.self, /`state\(self\)`/);
+});
+
+test('offers explicit authored input-state reconstruction', () => {
+  const state = BUILTINS.find((builtin) => builtin.name === 'state');
+  assert.ok(state);
+  assert.equal(state.signature, 'state(inputReference) -> AuthoredState');
+  assert.deepEqual(state.params, ['inputReference']);
+  assert.match(state.documentation, /consumed input handle/);
+  assert.match(state.documentation, /observed input reference/);
 });
 
 test('resolves compiler-standard modules for import navigation and symbol indexing', () => {

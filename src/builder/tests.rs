@@ -1046,6 +1046,113 @@ fn context_builds_paired_transfer_and_enforces_mass_limits() {
 }
 
 #[test]
+fn context_executes_consumed_state_digest_commitment() {
+    let artifact = inline_artifact(
+        "context-consumed-state-digest",
+        r#"
+            state LeaderState {
+                int nonce;
+            }
+
+            state PeerState {
+                int left;
+                int right;
+            }
+
+            state ArchiveState {
+                int marker;
+            }
+
+            actor Leader owns LeaderState {
+                entry verify(byte[32] expected_peer_digest)
+                consumes {
+                    peer: Peer,
+                }
+                emits next: Leader {
+                    require(digest(state(peer)) == expected_peer_digest);
+                    unrestricted(next.value);
+                    become next <- self;
+                }
+            }
+
+            actor Peer owns PeerState {
+                delegate participate() consumes {
+                    leader: Leader,
+                } {}
+
+                entry archive() emits next: Archive {
+                    ArchiveState next_state = {
+                        marker: left + right,
+                    };
+                    unrestricted(next.value);
+                    become next <- Archive(next_state);
+                }
+            }
+
+            actor Archive owns ArchiveState {
+                entry hold() emits none {
+                    require(marker >= 0);
+                }
+            }
+
+            app DigestApp {
+                actor Leader;
+                actor Peer;
+                actor Archive;
+            }
+            "#,
+    );
+    assert!(
+        artifact
+            .sil_abi
+            .contract("Peer")
+            .expect("Peer contract exists")
+            .runtime_state
+            .fields
+            .iter()
+            .any(|field| field.name == "gen__archive_template"),
+        "the runtime test must prove generated route fields are excluded from the authored digest"
+    );
+
+    let builder = TxBuilder::new(&artifact).expect("builder accepts consumed-state digest artifact");
+    let covenant_id = Hash::from_bytes([0x67; 32]);
+    let leader_state = state! { nonce: 3 };
+    let peer_state = state! { left: 7, right: 11 };
+    let leader_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0x68; 32]), 0);
+    let peer_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0x69; 32]), 0);
+    let leader_utxo =
+        builder.covenant_utxo("Leader", leader_state.clone(), 3_000, 0, false, Some(covenant_id)).expect("Leader UTXO builds");
+    let peer_utxo = builder
+        .covenant_utxo("Peer", peer_state.clone(), 2_000, 0, false, Some(covenant_id))
+        .expect("Peer UTXO with generated route context builds");
+
+    let mut authored_payload = kaspa_txscript::serialize_i64(7, Some(8)).expect("left packs as a fixed-width Sil int").into_vec();
+    authored_payload
+        .extend_from_slice(&kaspa_txscript::serialize_i64(11, Some(8)).expect("right packs as a fixed-width Sil int").into_vec());
+    let expected_digest = blake3::hash(&authored_payload).as_bytes().to_vec();
+    let context = |digest: Vec<u8>| {
+        TxContext::new()
+            .actor_input(
+                "Leader",
+                leader_state.clone(),
+                EntryCall::new("verify").args(args![digest]),
+                leader_outpoint,
+                leader_utxo.clone(),
+                0,
+            )
+            .actor_input("Peer", peer_state.clone(), "participate", peer_outpoint, peer_utxo.clone(), 0)
+            .actor_output("Leader", leader_state.clone(), CovenantBinding::new(0, covenant_id), 3_000)
+    };
+
+    builder.build(&context(expected_digest.clone())).expect("authenticated authored peer-state digest matches");
+
+    let mut wrong_digest = expected_digest;
+    wrong_digest[0] ^= 1;
+    let err = builder.build(&context(wrong_digest)).expect_err("wrong authored peer-state digest must fail contract execution");
+    assert!(matches!(err, BuilderError::InputScript { input_index: 0, .. }), "unexpected error: {err}");
+}
+
+#[test]
 fn context_builds_closed_icc_without_observed_context() {
     let controller_artifact =
         example_artifact("tests/fixtures/runtime/context_closed_icc/controller.ag", "context-closed-icc-controller");
@@ -1519,8 +1626,8 @@ actor Launcher owns LauncherState {
     }
     emits next: Launcher {
         ChildState child_state = {
-            amount: child.inputs.before.state.amount + 1,
-            updated_at: child.inputs.before.state.updated_at + temporal(1),
+            amount: child.inputs.before.amount + 1,
+            updated_at: child.inputs.before.updated_at + temporal(1),
             detail: ChildDetail { count: 1 },
         };
 

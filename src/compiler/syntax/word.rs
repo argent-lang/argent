@@ -12,6 +12,7 @@ pub const CONST: &str = "const";
 pub const COVENANT_ID: &str = "cov_id";
 pub const LEGACY_COVENANT_ID: &str = "covid";
 pub const DELEGATE: &str = "delegate";
+pub const DIGEST: &str = "digest";
 pub const ELSE: &str = "else";
 pub const EMITS: &str = "emits";
 pub const ENTRY: &str = "entry";

@@ -76,7 +76,7 @@ expects.
 Within the entry body, the observer can read named observed input state:
 
 ```rust
-MinterProxyState prev_proxy = asset.inputs.proxy.state;
+MinterProxyState prev_proxy = state(asset.inputs.proxy);
 ```
 
 and can require named observed outputs to become specific actors:
@@ -209,7 +209,7 @@ observes remote by self.agent_covid {
 emits {
     cell: Cell,
 } {
-    AgentState prev_state = remote.inputs.agent.state;
+    AgentState prev_state = state(remote.inputs.agent);
 
     AgentState next_state = {
         controller_id: prev_state.controller_id,
@@ -350,7 +350,7 @@ observes remote by self.agent_covid {
         agent: self.agent_type,
     }
 } {
-    AgentState current_state = remote.inputs.agent.state;
+    AgentState current_state = state(remote.inputs.agent);
     require(current_state.energy >= 0);
 }
 ```
@@ -393,7 +393,9 @@ Current and expected source-level ICC features:
   stored actor handle
 - `inputs { handle: actor_type<State> as observed, }`: bind an open observed actor handle
 - `outputs { handle: observed, }`: require an output to use the same open actor handle
-- `<observe>.inputs.<handle>.state`: read observed input state
+- `<observe>.inputs.<handle>.<field>`: project an authored field from an observed input
+- `state(<observe>.inputs.<handle>)`: reconstruct complete authored observed input state
+- `<observe>.inputs.<handle>.value` / `.cov_id`: read the observed input value or covenant id
 - `require <observe>.outputs become { ... };`: constrain observed outputs
 - `actor_type<State>`: first-class actor handle type
 

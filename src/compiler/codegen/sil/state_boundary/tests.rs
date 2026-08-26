@@ -30,7 +30,7 @@ fn aligned_active_input_is_direct_authored_state_with_the_covenant_domain_proof(
     assert_eq!(input.physical_type(), "State");
     assert_eq!(input.authored_sil_type(), "State");
     assert!(input.is_direct_authored());
-    assert_eq!(input.complete_authored_state(8).expect("aligned input is authored").into_sil(), "other");
+    assert_eq!(input.complete_authored_state(8).expect("aligned input is authored").into_sil(), "gen__other_state");
 
     let active = plan.active();
     assert_eq!(active.native_value(), "tx.inputs[this.activeInputIndex].value");
@@ -52,7 +52,7 @@ fn named_identity_input_is_already_an_authored_source_value() {
     assert!(input.is_direct_authored());
     let authored = input.complete_authored_state(8).expect("named input is authored");
     assert_eq!(authored.source().as_str(), "PeerState");
-    assert_eq!(authored.into_sil(), "peer");
+    assert_eq!(authored.into_sil(), "gen__peer_state");
 }
 
 #[test]
@@ -86,8 +86,8 @@ fn augmented_input_projects_only_user_fields_from_its_actor_keyed_type() {
 
     assert_eq!(input.physical_type(), "Gen__RightState");
     assert!(!input.is_direct_authored());
-    assert!(authored.contains("units: peer.units"), "{authored}");
-    assert!(!authored.contains("gen__"), "generated route fields must not enter authored state: {authored}");
+    assert!(authored.contains("units: gen__peer_state.units"), "{authored}");
+    assert!(!authored.contains("next_actor"), "generated route fields must not enter authored state: {authored}");
 }
 
 #[test]
@@ -160,7 +160,7 @@ fn entry_input_views_distinguish_complete_body_lowering_from_clause_expressions(
                     inputs { peer: Peer, }
                 }
                 emits none {
-                    require(source.amount >= remote.inputs.peer.state.amount);
+                    require(source.amount >= remote.inputs.peer.amount);
                 }
             }
 
@@ -187,7 +187,7 @@ fn entry_input_views_distinguish_complete_body_lowering_from_clause_expressions(
 }
 
 #[test]
-fn observed_input_plan_separates_reference_identity_from_legacy_state_access() {
+fn observed_input_plan_uses_the_canonical_reference_identity() {
     let program = program(include_str!("../../../../../tests/fixtures/emit/observed_template_witnesses/app.ag"));
     let model = Model::from_program(&program).expect("observed input fixture plans");
     let (actor, entry) = actor_entry(&model, "Local", "step");
@@ -196,8 +196,8 @@ fn observed_input_plan_separates_reference_identity_from_legacy_state_access() {
 
     assert_eq!(input.reference(), "asset.inputs.src");
     let view = EntryInputReferenceView::Complete(&plan);
-    assert!(view.compatibility_reference("asset.inputs.src.state").is_some());
-    assert!(view.compatibility_reference("asset.inputs.src").is_none());
+    assert!(view.reference("asset.inputs.src").is_some());
+    assert!(view.reference("state(asset.inputs.src)").is_none());
     assert_eq!(input.source_identity(), "ForeignState");
     assert!(input.is_direct_authored());
     let mut read = String::new();

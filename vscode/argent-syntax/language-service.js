@@ -37,7 +37,7 @@ const KEYWORD_DOCUMENTATION = Object.freeze({
   become:
     'Declares a terminal successor transition. Use `output <- self` to preserve the current script and complete physical state exactly.',
   self:
-    'The current Argent actor context. Bare `self` is valid only as the successor in `output <- self`; qualified `self.value`, `self.cov_id`, and authored state fields remain expressions. `self.state` is not a value.',
+    'The active input reference. Bare `self` is not an ordinary value. Use `self.value`, `self.cov_id`, or `self.<field>` to read it, `state(self)` to reconstruct authored state, and `output <- self` for exact continuation. `self.state` is not a value.',
 });
 
 const PRIMITIVE_TYPES = Object.freeze([
@@ -72,6 +72,13 @@ function standardModuleRelativePath(moduleName) {
 }
 
 const BUILTINS = Object.freeze([
+  {
+    name: 'state',
+    signature: 'state(inputReference) -> AuthoredState',
+    params: ['inputReference'],
+    documentation:
+      'Argent entry builtin: Reconstruct complete authored state from `self`, a consumed input handle, or an observed input reference.',
+  },
   {
     name: 'blake2b',
     signature: 'blake2b(data: byte[]) -> byte[32]',

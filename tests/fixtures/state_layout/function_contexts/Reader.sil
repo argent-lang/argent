@@ -65,6 +65,7 @@ contract Reader(
         SharedState value,
         SharedState[2] fixed,
         SharedState[] dynamic,
+        byte[32] expected_peer_digest,
         int gen__routed_prefix_len,
         int gen__routed_suffix_len
     ) {
@@ -73,7 +74,7 @@ contract Reader(
         require(OpCovInputCount(gen__cov_id) == 2);
         require(OpCovInputIdx(gen__cov_id, 0) == this.activeInputIndex);
         int gen__peer_input_idx = OpCovInputIdx(gen__cov_id, 1); // input Routed at cov[1]
-        Gen__RoutedState peer = readInputStateWithTemplate(
+        Gen__RoutedState gen__peer_state = readInputStateWithTemplate(
             gen__peer_input_idx,
             gen__routed_prefix_len,
             gen__routed_suffix_len,
@@ -85,45 +86,47 @@ contract Reader(
 
         SharedState[2] fixed_from_peer = SharedState[_]{ value, SharedState {
             // :: user declared fields
-            left: peer.left,
-            right: peer.right,
+            left: gen__peer_state.left,
+            right: gen__peer_state.right,
         } };
         SharedState[] dynamic_from_peer = SharedState[]{ SharedState {
             // :: user declared fields
-            left: peer.left,
-            right: peer.right,
+            left: gen__peer_state.left,
+            right: gen__peer_state.right,
         } };
         SharedState[3] fixed_appended = fixed.append(SharedState {
             // :: user declared fields
-            left: peer.left,
-            right: peer.right,
+            left: gen__peer_state.left,
+            right: gen__peer_state.right,
         });
         SharedState[] appended = dynamic.append(SharedState {
             // :: user declared fields
-            left: peer.left,
-            right: peer.right,
+            left: gen__peer_state.left,
+            right: gen__peer_state.right,
         });
         appended = appended.append(SharedState {
             // :: user declared fields
-            left: peer.left,
-            right: peer.right,
+            left: gen__peer_state.left,
+            right: gen__peer_state.right,
         });
         SharedState indexed = global_fixed(fixed)[0];
         SharedState passed = global_identity(global_dynamic(dynamic)[0]);
+        byte[32] peer_digest = blake3(byte[](((gen__peer_state.left) as byte[8]) + ((gen__peer_state.right) as byte[8])));
         require(fixed_from_peer[1].left + dynamic_from_peer[0].right >= 0);
         require(fixed_appended[2].right >= 0);
         require(appended.length >= dynamic.length);
         require(dynamic.append(SharedState {
             // :: user declared fields
-            left: peer.left,
-            right: peer.right,
+            left: gen__peer_state.left,
+            right: gen__peer_state.right,
         }).length > dynamic.length);
         require(SharedState[]{ SharedState {
             // :: user declared fields
-            left: peer.left,
-            right: peer.right,
+            left: gen__peer_state.left,
+            right: gen__peer_state.right,
         } }.length == 1);
         require(indexed.left + passed.right + marker >= 0);
+        require(peer_digest == expected_peer_digest);
     }
 
 }

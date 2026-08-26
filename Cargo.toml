@@ -48,5 +48,6 @@ silverscript-lang = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+blake3 = { workspace = true }
 kaspa-txscript-errors = { workspace = true }
 secp256k1 = { workspace = true }

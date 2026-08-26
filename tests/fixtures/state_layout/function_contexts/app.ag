@@ -124,25 +124,27 @@ actor Foreign owns ForeignState {
 }
 
 actor Reader owns ForeignState {
-    entry inspect(SharedState value, SharedState[2] fixed, SharedState[] dynamic)
+    entry inspect(SharedState value, SharedState[2] fixed, SharedState[] dynamic, byte[32] expected_peer_digest)
     consumes {
         peer: Routed,
     }
     emits none {
-        SharedState[2] fixed_from_peer = SharedState[_]{ value, peer };
-        SharedState[] dynamic_from_peer = SharedState[]{ peer };
-        SharedState[3] fixed_appended = fixed.append(peer);
-        SharedState[] appended = dynamic.append(peer);
-        appended = appended.append(peer);
+        SharedState[2] fixed_from_peer = SharedState[_]{ value, state(peer) };
+        SharedState[] dynamic_from_peer = SharedState[]{ state(peer) };
+        SharedState[3] fixed_appended = fixed.append(state(peer));
+        SharedState[] appended = dynamic.append(state(peer));
+        appended = appended.append(state(peer));
         SharedState indexed = global_fixed(fixed)[0];
         SharedState passed = global_identity(global_dynamic(dynamic)[0]);
+        byte[32] peer_digest = digest(state(peer));
 
         require(fixed_from_peer[1].left + dynamic_from_peer[0].right >= 0);
         require(fixed_appended[2].right >= 0);
         require(appended.length >= dynamic.length);
-        require(dynamic.append(peer).length > dynamic.length);
-        require(SharedState[]{ peer }.length == 1);
+        require(dynamic.append(state(peer)).length > dynamic.length);
+        require(SharedState[]{ state(peer) }.length == 1);
         require(indexed.left + passed.right + marker >= 0);
+        require(peer_digest == expected_peer_digest);
     }
 }
 

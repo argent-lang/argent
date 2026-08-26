@@ -16,7 +16,7 @@ actor Controller owns ControllerState {
         }
     }
     emits next: Controller {
-        AssetState payment = flow.inputs.payment.state;
+        AssetState payment = state(flow.inputs.payment);
         AssetState reserve = {
             owner: next_owner,
             amount: payment.amount,

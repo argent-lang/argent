@@ -9,7 +9,9 @@ mod state_types;
 mod state_values;
 mod token_refs;
 
-pub(super) use body::{lower_entry_body, lower_entry_expr, reject_function_physical_state_constructors};
+pub(super) use body::{
+    lower_entry_body, lower_entry_expr, reject_function_input_state_calls, reject_function_physical_state_constructors,
+};
 pub(super) use functions::{GlobalFunctionLowerer, validate_actor_function_captures};
 pub(super) use state_boundary::{
     EntryInputReferencePlan, EntryInputReferenceView, plan_actor_output_state, plan_entry_input_references, plan_open_output_state,

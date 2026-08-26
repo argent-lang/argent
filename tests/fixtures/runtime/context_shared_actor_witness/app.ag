@@ -28,7 +28,7 @@ actor Controller owns ControllerState {
     }
     emits next: Controller {
         PairState observed_next = {
-            amount: existing.inputs.anchor.state.amount + 1,
+            amount: existing.inputs.anchor.amount + 1,
         };
         PairState spawned = {
             amount: spawned_amount,
