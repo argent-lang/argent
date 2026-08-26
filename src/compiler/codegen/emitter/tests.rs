@@ -3423,6 +3423,60 @@ fn rejects_authored_physical_state_constructors() {
 }
 
 #[test]
+fn rejects_unclassified_authored_state_constructor_components() {
+    let err = emit_inline_error(
+        r#"
+            fn validation_call() -> int {
+                return 1;
+            }
+
+            state CounterState { int count; }
+
+            actor Counter owns CounterState {
+                entry inspect() emits none {
+                    CounterState snapshot = CounterState {
+                        count: 1,
+                        validation_call(),
+                    };
+                    require(snapshot.count == 1);
+                }
+            }
+
+            app Test { actor Counter; }
+        "#,
+    );
+
+    assert!(err.to_string().contains("state constructor component"), "unexpected error: {err}");
+}
+
+#[test]
+fn preserves_trivia_between_authored_state_type_and_constructor() {
+    let (actors, _) = inline_actor_sil_and_artifact(
+        "authored-state-constructor-trivia",
+        r#"
+            state CounterState { int count; }
+
+            actor Counter owns CounterState {
+                entry inspect() emits none {
+                    CounterState snapshot = CounterState /* authored */ {
+                        count: 1,
+                    };
+                    CounterState trailing = CounterState {
+                        count: 2,
+                        /* trailing constructor trivia */
+                    };
+                    require(snapshot.count == 1 && trailing.count == 2);
+                }
+            }
+
+            app Test { actor Counter; }
+        "#,
+    );
+
+    assert!(actors["Counter"].contains("State /* authored */ {"), "{}", actors["Counter"]);
+}
+
+#[test]
 fn authenticated_physical_state_values_can_be_bound_and_destructured() {
     inline_actor_sil_and_artifact(
         "physical-state-binding",

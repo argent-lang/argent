@@ -31,14 +31,14 @@ byte[32] direct = digest(state(self));
 byte[32] local = digest(snapshot);
 ```
 
-The direct form includes the expansion digest. The named form currently emits:
+The direct form included the expansion digest. The named form previously emitted:
 
 ```rust
 byte[32] local = blake3(byte[](0x));
 ```
 
 Expanded source declarations have no ordinary fields, so the legacy field
-packer hashes an empty payload.
+packer hashed an empty payload.
 
 The shared encoder handles expansion digests, explicit empty payloads, and
 excludes generated route fields. Broader typed expression support remains in
@@ -54,11 +54,13 @@ Completion criteria:
 - either support `digest(snapshot())` and other proven authored expressions,
   or explicitly document the narrower named-value rule.
 
-### 2. [ ] Make state-constructor parsing fail closed
+### 2. [x] Make state-constructor parsing fail closed
 
-**Status:** Confirmed locally. Blocker; source code is silently removed.
+**Resolved:** Every nontrivia top-level constructor component must be a valid
+`name: expression` field or compilation fails with an Argent diagnostic.
 
-The handwritten field splitter drops any top-level component without a colon:
+The handwritten field splitter previously dropped any top-level component
+without a colon:
 
 ```rust
 CounterState candidate = CounterState {
@@ -67,11 +69,10 @@ CounterState candidate = CounterState {
 };
 ```
 
-This compiles, but `validation_call()` does not appear in generated Sil.
+This compiled, but `validation_call()` did not appear in generated Sil.
 
-State constructors must use structured Sil AST fields, or another parser that
-proves it consumed the complete constructor. Every malformed or unclassified
-component must produce an Argent diagnostic.
+The existing focused parser now proves that it consumed every component.
+Malformed or unclassified components are never discarded.
 
 Also preserve valid comments and trivia. For example, this should not depend
 on the textual `split_state_constructor` heuristic:

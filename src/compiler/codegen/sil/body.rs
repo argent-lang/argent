@@ -9,7 +9,7 @@ use crate::compiler::model::{
     observed_is_dynamic_binding, observed_open_bindings, observed_open_state_for_decl, parse_actor_enum_selector,
     parse_actor_enum_variant, spawn_target_state,
 };
-use crate::compiler::naming::to_snake;
+use crate::compiler::naming::{is_identifier, to_snake};
 use crate::compiler::syntax::body::{
     EntryBinding, EntryLocalDecl, EntryRoute, EntryStatement, EntryStructDestructure, EntrySuccessor,
 };
@@ -1623,7 +1623,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
 
     fn lower_authored_state_object(&self, state_name: &str, sil_type: &str, body: &str, indent: usize) -> Result<String> {
         if let Some(expansion) = self.model.state(state_name)?.expansion.as_ref() {
-            let fields = parse_state_fields(body);
+            let fields = parse_state_fields(body)?;
             let mut pending = fields.iter().cloned().collect::<BTreeMap<_, _>>();
             if pending.len() != fields.len() {
                 return Err(ArgentError::new(format!("state `{state_name}` constructor contains duplicate fields")));
@@ -1656,7 +1656,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             return self.render_state_object(state_name, sil_type, &lowered_fields, indent);
         }
         let state = self.model.storage_state(state_name)?;
-        let fields = parse_state_fields(body)
+        let fields = parse_state_fields(body)?
             .into_iter()
             .map(|(name, expr)| {
                 let expected = state
@@ -1977,18 +1977,30 @@ fn contains_call_named(expr: &str, name: &str) -> Result<bool> {
     }))
 }
 
-fn parse_state_fields(body: &str) -> Vec<(String, String)> {
-    split_top_level_commas(body)
-        .into_iter()
-        .filter_map(|entry| {
-            let entry = entry.trim();
-            if entry.is_empty() {
-                return None;
+fn parse_state_fields(body: &str) -> Result<Vec<(String, String)>> {
+    let mut fields = Vec::new();
+    for component in split_top_level_commas(body) {
+        let component = component.trim();
+        if component.is_empty() {
+            continue;
+        }
+        let Some((name, expr)) = split_top_level_colon(component) else {
+            if matches!(lex(component)?.as_slice(), [Token { kind: TokenKind::Eof, .. }]) {
+                continue;
             }
-            let (name, expr) = split_top_level_colon(entry)?;
-            Some((name.trim().to_string(), expr.trim().to_string()))
-        })
-        .collect()
+            return Err(ArgentError::new(format!("state constructor component `{component}` must use `name: expression`")));
+        };
+        let name = name.trim();
+        let expr = expr.trim();
+        if !is_identifier(name) {
+            return Err(ArgentError::new(format!("state constructor component `{component}` has invalid field name `{name}`")));
+        }
+        if expr.is_empty() {
+            return Err(ArgentError::new(format!("state constructor component `{component}` has an empty expression")));
+        }
+        fields.push((name.to_string(), expr.to_string()));
+    }
+    Ok(fields)
 }
 
 fn split_top_level_colon(input: &str) -> Option<(&str, &str)> {

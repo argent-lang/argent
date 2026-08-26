@@ -3,6 +3,13 @@ use std::path::PathBuf;
 use super::*;
 
 #[test]
+fn state_constructor_fields_require_names_and_expressions() {
+    for body in [": 1", "count:", "1count: 1"] {
+        assert!(parse_state_fields(body).is_err(), "malformed component `{body}` must be rejected");
+    }
+}
+
+#[test]
 fn registry_covers_every_entry_namespace_role() {
     let module = crate::compiler::syntax::parser::parse_module(
         PathBuf::from("entry-namespace.ag"),
