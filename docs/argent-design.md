@@ -12,10 +12,11 @@ those pieces usable from Argent.
 
 - Argent emits plain Silverscript, not Silverscript covenant macros.
 - User state is declared once with `state`.
-- Each source state remains available as an authored Sil struct. A contract's
-  physical `State` may additionally contain compiler-generated fields.
-- [State layout boundary](state-layout-boundary.md) defines how
-  authored values cross into physical contract state.
+- Each source state remains available as an authored value. Its contract-local
+  Sil representation can be `State` or a named struct. A contract's physical
+  `State` may additionally contain compiler-generated fields.
+- [Compiler design](compiler-design.md) defines how authored values cross into
+  physical contract state.
 - `actor` owns persistent covenant state.
 - `entry` declares callable transition paths.
 - `emits` declares authorized output shape.
@@ -341,6 +342,63 @@ state WalletState {
     Payload payload;
 }
 ```
+
+### Input references and authored state
+
+Entries use the same read interface for the active input, consumed inputs, and
+observed inputs:
+
+```text
+self
+peer
+asset.inputs.src
+```
+
+These names are input references. They are not authored state values. Each
+reference supports these reads:
+
+```rust
+ref.value
+ref.cov_id
+ref.<authored_field>
+```
+
+A field read projects one field from authenticated physical state. Use
+`state(ref)` to reconstruct the complete authored state:
+
+```rust
+AccountState current = state(self);
+AccountState consumed = state(peer);
+AccountState observed = state(asset.inputs.src);
+```
+
+`state(ref)` is available only in an entry body, including successor state
+expressions. It is not available in clause expressions or in global or actor
+functions. It excludes compiler-owned route fields and preserves the declared
+state type. A function that needs the value receives it through a parameter.
+
+`digest(authored_state)` computes the Blake3 digest of the authored state's
+storage payload. It excludes compiler-owned route fields. Use
+`digest(state(peer))` when the source value comes from an input reference.
+`digest(...)` is also entry-body syntax and is not available in global or actor
+functions.
+
+For an expanded state, complete reconstruction requires validated openings for
+all expanded fields. A direct field read requires only the opening for that
+field. The compiler rejects reconstruction when an input provides only the
+stored digest.
+
+Exact continuation is a separate operation:
+
+```rust
+become next <- self;
+```
+
+It preserves the exact active covenant state. It does not reconstruct an
+authored value. Only `self` currently supports exact continuation.
+
+The compiler architecture for these conversions is in
+[Compiler design](compiler-design.md#state-layout-and-lowering).
 
 ## Template hash rule
 
