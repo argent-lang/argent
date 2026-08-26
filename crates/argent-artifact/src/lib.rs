@@ -650,9 +650,14 @@ pub struct RouteOutputHandleArtifact {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RouteArtifact {
     pub output: String,
-    pub actor: String,
-    pub template_id: String,
-    pub state_expr: String,
+    pub successor: RouteSuccessorArtifact,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RouteSuccessorArtifact {
+    ExactSelf,
+    Constructed { actor: String, template_id: String, state_expr: String },
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -1269,7 +1274,9 @@ impl TemplatePlanArtifact {
 
                 self.verify_route_recipe_ids(&entry_id, &entry.route_plan.witness_recipe_ids, &entry_recipe_ids, &recipes_by_id)?;
                 for route in &entry.routes {
-                    self.verify_route_template(&entry_id, route.actor.as_str(), route.template_id.as_str(), &templates_by_id)?;
+                    if let RouteSuccessorArtifact::Constructed { actor, template_id, .. } = &route.successor {
+                        self.verify_route_template(&entry_id, actor, template_id, &templates_by_id)?;
+                    }
                 }
             }
         }
@@ -1796,6 +1803,29 @@ mod tests {
     #[test]
     fn lowers_fixed_non_byte_arrays_as_structural_type() {
         assert_eq!(TypeArtifact::from_parts("int", Some(3)), TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Int), len: 3 });
+    }
+
+    #[test]
+    fn route_successor_artifacts_keep_constructed_only_fields_nested() {
+        let exact = RouteArtifact { output: "next".to_string(), successor: RouteSuccessorArtifact::ExactSelf };
+        let exact_json = serde_json::to_value(exact).expect("exact route serializes");
+        assert_eq!(exact_json["successor"]["kind"], "exact_self");
+        assert!(exact_json["successor"].get("actor").is_none());
+        assert!(exact_json["successor"].get("template_id").is_none());
+        assert!(exact_json["successor"].get("state_expr").is_none());
+
+        let constructed = RouteArtifact {
+            output: "next".to_string(),
+            successor: RouteSuccessorArtifact::Constructed {
+                actor: "Peer".to_string(),
+                template_id: "template/peer".to_string(),
+                state_expr: "next_peer".to_string(),
+            },
+        };
+        let constructed_json = serde_json::to_value(constructed).expect("constructed route serializes");
+        assert_eq!(constructed_json["successor"]["kind"], "constructed");
+        assert_eq!(constructed_json["successor"]["actor"], "Peer");
+        assert!(constructed_json.get("actor").is_none());
     }
 
     #[test]

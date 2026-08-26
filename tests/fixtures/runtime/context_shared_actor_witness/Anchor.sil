@@ -12,6 +12,10 @@ contract Anchor(
         byte[32] pair_type;
         int launches;
     }
+    struct AnchorState {
+        // :: user declared fields
+        int amount;
+    }
     struct PairState {
         // :: user declared fields
         int amount;
@@ -30,14 +34,14 @@ contract Anchor(
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Pair
 
-        PairState next = PairState {
+        PairState next_state = PairState {
             // :: user declared fields
             amount: amount + 1,
         };
         // :: become Pair
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            next,
+            next_state,
             gen__pair_prefix,
             gen__pair_suffix,
             gen__pair_template

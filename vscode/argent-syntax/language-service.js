@@ -33,6 +33,13 @@ const KEYWORDS = Object.freeze([
   'virtual',
 ]);
 
+const KEYWORD_DOCUMENTATION = Object.freeze({
+  become:
+    'Declares a terminal successor transition. Use `output <- self` to preserve the current script and complete physical state exactly.',
+  self:
+    'The active input reference. Bare `self` is not an ordinary value. Use `self.value`, `self.cov_id`, or `self.<field>` to read it, `state(self)` to reconstruct authored state, and `output <- self` for exact continuation. `self.state` is not a value.',
+});
+
 const PRIMITIVE_TYPES = Object.freeze([
   'actor_type',
   'bool',
@@ -65,6 +72,20 @@ function standardModuleRelativePath(moduleName) {
 }
 
 const BUILTINS = Object.freeze([
+  {
+    name: 'state',
+    signature: 'state(input_reference) -> AuthoredState',
+    params: ['input_reference'],
+    documentation:
+      'Argent entry builtin: Reconstruct complete authored state from `self`, a consumed input handle, or an observed input reference.',
+  },
+  {
+    name: 'digest',
+    signature: 'digest(authored_state) -> byte[32]',
+    params: ['authored_state'],
+    documentation:
+      'Argent entry builtin: Compute the Blake3 digest of an authored state storage payload. Reconstruct input references explicitly, for example `digest(state(peer))`; compiler-owned route fields are excluded.',
+  },
   {
     name: 'blake2b',
     signature: 'blake2b(data: byte[]) -> byte[32]',
@@ -283,6 +304,14 @@ function ident(token, value) {
 
 function symbol(token, value) {
   return token && token.kind === 'symbol' && token.value === value;
+}
+
+function builtinCall(tokens, index) {
+  const token = tokens[index];
+  if (!ident(token) || !symbol(tokens[index + 1], '(')) {
+    return undefined;
+  }
+  return BUILTINS.find((builtin) => builtin.name === token.value);
 }
 
 function normalizedSlice(source, start, end) {
@@ -552,7 +581,11 @@ function actorMembers(source, tokens, openIndex, closeIndex) {
   const starts = [];
   let depth = 1;
   for (let index = openIndex + 1; index < end; index += 1) {
-    if (depth === 1 && (ident(tokens[index], 'entry') || ident(tokens[index], 'delegate')) && ident(tokens[index + 1])) {
+    if (
+      depth === 1 &&
+      (ident(tokens[index], 'fn') || ident(tokens[index], 'entry') || ident(tokens[index], 'delegate')) &&
+      ident(tokens[index + 1])
+    ) {
       starts.push(index);
     }
     if (symbol(tokens[index], '{')) {
@@ -564,20 +597,24 @@ function actorMembers(source, tokens, openIndex, closeIndex) {
 
   return starts.map((start, memberIndex) => {
     const keyword = tokens[start].value;
+    const kind = keyword === 'fn' ? 'function' : keyword;
     const nameToken = tokens[start + 1];
     const segmentEnd = starts[memberIndex + 1] ?? end;
     const parameters = functionParameters(source, tokens, start + 1);
     const paramsOpen = start + 2;
     const paramsClose = matchingSymbolIndex(tokens, paramsOpen, '(', ')');
-    const signatureEnd = paramsClose >= 0 ? tokens[paramsClose].end : nameToken.end;
     const { openIndex: bodyOpenIndex, ...bodyRange } = callableBody(
       source,
       tokens,
       paramsClose >= 0 ? paramsClose + 1 : start + 2,
       segmentEnd,
     );
+    let signatureEnd = paramsClose >= 0 ? tokens[paramsClose].end : nameToken.end;
+    if (keyword === 'fn' && bodyOpenIndex >= 0) {
+      signatureEnd = tokens[bodyOpenIndex].start;
+    }
     return declaration(
-      keyword,
+      kind,
       nameToken,
       normalizedSlice(source, tokens[start].start, signatureEnd),
       leadingDocumentation(source, tokens[start].start),
@@ -803,9 +840,11 @@ function scanDocument(source) {
 
 module.exports = {
   BUILTINS,
+  KEYWORD_DOCUMENTATION,
   KEYWORDS,
   PRIMITIVE_DOCUMENTATION,
   PRIMITIVE_TYPES,
+  builtinCall,
   scanDocument,
   standardModuleRelativePath,
   tokenize,

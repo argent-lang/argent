@@ -3,6 +3,40 @@
 This file contains small follow-up items. Each item gives its area, context,
 and required work.
 
+## Isolate state-boundary code generation
+
+**Area:** State-boundary code generation.
+
+**Context:** `state_boundary.rs` still imports the complete emitter module.
+Layout planning and emission also calculate some generated names separately.
+Generated output fields lose their typed provenance when they become a map of
+field IDs to Sil expressions.
+
+**Follow-up:** Give the state boundary explicit naming, packing, witness, and
+rendering inputs instead of importing `emitter::*`. Centralize generated actor
+template and route-family field names. Keep each generated field source typed
+until final Sil rendering instead of reducing it to a string expression.
+
+## Define conversion from physical `State`
+
+When both state-layout relations are identity, `CounterState` and physical
+`State` have exactly the same fields. This currently compiles:
+
+```rust
+State raw = readInputState(index);
+CounterState value = raw;
+```
+
+Using `raw` directly as the successor state is rejected:
+
+```rust
+become next <- Counter(raw);
+```
+
+Decide whether the typed assignment is an intentional conversion or whether
+both forms should follow the same rule. Direct `readInputState` use remains
+low-level and developer-managed; it does not authenticate the input.
+
 ## Infer the leader of a singleton-app delegate
 
 **Area:** Delegate modeling, covenant-input validation, and artifacts.

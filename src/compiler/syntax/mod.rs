@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 
 pub use self::body::EntryBody;
+pub(crate) use self::body::{EntryRoute, RouteId};
 
 pub mod body;
 pub mod lexer;
@@ -23,6 +24,7 @@ pub struct Module {
     pub imports: Vec<Import>,
     pub consts: Vec<ConstDecl>,
     pub states: Vec<StateDecl>,
+    /// Global functions shared by every actor contract.
     pub functions: Vec<FunctionDecl>,
     pub actors: Vec<ActorDecl>,
     pub actor_enums: Vec<ActorEnumDecl>,
@@ -82,6 +84,8 @@ pub struct FunctionDecl {
 pub struct ActorDecl {
     pub name: String,
     pub state: String,
+    /// Contract-scoped functions available only to this actor.
+    pub functions: Vec<FunctionDecl>,
     pub entries: Vec<EntryDecl>,
 }
 
@@ -101,8 +105,8 @@ pub struct EntryDecl {
     pub spawns: Vec<SpawnDecl>,
     pub emits: EmitSpec,
     pub body: EntryBody,
-    pub routes: Vec<RouteCall>,
-    pub terminal_route_sets: Vec<Vec<RouteCall>>,
+    pub(crate) routes: Vec<EntryRoute>,
+    pub(crate) terminal_route_sets: Vec<Vec<RouteId>>,
 }
 
 #[derive(Debug, Clone)]
@@ -169,13 +173,6 @@ pub struct EmitOutput {
 pub struct AppDecl {
     pub name: String,
     pub actors: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct RouteCall {
-    pub output: String,
-    pub actor: String,
-    pub state: String,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

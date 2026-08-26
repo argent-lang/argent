@@ -7,6 +7,10 @@ contract Controller(
     int init_tick
 ) {
     // :: state layouts
+    struct ControllerState {
+        // :: user declared fields
+        int tick;
+    }
     struct PeerState {
         // :: user declared fields
         int count;
@@ -26,7 +30,7 @@ contract Controller(
         require(OpCovInputCount(gen__cov_id) == 2);
         require(OpCovInputIdx(gen__cov_id, 0) == this.activeInputIndex);
         int gen__peer_input_idx = OpCovInputIdx(gen__cov_id, 1); // input Peer at cov[1]
-        PeerState peer = readInputStateWithTemplate(
+        PeerState gen__peer_state = readInputStateWithTemplate(
             gen__peer_input_idx,
             gen__peer_prefix_len,
             gen__peer_suffix_len,
@@ -35,16 +39,17 @@ contract Controller(
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        int gen__peer_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output peer: Peer
+        // :: output next_peer: Peer
+        int gen__next_peer_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
-        PeerState next_peer = PeerState {
+        PeerState peer_state = PeerState {
             // :: user declared fields
-            count: peer.count + 1,
+            count: gen__peer_state.count + 1,
         };
         // :: become Peer
         validateOutputStateWithInputTemplate(
-            gen__peer_output_idx,
-            next_peer,
+            gen__next_peer_output_idx,
+            peer_state,
             gen__peer_input_idx,
             gen__peer_prefix_len,
             gen__peer_suffix_len,

@@ -11,7 +11,8 @@ use crate::error::{ArgentError, Result};
 
 use super::link::{LinkedContext, link_imported_actors};
 use super::{
-    ActorEnumInfo, ActorModel, AppActors, CompilerRoutePlan, CompilerRoutePlanner, Model, default_route_planner, infer_direct_routes,
+    ActorEnumInfo, ActorModel, AppActors, CompilerRoutePlan, CompilerRoutePlanner, Model, build_contract_state_lowerings,
+    default_route_planner, infer_direct_routes,
 };
 
 fn compute_leader_for(actors: &[&ActorDecl]) -> BTreeMap<String, Vec<EntryRefArtifact>> {
@@ -116,7 +117,7 @@ impl<'a> Model<'a> {
         let CompilerRoutePlan { families: route_families, leaves_by_actor: route_leaves_by_actor, transitions: route_transitions } =
             infer_direct_routes(&actor_models, &app_actors, route_planner)?;
         let leader_for = compute_leader_for(&actors);
-        let model = Self {
+        let mut model = Self {
             app_name,
             app_dependencies: dependencies
                 .iter()
@@ -137,8 +138,10 @@ impl<'a> Model<'a> {
             leader_for,
             route_leaves_by_actor,
             route_transitions,
+            state_lowering_by_actor: BTreeMap::new(),
         };
         model.validate()?;
+        model.state_lowering_by_actor = build_contract_state_lowerings(&model)?;
         Ok(model)
     }
 }

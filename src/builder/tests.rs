@@ -307,12 +307,12 @@ fn context_executes_dynamic_byte_array_sigscript_arguments_at_varying_lengths() 
             actor Blob owns BlobState {
                 entry store(byte[] data) emits next: Blob {
                     unrestricted(next.value);
-                    BlobState next = {
+                    BlobState next_state = {
                         size: data.length,
                         digest: blake2b(byte[](data)),
                     };
 
-                    become next <- Blob(next);
+                    become next <- Blob(next_state);
                 }
             }
 
@@ -806,10 +806,10 @@ fn context_executes_and_pins_invocation_uid() {
                     byte[32] uid = invocation_uid(domain);
                     require(uid == expected);
 
-                    IssuerState next = {
+                    IssuerState next_state = {
                         last_uid: uid,
                     };
-                    become next <- Issuer(next);
+                    become next <- Issuer(next_state);
                 }
             }
 
@@ -899,12 +899,12 @@ fn context_builds_and_verifies_signed_single_output() {
                     unrestricted(next.value);
                     require(checkSig(owner_sig, owner));
 
-                    CounterState next = {
+                    CounterState next_state = {
                         owner: owner,
                         count: count + delta,
                     };
 
-                    become next <- Counter(next);
+                    become next <- Counter(next_state);
                 }
             }
 
@@ -1046,6 +1046,113 @@ fn context_builds_paired_transfer_and_enforces_mass_limits() {
 }
 
 #[test]
+fn context_executes_consumed_state_digest_commitment() {
+    let artifact = inline_artifact(
+        "context-consumed-state-digest",
+        r#"
+            state LeaderState {
+                int nonce;
+            }
+
+            state PeerState {
+                int left;
+                int right;
+            }
+
+            state ArchiveState {
+                int marker;
+            }
+
+            actor Leader owns LeaderState {
+                entry verify(byte[32] expected_peer_digest)
+                consumes {
+                    peer: Peer,
+                }
+                emits next: Leader {
+                    require(digest(state(peer)) == expected_peer_digest);
+                    unrestricted(next.value);
+                    become next <- self;
+                }
+            }
+
+            actor Peer owns PeerState {
+                delegate participate() consumes {
+                    leader: Leader,
+                } {}
+
+                entry archive() emits next: Archive {
+                    ArchiveState next_state = {
+                        marker: left + right,
+                    };
+                    unrestricted(next.value);
+                    become next <- Archive(next_state);
+                }
+            }
+
+            actor Archive owns ArchiveState {
+                entry hold() emits none {
+                    require(marker >= 0);
+                }
+            }
+
+            app DigestApp {
+                actor Leader;
+                actor Peer;
+                actor Archive;
+            }
+            "#,
+    );
+    assert!(
+        artifact
+            .sil_abi
+            .contract("Peer")
+            .expect("Peer contract exists")
+            .runtime_state
+            .fields
+            .iter()
+            .any(|field| field.name == "gen__archive_template"),
+        "the runtime test must prove generated route fields are excluded from the authored digest"
+    );
+
+    let builder = TxBuilder::new(&artifact).expect("builder accepts consumed-state digest artifact");
+    let covenant_id = Hash::from_bytes([0x67; 32]);
+    let leader_state = state! { nonce: 3 };
+    let peer_state = state! { left: 7, right: 11 };
+    let leader_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0x68; 32]), 0);
+    let peer_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0x69; 32]), 0);
+    let leader_utxo =
+        builder.covenant_utxo("Leader", leader_state.clone(), 3_000, 0, false, Some(covenant_id)).expect("Leader UTXO builds");
+    let peer_utxo = builder
+        .covenant_utxo("Peer", peer_state.clone(), 2_000, 0, false, Some(covenant_id))
+        .expect("Peer UTXO with generated route context builds");
+
+    let mut authored_payload = kaspa_txscript::serialize_i64(7, Some(8)).expect("left packs as a fixed-width Sil int").into_vec();
+    authored_payload
+        .extend_from_slice(&kaspa_txscript::serialize_i64(11, Some(8)).expect("right packs as a fixed-width Sil int").into_vec());
+    let expected_digest = blake3::hash(&authored_payload).as_bytes().to_vec();
+    let context = |digest: Vec<u8>| {
+        TxContext::new()
+            .actor_input(
+                "Leader",
+                leader_state.clone(),
+                EntryCall::new("verify").args(args![digest]),
+                leader_outpoint,
+                leader_utxo.clone(),
+                0,
+            )
+            .actor_input("Peer", peer_state.clone(), "participate", peer_outpoint, peer_utxo.clone(), 0)
+            .actor_output("Leader", leader_state.clone(), CovenantBinding::new(0, covenant_id), 3_000)
+    };
+
+    builder.build(&context(expected_digest.clone())).expect("authenticated authored peer-state digest matches");
+
+    let mut wrong_digest = expected_digest;
+    wrong_digest[0] ^= 1;
+    let err = builder.build(&context(wrong_digest)).expect_err("wrong authored peer-state digest must fail contract execution");
+    assert!(matches!(err, BuilderError::InputScript { input_index: 0, .. }), "unexpected error: {err}");
+}
+
+#[test]
 fn context_builds_closed_icc_without_observed_context() {
     let controller_artifact =
         example_artifact("tests/fixtures/runtime/context_closed_icc/controller.ag", "context-closed-icc-controller");
@@ -1167,76 +1274,8 @@ fn context_builds_closed_icc_without_observed_context() {
 }
 
 #[test]
-fn context_executes_static_observation_between_same_app_covenants() {
-    let artifact = inline_artifact(
-        "same-app-static-observe",
-        r#"
-            state ForeignState {
-                int amount;
-            }
-
-            state LocalState {
-                cov_id foreign_id;
-                int steps;
-            }
-
-            state TargetState {
-                int units;
-            }
-
-            actor Foreign owns ForeignState {
-                entry hold() emits next: Foreign {
-                    unrestricted(next.value);
-                    become next <- Foreign(self.state);
-                }
-
-                entry route() emits next: Target {
-                    unrestricted(next.value);
-                    TargetState next = {
-                        units: 0,
-                    };
-                    become next <- Target(next);
-                }
-            }
-
-            actor Local owns LocalState {
-                entry step()
-                observes remote by self.foreign_id {
-                    inputs {
-                        src: Foreign,
-                    }
-                    outputs {
-                        next: Foreign,
-                    }
-                }
-                emits next: Local {
-                    unrestricted(next.value);
-                    ForeignState next_foreign = remote.inputs.src.state;
-                    require remote.outputs become {
-                        next <- Foreign(next_foreign),
-                    };
-
-                    LocalState next_local = {
-                        foreign_id: foreign_id,
-                        steps: steps + 1,
-                    };
-                    become next <- Local(next_local);
-                }
-            }
-
-            actor Target owns TargetState {
-                entry hold() emits none {
-                    require(1 == 1);
-                }
-            }
-
-            app Test {
-                actor Foreign;
-                actor Local;
-                actor Target;
-            }
-            "#,
-    );
+fn actor_and_global_functions_execute_through_static_observation() {
+    let artifact = example_artifact("tests/fixtures/emit/in_app_observe_routes/app.ag", "same-app-static-observe");
     let foreign_template =
         artifact.argent.template_plan.templates.iter().find(|template| template.actor == "Foreign").expect("Foreign template exists");
     assert_ne!(
@@ -1249,6 +1288,8 @@ fn context_executes_static_observation_between_same_app_covenants() {
     let local_initial = state! { foreign_id: foreign_covenant_id, steps: 0 };
     let local_next = state! { foreign_id: foreign_covenant_id, steps: 1 };
     let foreign_state = state! { amount: 7 };
+    let local_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0x76; 32]), 0);
+    let foreign_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0x77; 32]), 0);
     let local_utxo =
         builder.covenant_utxo("Local", local_initial.clone(), 2_000, 0, false, Some(local_covenant_id)).expect("local UTXO builds");
     let foreign_utxo = builder
@@ -1257,29 +1298,23 @@ fn context_executes_static_observation_between_same_app_covenants() {
     let mut transaction = builder
         .build(
             &TxContext::new()
-                .actor_input(
-                    "Local",
-                    local_initial,
-                    "step",
-                    TransactionOutpoint::new(TransactionId::from_bytes([0x76; 32]), 0),
-                    local_utxo.clone(),
-                    0,
-                )
-                .actor_input(
-                    "Foreign",
-                    foreign_state.clone(),
-                    "hold",
-                    TransactionOutpoint::new(TransactionId::from_bytes([0x77; 32]), 0),
-                    foreign_utxo.clone(),
-                    0,
-                )
+                .actor_input("Local", local_initial.clone(), "step", local_outpoint, local_utxo.clone(), 0)
+                .actor_input("Foreign", foreign_state.clone(), "hold", foreign_outpoint, foreign_utxo.clone(), 0)
                 .actor_output("Local", local_next, CovenantBinding::new(0, local_covenant_id), 2_000)
-                .actor_output("Foreign", foreign_state, CovenantBinding::new(1, foreign_covenant_id), 1_000),
+                .actor_output("Foreign", foreign_state.clone(), CovenantBinding::new(1, foreign_covenant_id), 1_000),
         )
         .expect("same-app static observation builds");
 
-    execute_transaction_with_covenants(&mut transaction, vec![local_utxo, foreign_utxo])
+    execute_transaction_with_covenants(&mut transaction, vec![local_utxo.clone(), foreign_utxo.clone()])
         .expect("same-app static observation executes");
+
+    let wrong_result = TxContext::new()
+        .actor_input("Local", local_initial, "step", local_outpoint, local_utxo, 0)
+        .actor_input("Foreign", foreign_state.clone(), "hold", foreign_outpoint, foreign_utxo, 0)
+        .actor_output("Local", state! { foreign_id: foreign_covenant_id, steps: 2 }, CovenantBinding::new(0, local_covenant_id), 2_000)
+        .actor_output("Foreign", foreign_state, CovenantBinding::new(1, foreign_covenant_id), 1_000);
+    let err = builder.build(&wrong_result).expect_err("actor and global functions determine the next step count");
+    assert!(matches!(err, BuilderError::InputScript { input_index: 0, .. }));
 }
 
 #[test]
@@ -1576,7 +1611,7 @@ state LauncherState {
 
 actor Launcher owns LauncherState {
     entry launch(cov_id child_id)
-    observes child by child_id {
+    observes existing_child by child_id {
         inputs {
             before: ChildApp::Child,
         }
@@ -1591,12 +1626,12 @@ actor Launcher owns LauncherState {
     }
     emits next: Launcher {
         ChildState child_state = {
-            amount: child.inputs.before.state.amount + 1,
-            updated_at: child.inputs.before.state.updated_at + temporal(1),
+            amount: existing_child.inputs.before.amount + 1,
+            updated_at: existing_child.inputs.before.updated_at + temporal(1),
             detail: ChildDetail { count: 1 },
         };
 
-        require child.outputs become {
+        require existing_child.outputs become {
             after <- ChildApp::Child(child_state),
         };
         unrestricted(children.outputs.child.value);
@@ -2520,11 +2555,11 @@ fn gate_less_route_family_rejects_selector_for_appended_rep() {
             actor Mux owns BoardState {
                 entry choose(MoveActor target) emits next: MoveActor {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         ply: ply + 1,
                     };
 
-                    become next <- target(next);
+                    become next <- target(next_state);
                 }
             }
 
@@ -2721,7 +2756,7 @@ fn same_template_shortcut_redeems_self_transition_and_rejects_changed_template()
             actor Foo owns FooState {
                 entry bump(int amount) emits next: Foo {
                     unrestricted(next.value);
-                    State next_state = {
+                    FooState next_state = {
                         count: count + amount,
                     };
                     become next <- Foo(next_state);

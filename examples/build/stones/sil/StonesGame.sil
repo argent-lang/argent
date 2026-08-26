@@ -35,6 +35,14 @@ contract StonesGame(
         int wins;
         int losses;
     }
+    struct GameState {
+        // :: user declared fields
+        byte[32] player_a;
+        byte[32] player_b;
+        int pile;
+        int max_take;
+        int turn;
+    }
     struct SettleState {
         // :: user declared fields
         byte[32] player_a;
@@ -52,7 +60,7 @@ contract StonesGame(
         int status;
     }
 
-    // :: global shared functions (vars prefixed with gen__glob_ for creating a unique namespace)
+    // :: global functions (isolated using the gen__glob_ namespace)
     function player_ref(byte[32] gen__glob_owner, byte[32] gen__glob_player_id) : byte[32] {
         return blake2b(byte[](gen__glob_owner + gen__glob_player_id));
     }
@@ -154,11 +162,7 @@ contract StonesGame(
                 gen__stones_settle_template
             );
         } else {
-            State next_game = State {
-                // :: generated fields
-                gen__player_template: gen__player_template,
-                gen__stones_game_template: gen__stones_game_template,
-                gen__stones_settle_template: gen__stones_settle_template,
+            GameState next_game = GameState {
                 // :: user declared fields
                 player_a: player_a,
                 player_b: player_b,
@@ -166,8 +170,20 @@ contract StonesGame(
                 max_take: max_take,
                 turn: other_side(turn),
             };
+            State gen__state_next_state = State {
+                // :: generated fields
+                gen__player_template: gen__player_template,
+                gen__stones_game_template: gen__stones_game_template,
+                gen__stones_settle_template: gen__stones_settle_template,
+                // :: user declared fields
+                player_a: next_game.player_a,
+                player_b: next_game.player_b,
+                pile: next_game.pile,
+                max_take: next_game.max_take,
+                turn: next_game.turn,
+            };
             // :: become StonesGame
-            validateOutputState(gen__next_output_idx, next_game);
+            validateOutputState(gen__next_output_idx, gen__state_next_state);
         }
     }
 

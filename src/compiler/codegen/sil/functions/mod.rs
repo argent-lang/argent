@@ -1,4 +1,4 @@
-//! Lowers Argent global functions into collision-free Sil function source.
+//! Owns function-specific namespace lowering and actor capture validation.
 //!
 //! Sil classifies names and their source spans; Argent resolves which names
 //! belong to the isolated global-function namespace.
@@ -7,17 +7,30 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 
 use crate::compiler::model::Model;
-use crate::compiler::syntax::{FunctionDecl, TypeRef};
+use crate::compiler::syntax::{ActorDecl, FunctionDecl, TypeRef};
 use crate::error::Result;
 
-use self::bindings::prefix_ranges;
+use self::bindings::{prefix_ranges, reject_expanded_field_captures};
 
 mod bindings;
 
 const VARIABLE_PREFIX: &str = "gen__glob_";
 
+pub(in crate::compiler::codegen) fn validate_actor_function_captures(actor: &ActorDecl, model: &Model<'_>) -> Result<()> {
+    let Some(expansion) = model.state(&actor.state)?.expansion.as_ref() else {
+        return Ok(());
+    };
+    let expanded_fields = expansion.digests.iter().map(|digest| digest.field.clone()).collect::<BTreeSet<_>>();
+    for function in &actor.functions {
+        let (source, body_span) = standalone_sil_function(function);
+        reject_expanded_field_captures(&source, body_span, &expanded_fields, &actor.name, &function.name)?;
+    }
+    Ok(())
+}
+
 pub(in crate::compiler::codegen) struct GlobalFunctionLowerer {
     constants: BTreeSet<String>,
+    actor_functions: BTreeSet<String>,
 }
 
 pub(in crate::compiler::codegen) struct LoweredFunction<'a> {
@@ -35,17 +48,23 @@ pub(in crate::compiler::codegen) struct LoweredParam<'a> {
 impl GlobalFunctionLowerer {
     pub(in crate::compiler::codegen) fn new(model: &Model<'_>) -> Self {
         let constants = model.consts.iter().map(|ct| ct.name.clone()).collect();
-        Self { constants }
+        let actor_functions =
+            model.actor_models.values().flat_map(|actor| actor.functions()).map(|function| function.name.clone()).collect();
+        Self { constants, actor_functions }
     }
 
     pub(in crate::compiler::codegen) fn lower<'a>(&self, function: &'a FunctionDecl) -> Result<LoweredFunction<'a>> {
-        lower_global_function(function, &self.constants)
+        lower_global_function(function, &self.constants, &self.actor_functions)
     }
 }
 
-fn lower_global_function<'a>(function: &'a FunctionDecl, constants: &BTreeSet<String>) -> Result<LoweredFunction<'a>> {
+fn lower_global_function<'a>(
+    function: &'a FunctionDecl,
+    constants: &BTreeSet<String>,
+    actor_functions: &BTreeSet<String>,
+) -> Result<LoweredFunction<'a>> {
     let (source, body_span) = standalone_sil_function(function);
-    let ranges = prefix_ranges(&source, body_span, constants, &function.name)?;
+    let ranges = prefix_ranges(&source, body_span, constants, actor_functions, &function.name)?;
     let params = function.params.iter().map(|param| LoweredParam { ty: &param.ty, name: prefixed(&param.name) }).collect();
     let body = apply_prefix(&function.body, &ranges);
     Ok(LoweredFunction { name: &function.name, params, return_ty: function.return_ty.as_ref(), body })
@@ -121,7 +140,7 @@ mod tests {
         let module = parse_module(PathBuf::from("test.ag"), source.to_string()).expect("module parses");
         let function = &module.functions[0];
         let constants = ["LIMIT".to_string()].into_iter().collect();
-        let lowered = lower_global_function(function, &constants).expect("variables prefix");
+        let lowered = lower_global_function(function, &constants, &BTreeSet::new()).expect("variables prefix");
 
         assert_eq!(lowered.params[0].name, "gen__glob_turn");
         assert_eq!(lowered.params[1].name, "gen__glob_index");
@@ -169,7 +188,8 @@ mod tests {
         let constants = ["LIMIT".to_string()].into_iter().collect();
 
         for function in &module.functions {
-            let err = lower_global_function(function, &constants).err().expect("constant shadowing must be rejected");
+            let err =
+                lower_global_function(function, &constants, &BTreeSet::new()).err().expect("constant shadowing must be rejected");
             assert!(
                 err.to_string().contains(&format!("global function `{}` binding `LIMIT` shadows a shared constant", function.name)),
                 "unexpected error: {err}"

@@ -17,6 +17,11 @@ contract Mux(
         // :: user declared fields
         int nonce;
     }
+    struct BoardState {
+        // :: user declared fields
+        int selector;
+        int ply;
+    }
 
     // :: route templates
     byte[32] gen__mux_template = gen__init_mux_template;
@@ -37,13 +42,18 @@ contract Mux(
         if (target == 1 /*KNIGHT*/) {
             require(selector >= 0);
         }
-        State next_board = State {
+        BoardState next_board = BoardState {
+            // :: user declared fields
+            selector: selector,
+            ply: ply + 1,
+        };
+        State gen__state_next_state = State {
             // :: generated fields
             gen__mux_template: gen__mux_template,
             gen__mux_routes: gen__mux_routes,
             // :: user declared fields
-            selector: selector,
-            ply: ply + 1,
+            selector: next_board.selector,
+            ply: next_board.ply,
         };
         int gen__target_selector = target;
         require(gen__target_selector >= 0);
@@ -54,7 +64,7 @@ contract Mux(
         // :: become target
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            next_board,
+            gen__state_next_state,
             gen__target_prefix,
             gen__target_suffix,
             gen__target_template
@@ -68,10 +78,7 @@ contract Mux(
         // :: output next: MoveActor
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
-        State next_board = State {
-            // :: generated fields
-            gen__mux_template: gen__mux_template,
-            gen__mux_routes: gen__mux_routes,
+        BoardState next_board = BoardState {
             // :: user declared fields
             selector: selector,
             ply: ply + 1,
@@ -82,10 +89,18 @@ contract Mux(
         byte[32] gen__target_template = byte[32](
             gen__mux_routes.slice(gen__target_selector * 32, gen__target_selector * 32 + 32)
         );
+        State gen__state_next_state = State {
+            // :: generated fields
+            gen__mux_template: gen__mux_template,
+            gen__mux_routes: gen__mux_routes,
+            // :: user declared fields
+            selector: next_board.selector,
+            ply: next_board.ply,
+        };
         // :: become target
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            next_board,
+            gen__state_next_state,
             gen__target_prefix,
             gen__target_suffix,
             gen__target_template
@@ -101,18 +116,23 @@ contract Mux(
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Pawn
 
-        State next_board = State {
-            // :: generated fields
-            gen__mux_template: gen__mux_template,
-            gen__mux_routes: gen__mux_routes,
+        BoardState next_board = BoardState {
             // :: user declared fields
             selector: selector,
             ply: ply + 1,
         };
+        State gen__state_next_state = State {
+            // :: generated fields
+            gen__mux_template: gen__mux_template,
+            gen__mux_routes: gen__mux_routes,
+            // :: user declared fields
+            selector: next_board.selector,
+            ply: next_board.ply,
+        };
         // :: become Pawn
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            next_board,
+            gen__state_next_state,
             gen__pawn_prefix,
             gen__pawn_suffix,
             gen__pawn_template
@@ -128,18 +148,23 @@ contract Mux(
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Knight
 
-        State next_board = State {
-            // :: generated fields
-            gen__mux_template: gen__mux_template,
-            gen__mux_routes: gen__mux_routes,
+        BoardState next_board = BoardState {
             // :: user declared fields
             selector: selector,
             ply: ply + 1,
         };
+        State gen__state_next_state = State {
+            // :: generated fields
+            gen__mux_template: gen__mux_template,
+            gen__mux_routes: gen__mux_routes,
+            // :: user declared fields
+            selector: next_board.selector,
+            ply: next_board.ply,
+        };
         // :: become Knight
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            next_board,
+            gen__state_next_state,
             gen__knight_prefix,
             gen__knight_suffix,
             gen__knight_template

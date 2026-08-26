@@ -18,14 +18,14 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "cell", "auth_index": 0, "actors": ["Cell"] }] },
           "consumes": [],
-          "routes": [{ "output": "cell", "actor": "Cell", "state": "next_cell" }]
+          "routes": [{ "output": "cell", "successor": { "kind": "constructed", "actor": "Cell", "state": "next_cell" } }]
         },
         {
           "name": "move",
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "source_cell", "auth_index": 0, "actors": ["Cell"] }, { "name": "target_cell", "auth_index": 1, "actors": ["Cell"] }] },
-          "consumes": [{ "name": "target_cell", "actor": "Cell" }],
-          "routes": [{ "output": "source_cell", "actor": "Cell", "state": "next_source" }, { "output": "target_cell", "actor": "Cell", "state": "next_target" }]
+          "consumes": [{ "name": "target_input", "actor": "Cell" }],
+          "routes": [{ "output": "source_cell", "successor": { "kind": "constructed", "actor": "Cell", "state": "next_source" } }, { "output": "target_cell", "successor": { "kind": "constructed", "actor": "Cell", "state": "next_target" } }]
         }
       ]
     }

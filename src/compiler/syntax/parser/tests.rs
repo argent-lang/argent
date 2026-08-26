@@ -94,6 +94,50 @@ fn parses_helper_functions_without_return_types() {
 }
 
 #[test]
+fn parses_actor_functions_separately_from_global_functions_and_entries() {
+    let module = parse_module(
+        PathBuf::from("actor-functions.ag"),
+        r#"
+            state CounterState {
+                int count;
+            }
+
+            fn global_double(int value) -> int {
+                return value * 2;
+            }
+
+            actor Counter owns CounterState {
+                fn current() -> int {
+                    return count;
+                }
+
+                entry inspect() emits none {
+                    require(current() >= 0);
+                }
+
+                fn authorize(int value) {
+                    require(value >= count);
+                }
+            }
+            "#
+        .to_string(),
+    )
+    .expect("actor functions parse alongside entries");
+
+    assert_eq!(module.functions.len(), 1);
+    assert_eq!(module.functions[0].name, "global_double");
+
+    let actor = &module.actors[0];
+    assert_eq!(actor.functions.len(), 2);
+    assert_eq!(actor.functions[0].name, "current");
+    assert_eq!(actor.functions[0].return_ty, Some(TypeRef::new("int")));
+    assert_eq!(actor.functions[1].name, "authorize");
+    assert_eq!(actor.functions[1].return_ty, None);
+    assert_eq!(actor.entries.len(), 1);
+    assert_eq!(actor.entries[0].name, "inspect");
+}
+
+#[test]
 fn rejects_name_first_parameters() {
     let err = parse_module(PathBuf::from("params.ag"), "fn helper(amount: int) -> int { return amount; }".to_string())
         .expect_err("name-first parameters must not parse");
@@ -152,8 +196,8 @@ fn parses_comma_separated_role_and_route_bindings() {
                     second: Actor
                 } {
                     become {
-                        first <- Actor(self.state),
-                        second <- Actor(self.state)
+                        first <- self,
+                        second <- self
                     };
                 }
             }
@@ -180,7 +224,7 @@ fn parses_named_single_output_shorthand() {
 
             actor Actor owns State {
                 entry update() emits result: Actor {
-                    become result <- Actor(self.state);
+                    become result <- self;
                 }
             }
             "#
@@ -208,7 +252,7 @@ fn allows_one_as_named_single_output_handle() {
 
             actor Actor owns State {
                 entry update() emits one: Actor {
-                    become one <- Actor(self.state);
+                    become one <- self;
                 }
             }
             "#
@@ -232,7 +276,7 @@ fn rejects_removed_emits_one_syntax() {
 
             actor Actor owns State {
                 entry update() emits one Actor {
-                    become Actor(self.state);
+                    become Actor(next);
                 }
             }
             "#

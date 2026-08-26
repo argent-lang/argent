@@ -18,6 +18,12 @@ contract League(
     int constant B_WIN = 2;
 
     // :: state layouts
+    struct LeagueState {
+        // :: user declared fields
+        byte[32] admin;
+        int default_pile;
+        int default_max_take;
+    }
     struct PlayerState {
         // :: user declared fields
         byte[32] owner;
@@ -55,7 +61,7 @@ contract League(
         int losses;
     }
 
-    // :: global shared functions (vars prefixed with gen__glob_ for creating a unique namespace)
+    // :: global functions (isolated using the gen__glob_ namespace)
     function player_ref(byte[32] gen__glob_owner, byte[32] gen__glob_player_id) : byte[32] {
         return blake2b(byte[](gen__glob_owner + gen__glob_player_id));
     }

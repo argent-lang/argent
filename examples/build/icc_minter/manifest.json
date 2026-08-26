@@ -19,7 +19,7 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "controller", "auth_index": 0, "actors": ["Minter"] }] },
           "consumes": [],
-          "routes": [{ "output": "controller", "actor": "Minter", "state": "next_controller" }]
+          "routes": [{ "output": "controller", "successor": { "kind": "constructed", "actor": "Minter", "state": "next_controller" } }]
         }
       ]
     }

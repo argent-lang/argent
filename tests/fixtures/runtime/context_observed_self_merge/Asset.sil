@@ -67,7 +67,7 @@ contract Asset(
         require(OpCovInputIdx(gen__cov_id, 0) == this.activeInputIndex);
         int gen__other_input_idx = OpCovInputIdx(gen__cov_id, 1); // input Asset at cov[1]
         // :: direct input state (single-actor covenant has one template)
-        State other = readInputState(gen__other_input_idx);
+        State gen__other_state = readInputState(gen__other_input_idx);
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
@@ -78,7 +78,7 @@ contract Asset(
         State next_state = State {
             // :: user declared fields
             owner: owner,
-            amount: amount + other.amount,
+            amount: amount + gen__other_state.amount,
         };
         // :: become Asset
         validateOutputState(gen__merged_output_idx, next_state);

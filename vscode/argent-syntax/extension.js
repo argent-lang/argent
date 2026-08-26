@@ -5,9 +5,11 @@ const path = require('node:path');
 const vscode = require('vscode');
 const {
   BUILTINS,
+  KEYWORD_DOCUMENTATION,
   KEYWORDS,
   PRIMITIVE_DOCUMENTATION,
   PRIMITIVE_TYPES,
+  builtinCall,
   scanDocument,
   standardModuleRelativePath,
 } = require('./language-service');
@@ -179,6 +181,20 @@ function preferredDeclaration(matches) {
   return matches.find((candidate) => candidate.local) ?? matches[0];
 }
 
+function declarationsVisibleAt(catalog, uri, offset, matches) {
+  const actor = enclosingActor(catalog, uri, offset);
+  return (matches ?? []).filter(
+    (candidate) =>
+      candidate.kind !== 'function' ||
+      !candidate.actor ||
+      (actor && candidate.actor === actor.name && candidate.uri.toString() === actor.uri.toString()),
+  );
+}
+
+function preferredDeclarationAt(catalog, uri, offset, matches) {
+  return preferredDeclaration(declarationsVisibleAt(catalog, uri, offset, matches));
+}
+
 function declarationOfKind(catalog, name, kind) {
   const matches = catalog.byName.get(name)?.filter((candidate) => candidate.kind === kind);
   return preferredDeclaration(matches);
@@ -289,12 +305,15 @@ function functionSnippet(name, params) {
   return new vscode.SnippetString(`${name}(${args})`);
 }
 
-function completionItems(catalog) {
+function completionItems(catalog, actor) {
   const items = [];
 
   for (const keyword of KEYWORDS) {
     const item = new vscode.CompletionItem(keyword, vscode.CompletionItemKind.Keyword);
     item.detail = 'Argent keyword';
+    if (KEYWORD_DOCUMENTATION[keyword]) {
+      item.documentation = new vscode.MarkdownString(KEYWORD_DOCUMENTATION[keyword]);
+    }
     item.sortText = `3-${keyword}`;
     items.push(item);
   }
@@ -322,6 +341,13 @@ function completionItems(catalog) {
 
   const seen = new Set();
   for (const declaration of catalog.declarations) {
+    if (
+      declaration.kind === 'function' &&
+      declaration.actor &&
+      (!actor || declaration.actor !== actor.name || declaration.uri.toString() !== actor.uri.toString())
+    ) {
+      continue;
+    }
     const key = `${declaration.kind}:${declaration.name}`;
     if (seen.has(key)) {
       continue;
@@ -462,13 +488,13 @@ function activate(context) {
           }
         }
         const callable = enclosingCallable(catalog, document.uri, document.offsetAt(position));
-        const actor = callable?.actor ? enclosingActor(catalog, document.uri, document.offsetAt(position)) : undefined;
+        const actor = enclosingActor(catalog, document.uri, document.offsetAt(position));
         const fields = actor ? fieldCompletionItems(fieldsForState(catalog, actor.ownedState)) : [];
         return [
           ...parameterCompletionItems(callable?.parameters ?? []),
           ...clauseVariableCompletionItems(callable?.clauseVariables ?? [], callable?.name),
           ...fields,
-          ...completionItems(catalog),
+          ...completionItems(catalog, actor),
         ];
       },
     }, '.'),
@@ -497,8 +523,13 @@ function activate(context) {
         if (parameter) {
           return declarationLocation(catalog, parameter);
         }
-        const matches = catalog.byName.get(word.value);
-        if (!matches) {
+        const matches = declarationsVisibleAt(
+          catalog,
+          document.uri,
+          document.offsetAt(word.range.start),
+          catalog.byName.get(word.value),
+        );
+        if (matches.length === 0) {
           return undefined;
         }
         return matches.map((declaration) => declarationLocation(catalog, declaration));
@@ -524,7 +555,9 @@ function activate(context) {
           return parameterHover(parameter);
         }
 
-        const builtin = BUILTINS.find((candidate) => candidate.name === word.value);
+        const current = catalog.modules.find((module) => module.uri.toString() === document.uri.toString());
+        const tokenIndex = current?.scan.tokens.findIndex((token) => token.start === document.offsetAt(word.range.start)) ?? -1;
+        const builtin = current ? builtinCall(current.scan.tokens, tokenIndex) : undefined;
         if (builtin) {
           const markdown = new vscode.MarkdownString();
           markdown.appendCodeblock(builtin.signature, 'argent');
@@ -539,7 +572,12 @@ function activate(context) {
           return new vscode.Hover(markdown, word.range);
         }
 
-        const declaration = preferredDeclaration(catalog.byName.get(word.value));
+        const declaration = preferredDeclarationAt(
+          catalog,
+          document.uri,
+          document.offsetAt(word.range.start),
+          catalog.byName.get(word.value),
+        );
         return declaration ? declarationHover(declaration) : undefined;
       },
     }),
@@ -587,7 +625,7 @@ function activate(context) {
               .flatMap((state) => state.fields ?? [])
               .map((field) => [field.start, field]),
           );
-          for (const token of current.scan.tokens) {
+          for (const [tokenIndex, token] of current.scan.tokens.entries()) {
             if (token.kind !== 'ident') {
               continue;
             }
@@ -599,7 +637,8 @@ function activate(context) {
               ? selfField(catalog, document.uri, token.start, token.value)
               : undefined;
             const referencedParameter = parameterInScope(catalog, document.uri, token.start, token.value);
-            const declaration = localDeclaration ?? preferredDeclaration(catalog.byName.get(token.value));
+            const declaration =
+              localDeclaration ?? preferredDeclarationAt(catalog, document.uri, token.start, catalog.byName.get(token.value));
             let type;
             let modifiers = [];
 
@@ -615,7 +654,7 @@ function activate(context) {
             } else if (PRIMITIVE_TYPES.includes(token.value)) {
               type = 'type';
               modifiers = ['defaultLibrary'];
-            } else if (BUILTINS.some((candidate) => candidate.name === token.value)) {
+            } else if (builtinCall(current.scan.tokens, tokenIndex)) {
               type = 'function';
               modifiers = ['defaultLibrary'];
             }

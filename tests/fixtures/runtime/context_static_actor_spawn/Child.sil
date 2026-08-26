@@ -12,6 +12,10 @@ contract Child(
         // :: user declared fields
         int launches;
     }
+    struct ChildState {
+        // :: user declared fields
+        int amount;
+    }
     struct Gen__LauncherState {
         // :: generated fields
         byte[32] gen__child_template;
@@ -35,7 +39,7 @@ contract Child(
         require(OpCovInputCount(gen__cov_id) >= 2);
         require(OpCovInputIdx(gen__cov_id, 0) != this.activeInputIndex);
         int gen__launcher_input_idx = OpCovInputIdx(gen__cov_id, 0); // input Launcher at cov[0]
-        Gen__LauncherState launcher = readInputStateWithTemplate(
+        Gen__LauncherState gen__launcher_state = readInputStateWithTemplate(
             gen__launcher_input_idx,
             gen__launcher_prefix_len,
             gen__launcher_suffix_len,
@@ -55,7 +59,7 @@ contract Child(
         // :: output next: Launcher
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
-        LauncherState next = LauncherState {
+        LauncherState next_state = LauncherState {
             // :: user declared fields
             launches: 0,
         };
@@ -64,7 +68,7 @@ contract Child(
             gen__child_template: gen__child_template,
             gen__launcher_template: gen__launcher_template,
             // :: user declared fields
-            launches: next.launches,
+            launches: next_state.launches,
         };
         // :: become Launcher
         validateOutputStateWithTemplate(

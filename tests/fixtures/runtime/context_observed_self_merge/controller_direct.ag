@@ -17,7 +17,7 @@ actor Ctrl owns CtrlState {
     emits {
         ctrl: Ctrl,
     } {
-        AssetState source = asset.inputs.src.state;
+        AssetState source = state(asset.inputs.src);
         AssetState next_asset = {
             owner: new_owner,
             amount: source.amount,

@@ -6,13 +6,13 @@ use std::{
 use kaspa_txscript::opcodes::codes::OpPushData1;
 
 use super::*;
+use crate::compiler::model::{CompilerRouteTransition, RouteRootLeaf};
 use crate::routing::{CommitmentNode, RouteGraph, SelectorRequirement};
 
 #[test]
 fn rejects_route_outside_named_output_union() {
     let mut program = test_program();
-    program.modules[0].actors[0].entries[0].routes =
-        vec![RouteCall { output: "next".to_string(), actor: "Game".to_string(), state: "next_game".to_string() }];
+    set_entry_body(&mut program.modules[0].actors[0].entries[0], "become next <- Game(next_game);");
 
     let err = Model::from_program(&program).expect_err("route must be rejected");
     assert!(err.to_string().contains("routes output `next` to `Game`"), "unexpected error: {err}");
@@ -26,9 +26,7 @@ fn accepts_route_inside_named_output_union() {
         actors: vec!["Player".to_string(), "Game".to_string()],
         auth_index: 0,
     }]);
-    let route = RouteCall { output: "next".to_string(), actor: "Game".to_string(), state: "next_game".to_string() };
-    program.modules[0].actors[0].entries[0].routes = vec![route.clone()];
-    program.modules[0].actors[0].entries[0].terminal_route_sets = vec![vec![route]];
+    set_entry_body(&mut program.modules[0].actors[0].entries[0], "become next <- Game(next_game);");
 
     Model::from_program(&program).expect("route should be accepted");
 }
@@ -50,10 +48,10 @@ fn planning_uses_declared_emit_domain_not_body_routes() {
             actor Source owns SourceState {
                 entry choose_a() emits next: A | B {
                     unrestricted(next.value);
-                    TargetState next = {
+                    TargetState next_state = {
                         nonce: nonce,
                     };
-                    become next <- A(next);
+                    become next <- A(next_state);
                 }
             }
 
@@ -80,7 +78,7 @@ fn planning_uses_declared_emit_domain_not_body_routes() {
             .expect("entry model exists")
             .expanded_routes()
             .iter()
-            .map(|route| route.actor.as_str())
+            .map(resolved_constructed_actor)
             .collect::<Vec<_>>(),
         ["A"]
     );
@@ -118,9 +116,7 @@ fn rejects_missing_named_output_coverage() {
         EmitOutput { name: "a".to_string(), actors: vec!["Player".to_string()], auth_index: 0 },
         EmitOutput { name: "b".to_string(), actors: vec!["Player".to_string()], auth_index: 1 },
     ]);
-    let route = RouteCall { output: "a".to_string(), actor: "Player".to_string(), state: "next_a".to_string() };
-    program.modules[0].actors[0].entries[0].routes = vec![route.clone()];
-    program.modules[0].actors[0].entries[0].terminal_route_sets = vec![vec![route]];
+    set_entry_body(&mut program.modules[0].actors[0].entries[0], "become a <- Player(next_a);");
 
     let err = Model::from_program(&program).expect_err("missing output coverage must be rejected");
     assert!(err.to_string().contains("does not validate output `b`"), "unexpected error: {err}");
@@ -191,10 +187,10 @@ fn rejects_explicit_auth_output_index_syntax() {
 #[test]
 fn rejects_duplicate_named_output_coverage() {
     let mut program = test_program();
-    let first = RouteCall { output: "next".to_string(), actor: "Player".to_string(), state: "next_player".to_string() };
-    let second = RouteCall { output: "next".to_string(), actor: "Player".to_string(), state: "other_player".to_string() };
-    program.modules[0].actors[0].entries[0].routes = vec![first.clone(), second.clone()];
-    program.modules[0].actors[0].entries[0].terminal_route_sets = vec![vec![first, second]];
+    set_entry_body(
+        &mut program.modules[0].actors[0].entries[0],
+        "become { next <- Player(next_player), next <- Player(other_player) };",
+    );
 
     let err = Model::from_program(&program).expect_err("duplicate output coverage must be rejected");
     assert!(err.to_string().contains("validates output `next` more than once"), "unexpected error: {err}");
@@ -206,8 +202,7 @@ fn rejects_delegate_become() {
     program.modules[0].actors[0].entries[0].kind = EntryKind::Delegate;
     program.modules[0].actors[0].entries[0].consumes.push(ConsumeDecl { name: "leader".to_string(), actor: "Player".to_string() });
     program.modules[0].actors[0].entries[0].emits = EmitSpec::None;
-    program.modules[0].actors[0].entries[0].routes =
-        vec![RouteCall { output: "next".to_string(), actor: "Player".to_string(), state: "next_player".to_string() }];
+    set_entry_body(&mut program.modules[0].actors[0].entries[0], "become next <- Player(next_player);");
 
     let err = Model::from_program(&program).expect_err("delegate become must be rejected");
     assert!(err.to_string().contains("cannot use `become`"), "unexpected error: {err}");
@@ -253,7 +248,7 @@ fn leader_actors_close_all_leader_input_groups() {
             actor Leader owns LeaderState {
                 entry standalone() emits next: Leader {
                     unrestricted(next.value);
-                    become next <- Leader(self.state);
+                    become next <- self;
                 }
 
                 entry coordinated() consumes {
@@ -261,7 +256,7 @@ fn leader_actors_close_all_leader_input_groups() {
                 } emits next: Leader {
                     unrestricted(next.value);
                     require(worker.value >= 0);
-                    become next <- Leader(self.state);
+                    become next <- self;
                 }
             }
 
@@ -276,7 +271,7 @@ fn leader_actors_close_all_leader_input_groups() {
             actor Unrelated owns UnrelatedState {
                 entry standalone() emits next: Unrelated {
                     unrestricted(next.value);
-                    become next <- Unrelated(self.state);
+                    become next <- self;
                 }
             }
 
@@ -326,7 +321,12 @@ fn rejects_duplicate_state_declarations() {
 fn rejects_duplicate_actor_declarations() {
     let mut program = test_program();
     let mut duplicate = empty_module("second.ag");
-    duplicate.actors.push(ActorDecl { name: "Player".to_string(), state: "PlayerState".to_string(), entries: Vec::new() });
+    duplicate.actors.push(ActorDecl {
+        name: "Player".to_string(),
+        state: "PlayerState".to_string(),
+        functions: Vec::new(),
+        entries: Vec::new(),
+    });
     program.modules.push(duplicate);
 
     let err = Model::from_program(&program).expect_err("duplicate actor declaration must be rejected");
@@ -382,6 +382,213 @@ fn rejects_function_named_unrestricted() {
         err.to_string().contains("function identifier `unrestricted` is reserved for output-value declarations"),
         "unexpected error: {err}"
     );
+}
+
+#[test]
+fn rejects_global_and_actor_functions_named_state() {
+    for (label, declaration) in [
+        (
+            "global",
+            r#"
+                fn state(int value) -> int { return value; }
+                actor Wallet owns WalletState {}
+            "#,
+        ),
+        (
+            "actor",
+            r#"
+                actor Wallet owns WalletState {
+                    fn state(int value) -> int { return value; }
+                }
+            "#,
+        ),
+    ] {
+        let source = format!(
+            r#"
+                state WalletState {{ int balance; }}
+                {declaration}
+                app Test {{ actor Wallet; }}
+            "#
+        );
+        let err = parse_and_validate(&source).expect_err("state reconstruction builtin must not be shadowed");
+        assert!(
+            err.to_string().contains("function identifier `state` is reserved for authored input-state reconstruction"),
+            "unexpected {label} error: {err}"
+        );
+    }
+}
+
+#[test]
+fn rejects_global_and_actor_functions_named_digest() {
+    for (label, declaration) in [
+        (
+            "global",
+            r#"
+                fn digest(int value) -> int { return value; }
+                actor Wallet owns WalletState {}
+            "#,
+        ),
+        (
+            "actor",
+            r#"
+                actor Wallet owns WalletState {
+                    fn digest(int value) -> int { return value; }
+                }
+            "#,
+        ),
+    ] {
+        let source = format!(
+            r#"
+                state WalletState {{ int balance; }}
+                {declaration}
+                app Test {{ actor Wallet; }}
+            "#
+        );
+        let err = parse_and_validate(&source).expect_err("state digest builtin must not be shadowed");
+        assert!(
+            err.to_string().contains("function identifier `digest` is reserved for authored state digests"),
+            "unexpected {label} error: {err}"
+        );
+    }
+}
+
+#[test]
+fn rejects_global_and_actor_functions_with_the_same_name() {
+    let mut program = test_program();
+    program.modules[0].actors[0].entries.clear();
+    program.modules[0].functions.push(FunctionDecl {
+        name: "helper".to_string(),
+        params: Vec::new(),
+        return_ty: Some(TypeRef::new("int")),
+        body: "return 1;".to_string(),
+    });
+    program.modules[0].actors[0].functions.push(FunctionDecl {
+        name: "helper".to_string(),
+        params: Vec::new(),
+        return_ty: Some(TypeRef::new("int")),
+        body: "return 2;".to_string(),
+    });
+
+    let err = Model::from_program(&program).expect_err("global and actor functions share the generated contract namespace");
+
+    assert_eq!(err.message, "actor `Player` function `helper` conflicts with a global function of the same name");
+}
+
+#[test]
+fn rejects_global_calls_to_actor_functions() {
+    let mut program = test_program();
+    program.modules[0].actors[0].entries.clear();
+    program.modules[0].functions.push(FunctionDecl {
+        name: "global_helper".to_string(),
+        params: Vec::new(),
+        return_ty: Some(TypeRef::new("int")),
+        body: "return actor_helper();".to_string(),
+    });
+    program.modules[0].actors[1].functions.push(FunctionDecl {
+        name: "actor_helper".to_string(),
+        params: Vec::new(),
+        return_ty: Some(TypeRef::new("int")),
+        body: "return 2;".to_string(),
+    });
+    let model = Model::from_program(&program).expect("function declarations form distinct namespaces");
+
+    let err = emit_actor(model.actor("Player").expect("Player exists"), &model)
+        .expect_err("global functions must not depend on actor functions");
+
+    assert_eq!(err.message, "global function `global_helper` cannot call actor function `actor_helper`");
+}
+
+#[test]
+fn allows_the_same_function_name_on_different_actors() {
+    let mut program = test_program();
+    for actor in &mut program.modules[0].actors {
+        actor.entries.clear();
+        actor.functions.push(FunctionDecl {
+            name: "helper".to_string(),
+            params: Vec::new(),
+            return_ty: Some(TypeRef::new("int")),
+            body: "return 1;".to_string(),
+        });
+    }
+
+    Model::from_program(&program).expect("actor-local function names may repeat across contracts");
+}
+
+#[test]
+fn emits_actor_functions_only_in_their_owning_contract() {
+    let path = PathBuf::from("actor-functions.ag");
+    let module = crate::compiler::syntax::parser::parse_module(
+        path.clone(),
+        r#"
+            const int BIAS = 1;
+
+            state CounterState {
+                int cycles;
+            }
+
+            state OtherState {
+                int amount;
+            }
+
+            fn add_bias(int value) -> int {
+                return value + BIAS;
+            }
+
+            actor Counter owns CounterState {
+                fn current() -> int {
+                    return cycles;
+                }
+
+                fn adjusted(int delta) -> int {
+                    return add_bias(current() + delta);
+                }
+
+                fn ensure_nonnegative() {
+                    require(current() >= 0);
+                }
+
+                entry check() emits none {
+                    ensure_nonnegative();
+                    require(adjusted(1) == cycles + 2);
+                }
+            }
+
+            actor Other owns OtherState {
+                fn adjusted(int delta) -> int {
+                    return amount - delta;
+                }
+
+                entry check() emits none {
+                    require(adjusted(1) == amount - 1);
+                }
+            }
+
+            app FunctionsApp {
+                actor Counter;
+                actor Other;
+            }
+            "#
+        .to_string(),
+    )
+    .expect("actor-function source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let out_dir = std::env::temp_dir().join(format!("argent-actor-functions-test-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&out_dir);
+
+    emit_build(&program, &out_dir).expect("actor functions compile in their owning contracts");
+    let counter = fs::read_to_string(out_dir.join("sil/Counter.sil")).expect("generated Counter Sil exists");
+    let other = fs::read_to_string(out_dir.join("sil/Other.sil")).expect("generated Other Sil exists");
+
+    assert!(counter.contains("// :: actor functions"), "{counter}");
+    assert!(counter.contains("function current() : int"), "{counter}");
+    assert!(counter.contains("return cycles;"), "{counter}");
+    assert!(counter.contains("function adjusted(int delta) : int"), "{counter}");
+    assert!(counter.contains("return add_bias(current() + delta);"), "{counter}");
+    assert!(counter.contains("function ensure_nonnegative()"), "{counter}");
+    assert!(!other.contains("function current()"), "{other}");
+    assert!(other.contains("return amount - delta;"), "{other}");
+
+    let _ = fs::remove_dir_all(out_dir);
 }
 
 #[test]
@@ -553,6 +760,7 @@ fn allows_reserved_self_member_names_in_nested_state_values() {
             state Payload {
                 int value;
                 int ref;
+                int state;
             }
 
             state WalletState {
@@ -612,13 +820,152 @@ fn rejects_reserved_entry_parameter_from_model() {
 }
 
 #[test]
+fn rejects_physical_state_entry_parameters_in_aligned_and_augmented_contracts() {
+    for (layout, actors, emits, body) in [
+        ("aligned", "", "emits none", "require(1 == 1);"),
+        (
+            "augmented",
+            r#"
+                state PeerState { int count; }
+                actor Peer owns PeerState {}
+            "#,
+            "emits next: Peer",
+            r#"
+                unrestricted(next.value);
+                become next <- Peer(PeerState { count: count });
+            "#,
+        ),
+    ] {
+        for ty in ["State", "State[2]", "State[]"] {
+            let source = format!(
+                r#"
+                    state CounterState {{ int count; }}
+
+                    actor Counter owns CounterState {{
+                        entry inspect({ty} supplied) {emits} {{
+                            {body}
+                        }}
+                    }}
+
+                    {actors}
+                    app Test {{ actor Counter; {} }}
+                "#,
+                if layout == "augmented" { "actor Peer;" } else { "" }
+            );
+            let err = parse_and_validate(&source).expect_err("physical State must not cross an external entry boundary");
+            assert!(
+                err.to_string()
+                    .contains(&format!("entry `Counter::inspect` parameter `supplied` uses compiler-owned physical type `{ty}`")),
+                "{layout} {ty}: unexpected error: {err}"
+            );
+            assert!(
+                err.to_string().contains("entry parameters must use an Argent-authored state type"),
+                "{layout} {ty}: unexpected error: {err}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rejects_self_as_an_entry_parameter() {
+    let err = parse_and_validate(
+        r#"
+            state CounterState { int count; }
+
+            actor Counter owns CounterState {
+                entry inspect(int self) emits none {
+                    require(self.count >= 0);
+                }
+            }
+
+            app Test { actor Counter; }
+        "#,
+    )
+    .expect_err("`self` must remain the current actor context");
+
+    assert!(
+        err.to_string().contains("entry `Counter::inspect` parameter identifier `self` is reserved for the current actor context"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn rejects_self_as_an_entry_body_binding() {
+    let cases = [
+        ("local", "int self = 7; require(self.count >= 0);"),
+        ("loop", "for (self, 0, 1, 1) { require(self.count >= 0); }"),
+        ("tuple", "(int self, int other) = pair(); require(self.count >= 0);"),
+        ("destructuring", "CounterState { count: int self } = current; require(self.count >= 0);"),
+    ];
+
+    for (case, body) in cases {
+        let source = format!(
+            r#"
+                state CounterState {{ int count; }}
+
+                actor Counter owns CounterState {{
+                    entry inspect() emits none {{
+                        {body}
+                    }}
+                }}
+
+                app Test {{ actor Counter; }}
+            "#
+        );
+        let err = emit_inline_error(&source);
+        assert!(
+            err.to_string().contains("entry binding `self` collides with current actor context of the same name"),
+            "{case}: unexpected error: {err}"
+        );
+    }
+}
+
+#[test]
+fn rejects_entry_body_bindings_that_collide_with_handles_or_parameters() {
+    let cases = [
+        ("emit local", "", "", "emits next: Counter", "CounterState next = state(self); become next <- self;", "emit handle"),
+        ("emit parameter", "int next", "", "emits next: Counter", "become next <- self;", "emit handle"),
+        ("consume local", "", "consumes { peer: Peer, }", "emits none", "int peer = 1;", "consume handle"),
+        ("consume loop", "", "consumes { peer: Peer, }", "emits none", "for (peer, 0, 1, 1) { require(1 == 1); }", "consume handle"),
+        ("consume tuple", "", "consumes { peer: Peer, }", "emits none", "(int peer, int other) = pair();", "consume handle"),
+        (
+            "consume destructuring",
+            "",
+            "consumes { peer: Peer, }",
+            "emits none",
+            "CounterState { count: int peer } = state(self);",
+            "consume handle",
+        ),
+        ("parameter nested local", "int amount", "", "emits none", "{ int amount = 1; }", "entry parameter"),
+    ];
+
+    for (case, params, clauses, emits, body, role) in cases {
+        let source = format!(
+            r#"
+                state CounterState {{ int count; }}
+                state PeerState {{ int amount; }}
+
+                actor Counter owns CounterState {{
+                    entry inspect({params}) {clauses} {emits} {{
+                        {body}
+                    }}
+                }}
+
+                actor Peer owns PeerState {{}}
+                app Test {{ actor Counter; actor Peer; }}
+            "#
+        );
+        let err = emit_inline_error(&source);
+        assert!(err.to_string().contains(&format!("collides with {role} of the same name")), "{case}: unexpected error: {err}");
+    }
+}
+
+#[test]
 fn rejects_reserved_output_handle_from_model() {
     let mut program = test_program();
     program.modules[0].actors[0].entries[0].emits =
         EmitSpec::Outputs(vec![EmitOutput { name: "gen__next".to_string(), actors: vec!["Player".to_string()], auth_index: 0 }]);
-    let route = RouteCall { output: "gen__next".to_string(), actor: "Player".to_string(), state: "next_player".to_string() };
-    program.modules[0].actors[0].entries[0].routes = vec![route.clone()];
-    program.modules[0].actors[0].entries[0].terminal_route_sets = vec![vec![route]];
+    set_entry_body(&mut program.modules[0].actors[0].entries[0], "become gen__next <- Player(next_player);");
 
     let err = Model::from_program(&program).expect_err("reserved output handle must be rejected");
     assert!(err.to_string().contains("reserved generated namespace"), "unexpected error: {err}");
@@ -669,7 +1016,7 @@ fn emits_reserved_generated_namespace_names() {
             actor Foo owns FooState {
                 entry step() emits next: Foo {
                     require(next.value == self.value);
-                    become next <- Foo(self.state);
+                    become next <- self;
                 }
             }
 
@@ -709,7 +1056,7 @@ fn rejects_emit_output_without_value_policy() {
 
             actor Foo owns FooState {
                 entry step() emits next: Foo {
-                    become next <- Foo(self.state);
+                    become next <- self;
                 }
             }
 
@@ -733,7 +1080,7 @@ fn commented_output_value_does_not_satisfy_the_reference_check() {
             actor Foo owns FooState {
                 entry step() emits next: Foo {
                     require(1 == 1 /* next.value */);
-                    become next <- Foo(self.state);
+                    become next <- self;
                 }
             }
 
@@ -754,7 +1101,7 @@ fn output_value_reference_anywhere_in_the_entry_satisfies_the_check() {
             actor Foo owns FooState {
                 entry step() emits next: Foo {
                     int output_value = next.value;
-                    become next <- Foo(self.state);
+                    become next <- self;
                 }
             }
 
@@ -779,7 +1126,7 @@ fn unrestricted_output_value_policy_is_compile_time_only() {
             actor Foo owns FooState {
                 entry allow() emits next: Foo {
                     unrestricted(next.value);
-                    become next <- Foo(self.state);
+                    become next <- self;
                 }
             }
 
@@ -805,7 +1152,7 @@ fn unrestricted_output_value_policy_requires_a_current_output_handle() {
             actor Foo owns FooState {
                 entry step() emits next: Foo {
                     unrestricted(self.value);
-                    become next <- Foo(self.state);
+                    become next <- self;
                 }
             }
 
@@ -841,7 +1188,7 @@ fn spawn_output_value_can_be_constrained_by_qualified_handle() {
                     require children.outputs become {
                         child <- Child(ChildState {}),
                     };
-                    become next <- Launcher(self.state);
+                    become next <- self;
                 }
             }
 
@@ -880,7 +1227,7 @@ fn rejects_spawn_output_without_value_policy() {
                     require children.outputs become {
                         child <- Child(ChildState {}),
                     };
-                    become next <- Launcher(self.state);
+                    become next <- self;
                 }
             }
 
@@ -897,7 +1244,7 @@ fn rejects_spawn_output_without_value_policy() {
 }
 
 #[test]
-fn qualified_spawn_value_does_not_cover_same_named_emit_value() {
+fn qualified_spawn_value_does_not_cover_emit_value() {
     let err = emit_inline_error(
         r#"
             state LauncherState {}
@@ -910,12 +1257,12 @@ fn qualified_spawn_value_does_not_cover_same_named_emit_value() {
                         child: Child,
                     }
                 }
-                emits child: Launcher {
+                emits launcher: Launcher {
                     require(children.outputs.child.value > 0);
                     require children.outputs become {
                         child <- Child(ChildState {}),
                     };
-                    become child <- Launcher(self.state);
+                    become launcher <- self;
                 }
             }
 
@@ -929,7 +1276,7 @@ fn qualified_spawn_value_does_not_cover_same_named_emit_value() {
     );
 
     let message = err.to_string();
-    assert!(message.contains("must reference output value `child.value`"), "unexpected error: {err}");
+    assert!(message.contains("must reference output value `launcher.value`"), "unexpected error: {err}");
     assert!(!message.contains("`children.outputs.child.value`,"), "unexpected error: {err}");
 }
 
@@ -977,7 +1324,7 @@ fn self_cov_id_lowers_to_the_active_input_covenant_id() {
                 entry step() emits next: Foo {
                     unrestricted(next.value);
                     require(self.cov_id == self.cov_id);
-                    become next <- Foo(self.state);
+                    become next <- self;
                 }
             }
 
@@ -1013,7 +1360,7 @@ fn self_member_prefixes_remain_state_field_refs() {
                     require(self.value_note == value_note);
                     require(self.cov_id_note == cov_id_note);
                     require(foo_self.value >= 0);
-                    become next <- Foo(self.state);
+                    become next <- self;
                 }
             }
 
@@ -1068,6 +1415,8 @@ fn self_transition_uses_same_template_shortcut() {
     let actor_sil = actor_sil_for_model(&model);
     let artifact = emit_artifact(&program, &model, &actor_sil).expect("artifact emits");
 
+    assert!(!sil.contains("FooState"), "{sil}");
+    assert!(sil.contains("State next_state = State {"), "{sil}");
     assert!(sil.contains("validateOutputState(gen__next_output_idx, next_state);"), "{sil}");
     assert!(!sil.contains("validateOutputStateWithTemplate"), "{sil}");
     assert!(!sil.contains("byte[] gen__foo_prefix"), "{sil}");
@@ -1084,7 +1433,1243 @@ fn self_transition_uses_same_template_shortcut() {
 }
 
 #[test]
-fn current_state_array_entry_param_uses_contract_state_type() {
+fn output_template_proofs_are_independent_of_physical_state_type() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "output-template-proof-matrix",
+        r#"
+            state BoardState { int ply; }
+
+            actor enum MoveActor {
+                Pawn;
+                Knight;
+            }
+
+            actor Mux owns BoardState {
+                entry hold() emits next: Mux {
+                    BoardState next_state = { ply: ply + 1 };
+                    unrestricted(next.value);
+                    become next <- Mux(next_state);
+                }
+
+                entry handoff()
+                consumes {
+                    prior: Pawn,
+                }
+                emits next: Pawn {
+                    BoardState next_state = { ply: prior.ply + 1 };
+                    unrestricted(next.value);
+                    become next <- Pawn(next_state);
+                }
+
+                entry choose(MoveActor target) emits next: MoveActor {
+                    BoardState next_state = { ply: ply + 1 };
+                    unrestricted(next.value);
+                    become next <- target(next_state);
+                }
+            }
+
+            actor Pawn owns BoardState {
+                delegate accept() consumes {
+                    leader: Mux,
+                } {}
+            }
+
+            actor Knight owns BoardState {
+                entry hold() emits none { require(ply >= 0); }
+            }
+
+            app Test {
+                actor Mux;
+                actor Pawn;
+                actor Knight;
+            }
+        "#,
+    );
+    let sil = &actor_sil["Mux"];
+    let hold = sil.split_once("entry hold()").expect("hold entry exists").1.split_once("entry handoff(").expect("handoff follows").0;
+    let handoff =
+        sil.split_once("entry handoff(").expect("handoff entry exists").1.split_once("entry choose(").expect("choose follows").0;
+    let choose = sil.split_once("entry choose(").expect("choose entry exists").1;
+
+    assert!(hold.contains("State gen__state_next_state = State {"), "{hold}");
+    assert!(hold.contains("validateOutputState(gen__next_output_idx, gen__state_next_state);"), "{hold}");
+
+    assert!(handoff.contains("State gen__state_next_state = State {"), "{handoff}");
+    assert!(handoff.contains("Gen__PawnState gen__prior_state = readInputStateWithTemplate("), "{handoff}");
+    assert!(handoff.contains("validateOutputStateWithInputTemplate("), "{handoff}");
+    assert!(handoff.contains("gen__prior_input_idx,"), "{handoff}");
+
+    assert!(choose.contains("State gen__state_next_state = State {"), "{choose}");
+    assert!(choose.contains("validateOutputStateWithTemplate("), "{choose}");
+    assert!(choose.contains("gen__target_template"), "{choose}");
+}
+
+#[test]
+fn state_returning_function_initializes_an_authored_local_once() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "state-function-local",
+        r#"
+            state CounterState {
+                int left;
+                int right;
+            }
+
+            actor Counter owns CounterState {
+                fn successor() -> CounterState {
+                    return CounterState {
+                        left: left + 1,
+                        right: right + 1,
+                    };
+                }
+
+                entry bump() emits next: Counter {
+                    CounterState candidate = successor();
+                    unrestricted(next.value);
+                    become next <- Counter(candidate);
+                }
+            }
+
+            app Test {
+                actor Counter;
+            }
+        "#,
+    );
+
+    let sil = actor_sil.get("Counter").expect("Counter emits");
+    assert!(!sil.contains("CounterState"), "{sil}");
+    assert!(sil.contains("function successor() : State"), "{sil}");
+    assert!(sil.contains("State candidate = successor();"), "{sil}");
+    assert!(!sil.contains("successor().left"), "{sil}");
+    assert!(!sil.contains("successor().right"), "{sil}");
+    assert!(sil.contains("validateOutputState(gen__next_output_idx, candidate);"), "{sil}");
+}
+
+#[test]
+fn named_exact_self_coexists_with_a_constructed_route() {
+    let (actor_sil, artifact) = inline_actor_sil_and_artifact(
+        "exact-self-mixed",
+        r#"
+            state CurrentState { int nonce; }
+            state PeerState { int nonce; }
+
+            actor Current owns CurrentState {
+                entry step() emits {
+                    current: Current,
+                    peer: Peer,
+                } {
+                    unrestricted(current.value);
+                    unrestricted(peer.value);
+                    PeerState next_peer = PeerState {
+                        nonce: nonce,
+                    };
+                    become {
+                        current <- self,
+                        peer <- Peer(next_peer),
+                    };
+                }
+            }
+
+            actor Peer owns PeerState {
+                entry hold() emits none {
+                    require(nonce >= 0);
+                }
+            }
+
+            app Test {
+                actor Current;
+                actor Peer;
+            }
+        "#,
+    );
+
+    let sil = actor_sil.get("Current").expect("Current emits");
+    assert!(sil.contains("// :: become Current"), "{sil}");
+    assert!(sil.contains("tx.outputs[gen__current_output_idx].scriptPubKey"), "{sil}");
+    assert!(sil.contains("== tx.inputs[this.activeInputIndex].scriptPubKey"), "{sil}");
+    assert!(sil.contains("// :: become Peer"), "{sil}");
+    assert_eq!(sil.matches("validateOutputStateWithTemplate(").count(), 1, "{sil}");
+
+    let entry = artifact
+        .argent
+        .actors
+        .iter()
+        .find(|actor| actor.name == "Current")
+        .and_then(|actor| actor.entries.iter().find(|entry| entry.name == "step"))
+        .expect("Current::step artifact exists");
+    assert_eq!(entry.routes[0].output, "current");
+    assert!(matches!(entry.routes[0].successor, RouteSuccessorArtifact::ExactSelf));
+    assert_eq!(artifact_constructed_actor(&entry.routes[1]), "Peer");
+    artifact.verify_template_plan().expect("exact and constructed successor metadata verifies");
+}
+
+#[test]
+fn exact_self_requires_an_output_handle_and_checks_its_actor_domain() {
+    let bare = parse_and_validate(
+        r#"
+            state CurrentState {}
+
+            actor Current owns CurrentState {
+                entry step() emits next: Current {
+                    unrestricted(next.value);
+                    become self;
+                }
+            }
+
+            app Test { actor Current; }
+        "#,
+    )
+    .expect_err("exact self must name an output like every other successor");
+    assert!(bare.to_string().contains("every `become` route must name its output"), "unexpected error: {bare}");
+
+    let incompatible = parse_and_validate(
+        r#"
+            state CurrentState {}
+            state PeerState {}
+
+            actor Current owns CurrentState {
+                entry step() emits next: Peer {
+                    unrestricted(next.value);
+                    become next <- self;
+                }
+            }
+
+            actor Peer owns PeerState {}
+
+            app Test {
+                actor Current;
+                actor Peer;
+            }
+        "#,
+    )
+    .expect_err("named exact self must target a compatible output");
+    assert!(incompatible.to_string().contains("cannot preserve exact self through output `next`"), "unexpected error: {incompatible}");
+
+    parse_and_validate(
+        r#"
+            state SharedState {}
+            state OtherState {}
+
+            actor enum CurrentDomain {
+                Current;
+                Peer;
+            }
+
+            actor Current owns SharedState {
+                entry step() emits {
+                    current: CurrentDomain,
+                    other: Other,
+                } {
+                    unrestricted(current.value);
+                    unrestricted(other.value);
+                    become {
+                        current <- self,
+                        other <- Other(OtherState {}),
+                    };
+                }
+            }
+
+            actor Peer owns SharedState {}
+            actor Other owns OtherState {}
+
+            app Test {
+                actor Current;
+                actor Peer;
+                actor Other;
+            }
+        "#,
+    )
+    .expect("an actor-enum output permits its current-actor variant for a named exact successor");
+}
+
+#[test]
+fn exact_self_is_rejected_for_external_covenant_outputs() {
+    let spawn = parse_and_validate(
+        r#"
+            state LauncherState {}
+            state ChildState {}
+
+            actor Launcher owns LauncherState {
+                entry launch()
+                spawns children by children_id {
+                    outputs {
+                        child: Child,
+                    }
+                }
+                emits next: Launcher {
+                    unrestricted(next.value);
+                    require children.outputs become {
+                        child <- self,
+                    };
+                    become next <- self;
+                }
+            }
+
+            actor Child owns ChildState {}
+
+            app Test {
+                actor Launcher;
+                actor Child;
+            }
+        "#,
+    )
+    .expect_err("spawn output validation cannot preserve the active input exactly");
+    assert!(
+        spawn.to_string().contains("cannot use exact successor `self` for observe or spawn `children` outputs"),
+        "unexpected error: {spawn}"
+    );
+
+    let observed = parse_and_validate(
+        r#"
+            state ObserverState {}
+            state PeerState {}
+
+            actor Observer owns ObserverState {
+                entry inspect(cov_id remote_id)
+                observes remote by remote_id {
+                    outputs {
+                        peer: Peer,
+                    }
+                }
+                emits none {
+                    require remote.outputs become {
+                        peer <- self,
+                    };
+                }
+            }
+
+            actor Peer owns PeerState {}
+
+            app Test {
+                actor Observer;
+                actor Peer;
+            }
+        "#,
+    )
+    .expect_err("observed output validation cannot preserve the active input exactly");
+    assert!(
+        observed.to_string().contains("cannot use exact successor `self` for observe or spawn `remote` outputs"),
+        "unexpected error: {observed}"
+    );
+}
+
+#[test]
+fn state_valued_functions_are_characterized_in_aligned_and_augmented_contexts() {
+    let fixture = "tests/fixtures/state_layout/function_contexts/app.ag";
+    let (aligned_sil, artifact) = emit_selected_fixture(fixture, "Test", "Aligned");
+    let (routed_sil, _) = emit_selected_fixture(fixture, "Test", "Routed");
+    let (reader_sil, _) = emit_selected_fixture(fixture, "Test", "Reader");
+
+    assert_eq!(aligned_sil, include_str!("../../../../tests/fixtures/state_layout/function_contexts/Aligned.sil"));
+    assert_eq!(routed_sil, include_str!("../../../../tests/fixtures/state_layout/function_contexts/Routed.sil"));
+    assert_eq!(reader_sil, include_str!("../../../../tests/fixtures/state_layout/function_contexts/Reader.sil"));
+
+    assert!(!aligned_sil.contains("SharedState"), "{aligned_sil}");
+    assert!(!aligned_sil.contains("struct SharedState"), "{aligned_sil}");
+    assert!(aligned_sil.contains("function global_identity(State gen__glob_value) : State"), "{aligned_sil}");
+    assert!(aligned_sil.contains("function global_fixed(State[2] gen__glob_values) : State[2]"), "{aligned_sil}");
+    assert!(aligned_sil.contains("function global_dynamic(State[] gen__glob_values) : State[]"), "{aligned_sil}");
+    assert!(aligned_sil.contains("function actor_identity(State value) : State"), "{aligned_sil}");
+    assert!(aligned_sil.contains("function actor_fixed(State[2] values) : State[2]"), "{aligned_sil}");
+    assert!(aligned_sil.contains("function actor_dynamic(State[] values) : State[]"), "{aligned_sil}");
+    assert!(aligned_sil.contains("State[2] gen__glob_fixed_literal = State[2]"), "{aligned_sil}");
+    assert!(aligned_sil.contains("State[_] gen__glob_inferred_literal = State[_]"), "{aligned_sil}");
+    assert!(aligned_sil.contains("State[SHARED_COUNT] gen__glob_symbolic_literal = State[SHARED_COUNT]"), "{aligned_sil}");
+    assert!(aligned_sil.contains("State[] gen__glob_dynamic_literal = State[]"), "{aligned_sil}");
+    assert!(aligned_sil.contains("State constructed = State {"), "{aligned_sil}");
+
+    assert!(routed_sil.contains("struct SharedState"), "{routed_sil}");
+    assert!(routed_sil.contains("function global_identity(SharedState gen__glob_value) : SharedState"), "{routed_sil}");
+    assert!(routed_sil.contains("function global_fixed(SharedState[2] gen__glob_values) : SharedState[2]"), "{routed_sil}");
+    assert!(routed_sil.contains("function global_dynamic(SharedState[] gen__glob_values) : SharedState[]"), "{routed_sil}");
+    assert!(routed_sil.contains("function actor_identity(SharedState value) : SharedState"), "{routed_sil}");
+    assert!(routed_sil.contains("SharedState constructed = SharedState {"), "{routed_sil}");
+    assert!(!routed_sil.contains("State constructed = State {"), "{routed_sil}");
+    assert!(aligned_sil.contains("reassigned = global_identity(value);"), "{aligned_sil}");
+    assert!(aligned_sil.contains("} = reassigned;"), "{aligned_sil}");
+
+    let advance = routed_sil
+        .split_once("entry advance")
+        .map(|(_, tail)| tail)
+        .and_then(|tail| tail.split_once("// :: leader entry (1:N)\n    entry export").map(|(body, _)| body))
+        .expect("advance entry is delimited in the generated SIL");
+    assert_eq!(advance.matches("actor_identity(global_identity(value))").count(), 1, "{advance}");
+    assert_eq!(advance.matches("actor_fixed(global_fixed(fixed))").count(), 1, "{advance}");
+    assert_eq!(advance.matches("actor_dynamic(global_dynamic(dynamic))").count(), 1, "{advance}");
+    assert_eq!(advance.matches("actor_identity(scalar)").count(), 1, "{advance}");
+    assert!(!advance.contains("actor_identity(scalar).left"), "{advance}");
+    assert!(!advance.contains("actor_identity(scalar).right"), "{advance}");
+    assert!(advance.contains("SharedState gen__source_next_shared_state = actor_identity(scalar);"), "{advance}");
+    assert!(advance.contains("validateOutputState(gen__next_output_idx, gen__state_next_state);"), "{advance}");
+    assert!(routed_sil.contains("validateOutputStateWithTemplate("), "{routed_sil}");
+
+    let inspect = reader_sil.split_once("entry inspect").map(|(_, body)| body).expect("Reader inspect entry is emitted");
+    assert_eq!(inspect.matches("readInputStateWithTemplate(").count(), 1, "{inspect}");
+    assert!(inspect.contains("SharedState[2] fixed_from_peer = SharedState[_]{ value, SharedState {"), "{inspect}");
+    assert!(inspect.contains("SharedState[] dynamic_from_peer = SharedState[]{ SharedState {"), "{inspect}");
+    assert!(inspect.contains("SharedState[3] fixed_appended = fixed.append(SharedState {"), "{inspect}");
+    assert!(inspect.contains("SharedState[] appended = dynamic.append(SharedState {"), "{inspect}");
+    assert!(inspect.contains("appended = appended.append(SharedState {"), "{inspect}");
+    assert!(!inspect.contains("dynamic.append(peer)"), "{inspect}");
+    assert!(inspect.contains("require(dynamic.append(SharedState {"), "{inspect}");
+    assert!(inspect.contains("require(SharedState[]{ SharedState {"), "{inspect}");
+    assert_eq!(inspect.matches("global_fixed(fixed)").count(), 1, "{inspect}");
+    assert_eq!(inspect.matches("global_dynamic(dynamic)").count(), 1, "{inspect}");
+    assert!(inspect.contains("SharedState indexed = global_fixed(fixed)[0];"), "{inspect}");
+    assert!(inspect.contains("SharedState passed = global_identity(global_dynamic(dynamic)[0]);"), "{inspect}");
+
+    let shared = artifact.argent.states.iter().find(|state| state.name == "SharedState").expect("SharedState is recorded");
+    assert_eq!(shared.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["left", "right"]);
+
+    let aligned = artifact.sil_abi.contract("Aligned").expect("Aligned contract exists");
+    assert_eq!(aligned.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["left", "right"]);
+    assert!(runtime_state_plan(&artifact, "Aligned").is_none());
+
+    let routed = artifact.sil_abi.contract("Routed").expect("Routed contract exists");
+    assert_eq!(
+        routed.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        ["gen__foreign_template", "left", "right"]
+    );
+    assert_eq!(
+        runtime_state_plan(&artifact, "Routed")
+            .expect("Routed physical plan exists")
+            .field_roles
+            .iter()
+            .map(|field| (field.name.as_str(), field.role.clone()))
+            .collect::<Vec<_>>(),
+        [("gen__foreign_template", RuntimeFieldRoleArtifact::Template { contract: "Foreign".to_string() })]
+    );
+
+    let templates = &artifact.argent.template_plan.templates;
+    let aligned_template = templates.iter().find(|template| template.actor == "Aligned").expect("Aligned template exists");
+    let routed_template = templates.iter().find(|template| template.actor == "Routed").expect("Routed template exists");
+    assert_eq!(aligned_template.sil_template_hash, "1e53efdb95d8b504889f7ae86ae51d4ac54c988e6435a010c29141d1936ade7a");
+    assert_eq!(routed_template.sil_template_hash, "f4ae67cf1f069160b3a70383fb977335446c555a05cc16066e47937bdc9b2d19");
+    assert!(aligned_template.actor_type_handle.context_fields.is_empty());
+    assert_eq!(routed_template.actor_type_handle.context_fields, ["gen__foreign_template"]);
+}
+
+#[test]
+fn equivalent_state_shared_constants_use_the_contract_plan() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "equivalent-state-shared-constant",
+        r#"
+            const CounterState INITIAL = CounterState {
+                count: 1,
+            };
+
+            state CounterState {
+                int count;
+            }
+
+            state TargetState {
+                int count;
+            }
+
+            actor Counter owns CounterState {
+                entry inspect() emits none {
+                    require(INITIAL.count >= count);
+                }
+            }
+
+            actor Routed owns CounterState {
+                entry advance() emits next: Target {
+                    unrestricted(next.value);
+                    become next <- Target(TargetState {
+                        count: INITIAL.count,
+                    });
+                }
+            }
+
+            actor Target owns TargetState {
+                entry inspect() emits none {
+                    require(count >= 0);
+                }
+            }
+
+            app Test {
+                actor Counter;
+                actor Routed;
+                actor Target;
+            }
+        "#,
+    );
+    let sil = &actor_sil["Counter"];
+    let routed = &actor_sil["Routed"];
+
+    assert!(sil.contains("State constant INITIAL = State {"), "{sil}");
+    assert!(!sil.contains("CounterState"), "{sil}");
+    assert!(routed.contains("CounterState constant INITIAL = CounterState {"), "{routed}");
+    assert!(!routed.contains("State constant INITIAL = State {"), "{routed}");
+}
+
+#[test]
+fn equivalent_state_literals_lower_in_plain_entry_statements() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "equivalent-state-plain-expression",
+        r#"
+            state CounterState {
+                int count;
+            }
+
+            actor Counter owns CounterState {
+                entry inspect() emits none {
+                    require(CounterState[]{ CounterState { count: count } }.length == 1);
+                }
+            }
+
+            app Test {
+                actor Counter;
+            }
+        "#,
+    );
+    let sil = &actor_sil["Counter"];
+
+    assert!(sil.contains("require(State[]{ State {"), "{sil}");
+    assert!(sil.contains("}.length == 1);"), "{sil}");
+    assert!(!sil.contains("CounterState"), "{sil}");
+}
+
+#[test]
+fn equivalent_state_assignment_retains_parenthesized_postfix_cast() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "equivalent-state-parenthesized-postfix-cast",
+        r#"
+            state CounterState {
+                byte status;
+            }
+
+            actor Counter owns CounterState {
+                entry inspect(byte increment) emits none {
+                    byte next_status = status;
+                    next_status = (signed(next_status) + signed(increment)) as byte;
+                    require(signed(next_status) >= signed(status));
+                }
+            }
+
+            app Test {
+                actor Counter;
+            }
+        "#,
+    );
+    let sil = &actor_sil["Counter"];
+
+    assert!(sil.contains("next_status = (signed(next_status) + signed(increment)) as byte;"), "{sil}");
+}
+
+#[test]
+fn typed_state_constant_can_supply_a_constructed_successor_directly() {
+    let (actors, _) = inline_actor_sil_and_artifact(
+        "state-constant-successor",
+        r#"
+            state CounterState {
+                int count;
+            }
+
+            const CounterState INITIAL = CounterState {
+                count: 1,
+            };
+
+            actor Counter owns CounterState {
+                entry reset() emits next: Counter {
+                    byte[32] initial_digest = digest(INITIAL);
+                    require(initial_digest == initial_digest);
+                    unrestricted(next.value);
+                    become next <- Counter(INITIAL);
+                }
+            }
+
+            app Test { actor Counter; }
+        "#,
+    );
+
+    assert!(actors["Counter"].contains("State constant INITIAL = State {"), "{}", actors["Counter"]);
+    assert!(
+        actors["Counter"].contains("byte[32] initial_digest = blake3(byte[](((INITIAL.count) as byte[8])));"),
+        "{}",
+        actors["Counter"]
+    );
+    assert!(!actors["Counter"].contains("function gen__digest_"), "{}", actors["Counter"]);
+    assert!(actors["Counter"].contains("validateOutputState(gen__next_output_idx, INITIAL);"), "{}", actors["Counter"]);
+}
+
+#[test]
+fn body_binding_shadows_typed_state_constant_provenance() {
+    let err = emit_inline_error(
+        r#"
+            state CounterState { int count; }
+
+            const CounterState INITIAL = CounterState { count: 1 };
+
+            actor Counter owns CounterState {
+                entry reset() emits next: Counter {
+                    int INITIAL = 7;
+                    unrestricted(next.value);
+                    become next <- Counter(INITIAL);
+                }
+            }
+
+            app Test { actor Counter; }
+        "#,
+    );
+
+    assert!(err.to_string().contains("is not an authored `CounterState` value"), "unexpected error: {err}");
+}
+
+#[test]
+fn digest_accepts_scalar_state_results_from_global_and_actor_functions_once() {
+    let (actors, _) = inline_actor_sil_and_artifact(
+        "state-function-result-digest",
+        r#"
+            state CounterState {
+                int left;
+                int right;
+            }
+
+            fn global_snapshot(int value) -> CounterState {
+                return CounterState {
+                    left: value,
+                    right: value + 1,
+                };
+            }
+
+            actor Counter owns CounterState {
+                fn actor_snapshot() -> CounterState {
+                    return CounterState {
+                        left: left,
+                        right: right,
+                    };
+                }
+
+                entry inspect() emits none {
+                    byte[32] global_digest = digest(global_snapshot(left));
+                    byte[32] actor_digest = digest(actor_snapshot());
+                    require(global_digest == global_digest);
+                    require(actor_digest == actor_digest);
+                }
+            }
+
+            app Test { actor Counter; }
+        "#,
+    );
+
+    let sil = &actors["Counter"];
+    assert_eq!(sil.matches("function gen__digest_CounterState(").count(), 1, "one typed helper is shared by both calls: {sil}");
+    assert!(sil.contains("gen__digest_CounterState(global_snapshot(left))"), "{sil}");
+    assert!(sil.contains("gen__digest_CounterState(actor_snapshot())"), "{sil}");
+    assert_eq!(sil.matches("global_snapshot(").count(), 2, "global result must be evaluated once: {sil}");
+    assert_eq!(sil.matches("actor_snapshot(").count(), 2, "actor result must be evaluated once: {sil}");
+}
+
+#[test]
+fn observed_state_reference_can_supply_a_matching_route_state() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "observed-state-route-source",
+        r#"
+            state ForeignState {
+                cov_id group_id;
+                int amount;
+            }
+
+            state PeerState {
+                int amount;
+            }
+
+            actor Foreign owns ForeignState {
+                entry relay()
+                observes asset by self.group_id {
+                    inputs {
+                        src: Foreign,
+                    }
+                    outputs {
+                        dst: Foreign,
+                    }
+                }
+                emits none {
+                    require asset.outputs become {
+                        dst <- Foreign(state(asset.inputs.src)),
+                    };
+                }
+
+                entry forward() emits next: Peer {
+                    unrestricted(next.value);
+                    become next <- Peer(PeerState {
+                        amount: amount,
+                    });
+                }
+            }
+
+            actor Peer owns PeerState {
+                entry inspect() emits none {
+                    require(amount >= 0);
+                }
+            }
+
+            app Test {
+                actor Foreign;
+                actor Peer;
+            }
+        "#,
+    );
+    let sil = &actor_sil["Foreign"];
+    let relay = sil
+        .split_once("entry relay")
+        .map(|(_, tail)| tail)
+        .and_then(|tail| tail.split_once("entry forward").map(|(body, _)| body))
+        .expect("relay entry is delimited in the generated Sil");
+    let authored = relay
+        .split_once("ForeignState gen__source_dst_foreign_state = ForeignState {")
+        .map(|(_, tail)| tail)
+        .and_then(|tail| tail.split_once("        };").map(|(body, _)| body))
+        .expect("relay reconstructs one authored ForeignState");
+
+    assert_eq!(relay.matches("State gen__asset_src_state = readInputStateWithTemplate(").count(), 1, "{relay}");
+    assert!(authored.contains("group_id: gen__asset_src_state.group_id,"), "{authored}");
+    assert!(authored.contains("amount: gen__asset_src_state.amount,"), "{authored}");
+    assert!(!authored.contains("gen__foreign_template"), "{authored}");
+    assert!(!authored.contains("gen__peer_template"), "{authored}");
+    assert!(relay.contains("gen__foreign_template: gen__foreign_template,"), "{relay}");
+    assert!(relay.contains("gen__peer_template: gen__peer_template,"), "{relay}");
+    assert!(!relay.contains("gen__asset_src_state.gen__foreign_template"), "{relay}");
+    assert!(!relay.contains("gen__asset_src_state.gen__peer_template"), "{relay}");
+    assert!(relay.contains("validateOutputState(gen__asset_dst_output_idx, gen__state_dst_state);"), "{relay}");
+}
+
+#[test]
+fn consumed_input_handles_reject_same_named_locals() {
+    let path = PathBuf::from("consumed-reference-shadowing.ag");
+    let module = crate::compiler::syntax::parser::parse_module(
+        path.clone(),
+        r#"
+            state LocalState {
+                int count;
+            }
+
+            state PeerState {
+                int amount;
+            }
+
+            actor Local owns LocalState {
+                entry inspect() consumes { peer: Peer, } emits next: Local {
+                    {
+                        LocalState peer = LocalState {
+                            count: count + 1,
+                        };
+                        LocalState copy = peer;
+                        require(copy.count == peer.count);
+                    }
+                    require(peer.amount >= 0);
+                    unrestricted(next.value);
+                    become next <- self;
+                }
+            }
+
+            actor Peer owns PeerState {
+                delegate accept() consumes { local: Local, } {}
+            }
+
+            app Test {
+                actor Local;
+                actor Peer;
+            }
+        "#
+        .to_string(),
+    )
+    .expect("source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let model = Model::from_program(&program).expect("model validates");
+    let actor = model.actor("Local").expect("Local exists");
+    let err = emit_actor(actor, &model).expect_err("entry locals must not shadow consumed input handles");
+    assert!(err.to_string().contains("entry binding `peer` collides with consume handle of the same name"), "{err}");
+}
+
+#[test]
+fn uniform_input_references_expose_operations_without_implicit_state_values() {
+    let (actors, _) = inline_actor_sil_and_artifact(
+        "uniform-input-references",
+        r#"
+            state LocalState {
+                cov_id remote_id;
+                int count;
+            }
+
+            state PeerState {
+                int amount;
+            }
+
+            fn peer_amount(PeerState value) -> int {
+                return value.amount;
+            }
+
+            actor Local owns LocalState {
+                entry inspect()
+                consumes { peer: Peer, }
+                observes remote by self.remote_id {
+                    inputs { src: Peer, }
+                }
+                emits next: Local {
+                    LocalState current = state(self);
+                    PeerState consumed = state(peer);
+                    PeerState observed = state(remote.inputs.src);
+                    byte[32] consumed_digest = digest(state(peer));
+
+                    require(current.count == self.count);
+                    require(consumed.amount == peer.amount);
+                    require(observed.amount == remote.inputs.src.amount);
+                    require(peer_amount(state(peer)) == peer.amount);
+                    require(self.value + peer.value + remote.inputs.src.value >= 0);
+                    require(self.cov_id == self.cov_id);
+                    require(peer.cov_id == peer.cov_id);
+                    require(remote.inputs.src.cov_id == remote.inputs.src.cov_id);
+                    require(consumed_digest == consumed_digest);
+                    unrestricted(next.value);
+                    become next <- self;
+                }
+            }
+
+            actor Peer owns PeerState {
+                delegate accept() consumes { local: Local, } {}
+            }
+
+            app Test { actor Local; actor Peer; }
+        "#,
+    );
+    let sil = &actors["Local"];
+
+    assert!(sil.contains("PeerState gen__peer_state = readInputStateWithTemplate("), "{sil}");
+    assert!(sil.contains("PeerState gen__remote_src_state = readInputStateWithTemplate("), "{sil}");
+    assert!(sil.contains("PeerState consumed = PeerState {"), "{sil}");
+    assert!(sil.contains("amount: gen__peer_state.amount,"), "{sil}");
+    assert!(sil.contains("PeerState observed = PeerState {"), "{sil}");
+    assert!(sil.contains("amount: gen__remote_src_state.amount,"), "{sil}");
+    assert!(sil.contains("peer_amount(PeerState {"), "{sil}");
+    assert!(sil.contains("byte[32] consumed_digest = blake3(byte[](((gen__peer_state.amount) as byte[8])));"), "{sil}");
+    assert!(sil.contains("tx.inputs[gen__peer_input_idx].value"), "{sil}");
+    assert!(sil.contains("tx.inputs[gen__remote_src_input_idx].value"), "{sil}");
+    assert!(sil.contains("OpInputCovenantId(gen__peer_input_idx)"), "{sil}");
+    assert!(sil.contains("OpInputCovenantId(gen__remote_src_input_idx)"), "{sil}");
+    assert_eq!(sil.matches("Gen__PeerState gen__peer_state = readInputStateWithTemplate(").count(), 1, "{sil}");
+    assert_eq!(sil.matches("Gen__PeerState gen__remote_src_state = readInputStateWithTemplate(").count(), 1, "{sil}");
+    assert!(!sil.contains("state(peer)"), "{sil}");
+    assert!(!sil.contains("remote.inputs.src"), "{sil}");
+}
+
+#[test]
+fn input_references_reject_implicit_and_legacy_whole_state_forms() {
+    let bare = emit_inline_error(
+        r#"
+            state SharedState { int count; }
+            fn read(SharedState value) -> int { return value.count; }
+            actor Counter owns SharedState {
+                entry inspect() consumes { peer: Counter, } emits none {
+                    require(read(peer) >= 0);
+                }
+            }
+            app Test { actor Counter; }
+        "#,
+    );
+    assert!(bare.to_string().contains("use `state(peer)`"), "unexpected error: {bare}");
+
+    for (legacy_expr, replacement) in
+        [("self.state", "state(self)"), ("peer.state", "state(peer)"), ("remote.inputs.src.state", "state(remote.inputs.src)")]
+    {
+        let legacy = emit_inline_error(&format!(
+            r#"
+                state SharedState {{ cov_id group_id; int count; }}
+                actor Counter owns SharedState {{
+                    entry inspect()
+                    consumes {{ peer: Counter, }}
+                    observes remote by self.group_id {{ inputs {{ src: Counter, }} }}
+                    emits none {{
+                        SharedState value = {legacy_expr};
+                        require(value.count >= 0);
+                    }}
+                }}
+                app Test {{ actor Counter; }}
+            "#
+        ));
+        assert!(legacy.to_string().contains("has no `.state` member"), "unexpected error for {legacy_expr}: {legacy}");
+        assert!(legacy.to_string().contains(&format!("use `{replacement}`")), "unexpected error for {legacy_expr}: {legacy}");
+    }
+
+    for state in ["self.state", "state(self)"] {
+        let successor = emit_inline_error(&format!(
+            r#"
+                state SharedState {{ int count; }}
+                actor Counter owns SharedState {{
+                    entry inspect() emits next: Counter {{
+                        unrestricted(next.value);
+                        become next <- Counter({state});
+                    }}
+                }}
+                app Test {{ actor Counter; }}
+            "#
+        ));
+        assert!(successor.to_string().contains("use `next <- self`"), "unexpected error for {state}: {successor}");
+    }
+
+    let nested = emit_inline_error(
+        r#"
+            state SharedState { int count; }
+            actor Counter owns SharedState {
+                entry inspect() consumes { peer: Counter, } emits none {
+                    byte[32] value = digest(peer.state);
+                    require(value.length == 32);
+                }
+            }
+            app Test { actor Counter; }
+        "#,
+    );
+    assert!(nested.to_string().contains("use `state(peer)`"), "unexpected error: {nested}");
+}
+
+#[test]
+fn input_state_reconstruction_rejects_invalid_calls_and_function_contexts() {
+    for (case, expression, expected) in [
+        ("missing argument", "state()", "requires exactly one input reference"),
+        ("extra argument", "state(self, peer)", "requires exactly one input reference"),
+        ("ordinary value", "state(value)", "requires one visible entry input reference"),
+        ("output handle", "state(next)", "requires one visible entry input reference"),
+    ] {
+        let source = format!(
+            r#"
+                state SharedState {{ int count; }}
+                actor Counter owns SharedState {{
+                    entry inspect(SharedState value)
+                    consumes {{ peer: Counter, }}
+                    emits next: Counter {{
+                        SharedState reconstructed = {expression};
+                        require(reconstructed.count >= 0);
+                        unrestricted(next.value);
+                        become next <- self;
+                    }}
+                }}
+                app Test {{ actor Counter; }}
+            "#
+        );
+        let err = emit_inline_error(&source);
+        assert!(err.to_string().contains(expected), "{case}: unexpected error: {err}");
+    }
+
+    for (context, declaration) in [
+        ("global", "fn reconstruct(SharedState value) -> SharedState { return state(value); }"),
+        (
+            "actor",
+            r#"
+                actor Counter owns SharedState {
+                    fn reconstruct(SharedState value) -> SharedState { return state(value); }
+                    entry inspect() emits none { require(count >= 0); }
+                }
+            "#,
+        ),
+    ] {
+        let actor = if context == "global" {
+            "actor Counter owns SharedState { entry inspect() emits none { require(count >= 0); } }"
+        } else {
+            ""
+        };
+        let source = format!(
+            r#"
+                state SharedState {{ int count; }}
+                {declaration}
+                {actor}
+                app Test {{ actor Counter; }}
+            "#
+        );
+        let err = emit_inline_error(&source);
+        assert!(
+            err.to_string().contains("input-state reconstruction is only available in entry bodies"),
+            "{context}: unexpected error: {err}"
+        );
+    }
+}
+
+#[test]
+fn empty_input_state_digest_uses_explicit_empty_bytes() {
+    let (actors, _) = inline_actor_sil_and_artifact(
+        "empty-input-state-digest",
+        r#"
+            state Empty {}
+            actor EmptyActor owns Empty {
+                entry verify(byte[32] expected) emits none {
+                    require(digest(state(self)) == expected);
+                }
+            }
+            app Test { actor EmptyActor; }
+        "#,
+    );
+    let sil = &actors["EmptyActor"];
+
+    assert!(sil.contains("require(blake3(byte[](0x)) == expected);"), "{sil}");
+}
+
+#[test]
+fn expanded_input_and_named_state_digests_use_the_same_storage_payload() {
+    let (actors, _) = inline_actor_sil_and_artifact(
+        "expanded-input-named-state-digest",
+        r#"
+            state Capsule {
+                int nonce;
+                virtual detail;
+            }
+
+            state Details {
+                int count;
+            }
+
+            state Expanded expands Capsule {
+                detail: Details;
+            }
+
+            actor Vault owns Expanded {
+                entry verify() emits none {
+                    Expanded snapshot = state(self);
+                    byte[32] direct = digest(state(self));
+                    byte[32] local = digest(snapshot);
+                    require(direct == local);
+                }
+            }
+
+            app Test { actor Vault; }
+        "#,
+    );
+    let sil = &actors["Vault"];
+    let initializer = |binding: &str| {
+        sil.lines()
+            .find_map(|line| line.trim().strip_prefix(&format!("byte[32] {binding} = ")).and_then(|value| value.strip_suffix(';')))
+            .unwrap_or_else(|| panic!("missing `{binding}` initializer in:\n{sil}"))
+    };
+
+    let direct = initializer("direct");
+    let local = initializer("local");
+    assert_ne!(direct, local, "{sil}");
+    assert!(direct.contains("byte[](detail)"), "{sil}");
+    assert!(!direct.contains("gen__detail_count"), "{sil}");
+    assert!(local.contains("snapshot.nonce"), "{sil}");
+    assert!(local.contains("snapshot.detail.count"), "{sil}");
+    assert!(sil.contains("require(blake3(byte[](gen__detail_details_preimage)) == detail);"), "{sil}");
+    assert!(sil.contains("int gen__detail_count = OpBin2Num(gen__detail_details_preimage.slice(0, 8));"), "{sil}");
+}
+
+#[test]
+fn digest_call_uses_ast_spans_for_spacing_comments_and_arity() {
+    for (case, expression) in [("spaced", "digest (state(self))"), ("commented", "digest /* authored state */ (state(self))")] {
+        let source = format!(
+            r#"
+                state Empty {{}}
+                actor EmptyActor owns Empty {{
+                    entry verify(byte[32] expected) emits none {{
+                        require({expression} == expected);
+                    }}
+                }}
+                app Test {{ actor EmptyActor; }}
+            "#
+        );
+        let (actors, _) = inline_actor_sil_and_artifact(case, &source);
+        let sil = &actors["EmptyActor"];
+        assert!(sil.contains("require(blake3(byte[](0x)) == expected);"), "{case}: {sil}");
+    }
+
+    for expression in ["digest()", "digest(state(self), state(self))"] {
+        let source = format!(
+            r#"
+                state Empty {{}}
+                actor EmptyActor owns Empty {{
+                    entry verify() emits none {{
+                        byte[32] invalid = {expression};
+                        require(invalid == invalid);
+                    }}
+                }}
+                app Test {{ actor EmptyActor; }}
+            "#
+        );
+        let err = emit_inline_error(&source);
+        assert!(
+            err.to_string().contains("`digest(...)` requires exactly one authored state value"),
+            "{expression}: unexpected error: {err}"
+        );
+    }
+}
+
+#[test]
+fn observe_roots_reject_same_named_locals() {
+    let err = emit_inline_error(
+        r#"
+            state ForeignState {
+                cov_id group_id;
+                int amount;
+            }
+
+            actor Foreign owns ForeignState {
+                entry relay()
+                observes asset by self.group_id {
+                    inputs {
+                        src: Foreign,
+                    }
+                    outputs {
+                        dst: Foreign,
+                    }
+                }
+                emits none {
+                    {
+                        int asset = 0;
+                        require asset.outputs become {
+                            dst <- Foreign(state(asset.inputs.src)),
+                        };
+                    }
+                }
+            }
+
+            app Test {
+                actor Foreign;
+            }
+        "#,
+    );
+
+    assert!(err.to_string().contains("entry binding `asset` collides with observe root of the same name"), "unexpected error: {err}");
+}
+
+#[test]
+fn observed_input_leaves_do_not_reserve_bare_body_names() {
+    let path = PathBuf::from("observed-input-leaf-local.ag");
+    let module = crate::compiler::syntax::parser::parse_module(
+        path.clone(),
+        r#"
+            state ForeignState {
+                cov_id group_id;
+                int amount;
+            }
+
+            actor Foreign owns ForeignState {
+                entry inspect()
+                observes asset by self.group_id {
+                    inputs { src: Foreign, }
+                }
+                emits none {
+                    int src = 1;
+                    require(src == 1);
+                }
+            }
+
+            app Test { actor Foreign; }
+        "#
+        .to_string(),
+    )
+    .expect("source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let model = Model::from_program(&program).expect("model validates");
+    let actor = model.actor("Foreign").expect("Foreign exists");
+    let sil = emit_actor(actor, &model).expect("a local may share a qualified observed input leaf name");
+
+    assert!(sil.contains("int src = 1;"), "{sil}");
+    assert!(sil.contains("State gen__asset_src_state = readInputState("), "{sil}");
+}
+
+#[test]
+fn observed_input_and_output_leaves_may_share_a_name() {
+    let path = PathBuf::from("observed-input-output-leaf.ag");
+    let module = crate::compiler::syntax::parser::parse_module(
+        path.clone(),
+        r#"
+            state ForeignState { int amount; }
+            state LocalState { cov_id group_id; }
+
+            actor Foreign owns ForeignState {
+                entry hold() emits none {
+                    require(amount >= 0);
+                }
+            }
+
+            actor Local owns LocalState {
+                entry relay()
+                observes asset by self.group_id {
+                    inputs { agent: Foreign, }
+                    outputs { agent: Foreign, }
+                }
+                emits none {
+                    require asset.outputs become {
+                        agent <- Foreign(state(asset.inputs.agent)),
+                    };
+                }
+            }
+
+            app Test { actor Foreign; actor Local; }
+        "#
+        .to_string(),
+    )
+    .expect("source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let model = Model::from_program(&program).expect("qualified input and output leaves may share a name");
+    let actor_sil = actor_sil_for_model(&model);
+
+    emit_artifact(&program, &model, &actor_sil).expect("same-named qualified input and output leaves compile");
+}
+
+#[test]
+fn observed_output_labels_reject_same_named_body_bindings() {
+    let err = emit_inline_error(
+        r#"
+            state ForeignState {
+                cov_id group_id;
+                int amount;
+            }
+
+            actor Foreign owns ForeignState {
+                entry relay()
+                observes asset by self.group_id {
+                    inputs { src: Foreign, }
+                    outputs { dst: Foreign, }
+                }
+                emits none {
+                    ForeignState dst = state(asset.inputs.src);
+                    require asset.outputs become {
+                        dst <- Foreign(dst),
+                    };
+                }
+            }
+
+            app Test { actor Foreign; }
+        "#,
+    );
+
+    assert!(
+        err.to_string().contains("entry binding `dst` collides with observe `asset` output label of the same name"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn spawned_output_labels_reject_same_named_body_bindings() {
+    let err = emit_inline_error(
+        r#"
+            state LauncherState { int launches; }
+            state ChildState { int amount; }
+
+            actor Launcher owns LauncherState {
+                entry launch()
+                spawns children by child_id {
+                    outputs { child: Child, }
+                }
+                emits none {
+                    ChildState child = { amount: 1 };
+                    require children.outputs become {
+                        child <- Child(child),
+                    };
+                }
+            }
+
+            actor Child owns ChildState {}
+            app Test { actor Launcher; actor Child; }
+        "#,
+    );
+
+    assert!(
+        err.to_string().contains("entry binding `child` collides with spawn `children` output label of the same name"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn current_state_array_entry_param_uses_selected_state_type() {
     let (actor_sil, artifact) = inline_actor_sil_and_artifact(
         "current-state-array-entry-param",
         r#"
@@ -1105,13 +2690,102 @@ fn current_state_array_entry_param_uses_contract_state_type() {
     );
 
     let sil = actor_sil.get("Note").expect("Note emits");
+    assert!(!sil.contains("NoteState"), "{sil}");
     assert!(sil.contains("entry inspect(State[2] notes)"), "{sil}");
 
     let inspect = artifact.sil_abi.contract("Note").expect("Note Sil ABI exists").entry("inspect").expect("inspect entry exists");
     assert_eq!(
         inspect.params[0].ty,
-        TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Struct { name: "State".to_string() }), len: 2 }
+        TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Struct { name: "NoteState".to_string() }), len: 2 }
     );
+}
+
+#[test]
+fn rejects_mismatched_authored_state_array_shapes_at_function_boundaries() {
+    let path = PathBuf::from("state-array-shape-mismatch.ag");
+    let module = crate::compiler::syntax::parser::parse_module(
+        path.clone(),
+        r#"
+            state NoteState {
+                int nonce;
+            }
+
+            fn fixed(NoteState[2] values) -> NoteState[2] {
+                return values;
+            }
+
+            actor Note owns NoteState {
+                entry inspect(NoteState[] values) emits none {
+                    NoteState[2] invalid = fixed(values);
+                    require(invalid[0].nonce >= 0);
+                }
+            }
+
+            app Test {
+                actor Note;
+            }
+        "#
+        .to_string(),
+    )
+    .expect("source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let model = Model::from_program(&program).expect("model validates");
+    let err = emit_actor(model.actor("Note").expect("Note exists"), &model).expect_err("array shapes must agree at the call boundary");
+
+    assert!(err.to_string().contains("authored state value has type `State[]`, not `State[2]`"), "unexpected error: {err}");
+}
+
+#[test]
+fn constant_sized_state_array_local_remains_planned() {
+    let sil = emit_unresolved_fixed_state_array_local("constant-state-array-local", "const int COUNT = 2;", "COUNT");
+
+    assert!(sil.contains("int constant COUNT = 2;"), "{sil}");
+    assert!(sil.contains("State[COUNT] values = State[COUNT]{"), "{sil}");
+    assert!(sil.contains("State indexed = values[0];"), "{sil}");
+    assert!(sil.contains("State[2] result = fixed(values);"), "{sil}");
+}
+
+#[test]
+fn inferred_state_array_local_uses_initializer_shape() {
+    let sil = emit_unresolved_fixed_state_array_local("inferred-state-array-local", "", "_");
+
+    assert!(sil.contains("State[_] values = State[_]{"), "{sil}");
+    assert!(sil.contains("State indexed = values[0];"), "{sil}");
+    assert!(sil.contains("State[2] result = fixed(values);"), "{sil}");
+}
+
+fn emit_unresolved_fixed_state_array_local(case: &str, constant: &str, dimension: &str) -> String {
+    let source = r#"
+        __CONSTANT__
+
+        state NoteState {
+            int nonce;
+        }
+
+        fn fixed(NoteState[2] values) -> NoteState[2] {
+            return values;
+        }
+
+        actor Note owns NoteState {
+            entry inspect() emits none {
+                NoteState[__DIMENSION__] values = NoteState[__DIMENSION__]{
+                    NoteState { nonce: 1 },
+                    NoteState { nonce: 2 },
+                };
+                NoteState indexed = values[0];
+                NoteState[2] result = fixed(values);
+                require(indexed.nonce + result[0].nonce >= 0);
+            }
+        }
+
+        app Test {
+            actor Note;
+        }
+    "#
+    .replace("__CONSTANT__", constant)
+    .replace("__DIMENSION__", dimension);
+    let (actors, _) = inline_actor_sil_and_artifact(case, &source);
+    actors.get("Note").expect("Note emits").clone()
 }
 
 #[test]
@@ -1157,7 +2831,8 @@ fn routed_current_state_array_entry_param_uses_source_state_type() {
     assert!(sil.contains("struct NoteState"), "{sil}");
     assert!(sil.contains("entry choose(NoteState[2] notes)"), "{sil}");
     assert!(sil.contains("gen__archive_template: gen__archive_template"), "{sil}");
-    assert!(sil.contains("nonce: notes[1].nonce"), "{sil}");
+    assert!(sil.contains("NoteState gen__source_next_note_state = notes[1];"), "{sil}");
+    assert!(sil.contains("nonce: gen__source_next_note_state.nonce"), "{sil}");
 
     let choose = artifact.sil_abi.contract("Note").expect("Note Sil ABI exists").entry("choose").expect("choose entry exists");
     assert_eq!(
@@ -1185,7 +2860,13 @@ fn expanded_entry_params_keep_the_authored_nested_layout() {
             }
 
             actor Vault owns Expanded {
-                entry inspect(Expanded value, Expanded[] values) emits none {
+                entry inspect(Expanded value, Expanded[] values, byte[32] expected_digest) emits none {
+                    Expanded current = state(self);
+                    Details copy = self.detail;
+                    byte[32] whole = digest(state(self));
+                    require(current.detail.count >= 0);
+                    require(copy.count >= 0);
+                    require(whole == expected_digest);
                     require(value.detail.count >= 0);
                     require(values.length >= 0);
                 }
@@ -1208,7 +2889,7 @@ fn expanded_entry_params_keep_the_authored_nested_layout() {
                     require(candidate.detail.count == 0);
 
                     unrestricted(next.value);
-                    become next <- Reader(self.state);
+                    become next <- self;
                 }
             }
 
@@ -1222,7 +2903,12 @@ fn expanded_entry_params_keep_the_authored_nested_layout() {
 
     assert!(sil.contains("struct Expanded {"), "{sil}");
     assert!(sil.contains("Details detail;"), "{sil}");
-    assert!(sil.contains("entry inspect(Expanded value, Expanded[] values"), "{sil}");
+    assert!(sil.contains("Expanded value,\n        Expanded[] values,\n        byte[32] expected_digest,"), "{sil}");
+    assert!(sil.contains("Expanded current = Expanded {"), "{sil}");
+    assert!(sil.contains("count: gen__detail_count,"), "{sil}");
+    assert!(sil.contains("Details copy = Details {"), "{sil}");
+    assert!(sil.contains("byte[32] whole = blake3(byte[](((nonce) as byte[8]) + byte[](detail)));"), "{sil}");
+    assert!(sil.contains("int gen__detail_count = OpBin2Num(gen__detail_details_preimage.slice(0, 8));"), "{sil}");
     let inspect = artifact.sil_abi.contract("Vault").expect("Vault contract exists").entry("inspect").expect("inspect entry exists");
     assert_eq!(inspect.params[0].ty, TypeArtifact::Struct { name: "Expanded".to_string() });
     assert_eq!(
@@ -1237,13 +2923,242 @@ fn expanded_entry_params_keep_the_authored_nested_layout() {
     );
 
     let reader_sil = &actor_sil["Reader"];
-    assert!(reader_sil.contains("struct Gen__VaultState {"), "{reader_sil}");
+    assert!(reader_sil.contains("struct Gen__PhysicalExpanded {"), "{reader_sil}");
     assert!(reader_sil.contains("byte[32] detail;"), "{reader_sil}");
-    assert!(reader_sil.contains("Gen__VaultState vault = readInputStateWithTemplate("), "{reader_sil}");
+    assert!(reader_sil.contains("Gen__PhysicalExpanded gen__vault_state = readInputStateWithTemplate("), "{reader_sil}");
 }
 
 #[test]
-fn equivalent_current_state_params_use_physical_state_type() {
+fn active_expanded_field_projects_as_an_authored_value() {
+    let (actors, _) = inline_actor_sil_and_artifact(
+        "active-expanded-field-value",
+        r#"
+            state Capsule { virtual detail; }
+            state Details { int count; }
+            state Expanded expands Capsule { detail: Details; }
+
+            actor Vault owns Expanded {
+                fn read_detail(Details value) -> int {
+                    return value.count;
+                }
+
+                entry inspect() emits next: Archive {
+                    Details copy = detail;
+                    int opened_count = detail.count;
+                    Details[1] copies = Details[1]{ detail };
+                    require(copy.count == opened_count);
+                    require(copies.length == 1);
+                    require(read_detail(detail) == opened_count);
+
+                    unrestricted(next.value);
+                    become next <- Archive(detail);
+                }
+            }
+
+            actor Archive owns Details {
+                entry hold() emits none {
+                    require(count >= 0);
+                }
+            }
+
+            app Test { actor Vault; actor Archive; }
+        "#,
+    );
+
+    let sil = &actors["Vault"];
+    assert!(sil.contains("Details copy = Details {"), "{sil}");
+    assert!(sil.contains("int opened_count = gen__detail_count;"), "{sil}");
+    assert!(sil.contains("Details[1] copies = Details[1]{ Details {"), "{sil}");
+    assert!(sil.contains("read_detail(Details {"), "{sil}");
+    assert!(sil.contains("Details gen__source_next_details = Details {"), "{sil}");
+    assert_eq!(sil.matches("count: gen__detail_count,").count(), 4, "{sil}");
+}
+
+#[test]
+fn active_expanded_field_rejects_whole_value_destructuring() {
+    let err = emit_inline_error(
+        r#"
+            state Capsule { virtual detail; }
+            state Details { int count; }
+            state Expanded expands Capsule { detail: Details; }
+
+            actor Vault owns Expanded {
+                entry inspect() emits none {
+                    Details { count: int opened_count } = detail;
+                    require(opened_count >= 0);
+                }
+            }
+
+            app Test { actor Vault; }
+        "#,
+    );
+
+    assert!(
+        err.to_string().contains(
+            "active expanded state field `detail` cannot be destructured as a whole value; project its fields directly, for example `int opened_count = detail.count;`"
+        ),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn expanded_input_fields_require_validated_preimages() {
+    let path = PathBuf::from("expanded-input-projection.ag");
+    let module = crate::compiler::syntax::parser::parse_module(
+        path.clone(),
+        r#"
+            state Capsule { int nonce; virtual detail; }
+            state Details { int count; }
+            state Expanded expands Capsule { detail: Details; }
+
+            actor Vault owns Expanded {
+                entry hold() emits none { require(nonce >= 0); }
+            }
+
+            state ReaderState { int nonce; }
+            actor Reader owns ReaderState {
+                entry inspect() consumes { vault: Vault, } emits next: Reader {
+                    require(vault.detail.count >= 0);
+                    unrestricted(next.value);
+                    become next <- self;
+                }
+            }
+
+            app Test { actor Vault; actor Reader; }
+        "#
+        .to_string(),
+    )
+    .expect("source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let model = Model::from_program(&program).expect("expanded input plans");
+
+    let err = emit_actor(model.actor("Reader").expect("Reader exists"), &model)
+        .expect_err("a stored expansion digest cannot expose its authored payload");
+    assert!(err.to_string().contains("expanded input field `detail`"), "unexpected error: {err}");
+    assert!(err.to_string().contains("validated preimage"), "unexpected error: {err}");
+}
+
+#[test]
+fn expanded_input_state_reconstruction_requires_validated_preimages() {
+    let err = emit_inline_error(
+        r#"
+            state Capsule { int nonce; virtual detail; }
+            state Details { int count; }
+            state Expanded expands Capsule { detail: Details; }
+
+            actor Vault owns Expanded {
+                entry hold() emits none { require(nonce >= 0); }
+            }
+
+            state ReaderState { int nonce; }
+            actor Reader owns ReaderState {
+                entry inspect() consumes { vault: Vault, } emits none {
+                    Expanded copy = state(vault);
+                    require(copy.nonce >= 0);
+                }
+            }
+
+            app Test { actor Vault; actor Reader; }
+        "#,
+    );
+
+    assert!(err.to_string().contains("cannot be materialized without a validated preimage"), "unexpected error: {err}");
+    assert!(err.to_string().contains("field `detail`"), "unexpected error: {err}");
+}
+
+#[test]
+fn expanded_actor_functions_require_explicit_authored_parameters() {
+    let path = PathBuf::from("expanded-function-capture.ag");
+    let module = crate::compiler::syntax::parser::parse_module(
+        path.clone(),
+        r#"
+            state Capsule { int nonce; virtual detail; }
+            state Details { int count; }
+            state Expanded expands Capsule { detail: Details; }
+
+            actor Vault owns Expanded {
+                fn captured_count() -> int {
+                    return detail.count;
+                }
+
+                entry hold() emits none {
+                    require(nonce >= 0);
+                }
+            }
+
+            app Test { actor Vault; }
+        "#
+        .to_string(),
+    )
+    .expect("source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let model = Model::from_program(&program).expect("expanded actor plans");
+    let err = emit_actor(model.actor("Vault").expect("Vault exists"), &model)
+        .expect_err("actor functions cannot capture an entry-specific expansion preimage");
+    assert!(err.to_string().contains("actor function `Vault::captured_count`"), "unexpected error: {err}");
+    assert!(err.to_string().contains("cannot capture expanded field `detail`"), "unexpected error: {err}");
+    assert!(err.location.is_some(), "expanded capture diagnostics retain the exact function-body location");
+
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "expanded-function-parameter",
+        r#"
+            state Capsule { int nonce; virtual detail; }
+            state Details { int count; }
+            state Expanded expands Capsule { detail: Details; }
+
+            actor Vault owns Expanded {
+                fn explicit_count(Expanded value) -> int {
+                    return value.detail.count;
+                }
+
+                fn make_details() -> Details {
+                    return Details {
+                        count: 1,
+                    };
+                }
+
+                entry inspect(Expanded value) emits next: Vault {
+                    Expanded current = Expanded {
+                        nonce: nonce,
+                        detail: Details {
+                            count: detail.count,
+                        },
+                    };
+                    Details next_detail = Details {
+                        count: 2,
+                    };
+                    Expanded from_local = {
+                        nonce: 1,
+                        detail: next_detail,
+                    };
+                    Expanded from_call = {
+                        nonce: 2,
+                        detail: make_details(),
+                    };
+                    require(explicit_count(value) >= 0);
+                    require(explicit_count(current) >= 0);
+                    require(explicit_count(from_local) >= 0);
+                    unrestricted(next.value);
+                    become next <- Vault(from_call);
+                }
+            }
+
+            app Test { actor Vault; }
+        "#,
+    );
+    let sil = actor_sil.get("Vault").expect("Vault emits");
+    assert!(sil.contains("function explicit_count(Expanded value) : int"), "{sil}");
+    assert!(sil.contains("return value.detail.count;"), "{sil}");
+    assert!(sil.contains("Expanded current = Expanded {"), "{sil}");
+    assert!(sil.contains("detail: Details {"), "{sil}");
+    assert!(sil.contains("count: gen__detail_count"), "{sil}");
+    assert!(sil.contains("detail: next_detail"), "{sil}");
+    assert!(sil.contains("detail: make_details()"), "{sil}");
+    assert!(sil.contains("from_call.detail.count"), "{sil}");
+}
+
+#[test]
+fn entry_state_params_use_selected_types_for_actor_function_calls() {
     let (actor_sil, artifact) = inline_actor_sil_and_artifact(
         "current-state-dynamic-array-entry-param",
         r#"
@@ -1252,8 +3167,12 @@ fn equivalent_current_state_params_use_physical_state_type() {
             }
 
             actor Note owns NoteState {
+                fn read_nonce(NoteState note) -> int {
+                    return note.nonce;
+                }
+
                 entry inspect(NoteState note) emits none {
-                    require(note.nonce >= 0);
+                    require(read_nonce(note) >= 0);
                 }
 
                 entry inspect_many(NoteState[] notes) emits none {
@@ -1269,15 +3188,19 @@ fn equivalent_current_state_params_use_physical_state_type() {
     );
 
     let sil = actor_sil.get("Note").expect("Note emits");
-    assert!(!sil.contains("struct NoteState"), "{sil}");
+    assert!(!sil.contains("NoteState"), "{sil}");
+    assert!(sil.contains("function read_nonce(State note) : int"), "{sil}");
     assert!(sil.contains("entry inspect(State note)"), "{sil}");
     assert!(sil.contains("entry inspect_many(State[] notes)"), "{sil}");
 
     let note = artifact.sil_abi.contract("Note").expect("Note Sil ABI exists");
-    assert_eq!(note.entry("inspect").expect("inspect entry exists").params[0].ty, TypeArtifact::Struct { name: "State".to_string() });
+    assert_eq!(
+        note.entry("inspect").expect("inspect entry exists").params[0].ty,
+        TypeArtifact::Struct { name: "NoteState".to_string() }
+    );
     assert_eq!(
         note.entry("inspect_many").expect("inspect_many entry exists").params[0].ty,
-        TypeArtifact::DynamicArray { item: Box::new(TypeArtifact::Struct { name: "State".to_string() }) }
+        TypeArtifact::DynamicArray { item: Box::new(TypeArtifact::Struct { name: "NoteState".to_string() }) }
     );
     assert_eq!(artifact.argent.actors.iter().find(|actor| actor.name == "Note").expect("Note actor exists").state, "NoteState");
     assert!(artifact.argent.states.iter().any(|state| state.name == "NoteState"));
@@ -1300,20 +3223,20 @@ fn terminal_state_does_not_carry_its_own_template() {
             actor Source owns SourceState {
                 entry finish() emits next: Terminal {
                     unrestricted(next.value);
-                    TerminalState next = {
+                    TerminalState next_state = {
                         count: count + 1,
                     };
-                    become next <- Terminal(next);
+                    become next <- Terminal(next_state);
                 }
             }
 
             actor Terminal owns TerminalState {
                 entry step() emits next: Terminal {
                     unrestricted(next.value);
-                    TerminalState next = {
+                    TerminalState next_state = {
                         count: count + 1,
                     };
-                    become next <- Terminal(next);
+                    become next <- Terminal(next_state);
                 }
             }
 
@@ -1333,7 +3256,9 @@ fn terminal_state_does_not_carry_its_own_template() {
 
     assert!(!terminal_sil.contains("byte[32] gen__init_terminal_template"), "{terminal_sil}");
     assert!(!terminal_sil.contains("byte[32] gen__terminal_template ="), "{terminal_sil}");
-    assert!(terminal_sil.contains("validateOutputState(gen__next_output_idx, next);"), "{terminal_sil}");
+    assert!(!terminal_sil.contains("TerminalState"), "{terminal_sil}");
+    assert!(terminal_sil.contains("State next_state = State {"), "{terminal_sil}");
+    assert!(terminal_sil.contains("validateOutputState(gen__next_output_idx, next_state);"), "{terminal_sil}");
     assert!(runtime_state_plan(&artifact, "Terminal").is_none());
     assert_eq!(
         runtime_state_plan(&artifact, "Source")
@@ -1365,7 +3290,7 @@ fn emits_portable_artifact_schema() {
             actor Foo owns FooState {
                 entry step(int amount) emits next: Foo {
                     require(next.value == self.value);
-                    become next <- Foo(self.state);
+                    become next <- self;
                 }
             }
 
@@ -1454,8 +3379,7 @@ fn emits_portable_artifact_schema() {
     assert!(entry.witnesses.is_empty(), "exact same-state continuation should not expose route witnesses");
     assert!(matches!(&entry.emits, EmitArtifact::Outputs { outputs } if outputs.len() == 1 && outputs[0].name == "next"));
     assert_eq!(entry.routes[0].output, "next");
-    assert_eq!(entry.routes[0].actor, "Foo");
-    assert_eq!(entry.routes[0].state_expr, "self.state");
+    assert!(matches!(entry.routes[0].successor, RouteSuccessorArtifact::ExactSelf));
     assert_eq!(entry.route_plan.active_input.as_ref().map(|input| (input.actor.as_str(), input.cov_index)), Some(("Foo", Some(0))));
     assert_eq!(entry.route_plan.outputs[0].auth_index, 0);
     assert_eq!(entry.route_plan.outputs[0].name, "next");
@@ -1497,7 +3421,7 @@ fn argent_states_preserve_lossy_source_types() {
             actor Holder owns HolderState {
                 entry hold() emits next: Holder {
                     unrestricted(next.value);
-                    become next <- Holder(self.state);
+                    become next <- self;
                 }
             }
 
@@ -1527,6 +3451,11 @@ fn state_expansion_uses_base_storage_layout() {
     let (sil, artifact) = emit_fixture("state_expansion", "Forager");
 
     assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/state_expansion/Forager.sil"));
+    assert!(sil.contains("ForagerStrategy strategy;"), "{sil}");
+    assert!(sil.contains("byte[32] strategy;"), "{sil}");
+    assert!(sil.contains("ForagerState next_state = ForagerState {"), "{sil}");
+    assert!(sil.contains("validateOutputState(gen__next_output_idx, gen__state_next_state);"), "{sil}");
+    assert!(!sil.contains("validateOutputStateWithTemplate"), "{sil}");
 
     let expansion = artifact.argent.state_expansions.first().expect("state expansion is recorded");
     assert_eq!(expansion.state, "ForagerState");
@@ -1543,6 +3472,17 @@ fn state_expansion_uses_base_storage_layout() {
     let contract = artifact.sil_abi.contract("Forager").expect("Forager Sil ABI exists");
     assert_eq!(contract.runtime_state.source, "ForagerState");
     assert_eq!(contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["strategy", "energy"]);
+    assert_eq!(contract.compiled.template_hash_hex, "6fe9ea6382a598cf1c2c6df366fc8bc4c419ae259d56eee5a7c45d6eb680df02");
+    assert!(runtime_state_plan(&artifact, "Forager").is_none());
+    let template = artifact
+        .argent
+        .template_plan
+        .templates
+        .iter()
+        .find(|template| template.actor == "Forager")
+        .expect("Forager template receipt exists");
+    assert!(template.actor_type_handle.context_fields.is_empty());
+    assert_eq!(template.sil_template_hash, contract.compiled.template_hash_hex);
     let hold = contract.entry("hold").expect("hold ABI exists");
     assert_eq!(hold.params.iter().map(|param| param.name.as_str()).collect::<Vec<_>>(), ["gen__strategy_forager_strategy_preimage"]);
     assert_eq!(hold.params[0].ty, TypeArtifact::FixedBytes { len: 8 });
@@ -1556,6 +3496,433 @@ fn state_expansion_uses_base_storage_layout() {
 }
 
 #[test]
+fn static_output_to_a_foreign_expanded_state_declares_the_planned_physical_type() {
+    let path = PathBuf::from("static-expanded-output.ag");
+    let module = crate::compiler::syntax::parser::parse_module(
+        path.clone(),
+        r#"
+            state SourceState {
+                int nonce;
+            }
+
+            state ExpandedStorage {
+                int amount;
+                virtual detail;
+            }
+
+            state Details {
+                int count;
+            }
+
+            state ExpandedState expands ExpandedStorage {
+                detail: Details;
+            }
+
+            actor Source owns SourceState {
+                entry send() emits next: Target {
+                    ExpandedState next_state = ExpandedState {
+                        amount: nonce,
+                        detail: Details { count: nonce },
+                    };
+                    unrestricted(next.value);
+                    become next <- Target(next_state);
+                }
+            }
+
+            actor Target owns ExpandedState {
+                entry hold() emits none {
+                    require(amount >= 0);
+                }
+            }
+
+            app Test {
+                actor Source;
+                actor Target;
+            }
+        "#
+        .to_string(),
+    )
+    .expect("source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let model = Model::from_program(&program).expect("expanded target plans");
+    let actor_sil = actor_sil_for_model(&model);
+    let source_sil = &actor_sil["Source"];
+
+    assert!(source_sil.contains("struct Gen__PhysicalExpandedState {"), "{source_sil}");
+    assert!(!source_sil.contains("struct Gen__TargetState {"), "{source_sil}");
+    assert!(source_sil.contains("Gen__PhysicalExpandedState gen__state_next_gen__physical_expanded_state"), "{source_sil}");
+    emit_artifact(&program, &model, &actor_sil).expect("planned expanded output type compiles");
+}
+
+#[test]
+fn expanded_output_payload_calls_are_evaluated_once_before_digest_lowering() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "expanded-output-single-evaluation",
+        r#"
+            state Capsule {
+                int nonce;
+                virtual detail;
+            }
+
+            state Details {
+                int count;
+                int limit;
+            }
+
+            state Expanded expands Capsule {
+                detail: Details;
+            }
+
+            actor Vault owns Expanded {
+                fn make_details() -> Details {
+                    return Details {
+                        count: 1,
+                        limit: 2,
+                    };
+                }
+
+                entry advance() emits next: Vault {
+                    unrestricted(next.value);
+                    become next <- Vault(Expanded {
+                        nonce: nonce + 1,
+                        detail: make_details(),
+                    });
+                }
+            }
+
+            app Test {
+                actor Vault;
+            }
+        "#,
+    );
+    let sil = &actor_sil["Vault"];
+
+    assert_eq!(sil.matches("detail: make_details(),").count(), 1, "{sil}");
+    assert!(sil.contains("Expanded gen__source_next_expanded = Expanded {"), "{sil}");
+    assert!(sil.contains("gen__source_next_expanded.detail.count"), "{sil}");
+    assert!(sil.contains("gen__source_next_expanded.detail.limit"), "{sil}");
+    assert!(!sil.contains("make_details().count"), "{sil}");
+    assert!(!sil.contains("make_details().limit"), "{sil}");
+}
+
+#[test]
+fn rejects_authored_physical_state_constructors() {
+    for initializer in ["{ count: count + 1 }", "State { count: count + 1 }"] {
+        let source = format!(
+            r#"
+                state SharedState {{ int count; }}
+
+                actor Current owns SharedState {{
+                    entry advance() emits next: Current {{
+                        State next_state = {initializer};
+                        unrestricted(next.value);
+                        become next <- Current(next_state);
+                    }}
+                }}
+
+                app Test {{ actor Current; }}
+            "#
+        );
+        let err = emit_inline_error(&source);
+        assert!(
+            err.to_string().contains("physical `State` is compiler-owned and cannot be constructed in Argent source"),
+            "unexpected error for `{initializer}`: {err}"
+        );
+    }
+
+    for (label, helper) in [
+        (
+            "global",
+            r#"
+                fn forge(int count) -> State {
+                    return State { count: count + 1 };
+                }
+            "#,
+        ),
+        (
+            "actor",
+            r#"
+                actor Current owns SharedState {
+                    fn forge(int count) -> State {
+                        return State { count: count + 1 };
+                    }
+
+                    entry hold() emits none {
+                        require(count >= 0);
+                    }
+                }
+            "#,
+        ),
+    ] {
+        let actor = if label == "global" {
+            r#"
+                actor Current owns SharedState {
+                    entry hold() emits none {
+                        require(count >= 0);
+                    }
+                }
+            "#
+        } else {
+            ""
+        };
+        let source = format!(
+            r#"
+                state SharedState {{ int count; }}
+                {helper}
+                {actor}
+                app Test {{ actor Current; }}
+            "#
+        );
+        let err = emit_inline_error(&source);
+        assert!(
+            err.to_string().contains("physical `State` is compiler-owned and cannot be constructed in Argent"),
+            "unexpected {label} function error: {err}"
+        );
+    }
+}
+
+#[test]
+fn rejects_unclassified_authored_state_constructor_components() {
+    let err = emit_inline_error(
+        r#"
+            fn validation_call() -> int {
+                return 1;
+            }
+
+            state CounterState { int count; }
+
+            actor Counter owns CounterState {
+                entry inspect() emits none {
+                    CounterState snapshot = CounterState {
+                        count: 1,
+                        validation_call(),
+                    };
+                    require(snapshot.count == 1);
+                }
+            }
+
+            app Test { actor Counter; }
+        "#,
+    );
+
+    assert!(err.to_string().contains("state constructor component"), "unexpected error: {err}");
+}
+
+#[test]
+fn preserves_trivia_between_authored_state_type_and_constructor() {
+    let (actors, _) = inline_actor_sil_and_artifact(
+        "authored-state-constructor-trivia",
+        r#"
+            state CounterState { int count; }
+
+            actor Counter owns CounterState {
+                entry inspect() emits none {
+                    CounterState snapshot = CounterState /* authored */ {
+                        count: 1,
+                    };
+                    CounterState trailing = CounterState {
+                        count: 2,
+                        /* trailing constructor trivia */
+                    };
+                    require(snapshot.count == 1 && trailing.count == 2);
+                }
+            }
+
+            app Test { actor Counter; }
+        "#,
+    );
+
+    assert!(actors["Counter"].contains("State /* authored */ {"), "{}", actors["Counter"]);
+}
+
+#[test]
+fn authenticated_physical_state_values_can_be_bound_and_destructured() {
+    inline_actor_sil_and_artifact(
+        "physical-state-binding",
+        r#"
+            state CounterState { int count; }
+
+            actor Counter owns CounterState {
+                fn retain(State value) -> State {
+                    return value;
+                }
+
+                entry inspect() emits none {
+                    State physical = readInputState(this.activeInputIndex);
+                    State rebound = retain(physical);
+                    State { count: int current } = rebound;
+                    require(rebound.count == current);
+                }
+            }
+
+            app Test { actor Counter; }
+        "#,
+    );
+}
+
+#[test]
+fn physical_state_values_cannot_supply_authored_successors() {
+    let err = emit_inline_error(
+        r#"
+            state CounterState { int count; }
+
+            actor Counter owns CounterState {
+                entry advance() emits next: Counter {
+                    State physical = readInputState(this.activeInputIndex);
+                    unrestricted(next.value);
+                    become next <- Counter(physical);
+                }
+            }
+
+            app Test { actor Counter; }
+        "#,
+    );
+    assert!(err.to_string().contains("is not an authored `CounterState` value"), "unexpected error: {err}");
+}
+
+#[test]
+fn physical_state_function_results_cannot_supply_authored_successors() {
+    let err = emit_inline_error(
+        r#"
+            state CounterState { int count; }
+
+            actor Counter owns CounterState {
+                fn retain(State value) -> State {
+                    return value;
+                }
+
+                entry advance() emits next: Counter {
+                    State physical = readInputState(this.activeInputIndex);
+                    unrestricted(next.value);
+                    become next <- Counter(retain(physical));
+                }
+            }
+
+            app Test { actor Counter; }
+        "#,
+    );
+    assert!(err.to_string().contains("is not a proven authored `CounterState` value"), "unexpected error: {err}");
+}
+
+#[test]
+fn non_active_selector_declares_and_uses_its_canonical_named_type() {
+    use crate::compiler::model::PhysicalTargetId;
+    use crate::routing::{CommitmentForest, CommitmentPlan, Cut, FamilyPlan, NodePath, RoutePlan};
+
+    let path = PathBuf::from("non-active-selector-output.ag");
+    let module = crate::compiler::syntax::parser::parse_module(
+        path.clone(),
+        r#"
+            state BoardState { int ply; }
+
+            actor enum MoveActor {
+                Alpha;
+                Beta;
+            }
+
+            actor Mux owns BoardState {
+                entry choose(MoveActor target) emits next: MoveActor {
+                    BoardState next_state = BoardState { ply: ply + 1 };
+                    unrestricted(next.value);
+                    become next <- target(next_state);
+                }
+            }
+
+            actor Alpha owns BoardState {
+                entry advance() emits next: Tail {
+                    BoardState next_state = BoardState { ply: ply + 1 };
+                    unrestricted(next.value);
+                    become next <- Tail(next_state);
+                }
+            }
+
+            actor Beta owns BoardState {
+                entry advance() emits next: Tail {
+                    BoardState next_state = BoardState { ply: ply + 1 };
+                    unrestricted(next.value);
+                    become next <- Tail(next_state);
+                }
+            }
+
+            actor Tail owns BoardState {
+                entry hold() emits none { require(ply >= 0); }
+            }
+
+            actor Extra owns BoardState {
+                entry hold() emits none { require(ply >= 0); }
+            }
+
+            app Test {
+                actor Mux;
+                actor Alpha;
+                actor Beta;
+                actor Tail;
+                actor Extra;
+            }
+        "#
+        .to_string(),
+    )
+    .expect("source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let leaf = |actor: &str| CommitmentNode::Leaf { actor: actor.to_string() };
+    let cut = |paths: &[&[usize]]| paths.iter().map(|path| NodePath::new(path.to_vec())).collect::<Cut>();
+    // Default selector cohorts align these cuts; inject a valid asymmetric
+    // plan to exercise the canonical named-type fallback.
+    let crafted_plan = RoutePlan {
+        families: vec![FamilyPlan {
+            domain: "BoardState".to_string(),
+            rep: "Mux".to_string(),
+            members: ["Mux", "Alpha", "Beta", "Tail"].into_iter().map(str::to_string).collect(),
+            gates: vec!["Mux".to_string()],
+            table: ["Alpha", "Beta"].into_iter().map(str::to_string).collect(),
+        }],
+        commitments: CommitmentPlan {
+            forest: CommitmentForest {
+                roots: vec![
+                    leaf("Mux"),
+                    CommitmentNode::Branch { children: vec![leaf("Alpha"), leaf("Beta")] },
+                    leaf("Tail"),
+                    leaf("Extra"),
+                ],
+            },
+            cuts: BTreeMap::from([
+                ("Mux".to_string(), cut(&[&[1, 0], &[1, 1], &[2], &[3]])),
+                ("Alpha".to_string(), cut(&[&[1, 0], &[1, 1], &[2]])),
+                ("Beta".to_string(), cut(&[&[1, 0], &[1, 1], &[2]])),
+                ("Tail".to_string(), Cut::new()),
+                ("Extra".to_string(), Cut::new()),
+            ]),
+        },
+    };
+    let injected_planner = move |_graph: &RouteGraph,
+                                 _domains: &BTreeMap<String, Vec<String>>,
+                                 selectors: &[SelectorRequirement]|
+          -> crate::error::Result<RoutePlan> {
+        assert_eq!(selectors.len(), 1);
+        Ok(crafted_plan.clone())
+    };
+    let model = Model::from_program_with_route_planner(&program, &injected_planner).expect("non-active selector plans");
+    let mux = model.actor("Mux").expect("Mux exists");
+    let choose = mux.entries.iter().find(|entry| entry.name == "choose").expect("choose entry exists");
+    let selector = model
+        .entry_model(mux, choose)
+        .expect("entry model exists")
+        .template_selectors()
+        .get("target")
+        .expect("target selector exists");
+    let output = plan_selector_output_state(mux, selector, &model).expect("selector output state plans");
+
+    assert!(matches!(output.canonical_target(), PhysicalTargetId::Actor(actor) if actor.actor() == "Alpha"));
+    assert_eq!(output.physical_type(), "Gen__AlphaState");
+    let actor_sil = actor_sil_for_model(&model);
+    let mux_sil = &actor_sil["Mux"];
+    assert!(mux_sil.contains("struct Gen__AlphaState {"), "{mux_sil}");
+    assert!(!mux_sil.contains("struct Gen__BetaState {"), "{mux_sil}");
+    assert!(mux_sil.contains("Gen__AlphaState gen__state_next_gen__alpha_state"), "{mux_sil}");
+    emit_artifact(&program, &model, &actor_sil).expect("canonical selector output type compiles");
+}
+
+#[test]
 fn expanded_actor_records_sil_and_capsule_template_cuts() {
     let (sil, artifact) = emit_fixture("capsule_route_context", "ReserveAsset");
     let (wallet_sil, _) = emit_fixture("capsule_route_context", "WalletAsset");
@@ -1563,10 +3930,61 @@ fn expanded_actor_records_sil_and_capsule_template_cuts() {
     assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/capsule_route_context/ReserveAsset.sil"));
     assert_eq!(wallet_sil, include_str!("../../../../tests/fixtures/emit/capsule_route_context/WalletAsset.sil"));
     assert!(sil.contains("byte[32] gen__wallet_asset_template"), "{sil}");
+    assert!(sil.contains("ReserveAssetState next_asset = ReserveAssetState {"), "{sil}");
+    assert!(sil.contains("validateOutputState(gen__next_output_idx, gen__state_next_state);"), "{sil}");
+    assert!(sil.contains("validateOutputStateWithTemplate("), "{sil}");
+
+    // Migration debt: exact continuation is still recognized from the
+    // exact-successor route intent.
+    assert!(wallet_sil.contains("tx.outputs[gen__next_output_idx].scriptPubKey"), "{wallet_sil}");
+    assert!(wallet_sil.contains("== tx.inputs[this.activeInputIndex].scriptPubKey"), "{wallet_sil}");
+    assert!(!wallet_sil.contains("validateOutputState"), "{wallet_sil}");
 
     let contract = artifact.sil_abi.contract("ReserveAsset").expect("ReserveAsset Sil ABI exists");
+    assert_eq!(
+        contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        ["gen__reserve_asset_template", "gen__wallet_asset_template", "owner_kind", "owner_id", "policy", "balance"]
+    );
+    assert_eq!(contract.compiled.template_hash_hex, "627db2b04fa0d951683831303996ca6cd1c4ababec8bdf59546a57afe3f02206");
+    let wallet_contract = artifact.sil_abi.contract("WalletAsset").expect("WalletAsset Sil ABI exists");
+    assert_eq!(
+        wallet_contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        ["gen__reserve_asset_template", "gen__wallet_asset_template", "owner_kind", "owner_id", "policy", "balance"]
+    );
+    assert_eq!(wallet_contract.compiled.template_hash_hex, "7fcc79baaa34f0dce572b2d915ddd4697b487baab7f53d1e930d6aac0d82fedc");
+
+    let source_state =
+        artifact.argent.states.iter().find(|state| state.name == "ReserveAssetState").expect("ReserveAssetState exists");
+    assert_eq!(
+        source_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        ["owner_kind", "owner_id", "policy", "balance"]
+    );
+    assert!(source_state.fields[2].virtual_slot);
+
+    let wallet_actor = artifact.argent.actors.iter().find(|actor| actor.name == "WalletAsset").expect("WalletAsset actor exists");
+    let hold = wallet_actor.entries.iter().find(|entry| entry.name == "hold").expect("WalletAsset hold entry exists");
+    assert!(matches!(hold.routes[0].successor, RouteSuccessorArtifact::ExactSelf));
+
     let runtime_plan = runtime_state_plan(&artifact, "ReserveAsset").expect("route context is recorded");
-    assert!(!runtime_plan.field_roles.is_empty());
+    assert_eq!(
+        runtime_plan.field_roles.iter().map(|field| (field.name.as_str(), field.role.clone())).collect::<Vec<_>>(),
+        [
+            ("gen__reserve_asset_template", RuntimeFieldRoleArtifact::Template { contract: "ReserveAsset".to_string() },),
+            ("gen__wallet_asset_template", RuntimeFieldRoleArtifact::Template { contract: "WalletAsset".to_string() },),
+        ]
+    );
+    assert_eq!(
+        runtime_state_plan(&artifact, "WalletAsset")
+            .expect("WalletAsset route context is recorded")
+            .field_roles
+            .iter()
+            .map(|field| (field.name.as_str(), field.role.clone()))
+            .collect::<Vec<_>>(),
+        [
+            ("gen__reserve_asset_template", RuntimeFieldRoleArtifact::Template { contract: "ReserveAsset".to_string() },),
+            ("gen__wallet_asset_template", RuntimeFieldRoleArtifact::Template { contract: "WalletAsset".to_string() },),
+        ]
+    );
     let receipt = artifact
         .argent
         .template_plan
@@ -1717,7 +4135,7 @@ fn state_expansion_slots_require_typed_payload_constructors() {
     let program = Program { root: PathBuf::from("test.ag"), modules: vec![module] };
     let model = Model::from_program(&program).expect("model validates");
     let actor = model.actor("Forager").expect("Forager actor exists");
-    let err = emit_actor(actor, &model).expect_err("untyped virtual slot payload must be rejected");
+    let err = emit_actor(actor, &model).expect_err("anonymous virtual slot payload must be rejected");
 
     assert!(err.to_string().contains("must use `ForagerStrategy { ... }`"), "unexpected error: {err}");
 }
@@ -1728,7 +4146,7 @@ fn builds_examples_with_compiled_artifacts() {
         "examples/tickets.ag",
         "tickets",
         &[
-            ("Issuer", "04e42d0f9f69e8c344142685c9e1512ed03e0e3f317c5f2649b0da3f61b06a13"),
+            ("Issuer", "a6af0ca5bff28389fd687b7ca8ac8cf0dd270276927037a9f212a3ea8ff27166"),
             ("Ticket", "0480dbcb791c1d53b7f4668bf684c14be77fd7cf4ee02e49c9f9f2528e2fbd3e"),
         ],
     );
@@ -2160,7 +4578,9 @@ fn icc_asset_lowers_cov_id_co_spend_and_else_if() {
     assert!(kcc20_sil.contains("require(checkSig(owner_sig, pubkey(owner_identifier)));"), "{kcc20_sil}");
     assert!(kcc20_sil.contains("// :: co-spent with owner_identifier"), "{kcc20_sil}");
     assert!(kcc20_sil.contains("require(OpCovInputCount(owner_identifier) > 0);"), "{kcc20_sil}");
+    assert!(!kcc20_sil.contains("KCC20State"), "{kcc20_sil}");
     assert!(kcc20_sil.contains("State next_state = State {"), "{kcc20_sil}");
+    assert!(kcc20_sil.contains("validateOutputState(gen__next_output_idx, next_state);"), "{kcc20_sil}");
 
     let proxy_sil = fs::read_to_string(out_dir.join("sil/MinterProxy.sil")).expect("MinterProxy.sil exists");
     assert!(proxy_sil.contains("byte[32] controller_id = init_controller_id;"), "{proxy_sil}");
@@ -2190,7 +4610,7 @@ fn lowers_co_spend_and_output_value_in_the_same_expression() {
             actor Counter owns CounterState {
                 entry bump() emits next: Counter {
                     require(guard.co_spent() && next.value >= 0);
-                    become next <- Counter(self.state);
+                    become next <- self;
                 }
             }
 
@@ -2326,6 +4746,23 @@ fn in_app_observed_templates_use_shared_actor_witnesses() {
     let (sil, artifact) = emit_fixture("observed_template_witnesses", "Local");
 
     assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/observed_template_witnesses/Local.sil"));
+    assert!(sil.contains("ForeignState gen__asset_src_state = readInputStateWithTemplate("), "{sil}");
+    assert!(sil.contains("validateOutputStateWithInputTemplate("), "{sil}");
+
+    let foreign_state = artifact.argent.states.iter().find(|state| state.name == "ForeignState").expect("ForeignState exists");
+    assert_eq!(foreign_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["count"]);
+    let local_state = artifact.argent.states.iter().find(|state| state.name == "LocalState").expect("LocalState exists");
+    assert_eq!(local_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["target_id"]);
+
+    let foreign_contract = artifact.sil_abi.contract("Foreign").expect("Foreign contract exists");
+    assert_eq!(foreign_contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["count"]);
+    assert_eq!(foreign_contract.compiled.template_hash_hex, "464dd0aa5c6a60a35f5a1f3e54be4822991b4578cfe58e5a266cb8650e524c94");
+    let local_contract = artifact.sil_abi.contract("Local").expect("Local contract exists");
+    assert_eq!(
+        local_contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        ["gen__foreign_template", "target_id"]
+    );
+    assert_eq!(local_contract.compiled.template_hash_hex, "ed3b4d44f4911b5dc91a4ad26acb9bb1d61526f3082e976b1de506969dccf81d");
 
     assert_eq!(
         runtime_state_plan(&artifact, "Local")
@@ -2359,6 +4796,8 @@ fn in_app_observe_preserves_observed_route_context() {
     assert_eq!(local_sil, include_str!("../../../../tests/fixtures/emit/in_app_observe_routes/Local.sil"));
     assert_eq!(foreign_sil, include_str!("../../../../tests/fixtures/emit/in_app_observe_routes/Foreign.sil"));
     assert_eq!(target_sil, include_str!("../../../../tests/fixtures/emit/in_app_observe_routes/Target.sil"));
+    assert!(local_sil.contains("function foreign_identity(ForeignState value) : ForeignState"), "{local_sil}");
+    assert!(local_sil.contains("ForeignState next_foreign = foreign_identity(ForeignState {"), "{local_sil}");
 
     assert_eq!(
         runtime_state_plan(&artifact, "Foreign")
@@ -2399,6 +4838,34 @@ fn consumed_route_reuses_input_template() {
     let (sil, artifact) = emit_fixture("input_template_route_reuse", "Controller");
 
     assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/input_template_route_reuse/Controller.sil"));
+    assert!(sil.contains("PeerState gen__peer_state = readInputStateWithTemplate("), "{sil}");
+    assert!(sil.contains("validateOutputStateWithInputTemplate("), "{sil}");
+
+    let controller_state =
+        artifact.argent.states.iter().find(|state| state.name == "ControllerState").expect("ControllerState exists");
+    assert_eq!(controller_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["tick"]);
+    let peer_state = artifact.argent.states.iter().find(|state| state.name == "PeerState").expect("PeerState exists");
+    assert_eq!(peer_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["count"]);
+
+    let controller_contract = artifact.sil_abi.contract("Controller").expect("Controller contract exists");
+    assert_eq!(
+        controller_contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        ["gen__peer_template", "tick"]
+    );
+    assert_eq!(controller_contract.compiled.template_hash_hex, "3091c3cb1b9eac52e3f7be3661e80720b5d2be1c0b9569e76f440a493ce53413");
+    let peer_contract = artifact.sil_abi.contract("Peer").expect("Peer contract exists");
+    assert_eq!(peer_contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["count"]);
+    assert_eq!(peer_contract.compiled.template_hash_hex, "7cbdc27a4fffbaad655bcd7565a7d85682469203db07d26b953f665640f4271f");
+
+    assert_eq!(
+        runtime_state_plan(&artifact, "Controller")
+            .expect("Controller runtime state role overlay exists")
+            .field_roles
+            .iter()
+            .map(|field| (field.name.as_str(), field.role.clone()))
+            .collect::<Vec<_>>(),
+        [("gen__peer_template", RuntimeFieldRoleArtifact::Template { contract: "Peer".to_string() })]
+    );
 
     let controller = artifact.argent.actors.iter().find(|actor| actor.name == "Controller").expect("Controller actor exists");
     let step = controller.entries.iter().find(|entry| entry.name == "step").expect("step entry exists");
@@ -2420,8 +4887,28 @@ fn single_actor_self_consume_is_pinned() {
     let (sil, artifact) = emit_fixture("single_actor_self_consume", "Counter");
 
     assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/single_actor_self_consume/Counter.sil"));
-    assert!(sil.contains("State other = readInputState(gen__other_input_idx);"), "{sil}");
+    assert!(sil.contains("State gen__other_state = readInputState(gen__other_input_idx);"), "{sil}");
     assert!(!sil.contains("readInputStateWithTemplate"), "{sil}");
+    assert!(!sil.contains("CounterState"), "{sil}");
+    assert!(sil.contains("State copied = actor_identity(global_identity(gen__other_state));"), "{sil}");
+    assert_eq!(sil.matches("actor_identity(global_identity(").count(), 1, "{sil}");
+    assert!(sil.contains("copied = global_identity(gen__other_state);"), "{sil}");
+    assert!(sil.contains("validateOutputState(gen__next_output_idx, next_state);"), "{sil}");
+
+    let source_state = artifact.argent.states.iter().find(|state| state.name == "CounterState").expect("CounterState exists");
+    assert_eq!(source_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["count"]);
+    let contract = artifact.sil_abi.contract("Counter").expect("Counter contract exists");
+    assert_eq!(contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["count"]);
+    assert_eq!(contract.compiled.template_hash_hex, "7e3775a25b2ed4594671eb43b72ca5389252ec0a11f3f0b8b255f91d7851e44a");
+    let template = artifact
+        .argent
+        .template_plan
+        .templates
+        .iter()
+        .find(|template| template.actor == "Counter")
+        .expect("Counter template receipt exists");
+    assert!(template.actor_type_handle.context_fields.is_empty());
+    assert_eq!(template.sil_template_hash, contract.compiled.template_hash_hex);
 
     let counter = artifact.argent.actors.iter().find(|actor| actor.name == "Counter").expect("Counter actor exists");
     let merge = counter.entries.iter().find(|entry| entry.name == "merge").expect("merge entry exists");
@@ -2449,11 +4936,11 @@ fn selected_app_actor_count_controls_self_consume_template_authentication() {
                 }
                 emits next: Counter {
                     unrestricted(next.value);
-                    CounterState next = {
+                    CounterState next_state = {
                         count: count + other.count,
                     };
 
-                    become next <- Counter(next);
+                    become next <- Counter(next_state);
                 }
             }
 
@@ -2482,7 +4969,7 @@ fn selected_app_actor_count_controls_self_consume_template_authentication() {
     let actor_sil = actor_sil_for_model(&multi_model);
     let artifact = emit_artifact(&program, &multi_model, &actor_sil).expect("multi-actor artifact emits");
 
-    assert!(sil.contains("State other = readInputStateWithTemplate("), "{sil}");
+    assert!(sil.contains("State gen__other_state = readInputStateWithTemplate("), "{sil}");
     assert!(!sil.contains("// :: direct input state"), "{sil}");
     let counter = artifact.argent.actors.iter().find(|actor| actor.name == "Counter").expect("Counter actor exists");
     let merge = counter.entries.iter().find(|entry| entry.name == "merge").expect("merge entry exists");
@@ -2502,7 +4989,7 @@ fn selected_app_actor_count_controls_self_consume_template_authentication() {
     let actor_sil = actor_sil_for_model(&single_model);
     let artifact = emit_artifact(&program, &single_model, &actor_sil).expect("single-actor artifact emits");
 
-    assert!(sil.contains("State other = readInputState(gen__other_input_idx);"), "{sil}");
+    assert!(sil.contains("State gen__other_state = readInputState(gen__other_input_idx);"), "{sil}");
     assert!(!sil.contains("readInputStateWithTemplate"), "{sil}");
     assert!(runtime_state_plan(&artifact, "Counter").is_none());
 }
@@ -2522,15 +5009,15 @@ fn unselected_actors_do_not_shape_selected_app_state() {
             actor Current owns SharedState {
                 entry step() emits next: Current {
                     unrestricted(next.value);
-                    become next <- Current(self.state);
+                    become next <- self;
                 }
             }
 
             actor Outside owns SharedState {
                 entry step() emits next: Target {
                     unrestricted(next.value);
-                    TargetState next = {};
-                    become next <- Target(next);
+                    TargetState next_state = {};
+                    become next <- Target(next_state);
                 }
             }
 
@@ -2626,7 +5113,7 @@ fn rejects_input_only_open_observed_actor_binding() {
                     }
                 }
                 emits none {
-                    AgentCapsule prev_state = remote.inputs.agent.state;
+                    AgentCapsule prev_state = state(remote.inputs.agent);
                     require(prev_state.energy >= 0);
                 }
             }
@@ -2838,8 +5325,10 @@ fn stones_delegate_reads_use_length_only_template_witnesses() {
         !player_sil.contains("gen__league_template"),
         "Player route-family template root should not carry unrelated League template: {player_sil}"
     );
-    assert!(player_sil.contains("validateOutputState(gen__self_out_output_idx, next_self);"), "{player_sil}");
-    assert!(player_sil.contains("validateOutputState(gen__opponent_out_output_idx, next_opponent);"), "{player_sil}");
+    assert!(player_sil.contains("PlayerState next_self = PlayerState {"), "{player_sil}");
+    assert!(player_sil.contains("PlayerState next_opponent = PlayerState {"), "{player_sil}");
+    assert!(player_sil.contains("validateOutputState(gen__self_out_output_idx, gen__state_self_out_state);"), "{player_sil}");
+    assert!(player_sil.contains("validateOutputState(gen__opponent_out_output_idx, gen__state_opponent_out_state);"), "{player_sil}");
     assert!(player_sil.contains("validateOutputStateWithTemplate(\n            gen__game_output_idx,"), "{player_sil}");
     assert!(league_sil.contains("entry register_player(\n"), "{league_sil}");
     assert!(league_sil.contains("byte[] gen__player_prefix,"), "{league_sil}");
@@ -2942,62 +5431,62 @@ fn compiler_lowers_injected_deep_forest_cuts() {
             actor Source owns SourceState {
                 entry start() emits next: HubA {
                     unrestricted(next.value);
-                    SharedState next = { amount: amount + 1 };
-                    become next <- HubA(next);
+                    SharedState next_state = { amount: amount + 1 };
+                    become next <- HubA(next_state);
                 }
             }
 
             actor HubA owns SharedState {
                 entry advance() emits next: A1 {
                     unrestricted(next.value);
-                    SharedState next = { amount: amount + 1 };
-                    become next <- A1(next);
+                    SharedState next_state = { amount: amount + 1 };
+                    become next <- A1(next_state);
                 }
             }
 
             actor A1 owns SharedState {
                 entry advance() emits next: A2 {
                     unrestricted(next.value);
-                    SharedState next = { amount: amount + 1 };
-                    become next <- A2(next);
+                    SharedState next_state = { amount: amount + 1 };
+                    become next <- A2(next_state);
                 }
             }
 
             actor A2 owns SharedState {
                 entry cross() emits next: HubB {
                     unrestricted(next.value);
-                    SharedState next = { amount: amount + 1 };
-                    become next <- HubB(next);
+                    SharedState next_state = { amount: amount + 1 };
+                    become next <- HubB(next_state);
                 }
             }
 
             actor HubB owns SharedState {
                 entry advance() emits next: B1 {
                     unrestricted(next.value);
-                    SharedState next = { amount: amount + 1 };
-                    become next <- B1(next);
+                    SharedState next_state = { amount: amount + 1 };
+                    become next <- B1(next_state);
                 }
 
                 entry rewind() emits next: A1 {
                     unrestricted(next.value);
-                    SharedState next = { amount: amount + 1 };
-                    become next <- A1(next);
+                    SharedState next_state = { amount: amount + 1 };
+                    become next <- A1(next_state);
                 }
             }
 
             actor B1 owns SharedState {
                 entry advance() emits next: B2 {
                     unrestricted(next.value);
-                    SharedState next = { amount: amount + 1 };
-                    become next <- B2(next);
+                    SharedState next_state = { amount: amount + 1 };
+                    become next <- B2(next_state);
                 }
             }
 
             actor B2 owns SharedState {
                 entry finish() emits next: Tail {
                     unrestricted(next.value);
-                    TailState next = { amount: amount + 1 };
-                    become next <- Tail(next);
+                    TailState next_state = { amount: amount + 1 };
+                    become next <- Tail(next_state);
                 }
             }
 
@@ -3170,14 +5659,27 @@ fn shared_state_actors_retain_distinct_transitive_cuts() {
     );
     assert!(model.route_leaves_by_actor["B"].is_empty());
 
-    match route_field_kind_for_actor("A", &model) {
-        RouteFieldKind::Direct { actor_templates, family_commitments } => {
-            assert_eq!(actor_templates, ["Middle", "Tail"]);
-            assert!(family_commitments.is_empty());
-        }
-        RouteFieldKind::None | RouteFieldKind::FamilyTables { .. } => panic!("A has two direct actor templates"),
-    }
-    assert!(matches!(route_field_kind_for_actor("B", &model), RouteFieldKind::None));
+    let a_generated = model
+        .state_lowering("A")
+        .expect("A has a state lowering")
+        .active()
+        .physical()
+        .fields()
+        .iter()
+        .filter(|field| matches!(field.id(), PhysicalFieldId::Generated(_)))
+        .map(|field| field.sil_name())
+        .collect::<Vec<_>>();
+    assert_eq!(a_generated, ["gen__middle_template", "gen__tail_template"]);
+    assert!(
+        model
+            .state_lowering("B")
+            .expect("B has a state lowering")
+            .active()
+            .physical()
+            .fields()
+            .iter()
+            .all(|field| matches!(field.id(), PhysicalFieldId::Storage(_)))
+    );
 
     let actor_a = model.actor("A").expect("A exists");
     let actor_b = model.actor("B").expect("B exists");
@@ -3235,30 +5737,30 @@ fn foreign_routes_materialize_the_target_actors_cut() {
             actor Source owns SourceState {
                 entry send() emits next: A {
                     unrestricted(next.value);
-                    SharedState next = {
+                    SharedState next_state = {
                         amount: amount,
                     };
-                    become next <- A(next);
+                    become next <- A(next_state);
                 }
             }
 
             actor A owns SharedState {
                 entry leave() emits next: TailA {
                     unrestricted(next.value);
-                    TailAState next = {
+                    TailAState next_state = {
                         amount: amount,
                     };
-                    become next <- TailA(next);
+                    become next <- TailA(next_state);
                 }
             }
 
             actor B owns SharedState {
                 entry leave() emits next: TailB {
                     unrestricted(next.value);
-                    TailBState next = {
+                    TailBState next_state = {
                         amount: amount,
                     };
-                    become next <- TailB(next);
+                    become next <- TailB(next_state);
                 }
             }
 
@@ -3296,9 +5798,9 @@ fn foreign_routes_materialize_the_target_actors_cut() {
         .expect("A receives an actor-qualified foreign state layout");
     assert!(actor_layout.contains("byte[32] gen__tail_a_template;"), "{source_sil}");
     assert!(!actor_layout.contains("gen__tail_b_template"), "{source_sil}");
-    assert!(source_sil.contains("SharedState next = SharedState {"), "{source_sil}");
+    assert!(source_sil.contains("SharedState next_state = SharedState {"), "{source_sil}");
     assert!(source_sil.contains("Gen__AState gen__state_next_gen__a_state = Gen__AState {"), "{source_sil}");
-    assert!(source_sil.contains("amount: next.amount,"), "{source_sil}");
+    assert!(source_sil.contains("amount: next_state.amount,"), "{source_sil}");
     assert!(source_sil.contains("gen__tail_a_template: gen__tail_a_template,"), "{source_sil}");
     assert!(!source_sil.contains("gen__tail_b_template:"), "{source_sil}");
 
@@ -3306,34 +5808,51 @@ fn foreign_routes_materialize_the_target_actors_cut() {
 }
 
 #[test]
-fn actor_route_field_kind_distinguishes_local_tables_from_foreign_commitments() {
+fn typed_actor_layouts_distinguish_local_tables_from_foreign_commitments() {
     let path = PathBuf::from("actor-route-field-kinds.ag");
     let module = crate::compiler::syntax::parser::parse_module(path.clone(), toy_chess_source()).expect("toy chess source parses");
     let program = Program { root: path, modules: vec![module] };
 
     let model = Model::from_program(&program).expect("toy chess model validates");
 
-    match route_field_kind_for_actor("Mux", &model) {
-        RouteFieldKind::FamilyTables { actor_templates, family_commitments, families } => {
-            assert!(actor_templates.is_empty());
-            assert!(family_commitments.is_empty());
-            assert_eq!(families.iter().map(|family| family.id.as_str()).collect::<Vec<_>>(), ["route_family/BoardState/mux"]);
-        }
-        RouteFieldKind::None | RouteFieldKind::Direct { .. } => panic!("Mux owns its local route table"),
-    }
+    let mux_fields = model
+        .state_lowering("Mux")
+        .expect("Mux has a state lowering")
+        .active()
+        .physical()
+        .fields()
+        .iter()
+        .filter(|field| matches!(field.id(), PhysicalFieldId::Generated(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(mux_fields.iter().map(|field| field.sil_name()).collect::<Vec<_>>(), ["gen__mux_template", "gen__mux_routes"]);
+    assert!(matches!(
+        mux_fields.as_slice(),
+        [template, table]
+            if matches!(template.id(), PhysicalFieldId::Generated(GeneratedFieldId::Template(actor)) if actor.actor() == "Mux")
+                && matches!(table.id(), PhysicalFieldId::Generated(GeneratedFieldId::RouteFamilyTable { family, .. }) if family == "route_family/BoardState/mux")
+    ));
 
-    match route_field_kind_for_actor("Player", &model) {
-        RouteFieldKind::Direct { actor_templates, family_commitments } => {
-            assert_eq!(actor_templates, ["Mux"]);
-            assert_eq!(
-                family_commitments.iter().map(|family| family.id.as_str()).collect::<Vec<_>>(),
-                ["route_family/BoardState/mux"]
-            );
-        }
-        RouteFieldKind::None | RouteFieldKind::FamilyTables { .. } => {
-            panic!("Player carries a foreign family commitment")
-        }
-    }
+    let player_fields = model
+        .state_lowering("Player")
+        .expect("Player has a state lowering")
+        .active()
+        .physical()
+        .fields()
+        .iter()
+        .filter(|field| matches!(field.id(), PhysicalFieldId::Generated(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        player_fields.iter().map(|field| field.sil_name()).collect::<Vec<_>>(),
+        ["gen__mux_template", "gen__mux_routes_digest"]
+    );
+    assert!(matches!(
+        player_fields.as_slice(),
+        [
+            template,
+            digest,
+        ] if matches!(template.id(), PhysicalFieldId::Generated(GeneratedFieldId::Template(actor)) if actor.actor() == "Mux")
+            && matches!(digest.id(), PhysicalFieldId::Generated(GeneratedFieldId::RouteFamilyDigest { family, .. }) if family == "route_family/BoardState/mux")
+    ));
 
     assert_eq!(
         model.route_transitions[&("Player".to_string(), "Mux".to_string())],
@@ -3390,35 +5909,35 @@ fn in_app_observed_output_opens_the_target_family_cut() {
                     require game.outputs become {
                         mux <- Mux(board),
                     };
-                    ObserverState next = {
+                    ObserverState next_state = {
                         game_id: game_id,
                         steps: steps + 1,
                     };
-                    become next <- Observer(next);
+                    become next <- Observer(next_state);
                 }
             }
 
             actor Mux owns BoardState {
                 entry move() emits next: Pawn {
                     unrestricted(next.value);
-                    BoardState next = { turn: turn + 1 };
-                    become next <- Pawn(next);
+                    BoardState next_state = { turn: turn + 1 };
+                    become next <- Pawn(next_state);
                 }
             }
 
             actor Pawn owns BoardState {
                 entry finish() emits next: Mux {
                     unrestricted(next.value);
-                    BoardState next = { turn: turn + 1 };
-                    become next <- Mux(next);
+                    BoardState next_state = { turn: turn + 1 };
+                    become next <- Mux(next_state);
                 }
             }
 
             actor Knight owns BoardState {
                 entry finish() emits next: Mux {
                     unrestricted(next.value);
-                    BoardState next = { turn: turn + 1 };
-                    become next <- Mux(next);
+                    BoardState next_state = { turn: turn + 1 };
+                    become next <- Mux(next_state);
                 }
             }
 
@@ -3464,8 +5983,8 @@ fn in_app_observed_input_uses_a_direct_template_dependency() {
             actor Foreign owns ForeignState {
                 entry route() emits next: Target {
                     unrestricted(next.value);
-                    TargetState next = { amount: amount };
-                    become next <- Target(next);
+                    TargetState next_state = { amount: amount };
+                    become next <- Target(next_state);
                 }
             }
 
@@ -3477,7 +5996,7 @@ fn in_app_observed_input_uses_a_direct_template_dependency() {
                     }
                 }
                 emits none {
-                    require(remote.inputs.src.state.amount >= 0);
+                    require(remote.inputs.src.amount >= 0);
                 }
             }
 
@@ -3553,9 +6072,9 @@ fn in_app_observed_output_reuses_a_current_input_template() {
                     }
                 }
                 emits none {
-                    ForeignState next = source;
+                    ForeignState next_state = state(source);
                     require remote.outputs become {
-                        next <- Foreign(next),
+                        next <- Foreign(next_state),
                     };
                 }
             }
@@ -3614,8 +6133,8 @@ fn in_app_current_output_reuses_an_observed_input_template() {
                 }
                 emits next: Foreign {
                     unrestricted(next.value);
-                    ForeignState next = remote.inputs.source.state;
-                    become next <- Foreign(next);
+                    ForeignState next_state = state(remote.inputs.source);
+                    become next <- Foreign(next_state);
                 }
             }
 
@@ -3672,20 +6191,20 @@ fn selected_gates_open_from_the_family_table_and_direct_consumes_stay_concrete()
             actor Source owns SourceState {
                 entry enter_pawn() emits next: Pawn {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         ply: nonce,
                     };
-                    become next <- Pawn(next);
+                    become next <- Pawn(next_state);
                 }
             }
 
             actor Mux owns BoardState {
                 entry choose(MoveActor target) emits next: MoveActor {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         ply: ply + 1,
                     };
-                    become next <- target(next);
+                    become next <- target(next_state);
                 }
             }
 
@@ -3708,20 +6227,20 @@ fn selected_gates_open_from_the_family_table_and_direct_consumes_stay_concrete()
                     unrestricted(next.value);
                     require(pawn.ply >= 0);
 
-                    ArchiveState next = {
+                    ArchiveState next_state = {
                         nonce: nonce + 1,
                     };
-                    become next <- Archive(next);
+                    become next <- Archive(next_state);
                 }
             }
 
             actor Archive owns ArchiveState {
                 entry reopen() emits next: Pawn {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         ply: nonce,
                     };
-                    become next <- Pawn(next);
+                    become next <- Pawn(next_state);
                 }
             }
 
@@ -3815,6 +6334,13 @@ fn route_neutral_state_locals_convert_at_actor_routes() {
     assert!(straight_sil["Lobby"].contains("BoardState next_board = BoardState {"), "{}", straight_sil["Lobby"]);
     assert!(
         straight_sil["Lobby"].contains("Gen__MuxState gen__state_next_gen__mux_state = Gen__MuxState {"),
+        "{}",
+        straight_sil["Lobby"]
+    );
+    assert!(
+        straight_sil["Lobby"].contains(
+            "validateOutputStateWithTemplate(\n            gen__next_output_idx,\n            gen__state_next_gen__mux_state,"
+        ),
         "{}",
         straight_sil["Lobby"]
     );
@@ -3993,7 +6519,7 @@ fn direct_route_families_are_inferred_without_hints() {
             .collect::<Vec<_>>(),
         vec![("target", "MoveActor", "BoardState", vec!["Pawn", "Knight"], Some("Knight"))]
     );
-    assert_eq!(choose_knight_const.routes.iter().map(|route| route.actor.as_str()).collect::<Vec<_>>(), vec!["Knight"]);
+    assert_eq!(choose_knight_const.routes.iter().map(artifact_constructed_actor).collect::<Vec<_>>(), vec!["Knight"]);
     artifact.verify_template_plan().expect("template plan receipt verifies inferred route family");
 }
 
@@ -4267,7 +6793,7 @@ fn gate_less_family_appends_rep_after_selector_variants() {
             .collect::<Vec<_>>(),
         vec![("target", Some("Knight"))]
     );
-    assert_eq!(choose_knight_const.routes.iter().map(|route| route.actor.as_str()).collect::<Vec<_>>(), vec!["Knight"]);
+    assert_eq!(choose_knight_const.routes.iter().map(artifact_constructed_actor).collect::<Vec<_>>(), vec!["Knight"]);
 
     let mux_sil = actor_sil.get("Mux").expect("Mux Sil is emitted");
     assert!(mux_sil.contains("int gen__target_selector = 1 /*KNIGHT*/;"), "{mux_sil}");
@@ -4332,7 +6858,7 @@ fn actor_enum_local_drives_selector_domain_and_route_expansion() {
     let mux = artifact.argent.actors.iter().find(|actor| actor.name == "Mux").expect("Mux actor exists");
     let choose = mux.entries.iter().find(|entry| entry.name == "choose").expect("choose entry exists");
     assert_eq!(choose.template_selectors.iter().map(|selector| selector.name.as_str()).collect::<Vec<_>>(), vec!["target"]);
-    assert_eq!(choose.routes.iter().map(|route| route.actor.as_str()).collect::<Vec<_>>(), vec!["Pawn", "Knight"]);
+    assert_eq!(choose.routes.iter().map(artifact_constructed_actor).collect::<Vec<_>>(), vec!["Pawn", "Knight"]);
 
     let mux_sil = actor_sil.get("Mux").expect("Mux Sil is emitted");
     assert!(mux_sil.contains("int target = index;"), "{mux_sil}");
@@ -4472,10 +6998,10 @@ fn selector_can_include_its_source_actor() {
             actor Challenge owns SharedState {
                 entry choose(NextActor target) emits next: NextActor {
                     unrestricted(next.value);
-                    SharedState next = {
+                    SharedState next_state = {
                         amount: amount + 1,
                     };
-                    become next <- target(next);
+                    become next <- target(next_state);
                 }
             }
 
@@ -4533,22 +7059,22 @@ fn two_actor_routes_use_direct_template_fields() {
             actor A owns BoardState {
                 entry to_b() emits next: B {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         n: n + 1,
                     };
 
-                    become next <- B(next);
+                    become next <- B(next_state);
                 }
             }
 
             actor B owns BoardState {
                 entry to_a() emits next: A {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         n: n + 1,
                     };
 
-                    become next <- A(next);
+                    become next <- A(next_state);
                 }
             }
 
@@ -4589,66 +7115,66 @@ fn route_family_state_can_have_multiple_disconnected_families() {
             actor A owns BoardState {
                 entry to_b() emits next: B {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         n: n + 1,
                     };
 
-                    become next <- B(next);
+                    become next <- B(next_state);
                 }
             }
 
             actor B owns BoardState {
                 entry to_c() emits next: C {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         n: n + 1,
                     };
 
-                    become next <- C(next);
+                    become next <- C(next_state);
                 }
             }
 
             actor C owns BoardState {
                 entry to_a() emits next: A {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         n: n + 1,
                     };
 
-                    become next <- A(next);
+                    become next <- A(next_state);
                 }
             }
 
             actor D owns BoardState {
                 entry to_e() emits next: E {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         n: n + 1,
                     };
 
-                    become next <- E(next);
+                    become next <- E(next_state);
                 }
             }
 
             actor E owns BoardState {
                 entry to_f() emits next: F {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         n: n + 1,
                     };
 
-                    become next <- F(next);
+                    become next <- F(next_state);
                 }
             }
 
             actor F owns BoardState {
                 entry to_d() emits next: D {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         n: n + 1,
                     };
 
-                    become next <- D(next);
+                    become next <- D(next_state);
                 }
             }
 
@@ -4756,44 +7282,44 @@ fn route_family_with_one_table_actor_uses_direct_template_fields() {
             actor PlayerA owns PlayerState {
                 entry enter_a() emits next: HubA {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         n: n,
                     };
 
-                    become next <- HubA(next);
+                    become next <- HubA(next_state);
                 }
             }
 
             actor PlayerB owns PlayerState {
                 entry enter_b() emits next: HubB {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         n: n,
                     };
 
-                    become next <- HubB(next);
+                    become next <- HubB(next_state);
                 }
             }
 
             actor HubB owns BoardState {
                 entry to_leaf() emits next: Leaf {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         n: n + 1,
                     };
 
-                    become next <- Leaf(next);
+                    become next <- Leaf(next_state);
                 }
             }
 
             actor HubA owns BoardState {
                 entry to_leaf() emits next: Leaf {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         n: n + 1,
                     };
 
-                    become next <- Leaf(next);
+                    become next <- Leaf(next_state);
                 }
             }
 
@@ -4847,66 +7373,66 @@ fn route_family_with_multiple_external_entries_uses_first_entry_as_representativ
             actor PlayerA owns PlayerState {
                 entry enter_a() emits next: HubA {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         n: n,
                     };
 
-                    become next <- HubA(next);
+                    become next <- HubA(next_state);
                 }
             }
 
             actor PlayerB owns PlayerState {
                 entry enter_b() emits next: HubB {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         n: n,
                     };
 
-                    become next <- HubB(next);
+                    become next <- HubB(next_state);
                 }
             }
 
             actor HubB owns BoardState {
                 entry to_leaf_a() emits next: LeafA {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         n: n + 1,
                     };
 
-                    become next <- LeafA(next);
+                    become next <- LeafA(next_state);
                 }
             }
 
             actor HubA owns BoardState {
                 entry to_leaf_b() emits next: LeafB {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         n: n + 1,
                     };
 
-                    become next <- LeafB(next);
+                    become next <- LeafB(next_state);
                 }
             }
 
             actor LeafA owns BoardState {
                 entry to_a() emits next: HubA {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         n: n + 1,
                     };
 
-                    become next <- HubA(next);
+                    become next <- HubA(next_state);
                 }
             }
 
             actor LeafB owns BoardState {
                 entry to_b() emits next: HubB {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         n: n + 1,
                     };
 
-                    become next <- HubB(next);
+                    become next <- HubB(next_state);
                 }
             }
 
@@ -5082,6 +7608,96 @@ fn for_loop_entry_body_lowers_and_compiles() {
             }
             "#,
     );
+}
+
+#[test]
+fn scalar_state_arguments_lower_inside_for_headers() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "state-argument-for-header",
+        r#"
+            state CounterState {
+                int count;
+            }
+
+            fn read_count(CounterState value) -> int {
+                return value.count;
+            }
+
+            actor Counter owns CounterState {
+                entry inspect()
+                consumes {
+                    other: Counter,
+                }
+                emits none {
+                    for (i, 0, read_count(state(other)), 8) {
+                        require(i >= 0);
+                    }
+                }
+            }
+
+            app StateArgumentForHeader {
+                actor Counter;
+            }
+        "#,
+    );
+    let sil = actor_sil.get("Counter").expect("Counter emits");
+    assert!(!sil.contains("CounterState"), "{sil}");
+    assert!(sil.contains("function read_count(State gen__glob_value) : int"), "{sil}");
+    assert!(sil.contains("for (i, 0, read_count(gen__other_state), 8)"), "{sil}");
+}
+
+#[test]
+fn scalar_state_arguments_lower_after_actor_enum_literals() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "state-argument-actor-enum",
+        r#"
+            state CounterState {
+                int count;
+            }
+
+            fn read_count(CounterState value) -> int {
+                return value.count;
+            }
+
+            actor enum MoveActor {
+                Pawn;
+                Knight;
+            }
+
+            actor Pawn owns CounterState {
+                entry hold() emits none {
+                    require(count >= 0);
+                }
+            }
+
+            actor Knight owns CounterState {
+                entry hold() emits none {
+                    require(count >= 0);
+                }
+            }
+
+            actor Counter owns CounterState {
+                entry inspect()
+                consumes {
+                    other: Counter,
+                }
+                emits none {
+                    require(read_count(state(other)) + MoveActor::Knight >= 0);
+                }
+            }
+
+            app StateArgumentActorEnum {
+                actor Counter;
+                actor Pawn;
+                actor Knight;
+            }
+        "#,
+    );
+    let sil = actor_sil.get("Counter").expect("Counter emits");
+    assert!(sil.contains("read_count(CounterState {"), "{sil}");
+    assert!(sil.contains("count: gen__other_state.count"), "{sil}");
+    assert!(sil.contains("+ 1 /*KNIGHT*/ >= 0"), "{sil}");
+    assert!(!sil.contains("read_count(state(other))"), "{sil}");
 }
 
 #[test]
@@ -5360,7 +7976,7 @@ fn spawn_actor_type_sources_have_distinct_witness_names() {
                     require argument.outputs become {
                         pair <- self_pair_type(argument_pair),
                     };
-                    become next <- Launcher(self.state);
+                    become next <- self;
                 }
             }
 
@@ -5407,11 +8023,11 @@ fn spawn_witness_recipe_ids_are_scoped_to_the_entry() {
                 emits next: Launcher {
                     unrestricted(child.outputs.pair.value);
                     unrestricted(next.value);
-                    PairState pair = { value: 1 };
+                    PairState pair_state = { value: 1 };
                     require child.outputs become {
-                        pair <- self.first_type(pair),
+                        pair <- self.first_type(pair_state),
                     };
-                    become next <- Launcher(self.state);
+                    become next <- self;
                 }
 
                 entry launch_second()
@@ -5423,11 +8039,11 @@ fn spawn_witness_recipe_ids_are_scoped_to_the_entry() {
                 emits next: Launcher {
                     unrestricted(child.outputs.pair.value);
                     unrestricted(next.value);
-                    PairState pair = { value: 2 };
+                    PairState pair_state = { value: 2 };
                     require child.outputs become {
-                        pair <- self.second_type(pair),
+                        pair <- self.second_type(pair_state),
                     };
-                    become next <- Launcher(self.state);
+                    become next <- self;
                 }
             }
 
@@ -5482,14 +8098,14 @@ fn genesis_spawn_groups_must_follow_first_output_order() {
                     unrestricted(first.outputs.pair.value);
                     unrestricted(second.outputs.pair.value);
                     unrestricted(next.value);
-                    PairState pair = { value: 1 };
+                    PairState pair_state = { value: 1 };
                     require first.outputs become {
-                        pair <- self.pair_type(pair),
+                        pair <- self.pair_type(pair_state),
                     };
                     require second.outputs become {
-                        pair <- self.pair_type(pair),
+                        pair <- self.pair_type(pair_state),
                     };
-                    become next <- Launcher(self.state);
+                    become next <- self;
                 }
             }
 
@@ -5530,11 +8146,11 @@ fn rejects_actor_type_parameter_shadowing_same_named_app_actor() {
                     unrestricted(child_group.outputs.child.value);
                     unrestricted(next.value);
                     ChildState child_state = { amount: 1 };
-                    LauncherState next = { launches: launches + 1 };
+                    LauncherState next_state = { launches: launches + 1 };
                     require child_group.outputs become {
                         child <- Child(child_state),
                     };
-                    become next <- Launcher(next);
+                    become next <- Launcher(next_state);
                 }
             }
 
@@ -5583,12 +8199,12 @@ fn fixed_actor_spawn_uses_compiler_owned_template_and_keeps_its_closure() {
                     unrestricted(next.value);
                     ChildState child_state = { amount: amount };
                     ChildState sibling_state = { amount: amount + 1 };
-                    LauncherState next = { launches: launches + 1 };
+                    LauncherState next_state = { launches: launches + 1 };
                     require child_group.outputs become {
                         child <- Child(child_state),
                         sibling <- Child(sibling_state),
                     };
-                    become next <- Launcher(next);
+                    become next <- Launcher(next_state);
                 }
             }
 
@@ -5597,8 +8213,8 @@ fn fixed_actor_spawn_uses_compiler_owned_template_and_keeps_its_closure() {
             actor Child owns ChildState {
                 entry return_to_launcher() emits next: Launcher {
                     unrestricted(next.value);
-                    LauncherState next = { launches: 0 };
-                    become next <- Launcher(next);
+                    LauncherState next_state = { launches: 0 };
+                    become next <- Launcher(next_state);
                 }
             }
 
@@ -5702,12 +8318,12 @@ fn fixed_actor_self_spawn_uses_the_active_template() {
                 emits next: Node {
                     unrestricted(child_group.outputs.child.value);
                     unrestricted(next.value);
-                    NodeState child = { amount: next_amount };
-                    NodeState next = { amount: next_amount + 1 };
+                    NodeState child_state = { amount: next_amount };
+                    NodeState next_state = { amount: next_amount + 1 };
                     require child_group.outputs become {
-                        child <- Node(child),
+                        child <- Node(child_state),
                     };
-                    become next <- Node(next);
+                    become next <- Node(next_state);
                 }
             }
 
@@ -5755,35 +8371,35 @@ fn fixed_actor_spawn_opens_the_target_family_cut() {
                     unrestricted(game.outputs.mux.value);
                     unrestricted(next.value);
                     BoardState board = { turn: 0 };
-                    LauncherState next = { launches: launches + 1 };
+                    LauncherState next_state = { launches: launches + 1 };
                     require game.outputs become {
                         mux <- Mux(board),
                     };
-                    become next <- Launcher(next);
+                    become next <- Launcher(next_state);
                 }
             }
 
             actor Mux owns BoardState {
                 entry move() emits next: Pawn {
                     unrestricted(next.value);
-                    BoardState next = { turn: turn + 1 };
-                    become next <- Pawn(next);
+                    BoardState next_state = { turn: turn + 1 };
+                    become next <- Pawn(next_state);
                 }
             }
 
             actor Pawn owns BoardState {
                 entry finish() emits next: Mux {
                     unrestricted(next.value);
-                    BoardState next = { turn: turn + 1 };
-                    become next <- Mux(next);
+                    BoardState next_state = { turn: turn + 1 };
+                    become next <- Mux(next_state);
                 }
             }
 
             actor Knight owns BoardState {
                 entry finish() emits next: Mux {
                     unrestricted(next.value);
-                    BoardState next = { turn: turn + 1 };
-                    become next <- Mux(next);
+                    BoardState next_state = { turn: turn + 1 };
+                    become next <- Mux(next_state);
                 }
             }
 
@@ -5830,7 +8446,7 @@ fn rejects_spawn_name_shared_with_observe() {
                     unrestricted(pair.outputs.next_pair.value);
                     unrestricted(next.value);
                     require(1 == 1);
-                    become next <- Launcher(self.state);
+                    become next <- self;
                 }
             }
 
@@ -5865,7 +8481,7 @@ fn rejects_spawn_covenant_binding_shared_with_source_value() {
                     unrestricted(pair.outputs.next_pair.value);
                     unrestricted(next.value);
                     require(1 == 1);
-                    become next <- Launcher(self.state);
+                    become next <- self;
                 }
             }
 
@@ -6281,6 +8897,7 @@ fn test_program() -> Program {
                 ActorDecl {
                     name: "Player".to_string(),
                     state: "PlayerState".to_string(),
+                    functions: Vec::new(),
                     entries: vec![EntryDecl {
                         kind: EntryKind::Leader,
                         name: "step".to_string(),
@@ -6298,10 +8915,30 @@ fn test_program() -> Program {
                         terminal_route_sets: Vec::new(),
                     }],
                 },
-                ActorDecl { name: "Game".to_string(), state: "GameState".to_string(), entries: Vec::new() },
+                ActorDecl { name: "Game".to_string(), state: "GameState".to_string(), functions: Vec::new(), entries: Vec::new() },
             ],
             actor_enums: Vec::new(),
             apps: vec![AppDecl { name: "Test".to_string(), actors: vec!["Player".to_string(), "Game".to_string()] }],
         }],
     }
+}
+
+fn set_entry_body(entry: &mut EntryDecl, source: &str) {
+    let body = EntryBody::new(source).expect("test entry body parses");
+    let analysis = crate::compiler::syntax::body::routes::analyze_entry_routes(&body).expect("test entry routes analyze");
+    entry.body = body;
+    entry.routes = analysis.routes;
+    entry.terminal_route_sets = analysis.terminal_route_sets;
+}
+
+fn resolved_constructed_actor(route: &ResolvedRoute) -> &str {
+    let ResolvedSuccessor::Constructed { actor, .. } = &route.successor else { panic!("expected constructed successor") };
+    actor
+}
+
+fn artifact_constructed_actor(route: &RouteArtifact) -> &str {
+    let RouteSuccessorArtifact::Constructed { actor, .. } = &route.successor else {
+        panic!("expected constructed successor artifact")
+    };
+    actor
 }

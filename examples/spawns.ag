@@ -16,13 +16,13 @@ actor Controller owns ControllerState {
         }
     }
     emits next: Controller {
-        PairState left = {
+        PairState left_state = {
             amount: left_amount,
         };
-        PairState right = {
+        PairState right_state = {
             amount: right_amount,
         };
-        ControllerState next = {
+        ControllerState next_state = {
             pair_type: pair_type,
             launches: launches + 1,
         };
@@ -30,18 +30,18 @@ actor Controller owns ControllerState {
         unrestricted(new_pair.outputs.left.value);
         unrestricted(new_pair.outputs.right.value);
         require new_pair.outputs become {
-            left <- self.pair_type(left),
-            right <- self.pair_type(right),
+            left <- self.pair_type(left_state),
+            right <- self.pair_type(right_state),
         };
         unrestricted(next.value);
-        become next <- Controller(next);
+        become next <- Controller(next_state);
     }
 }
 
 actor Pair owns PairState {
     entry keep() emits next: Pair {
         unrestricted(next.value);
-        become next <- Pair(self.state);
+        become next <- self;
     }
 }
 

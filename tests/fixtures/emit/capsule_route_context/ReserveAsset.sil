@@ -11,6 +11,24 @@ contract ReserveAsset(
     int init_balance
 ) {
     // :: state layouts
+    struct ReserveAssetState {
+        // :: user declared fields
+        int owner_kind;
+        byte[32] owner_id;
+        ReservePolicy policy;
+        int balance;
+    }
+    struct AssetCapsule {
+        // :: user declared fields
+        int owner_kind;
+        byte[32] owner_id;
+        byte[32] policy;
+        int balance;
+    }
+    struct ReservePolicy {
+        // :: user declared fields
+        int nonce;
+    }
 
     // :: route templates
     byte[32] gen__reserve_asset_template = gen__init_reserve_asset_template;
@@ -36,18 +54,28 @@ contract ReserveAsset(
 
         // :: co-spent with owner_id
         require(OpCovInputCount(owner_id) > 0);
-        State next_asset = State {
+        ReserveAssetState next_asset = ReserveAssetState {
+            // :: user declared fields
+            owner_kind: owner_kind,
+            owner_id: owner_id,
+            policy: ReservePolicy {
+                // :: user declared fields
+                nonce: gen__policy_nonce + 1,
+            },
+            balance: next_balance,
+        };
+        State gen__state_next_state = State {
             // :: generated fields
             gen__reserve_asset_template: gen__reserve_asset_template,
             gen__wallet_asset_template: gen__wallet_asset_template,
             // :: user declared fields
-            owner_kind: owner_kind,
-            owner_id: owner_id,
-            policy: blake3(byte[](((gen__policy_nonce + 1) as byte[8]))),
-            balance: next_balance,
+            owner_kind: next_asset.owner_kind,
+            owner_id: next_asset.owner_id,
+            policy: blake3(byte[](((next_asset.policy.nonce) as byte[8]))),
+            balance: next_asset.balance,
         };
         // :: become ReserveAsset
-        validateOutputState(gen__next_output_idx, next_asset);
+        validateOutputState(gen__next_output_idx, gen__state_next_state);
     }
 
     // :: leader entry (1:N)
@@ -68,20 +96,30 @@ contract ReserveAsset(
 
         // :: co-spent with owner_id
         require(OpCovInputCount(owner_id) > 0);
-        State next_asset = State {
+        ReserveAssetState next_asset = ReserveAssetState {
+            // :: user declared fields
+            owner_kind: owner_kind,
+            owner_id: owner_id,
+            policy: ReservePolicy {
+                // :: user declared fields
+                nonce: gen__policy_nonce + 1,
+            },
+            balance: next_balance,
+        };
+        State gen__state_next_state = State {
             // :: generated fields
             gen__reserve_asset_template: gen__reserve_asset_template,
             gen__wallet_asset_template: gen__wallet_asset_template,
             // :: user declared fields
-            owner_kind: owner_kind,
-            owner_id: owner_id,
-            policy: blake3(byte[](((gen__policy_nonce + 1) as byte[8]))),
-            balance: next_balance,
+            owner_kind: next_asset.owner_kind,
+            owner_id: next_asset.owner_id,
+            policy: blake3(byte[](((next_asset.policy.nonce) as byte[8]))),
+            balance: next_asset.balance,
         };
         // :: become WalletAsset
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            next_asset,
+            gen__state_next_state,
             gen__wallet_asset_prefix,
             gen__wallet_asset_suffix,
             gen__wallet_asset_template

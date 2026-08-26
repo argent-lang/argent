@@ -11,6 +11,24 @@ contract WalletAsset(
     int init_balance
 ) {
     // :: state layouts
+    struct ReserveAssetState {
+        // :: user declared fields
+        int owner_kind;
+        byte[32] owner_id;
+        ReservePolicy policy;
+        int balance;
+    }
+    struct AssetCapsule {
+        // :: user declared fields
+        int owner_kind;
+        byte[32] owner_id;
+        byte[32] policy;
+        int balance;
+    }
+    struct ReservePolicy {
+        // :: user declared fields
+        int nonce;
+    }
 
     // :: route templates
     byte[32] gen__reserve_asset_template = gen__init_reserve_asset_template;

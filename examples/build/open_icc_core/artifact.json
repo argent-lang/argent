@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "470f207cdb43be7cfe460d116ac3ecfc4ed6bc52a3fe7f1128a100add861461d",
+  "id": "238a34ce2d442c5a9ad0d55322eec28bbfc53a3c0c4aa6bd66bc0370ccb6392b",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -448,9 +448,12 @@
             "routes": [
               {
                 "output": "cell",
-                "actor": "Cell",
-                "template_id": "template/cell",
-                "state_expr": "next_cell"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Cell",
+                  "template_id": "template/cell",
+                  "state_expr": "next_cell"
+                }
               }
             ]
           },
@@ -474,7 +477,7 @@
               },
               "consumes": [
                 {
-                  "name": "target_cell",
+                  "name": "target_input",
                   "actor": "Cell",
                   "cov_index": 1
                 }
@@ -630,7 +633,7 @@
             ],
             "consumes": [
               {
-                "name": "target_cell",
+                "name": "target_input",
                 "actor": "Cell"
               }
             ],
@@ -656,15 +659,21 @@
             "routes": [
               {
                 "output": "source_cell",
-                "actor": "Cell",
-                "template_id": "template/cell",
-                "state_expr": "next_source"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Cell",
+                  "template_id": "template/cell",
+                  "state_expr": "next_source"
+                }
               },
               {
                 "output": "target_cell",
-                "actor": "Cell",
-                "template_id": "template/cell",
-                "state_expr": "next_target"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Cell",
+                  "template_id": "template/cell",
+                  "state_expr": "next_target"
+                }
               }
             ]
           }

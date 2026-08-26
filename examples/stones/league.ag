@@ -28,7 +28,7 @@ actor League owns LeagueState {
 
         // Atomic `become` lowers to output-count and template checks.
         become {
-            league <- League(self.state),
+            league <- self,
             player <- Player(next_player),
         };
     }

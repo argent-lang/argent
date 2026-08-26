@@ -106,6 +106,21 @@ The following rules apply to each range:
 7. The upper bound is part of the actor template. State cannot change it.
 8. A bulk route state array has the same length as its output range.
 
+State-valued ranges reuse the compiler's ordinary authored-array boundary:
+
+- A range array contains authored state values. Indexing it produces one
+  authored scalar value.
+- Typed array literals and `append(...)` lower each element in the declared
+  authored state context.
+- An authenticated consumed or observed physical element is projected to its
+  authored fields before insertion into an authored array.
+- Each successor element is materialized independently through the state
+  boundary. Generated route fields come from the compiler's target plan, never
+  from the authored array element.
+- A whole-array conversion may pass through when its authored representation
+  already matches. An unknown or unbounded cross-representation conversion is
+  rejected rather than synthesized as an unbounded loop.
+
 The first version must not use a consume range in a delegate. A delegate's
 covenant group can contain peer delegates that its clause does not name. The
 complete group count therefore does not give the consume range length. A later
@@ -304,8 +319,9 @@ The route graph does not need multiplicity. Add one graph relation for a range:
 The commitment forest and cut transitions therefore stay unchanged.
 
 The body lowerer needs explicit range bindings. Its current text replacement
-is not sufficient for indexed expressions such as `accounts[i].value` or
-`remote.inputs.assets[i].state`. Add token-aware indexed access lowering. A
+is not sufficient for indexed expressions such as `accounts[i].value`,
+`remote.inputs.assets[i].amount`, or `state(remote.inputs.assets[i])`. Add
+token-aware indexed access lowering. A
 full expression type checker is not required for the first version.
 
 Add structured `for` statement support to the Argent body lowerer. Users need
@@ -374,8 +390,8 @@ part of the compiled template and not its state span.
 
 - Register range handles and their source state types.
 - Lower `.length`, indexed state access, and indexed `.value` access.
-- Lower indexed observed access such as
-  `remote.inputs.assets[i].state`.
+- Lower indexed observed field access and authored reconstruction such as
+  `remote.inputs.assets[i].amount` and `state(remote.inputs.assets[i])`.
 - Lower state arrays for route targets that contain hidden route fields.
 - Add structured `for` statements with compile-time maxima.
 - Add bulk range routes and terminal coverage checks.

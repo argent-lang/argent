@@ -13,6 +13,11 @@ contract Local(
         // :: user declared fields
         int amount;
     }
+    struct LocalState {
+        // :: user declared fields
+        byte[32] foreign_id;
+        int steps;
+    }
     struct TargetState {
         // :: user declared fields
         int units;
@@ -22,6 +27,34 @@ contract Local(
         byte[32] gen__target_template;
         // :: user declared fields
         int amount;
+    }
+
+    // :: global functions (isolated using the gen__glob_ namespace)
+    function add_one(int gen__glob_value) : int {
+        return gen__glob_value + 1;
+    }
+
+    // :: actor functions
+    function foreign_identity(ForeignState value) : ForeignState {
+        return value;
+    }
+    function snapshot() : LocalState {
+        return LocalState {
+            foreign_id: foreign_id,
+            steps: steps,
+        };
+    }
+    function read_steps(LocalState value) : int {
+        return value.steps;
+    }
+    function incremented_steps() : int {
+        return add_one(read_steps(snapshot()));
+    }
+    function next_state(int extra_steps) : LocalState {
+        return LocalState {
+            foreign_id: foreign_id,
+            steps: incremented_steps() + extra_steps,
+        };
     }
 
     // :: route templates
@@ -47,33 +80,43 @@ contract Local(
             gen__foreign_suffix_len,
             gen__foreign_template
         );
-        // :: observed output remote.next: Foreign
-        int gen__remote_next_output_idx = OpCovOutputIdx(gen__remote_cov_id, 0);
+        // :: observed output remote.remote_next: Foreign
+        int gen__remote_remote_next_output_idx = OpCovOutputIdx(gen__remote_cov_id, 0);
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Local
 
-        Gen__ForeignState next_foreign = gen__remote_src_state;
-        // :: observed become remote.next -> Foreign
+        ForeignState next_foreign = foreign_identity(ForeignState {
+            // :: user declared fields
+            amount: gen__remote_src_state.amount,
+        });
+        Gen__ForeignState gen__state_remote_next_gen__foreign_state = Gen__ForeignState {
+            // :: generated fields
+            gen__target_template: gen__target_template,
+            // :: user declared fields
+            amount: next_foreign.amount,
+        };
+        // :: observed become remote.remote_next -> Foreign
         validateOutputStateWithInputTemplate(
-            gen__remote_next_output_idx,
-            next_foreign,
+            gen__remote_remote_next_output_idx,
+            gen__state_remote_next_gen__foreign_state,
             gen__remote_src_input_idx,
             gen__foreign_prefix_len,
             gen__foreign_suffix_len,
             gen__foreign_template
         );
-        State next_local = State {
+        LocalState gen__source_next_local_state = next_state(0);
+        State gen__state_next_state = State {
             // :: generated fields
             gen__foreign_template: gen__foreign_template,
             gen__target_template: gen__target_template,
             // :: user declared fields
-            foreign_id: foreign_id,
-            steps: steps + 1,
+            foreign_id: gen__source_next_local_state.foreign_id,
+            steps: gen__source_next_local_state.steps,
         };
         // :: become Local
-        validateOutputState(gen__next_output_idx, next_local);
+        validateOutputState(gen__next_output_idx, gen__state_next_state);
     }
 
 }

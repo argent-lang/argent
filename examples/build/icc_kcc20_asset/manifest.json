@@ -19,7 +19,7 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["KCC20"] }] },
           "consumes": [],
-          "routes": [{ "output": "next", "actor": "KCC20", "state": "next_state" }]
+          "routes": [{ "output": "next", "successor": { "kind": "constructed", "actor": "KCC20", "state": "next_state" } }]
         }
       ]
     },
@@ -33,7 +33,7 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "proxy", "auth_index": 0, "actors": ["MinterProxy"] }, { "name": "recipient", "auth_index": 1, "actors": ["KCC20"] }] },
           "consumes": [],
-          "routes": [{ "output": "proxy", "actor": "MinterProxy", "state": "next_proxy" }, { "output": "recipient", "actor": "KCC20", "state": "recipient" }]
+          "routes": [{ "output": "proxy", "successor": { "kind": "constructed", "actor": "MinterProxy", "state": "next_proxy" } }, { "output": "recipient", "successor": { "kind": "constructed", "actor": "KCC20", "state": "recipient_state" } }]
         }
       ]
     }

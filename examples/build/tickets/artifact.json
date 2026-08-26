@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "bdb9f95af1f199e66d1b410a618538907f81f270a27fb3f226ee398a624141a6",
+  "id": "67fd1fed2ba9c13f7b775cdfd372fab4470ea208144af22b65bb0a5802d4a6e8",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -31,7 +31,7 @@
           "actor": "Issuer",
           "contract": "Issuer",
           "symbol": "gen__issuer_template",
-          "sil_template_hash": "04e42d0f9f69e8c344142685c9e1512ed03e0e3f317c5f2649b0da3f61b06a13",
+          "sil_template_hash": "a6af0ca5bff28389fd687b7ca8ac8cf0dd270276927037a9f212a3ea8ff27166",
           "actor_type_handle": {
             "state": "IssuerState",
             "context_fields": [
@@ -39,8 +39,8 @@
             ],
             "template": {
               "prefix_hex": "6b200480dbcb791c1d53b7f4668bf684c14be77fd7cf4ee02e49c9f9f2528e2fbd3e",
-              "suffix_hex": "6c7604e9ff438087637557798201419d7556798201209d7555798201209d755479825197009d755379825197009d75b9cb529c69b900ccb951cc5879aa5479876959795979ac6952795879aa567956795679519353795579005979c2b9be9c695879c200a069012056797e012056797e0108567958cd7e7e7eb976c902520194765193bc7c7eb976c976020681937cbc7eaa02000001aa7e01207e7c7e01877e5a79c3885c795f79827c75519658cd60797e5f79827c75519658cd60797e7ed988012053797e0108537958cd7e0108537958cd7e7e7e5f797c7e5e797eaa02000001aa7e01207e7c7e01877e5979c38875757575757575757575757575757575757551676a68",
-              "hash_hex": "aff63d128bf3a69da65a93654caa56a567536a568a85b3a1e50eb24d6b1f0d8c"
+              "suffix_hex": "6c7604e9ff438087637557798201419d7556798201209d7555798201209d755479825197009d755379825197009d75b9cb529c69b900ccb951cc5879aa5479876959795979ac6952795879aa55795579519352795479005879c2b9be9c695779c200a0695b7955795579012053797e012053797e0108537958cd7e7e7eb976c9025d0194765193bc7c7eb976c976021181937cbc7eaa02000001aa7e01207e7c7e01877e5c79c3885e79011179827c75519658cd0112797e011179827c75519658cd0112797e7ed988012056797e0108567958cd7e0108567958cd7e7e7e0111797c7e60797eaa02000001aa7e01207e7c7e01877e5b79c388757575757575757575757575757575757575757551676a68",
+              "hash_hex": "ca9f34bab457bbefd0c419f491ead0b46c350363284accf0987522c2c3c6a0c3"
             }
           }
         },
@@ -296,15 +296,21 @@
             "routes": [
               {
                 "output": "issuer",
-                "actor": "Issuer",
-                "template_id": "template/issuer",
-                "state_expr": "next_issuer"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Issuer",
+                  "template_id": "template/issuer",
+                  "state_expr": "next_issuer"
+                }
               },
               {
                 "output": "ticket",
-                "actor": "Ticket",
-                "template_id": "template/ticket",
-                "state_expr": "new_ticket"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Ticket",
+                  "template_id": "template/ticket",
+                  "state_expr": "new_ticket"
+                }
               }
             ]
           }
@@ -366,9 +372,12 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "Ticket",
-                "template_id": "template/ticket",
-                "state_expr": "redeemed_ticket"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Ticket",
+                  "template_id": "template/ticket",
+                  "state_expr": "redeemed_ticket"
+                }
               }
             ]
           }
@@ -490,8 +499,8 @@
           }
         ],
         "compiled": {
-          "script_hex": "6b2000000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000800000000000000006c7604e9ff438087637557798201419d7556798201209d7555798201209d755479825197009d755379825197009d75b9cb529c69b900ccb951cc5879aa5479876959795979ac6952795879aa567956795679519353795579005979c2b9be9c695879c200a069012056797e012056797e0108567958cd7e7e7eb976c902520194765193bc7c7eb976c976020681937cbc7eaa02000001aa7e01207e7c7e01877e5a79c3885c795f79827c75519658cd60797e5f79827c75519658cd60797e7ed988012053797e0108537958cd7e0108537958cd7e7e7e5f797c7e5e797eaa02000001aa7e01207e7c7e01877e5979c38875757575757575757575757575757575757551676a68",
-          "template_hash_hex": "04e42d0f9f69e8c344142685c9e1512ed03e0e3f317c5f2649b0da3f61b06a13",
+          "script_hex": "6b2000000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000800000000000000006c7604e9ff438087637557798201419d7556798201209d7555798201209d755479825197009d755379825197009d75b9cb529c69b900ccb951cc5879aa5479876959795979ac6952795879aa55795579519352795479005879c2b9be9c695779c200a0695b7955795579012053797e012053797e0108537958cd7e7e7eb976c9025d0194765193bc7c7eb976c976021181937cbc7eaa02000001aa7e01207e7c7e01877e5c79c3885e79011179827c75519658cd0112797e011179827c75519658cd0112797e7ed988012056797e0108567958cd7e0108567958cd7e7e7e0111797c7e60797eaa02000001aa7e01207e7c7e01877e5b79c388757575757575757575757575757575757575757551676a68",
+          "template_hash_hex": "a6af0ca5bff28389fd687b7ca8ac8cf0dd270276927037a9f212a3ea8ff27166",
           "state_span": {
             "offset": 1,
             "len": 75

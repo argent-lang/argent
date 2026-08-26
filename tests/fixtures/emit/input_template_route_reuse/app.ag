@@ -18,14 +18,14 @@ actor Controller owns ControllerState {
         peer: Peer,
     }
     emits {
-        peer: Peer,
+        next_peer: Peer,
     } {
-        PeerState next_peer = {
+        PeerState peer_state = {
             count: peer.count + 1,
         };
 
-        unrestricted(peer.value);
-        become peer <- Peer(next_peer);
+        unrestricted(next_peer.value);
+        become next_peer <- Peer(peer_state);
     }
 }
 

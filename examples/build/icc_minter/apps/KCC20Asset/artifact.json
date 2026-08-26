@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "e1e20005be564b4509aeb46a59ce686cc3f62a40715d2d9c7d023087876bc69e",
+  "id": "6a4872f41d23eb0e31a6a9ad84a525d74f26de2260037407273296f2621330bb",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -224,9 +224,12 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "KCC20",
-                "template_id": "template/kcc20",
-                "state_expr": "next_state"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "KCC20",
+                  "template_id": "template/kcc20",
+                  "state_expr": "next_state"
+                }
               }
             ]
           }
@@ -357,15 +360,21 @@
             "routes": [
               {
                 "output": "proxy",
-                "actor": "MinterProxy",
-                "template_id": "template/minter_proxy",
-                "state_expr": "next_proxy"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "MinterProxy",
+                  "template_id": "template/minter_proxy",
+                  "state_expr": "next_proxy"
+                }
               },
               {
                 "output": "recipient",
-                "actor": "KCC20",
-                "template_id": "template/kcc20",
-                "state_expr": "recipient"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "KCC20",
+                  "template_id": "template/kcc20",
+                  "state_expr": "recipient_state"
+                }
               }
             ]
           }
@@ -512,7 +521,7 @@
                 }
               },
               {
-                "name": "recipient",
+                "name": "recipient_state",
                 "type": {
                   "kind": "struct",
                   "name": "KCC20State"

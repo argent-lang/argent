@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "cc84ce4a20bfa51b372ab15b4f8f03a188c858032640ef82f036c6289a974e35",
+  "id": "d3d3550b978f13c49c47930d32540fed21cb4c4804f6d3c482a383ee69643178",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -373,9 +373,12 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "Controller",
-                "template_id": "template/controller",
-                "state_expr": "next"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Controller",
+                  "template_id": "template/controller",
+                  "state_expr": "next_state"
+                }
               }
             ]
           }
@@ -437,9 +440,9 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "Pair",
-                "template_id": "template/pair",
-                "state_expr": "self.state"
+                "successor": {
+                  "kind": "exact_self"
+                }
               }
             ]
           }

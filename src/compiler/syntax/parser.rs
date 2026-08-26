@@ -152,12 +152,17 @@ impl Parser {
         self.expect_ident(word::OWNS)?;
         let state = self.expect_any_ident()?;
         self.expect_symbol('{')?;
+        let mut functions = Vec::new();
         let mut entries = Vec::new();
         while !self.check_symbol('}') {
-            entries.push(self.parse_actor_item()?);
+            if self.check_ident(word::FN) {
+                functions.push(self.parse_function()?);
+            } else {
+                entries.push(self.parse_actor_item()?);
+            }
         }
         self.expect_symbol('}')?;
-        Ok(ActorDecl { name, state, entries })
+        Ok(ActorDecl { name, state, functions, entries })
     }
 
     fn parse_actor_enum(&mut self) -> Result<ActorEnumDecl> {
@@ -185,7 +190,7 @@ impl Parser {
         } else if self.check_ident(word::DELEGATE) {
             self.parse_delegate()
         } else {
-            Err(self.error(format!("expected `entry` or `delegate`, found {}", self.describe_current())))
+            Err(self.error(format!("expected `fn`, `entry`, or `delegate`, found {}", self.describe_current())))
         }
     }
 

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "16e873252f070ea160658c7c4155dc88afab8bdd06bc963badde6628d967afc6",
+  "id": "b1aa5bae24e0c7c9f37001f8ecef146f89cb7a533808ce25ff080a560472df80",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -9,7 +9,7 @@
   "dependencies": [
     {
       "app": "KCC20Asset",
-      "artifact_id": "e1e20005be564b4509aeb46a59ce686cc3f62a40715d2d9c7d023087876bc69e"
+      "artifact_id": "6a4872f41d23eb0e31a6a9ad84a525d74f26de2260037407273296f2621330bb"
     }
   ],
   "root": "examples/icc/minter.ag",
@@ -399,9 +399,12 @@
             "routes": [
               {
                 "output": "controller",
-                "actor": "Minter",
-                "template_id": "template/minter",
-                "state_expr": "next_controller"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Minter",
+                  "template_id": "template/minter",
+                  "state_expr": "next_controller"
+                }
               }
             ]
           }

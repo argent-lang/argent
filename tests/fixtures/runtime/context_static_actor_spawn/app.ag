@@ -20,7 +20,7 @@ actor Launcher owns LauncherState {
         ChildState child_state = {
             amount: source.amount + amount,
         };
-        LauncherState next = {
+        LauncherState next_state = {
             launches: launches + 1,
         };
 
@@ -29,7 +29,7 @@ actor Launcher owns LauncherState {
             child <- Child(child_state),
         };
         unrestricted(next.value);
-        become next <- Launcher(next);
+        become next <- Launcher(next_state);
     }
 }
 
@@ -40,11 +40,11 @@ actor Child owns ChildState {
     } {}
 
     entry return_to_launcher() emits next: Launcher {
-        LauncherState next = {
+        LauncherState next_state = {
             launches: 0,
         };
         unrestricted(next.value);
-        become next <- Launcher(next);
+        become next <- Launcher(next_state);
     }
 }
 

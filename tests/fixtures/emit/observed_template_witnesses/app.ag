@@ -24,7 +24,7 @@ actor Local owns LocalState {
         }
     }
     emits none {
-        ForeignState prev = asset.inputs.src.state;
+        ForeignState prev = state(asset.inputs.src);
         ForeignState next = {
             count: prev.count + 1,
         };

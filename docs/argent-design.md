@@ -12,6 +12,11 @@ those pieces usable from Argent.
 
 - Argent emits plain Silverscript, not Silverscript covenant macros.
 - User state is declared once with `state`.
+- Each source state remains available as an authored value. Its contract-local
+  Sil representation can be `State` or a named struct. A contract's physical
+  `State` may additionally contain compiler-generated fields.
+- [Compiler design](compiler-design.md) defines how authored values cross into
+  physical contract state.
 - `actor` owns persistent covenant state.
 - `entry` declares callable transition paths.
 - `emits` declares authorized output shape.
@@ -31,6 +36,9 @@ those pieces usable from Argent.
 - Top-level helper functions are global. They may use their parameters and
   locals, shared constants, other functions, and explicit runtime context, but
   cannot capture actor constructor or state fields through bare names.
+- Actor functions belong to one actor contract. They may access its fields and
+  call global or same-actor functions. Global functions cannot call actor
+  functions.
 - Helper bodies are expected to otherwise be valid Silverscript-shaped code.
   Silverscript remains responsible for final helper/body validity where Argent
   has not lowered the expression itself.
@@ -84,6 +92,69 @@ entry transfer(pubkey pk, int amount)
 ```
 
 Type-first declarations preserve a direct high-level-to-Sil surface.
+
+### Global and actor functions
+
+A top-level `fn` declares a global function. A `fn` inside an `actor` declares
+an actor function owned by that actor. Parameters use type-first declarations;
+`-> Type` is omitted when the function returns no value.
+
+```rust
+const int BIAS = 1;
+
+fn add_bias(int value) -> int {
+    return value + BIAS;
+}
+
+state CounterState {
+    int count;
+}
+
+actor Counter owns CounterState {
+    fn current() -> int {
+        return count;
+    }
+
+    fn adjusted(int delta) -> int {
+        return add_bias(current() + delta);
+    }
+
+    entry inspect() emits none {
+        require(adjusted(1) == count + BIAS + 1);
+    }
+}
+```
+
+Global functions are emitted into every selected actor contract. Their
+parameters and locals occupy an isolated namespace: a bare name in a global
+function cannot capture an actor constructor or state field. Global functions
+may use shared constants, other global functions, their own parameters and
+locals, and explicit Sil runtime context such as `tx` and `this`.
+
+Actor functions are emitted only into their owning actor contract. They may
+read that actor's available state fields by bare name, as `current()` does
+above, and may call global functions or other functions on the same actor.
+They are not methods: there is no cross-actor `actor.function()` call surface.
+
+| Caller | Global function | Same-actor function | Other actor's function |
+| --- | --- | --- | --- |
+| Global function | Allowed | Not visible | Not visible |
+| Actor function | Allowed | Allowed | Not visible |
+| Entry | Allowed | Allowed | Not visible |
+
+`self`, entry input references, output handles, and `state(ref)` reconstruction
+belong to entry lowering and are not available inside either kind of function.
+Functions instead receive authored values explicitly through their parameters.
+State-valued parameters and results keep their authored Argent types in source;
+the compiler lowers their representation separately for each generated actor
+contract.
+
+Global function names and actor function names share each generated contract's
+callable namespace, so an actor function cannot reuse a global function name.
+The same actor-function name may be used by different actors because each is
+emitted only into its owning contract. Compiler operations such as `state`,
+`digest`, and `unrestricted` are reserved and cannot be redeclared as
+functions.
 
 ### Value bindings
 
@@ -148,6 +219,71 @@ A singleton route can omit the braces:
 become next <- Player(next_player);
 ```
 
+### Entry binding namespaces
+
+Entry syntax distinguishes bare value bindings from role leaves that remain
+scoped by an observe or spawn root. This prevents one spelling from appearing
+to mean two different values in a route without needlessly reserving qualified
+names.
+
+| Identifier class | Examples | Rule |
+| --- | --- | --- |
+| Bare entry bindings | `self`, consume `peer`, emit `next`, observe root `asset`, spawn root `children` | Unique within the entry. They cannot collide with parameters, body bindings, or output labels. |
+| Generated bare bindings | Spawn covenant `pair_id`; open-actor alias `observed_agent` | Follow the same rule because the entry body can reference them directly. |
+| Entry parameters | `amount`, `recipient` | Cannot collide with bare entry bindings, output labels, other parameters, or body bindings. |
+| Observed input leaves | `asset.inputs.src` | Remain root-qualified. They may repeat under different observe roots or match a bare binding, output leaf, local, or parameter. Existing uniqueness within one input block still applies. |
+| Observed and spawned output labels | `asset.outputs.dst`, `children.outputs.left` | Scoped to their output group, so they may repeat across groups and may match input leaves. They cannot match a bare value binding, parameter, or body binding because they appear standalone on the left of `<-`. |
+| Body bindings | Locals, loop variables, tuple or result bindings, and destructuring bindings, including nested declarations | Cannot collide with bare entry bindings, parameters, or output labels. Ordinary local-to-local lexical rules are unchanged. |
+| Actor state fields | `count`, `owner` | Retain their existing behavior; this entry-namespace rule does not add a new restriction. |
+| Observe covenant expressions | `observes asset by self.asset_id` | Introduce no binding. Only the observe root `asset` is reserved. |
+
+An emit handle and a successor-state local must have distinct names. Otherwise
+the two occurrences of `next` appear to denote the same thing even though one
+is an output role and the other is an authored value:
+
+```rust
+// Rejected.
+TurnState next = state(self);
+become next <- Pong(next);
+```
+
+Observed input leaves do not have this problem because they remain qualified.
+A local `src` does not shadow `asset.inputs.src`:
+
+```rust
+// Allowed.
+int src = 1;
+require(asset.inputs.src.amount >= src);
+```
+
+Input and output leaves may share a name, and output labels may repeat under
+different roots:
+
+```rust
+observes asset by self.asset_id {
+    inputs  { agent: Agent }
+    outputs { agent: Agent }
+}
+
+require first.outputs become {
+    left <- Pair(first_left),
+};
+require second.outputs become {
+    left <- Pair(second_left),
+};
+```
+
+Output labels are nevertheless reserved against value bindings because the
+label is written standalone inside its route block:
+
+```rust
+// Rejected: the two uses of `dst` have unrelated roles.
+TargetState dst = state(self);
+require asset.outputs become {
+    dst <- Target(dst),
+};
+```
+
 ### Consistency rule
 
 Declarations put the type before the declared name. Value, role, and route
@@ -173,15 +309,16 @@ transaction. `this` identifies the active input and script. `self` presents the
 active input as a logical Argent actor.
 
 `self` is a context namespace. It is not an actor handle or another first-class
-actor value. Its valid and reserved members are:
+actor value. Bare `self` is valid only as an exact successor in
+`output <- self`. Its valid and reserved members are:
 
 ```text
 self.value  // Native KAS value of the UTXO consumed by the active input.
             // Type: int.
-self.state  // Complete typed source-level state owned by the actor.
-            // Type: the state named in the actor's owns clause.
 self.cov_id // Covenant ID carried by the active input. Type: cov_id.
             // Lowers to OpInputCovenantId(this.activeInputIndex).
+self.state  // Reserved and invalid. Use state(self) to reconstruct the
+            // user-level state from its fields.
 self.type   // Reserved.
 self.ref    // Reserved.
 ```
@@ -206,13 +343,70 @@ state WalletState {
 }
 ```
 
+### Input references and authored state
+
+Entries use the same read interface for the active input, consumed inputs, and
+observed inputs:
+
+```text
+self
+peer
+asset.inputs.src
+```
+
+These names are input references. They are not authored state values. Each
+reference supports these reads:
+
+```rust
+ref.value
+ref.cov_id
+ref.<authored_field>
+```
+
+A field read projects one field from authenticated physical state. Use
+`state(ref)` to reconstruct the complete authored state:
+
+```rust
+AccountState current = state(self);
+AccountState consumed = state(peer);
+AccountState observed = state(asset.inputs.src);
+```
+
+`state(ref)` is available only in an entry body, including successor state
+expressions. It is not available in clause expressions or in global or actor
+functions. It excludes compiler-owned route fields and preserves the declared
+state type. A function that needs the value receives it through a parameter.
+
+`digest(authored_state)` computes the Blake3 digest of the authored state's
+storage payload. It excludes compiler-owned route fields. Use
+`digest(state(peer))` when the source value comes from an input reference.
+`digest(...)` is also entry-body syntax and is not available in global or actor
+functions.
+
+For an expanded state, complete reconstruction requires validated openings for
+all expanded fields. A direct field read requires only the opening for that
+field. The compiler rejects reconstruction when an input provides only the
+stored digest.
+
+Exact continuation is a separate operation:
+
+```rust
+become next <- self;
+```
+
+It preserves the exact active covenant state. It does not reconstruct an
+authored value. Only `self` currently supports exact continuation.
+
+The compiler architecture for these conversions is in
+[Compiler design](compiler-design.md#state-layout-and-lowering).
+
 ## Template hash rule
 
 Argent uses Silverscript's template hash, which excludes all instance state,
 including compiler-owned state:
 
 ```text
-template_hash = blake2b(i64le(template_prefix.length) || template_prefix || i64le(template_suffix.length) || template_suffix)
+template_hash = blake3(i64le(template_prefix.length) || template_prefix || i64le(template_suffix.length) || template_suffix)
 ```
 
 The state bytes live between prefix and suffix, so template references stored in
@@ -276,7 +470,7 @@ cuts.
 Route lowering uses the strongest template identity already proved by the entry
 model:
 
-- An exact self-continuation with `self.state` compares the successor output's
+- An exact self-continuation with `output <- self` compares the successor output's
   script public key with the active input's script public key.
 - A same-actor continuation with new state uses `validateOutputState`.
 - A foreign continuation can use `validateOutputStateWithInputTemplate` when a

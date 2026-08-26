@@ -7,6 +7,20 @@ contract Forager(
     int init_energy
 ) {
     // :: state layouts
+    struct ForagerState {
+        // :: user declared fields
+        ForagerStrategy strategy;
+        int energy;
+    }
+    struct AgentCapsule {
+        // :: user declared fields
+        byte[32] strategy;
+        int energy;
+    }
+    struct ForagerStrategy {
+        // :: user declared fields
+        int hunger;
+    }
 
     // :: route templates
 
@@ -27,13 +41,21 @@ contract Forager(
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
         require(energy > 0);
-        State next_state = State {
+        ForagerState next_state = ForagerState {
             // :: user declared fields
-            strategy: blake3(byte[](((gen__strategy_hunger + 1) as byte[8]))),
+            strategy: ForagerStrategy {
+                // :: user declared fields
+                hunger: gen__strategy_hunger + 1,
+            },
             energy: energy - 1,
         };
+        State gen__state_next_state = State {
+            // :: user declared fields
+            strategy: blake3(byte[](((next_state.strategy.hunger) as byte[8]))),
+            energy: next_state.energy,
+        };
         // :: become Forager
-        validateOutputState(gen__next_output_idx, next_state);
+        validateOutputState(gen__next_output_idx, gen__state_next_state);
     }
 
 }

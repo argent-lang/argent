@@ -19,7 +19,7 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "issuer", "auth_index": 0, "actors": ["Issuer"] }, { "name": "ticket", "auth_index": 1, "actors": ["Ticket"] }] },
           "consumes": [],
-          "routes": [{ "output": "issuer", "actor": "Issuer", "state": "next_issuer" }, { "output": "ticket", "actor": "Ticket", "state": "new_ticket" }]
+          "routes": [{ "output": "issuer", "successor": { "kind": "constructed", "actor": "Issuer", "state": "next_issuer" } }, { "output": "ticket", "successor": { "kind": "constructed", "actor": "Ticket", "state": "new_ticket" } }]
         }
       ]
     },
@@ -33,7 +33,7 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["Ticket"] }] },
           "consumes": [],
-          "routes": [{ "output": "next", "actor": "Ticket", "state": "redeemed_ticket" }]
+          "routes": [{ "output": "next", "successor": { "kind": "constructed", "actor": "Ticket", "state": "redeemed_ticket" } }]
         }
       ]
     }

@@ -30,7 +30,7 @@ actor Minter owns MinterState {
     emits {
         controller: Minter,
     } {
-        MinterProxyState prev_proxy = asset.inputs.proxy.state;
+        MinterProxyState prev_proxy = state(asset.inputs.proxy);
 
         require(checkSig(owner_sig, owner));
         require(initialized);

@@ -6,8 +6,10 @@ const path = require('node:path');
 const test = require('node:test');
 const {
   BUILTINS,
+  KEYWORD_DOCUMENTATION,
   PRIMITIVE_DOCUMENTATION,
   PRIMITIVE_TYPES,
+  builtinCall,
   scanDocument,
   standardModuleRelativePath,
   tokenize,
@@ -15,6 +17,46 @@ const {
 
 test('includes temporal among Argent primitive types', () => {
   assert.ok(PRIMITIVE_TYPES.includes('temporal'));
+});
+
+test('documents exact self successor syntax without restoring self.state', () => {
+  assert.match(KEYWORD_DOCUMENTATION.become, /output <- self/);
+  assert.match(KEYWORD_DOCUMENTATION.self, /Bare `self`/);
+  assert.match(KEYWORD_DOCUMENTATION.self, /`self\.state` is not a value/);
+  assert.match(KEYWORD_DOCUMENTATION.self, /`state\(self\)`/);
+});
+
+test('offers explicit authored input-state reconstruction', () => {
+  const state = BUILTINS.find((builtin) => builtin.name === 'state');
+  assert.ok(state);
+  assert.equal(state.signature, 'state(input_reference) -> AuthoredState');
+  assert.deepEqual(state.params, ['input_reference']);
+  assert.match(state.documentation, /consumed input handle/);
+  assert.match(state.documentation, /observed input reference/);
+});
+
+test('offers authored state digests and classifies state only when called', () => {
+  const digest = BUILTINS.find((builtin) => builtin.name === 'digest');
+  assert.ok(digest);
+  assert.equal(digest.signature, 'digest(authored_state) -> byte[32]');
+  assert.deepEqual(digest.params, ['authored_state']);
+  assert.match(digest.documentation, /`digest\(state\(peer\)\)`/);
+  assert.match(digest.documentation, /route fields are excluded/);
+
+  const tokens = tokenize('state AccountState {} state /* reconstruct */ (self); digest (state(peer));');
+  const calls = tokens.map((token, index) => builtinCall(tokens, index)?.name).filter(Boolean);
+  assert.deepEqual(calls, ['state', 'digest', 'state']);
+});
+
+test('highlights state and digest calls as Argent functions', () => {
+  const grammar = JSON.parse(fs.readFileSync(path.join(__dirname, 'syntaxes/argent.tmLanguage.json'), 'utf8'));
+  assert.equal(grammar.patterns[0].include, '#argent-builtins');
+
+  const operationPattern = grammar.repository['argent-builtins'].patterns[0];
+  assert.equal(operationPattern.name, 'support.function.argent');
+  assert.match('state(self)', new RegExp(operationPattern.match));
+  assert.match('digest (state(peer))', new RegExp(operationPattern.match));
+  assert.doesNotMatch('state AccountState', new RegExp(operationPattern.match));
 });
 
 test('resolves compiler-standard modules for import navigation and symbol indexing', () => {
@@ -265,13 +307,18 @@ actor Pair owns PairState {
   assert.ok(actor.bodyEnd > source.indexOf('self.quote_id'));
 });
 
-test('indexes entry and delegate callables with parameters and implementation body ranges', () => {
+test('indexes actor functions, entries, and delegates with their lexical owners', () => {
   const source = `
 state PairState {
   int reserve;
 }
 
 actor Pair owns PairState {
+  /// Returns the adjusted reserve.
+  fn adjusted(int delta) -> int {
+    return reserve + delta;
+  }
+
   /// Exchanges one side of the pair.
   entry swap(int amount, cov_id asset_id)
   observes asset by asset_id {
@@ -296,12 +343,23 @@ actor Pair owns PairState {
   assert.deepEqual(
     actor.members.map(({ kind, name, params }) => ({ kind, name, params })),
     [
+      { kind: 'function', name: 'adjusted', params: ['delta'] },
       { kind: 'entry', name: 'swap', params: ['amount', 'asset_id'] },
       { kind: 'delegate', name: 'authorize', params: ['owner_sig'] },
     ],
   );
 
-  const swap = actor.members[0];
+  const adjusted = actor.members[0];
+  assert.equal(adjusted.signature, 'fn adjusted(int delta) -> int');
+  assert.equal(adjusted.documentation, 'Returns the adjusted reserve.');
+  assert.deepEqual(
+    adjusted.parameters.map(({ name, type }) => ({ name, type })),
+    [{ name: 'delta', type: 'int' }],
+  );
+  assert.ok(adjusted.bodyStart < source.indexOf('return reserve'));
+  assert.ok(adjusted.bodyEnd > source.indexOf('return reserve'));
+
+  const swap = actor.members[1];
   assert.equal(swap.documentation, 'Exchanges one side of the pair.');
   assert.deepEqual(
     swap.parameters.map(({ name, type }) => ({ name, type })),
@@ -314,13 +372,38 @@ actor Pair owns PairState {
   assert.ok(swap.bodyEnd > source.indexOf('require(amount'));
   assert.ok(swap.bodyStart > source.indexOf('inputs {'));
 
-  const authorize = actor.members[1];
+  const authorize = actor.members[2];
   assert.deepEqual(
     authorize.parameters.map(({ name, type }) => ({ name, type })),
     [{ name: 'owner_sig', type: 'sig' }],
   );
   assert.ok(authorize.bodyStart < source.indexOf('checkSig(owner_sig'));
   assert.ok(authorize.bodyEnd > source.indexOf('checkSig(owner_sig'));
+});
+
+test('keeps same-named actor functions attached to their respective actors', () => {
+  const source = `
+actor Left owns LeftState {
+  fn current() -> int {
+    return value;
+  }
+}
+
+actor Right owns RightState {
+  fn current() -> int {
+    return value;
+  }
+}
+`;
+
+  const actors = scanDocument(source).declarations.filter((item) => item.kind === 'actor');
+  assert.deepEqual(
+    actors.map((actor) => ({ actor: actor.name, functions: actor.members.map((member) => member.name) })),
+    [
+      { actor: 'Left', functions: ['current'] },
+      { actor: 'Right', functions: ['current'] },
+    ],
+  );
 });
 
 test('indexes variables introduced by all callable clause forms', () => {

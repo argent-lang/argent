@@ -17,6 +17,11 @@ contract Knight(
         // :: user declared fields
         int nonce;
     }
+    struct BoardState {
+        // :: user declared fields
+        int selector;
+        int ply;
+    }
 
     // :: route templates
     byte[32] gen__mux_template = gen__init_mux_template;
@@ -34,18 +39,23 @@ contract Knight(
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Mux
 
         require(selector >= 0);
-        State next_board = State {
-            // :: generated fields
-            gen__mux_template: gen__mux_template,
-            gen__mux_routes: gen__mux_routes,
+        BoardState next_board = BoardState {
             // :: user declared fields
             selector: selector,
             ply: ply + 1,
         };
+        State gen__state_next_state = State {
+            // :: generated fields
+            gen__mux_template: gen__mux_template,
+            gen__mux_routes: gen__mux_routes,
+            // :: user declared fields
+            selector: next_board.selector,
+            ply: next_board.ply,
+        };
         // :: become Mux
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            next_board,
+            gen__state_next_state,
             gen__mux_prefix,
             gen__mux_suffix,
             gen__mux_template

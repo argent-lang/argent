@@ -117,6 +117,7 @@ dependencies = [
  "argent-artifact",
  "argent-runtime",
  "blake2b_simd",
+ "blake3",
  "colored",
  "kaspa-consensus-core",
  "kaspa-txscript",

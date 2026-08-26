@@ -48,7 +48,7 @@ actor Controller owns ControllerState {
         PairState third_right = {
             amount: third_right_amount,
         };
-        ControllerState next = {
+        ControllerState next_state = {
             pair_type: pair_type,
             launches: launches + 3,
         };
@@ -70,14 +70,14 @@ actor Controller owns ControllerState {
             right <- self.pair_type(third_right),
         };
         unrestricted(next.value);
-        become next <- Controller(next);
+        become next <- Controller(next_state);
     }
 }
 
 actor Pair owns PairState {
     entry keep() emits next: Pair {
         unrestricted(next.value);
-        become next <- Pair(self.state);
+        become next <- self;
     }
 }
 

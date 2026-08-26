@@ -51,7 +51,7 @@ actor Cell owns CellState {
     emits {
         cell: Cell,
     } {
-        AgentCapsule prev_state = remote.inputs.agent.state;
+        AgentCapsule prev_state = state(remote.inputs.agent);
 
         require(prev_state.world_id == world_id);
         require(prev_state.capabilities_digest == occupant_caps_digest);
@@ -103,13 +103,13 @@ actor Cell owns CellState {
         }
     }
     consumes {
-        target_cell: Cell,
+        target_input: Cell,
     }
     emits {
         source_cell: Cell,
         target_cell: Cell,
     } {
-        AgentCapsule prev_state = remote.inputs.agent.state;
+        AgentCapsule prev_state = state(remote.inputs.agent);
 
         int distance = abs1(dx) + abs1(dy);
         require(distance == 1);
@@ -119,12 +119,12 @@ actor Cell owns CellState {
         require(prev_state.energy > 0);
         require(prev_state.capabilities_digest == occupant_caps_digest);
 
-        require(target_cell.world_id == world_id);
-        require(target_cell.x == x + dx);
-        require(target_cell.y == y + dy);
-        require(target_cell.occupant_agent_covid == empty_agent_covid);
-        require(target_cell.occupant_agent_type == empty_agent_type);
-        require(target_cell.occupant_caps_digest == empty_caps_digest);
+        require(target_input.world_id == world_id);
+        require(target_input.x == x + dx);
+        require(target_input.y == y + dy);
+        require(target_input.occupant_agent_covid == empty_agent_covid);
+        require(target_input.occupant_agent_type == empty_agent_type);
+        require(target_input.occupant_caps_digest == empty_caps_digest);
 
         AgentCapsule next_agent = {
             world_id: prev_state.world_id,
@@ -132,8 +132,8 @@ actor Cell owns CellState {
             species_id: prev_state.species_id,
             controller_id: prev_state.controller_id,
             capabilities_digest: prev_state.capabilities_digest,
-            x: target_cell.x,
-            y: target_cell.y,
+            x: target_input.x,
+            y: target_input.y,
             energy: prev_state.energy - 1,
             generation: prev_state.generation,
         };
@@ -149,10 +149,10 @@ actor Cell owns CellState {
         };
 
         CellState next_target = {
-            world_id: target_cell.world_id,
-            x: target_cell.x,
-            y: target_cell.y,
-            food: target_cell.food,
+            world_id: target_input.world_id,
+            x: target_input.x,
+            y: target_input.y,
+            food: target_input.food,
             occupant_agent_covid: occupant_agent_covid,
             occupant_agent_type: occupant_agent_type,
             occupant_caps_digest: occupant_caps_digest,

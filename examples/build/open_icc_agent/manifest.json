@@ -20,7 +20,7 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "agent", "auth_index": 0, "actors": ["Agent"] }] },
           "consumes": [],
-          "routes": [{ "output": "agent", "actor": "Agent", "state": "next_agent" }]
+          "routes": [{ "output": "agent", "successor": { "kind": "constructed", "actor": "Agent", "state": "next_agent" } }]
         }
       ]
     },
@@ -34,7 +34,7 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "agent", "auth_index": 0, "actors": ["Forager"] }] },
           "consumes": [],
-          "routes": [{ "output": "agent", "actor": "Forager", "state": "next_agent" }]
+          "routes": [{ "output": "agent", "successor": { "kind": "constructed", "actor": "Forager", "state": "next_agent" } }]
         }
       ]
     }

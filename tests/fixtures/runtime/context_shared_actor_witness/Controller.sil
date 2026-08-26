@@ -8,6 +8,11 @@ contract Controller(
     int init_launches
 ) {
     // :: state layouts
+    struct ControllerState {
+        // :: user declared fields
+        byte[32] pair_type;
+        int launches;
+    }
     struct AnchorState {
         // :: user declared fields
         int amount;
@@ -82,9 +87,7 @@ contract Controller(
             // :: user declared fields
             amount: spawned_amount,
         };
-        State next = State {
-            // :: generated fields
-            gen__anchor_template: gen__anchor_template,
+        ControllerState next_state = ControllerState {
             // :: user declared fields
             pair_type: pair_type,
             launches: launches + 1,
@@ -105,8 +108,15 @@ contract Controller(
             gen__actor_type_self_pair_type_suffix,
             pair_type
         );
+        State gen__state_next_state = State {
+            // :: generated fields
+            gen__anchor_template: gen__anchor_template,
+            // :: user declared fields
+            pair_type: next_state.pair_type,
+            launches: next_state.launches,
+        };
         // :: become Controller
-        validateOutputState(gen__next_output_idx, next);
+        validateOutputState(gen__next_output_idx, gen__state_next_state);
     }
 
 }

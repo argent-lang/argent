@@ -1,34 +1,57 @@
 //! Lowers structured Argent entry bodies into generated Sil source.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 
 use crate::compiler::model::{
-    ActorTarget, CompilerRouteTransition, CovenantGroup, EntryInteraction, InteractionSource, Model, RouteFamily, StaticActorTarget,
-    TemplateSelector, actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding, observed_open_bindings,
-    observed_open_state_for_decl, parse_actor_enum_selector, parse_actor_enum_variant, spawn_target_state,
+    ActorTarget, CovenantGroup, EntryInteraction, InteractionSource, Model, ResolvedRoute, ResolvedSuccessor, RouteFamily,
+    SourceStateId, StaticActorTarget, TemplateSelector, actor_enum_variant_const_expr, clause_actor_type_ref,
+    observed_is_dynamic_binding, observed_open_bindings, observed_open_state_for_decl, parse_actor_enum_selector,
+    parse_actor_enum_variant, spawn_target_state,
 };
-use crate::compiler::naming::to_snake;
-use crate::compiler::syntax::body::{EntryBinding, EntryLocalDecl, EntryRoute, EntryStatement, EntryStructDestructure};
+use crate::compiler::naming::{is_identifier, to_snake};
+use crate::compiler::syntax::body::{
+    EntryBinding, EntryLocalDecl, EntryRoute, EntryStatement, EntryStructDestructure, EntrySuccessor,
+};
 use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, Span, Token, TokenKind, lex};
 use crate::compiler::syntax::word;
 use crate::compiler::syntax::*;
 use crate::error::{ArgentError, Result};
+use silverscript_lang::ast::visit::{AstVisitorMut, visit_function_mut, walk_expr_mut};
+use silverscript_lang::ast::{
+    Expr as SilExpr, ExprKind as SilExprKind, Statement as SilStatement, parse_expression_ast, parse_function_ast,
+};
 
 // Body lowering uses the surrounding Sil emitter's shared witness plans,
 // layout helpers, and generated names.
 use super::super::emitter::*;
+use super::state_boundary::{
+    AuthoredStateExpr, EntryInputReferencePlan, EntryInputReferenceView, EntryInputScopeId, OutputStateTarget,
+    OutputValidationContext, PlannedEntryInputReference, authored_state_payload_digest_expr, materialize_output_state,
+    plan_actor_output_state, plan_open_output_state, plan_output_validation, plan_selector_output_state,
+    plan_static_actor_output_state, preserve_exact_self,
+};
+use super::state_types::{lower_expression_state_types, lower_statement_state_types};
+use super::state_values::{ContractStateValuePlan, PlannedStateValue};
 use super::token_refs::{RefReplacements, count_qualified_ref};
+
+#[cfg(test)]
+mod tests;
 
 pub(in crate::compiler::codegen) struct LoweredEntryBody {
     pub(in crate::compiler::codegen) sil: String,
+    pub(in crate::compiler::codegen) digest_helpers: BTreeSet<SourceStateId>,
 }
 
 pub(in crate::compiler::codegen) fn lower_entry_body(
     actor: &ActorDecl,
     entry: &EntryDecl,
     model: &Model<'_>,
+    input_references: &EntryInputReferencePlan,
+    state_values: &ContractStateValuePlan,
 ) -> Result<LoweredEntryBody> {
-    BodyLowerer::new(actor, entry, model)?.lower()
+    BodyLowerer::new(actor, entry, model, EntryInputReferenceView::Complete(input_references), state_values)?.lower()
 }
 
 /// Source details needed while lowering one non-current covenant output.
@@ -68,19 +91,113 @@ impl<'a> CovenantOutputContext<'a> {
     }
 }
 
-struct BodyLowerer<'a, 'm> {
+struct BodyLowerer<'a, 'm, 'p> {
     actor: &'a ActorDecl,
     entry: &'a EntryDecl,
     model: &'m Model<'a>,
+    input_references: EntryInputReferenceView<'p>,
+    active_reference: PlannedEntryInputReference,
+    state_values: &'p ContractStateValuePlan,
     bindings: BodyBindings,
+    reserved_entry_names: ReservedEntryNames,
     /// Entry-wide candidates; the current binding decides selector visibility.
     selector_catalog: BTreeMap<String, TemplateSelector>,
     output_values: Vec<OutputValueRef>,
-    ref_replacements: RefReplacements,
+    fixed_ref_replacements: Vec<(String, String)>,
     observed_output_fields: Vec<ObservedOutputFieldWitnessSpec>,
     validated_spawns: BTreeSet<String>,
+    // Expression lowering records contract-level helpers without making the
+    // otherwise read-only lowering API mutable.
+    digest_helpers: RefCell<BTreeSet<SourceStateId>>,
     conditional_depth: usize,
     current_statement: Option<Span>,
+}
+
+#[derive(Clone)]
+struct ConstructedRoute {
+    output: String,
+    actor: String,
+    state: String,
+}
+
+struct PlannedStateValueSite {
+    span: Range<usize>,
+    expected: PlannedStateValue,
+}
+
+struct StateValueSiteCollector<'a> {
+    state_values: &'a ContractStateValuePlan,
+    bindings: &'a BodyBindings,
+    sites: Vec<PlannedStateValueSite>,
+}
+
+struct NamedCallSiteCollector<'a> {
+    name: &'a str,
+    sites: Vec<Range<usize>>,
+}
+
+#[derive(Default)]
+struct PhysicalStateConstructorDetector {
+    found: bool,
+}
+
+impl<'i> AstVisitorMut<'i> for PhysicalStateConstructorDetector {
+    fn visit_expr(&mut self, expr: &mut SilExpr<'i>) {
+        if matches!(&expr.kind, SilExprKind::StructLiteral { name, .. } if name == "State") {
+            self.found = true;
+        }
+        walk_expr_mut(self, expr);
+    }
+}
+
+impl<'i> AstVisitorMut<'i> for StateValueSiteCollector<'_> {
+    fn visit_expr(&mut self, expr: &mut SilExpr<'i>) {
+        match &expr.kind {
+            SilExprKind::Call { name, args, .. } => {
+                if let Some(signature) = self.state_values.signature(name) {
+                    for (index, arg) in args.iter().enumerate() {
+                        if let Some(expected) = signature.param(index) {
+                            self.sites
+                                .push(PlannedStateValueSite { span: arg.span.start()..arg.span.end(), expected: expected.clone() });
+                        }
+                    }
+                }
+            }
+            SilExprKind::Array { type_ref, values } => {
+                if let Some(element) =
+                    self.state_values.plan_ast_type_ref(type_ref, Some(values.len())).and_then(|value| value.element())
+                {
+                    self.sites.extend(
+                        values.iter().map(|value| PlannedStateValueSite {
+                            span: value.span.start()..value.span.end(),
+                            expected: element.clone(),
+                        }),
+                    );
+                }
+            }
+            SilExprKind::Append { source, args, .. } => {
+                if let Some(element) =
+                    planned_state_value_for_expr(source, self.state_values, self.bindings).and_then(|value| value.element())
+                {
+                    self.sites.extend(
+                        args.iter()
+                            .map(|arg| PlannedStateValueSite { span: arg.span.start()..arg.span.end(), expected: element.clone() }),
+                    );
+                }
+            }
+            _ => {}
+        }
+        walk_expr_mut(self, expr);
+    }
+}
+
+impl<'i> AstVisitorMut<'i> for NamedCallSiteCollector<'_> {
+    fn visit_expr(&mut self, expr: &mut SilExpr<'i>) {
+        if matches!(&expr.kind, SilExprKind::Call { name, .. } if name == self.name) {
+            self.sites.push(expr.span.start()..expr.span.end());
+        }
+        walk_expr_mut(self, expr);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -90,24 +207,80 @@ struct BodyBindingId(usize);
 struct BodyBinding {
     source_type: Option<String>,
     lowered_type: Option<String>,
+    state_value: Option<PlannedStateValue>,
     selector: Option<TemplateSelector>,
+    input_scope: Option<EntryInputScopeId>,
+    /// Projection through the authenticated active input for this root field.
+    active_field_projection: Option<ActiveFieldProjection>,
+}
+
+struct ActiveFieldProjection {
+    field: String,
+    /// Whole-value projection reconstructs an authored expansion value.
+    expanded: bool,
 }
 
 impl BodyBinding {
-    fn typed(source_type: impl Into<String>, lowered_type: impl Into<String>) -> Self {
-        Self { source_type: Some(source_type.into()), lowered_type: Some(lowered_type.into()), selector: None }
+    fn typed(source_type: impl Into<String>, lowered_type: impl Into<String>, state_values: &ContractStateValuePlan) -> Self {
+        let source_type = source_type.into();
+        let state_value = state_values.plan_source_sil_type(&source_type);
+        Self {
+            source_type: Some(source_type),
+            lowered_type: Some(lowered_type.into()),
+            state_value,
+            selector: None,
+            input_scope: None,
+            active_field_projection: None,
+        }
     }
 
-    fn source_typed(source_type: impl Into<String>) -> Self {
-        Self { source_type: Some(source_type.into()), lowered_type: None, selector: None }
+    fn source_typed(source_type: impl Into<String>, state_values: &ContractStateValuePlan) -> Self {
+        let source_type = source_type.into();
+        let state_value = state_values.plan_source_sil_type(&source_type);
+        Self {
+            source_type: Some(source_type),
+            lowered_type: None,
+            state_value,
+            selector: None,
+            input_scope: None,
+            active_field_projection: None,
+        }
     }
 
     fn lowered_typed(lowered_type: impl Into<String>) -> Self {
-        Self { source_type: None, lowered_type: Some(lowered_type.into()), selector: None }
+        Self {
+            source_type: None,
+            lowered_type: Some(lowered_type.into()),
+            state_value: None,
+            selector: None,
+            input_scope: None,
+            active_field_projection: None,
+        }
+    }
+
+    fn input_root(scope: EntryInputScopeId) -> Self {
+        Self {
+            source_type: None,
+            lowered_type: None,
+            state_value: None,
+            selector: None,
+            input_scope: Some(scope),
+            active_field_projection: None,
+        }
     }
 
     fn with_selector(mut self, selector: TemplateSelector) -> Self {
         self.selector = Some(selector);
+        self
+    }
+
+    fn with_planned_state_value(mut self, state_value: Option<PlannedStateValue>) -> Self {
+        self.state_value = state_value;
+        self
+    }
+
+    fn with_active_field_projection(mut self, field: impl Into<String>, expanded: bool) -> Self {
+        self.active_field_projection = Some(ActiveFieldProjection { field: field.into(), expanded });
         self
     }
 }
@@ -176,13 +349,17 @@ impl BodyBindings {
         self.get(name).and_then(|binding| binding.value.source_type.as_deref())
     }
 
-    fn source_type_for_expr(&self, expr: &str) -> Option<String> {
-        let expr = strip_outer_parentheses(expr);
-        if let Some(ty) = self.source_type(expr) {
-            return Some(ty.to_string());
-        }
-        let root = indexed_root_binding(expr)?;
-        array_element_type(self.source_type(root)?).map(str::to_string)
+    fn state_value(&self, name: &str) -> Option<&PlannedStateValue> {
+        self.get(name)?.value.state_value.as_ref()
+    }
+
+    fn active_field_projection(&self, name: &str) -> Option<&ActiveFieldProjection> {
+        self.get(name)?.value.active_field_projection.as_ref()
+    }
+
+    fn input_reference_is_visible(&self, reference: &PlannedEntryInputReference) -> bool {
+        reference.is_active()
+            || self.get(reference.lexical_root()).and_then(|binding| binding.value.input_scope) == Some(reference.scope())
     }
 
     fn selector(&self, name: &str) -> Option<(BodyBindingId, &TemplateSelector)> {
@@ -199,64 +376,189 @@ impl BodyBindings {
     }
 }
 
+fn planned_state_value_for_expr(
+    expr: &SilExpr<'_>,
+    state_values: &ContractStateValuePlan,
+    bindings: &BodyBindings,
+) -> Option<PlannedStateValue> {
+    match &expr.kind {
+        SilExprKind::Identifier(name) => match bindings.get(name) {
+            Some(binding) => binding.value.state_value.clone(),
+            None => state_values.constant(name).cloned(),
+        },
+        SilExprKind::Call { name, .. } => state_values.signature(name)?.result().cloned(),
+        SilExprKind::Array { type_ref, values } => state_values.plan_ast_type_ref(type_ref, Some(values.len())),
+        SilExprKind::Append { source, args, .. } => planned_state_value_for_expr(source, state_values, bindings)?.appended(args.len()),
+        SilExprKind::ArrayIndex { source, .. } => planned_state_value_for_expr(source, state_values, bindings)?.element(),
+        _ => None,
+    }
+}
+
 #[derive(Debug)]
 struct OutputValueRef {
     source: String,
     lowered: String,
 }
 
-/// Builds the fixed dotted-reference lowering plan for one entry body.
-fn entry_ref_replacements(
-    actor: &ActorDecl,
-    model: &Model<'_>,
-    input_names: BTreeSet<String>,
-    output_values: &[OutputValueRef],
-    observed_input_state_refs: Vec<(String, String)>,
-) -> Result<RefReplacements> {
-    assert_eq!(word::SELF, "self");
-    assert_eq!(word::VALUE, "value");
-    assert_eq!(word::COVENANT_ID, "cov_id");
-    let mut replacements = vec![
-        ("self.value".to_string(), "tx.inputs[this.activeInputIndex].value".to_string()),
-        ("self.cov_id".to_string(), "OpInputCovenantId(this.activeInputIndex)".to_string()),
-    ];
-    for spec in state_expansion_witness_specs_for_actor(actor, model) {
-        for field in &model.state(&spec.memory_state)?.fields {
-            let local = hidden_state_expansion_field_name(&spec, &field.name);
-            replacements.push((format!("self.{}.{}", spec.field, field.name), local.clone()));
-            replacements.push((format!("{}.{}", spec.field, field.name), local));
-        }
-    }
-    for field in &model.storage_state(&actor.state)?.fields {
-        replacements.push((format!("self.{}", field.name), field.name.clone()));
-    }
-    replacements.extend(observed_input_state_refs);
-    replacements.extend(output_values.iter().map(|output| (output.source.clone(), output.lowered.clone())));
-    replacements.extend(
-        input_names.into_iter().map(|name| (format!("{name}.value"), format!("tx.inputs[{}].value", hidden_input_idx_name(&name)))),
-    );
-    RefReplacements::new(replacements)
+#[derive(Debug)]
+enum ReservedEntryNameRole {
+    CurrentActor,
+    ConsumeHandle,
+    EmitHandle,
+    ObserveRoot,
+    ObservedOutputLabel { observe: String },
+    SpawnRoot,
+    SpawnedOutputLabel { spawn: String },
+    CovenantBinding { spawn: String },
+    OpenActorBinding { observe: String },
+    EntryParameter,
 }
 
-impl<'a, 'm> BodyLowerer<'a, 'm> {
-    fn new(actor: &'a ActorDecl, entry: &'a EntryDecl, model: &'m Model<'a>) -> Result<Self> {
+impl ReservedEntryNameRole {
+    fn description(&self) -> String {
+        match self {
+            Self::CurrentActor => "current actor context".to_string(),
+            Self::ConsumeHandle => "consume handle".to_string(),
+            Self::EmitHandle => "emit handle".to_string(),
+            Self::ObserveRoot => "observe root".to_string(),
+            Self::ObservedOutputLabel { observe } => format!("observe `{observe}` output label"),
+            Self::SpawnRoot => "spawn root".to_string(),
+            Self::SpawnedOutputLabel { spawn } => format!("spawn `{spawn}` output label"),
+            Self::CovenantBinding { spawn } => format!("spawn `{spawn}` covenant binding"),
+            Self::OpenActorBinding { observe } => format!("observe `{observe}` open-actor binding"),
+            Self::EntryParameter => "entry parameter".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct ReservedEntryNames {
+    body_bindings: BTreeMap<String, ReservedEntryNameRole>,
+}
+
+impl ReservedEntryNames {
+    fn role_for_body_binding(&self, name: &str) -> Option<&ReservedEntryNameRole> {
+        self.body_bindings.get(name)
+    }
+
+    fn reserve_unique(&mut self, actor: &ActorDecl, entry: &EntryDecl, name: &str, role: ReservedEntryNameRole) -> Result<()> {
+        if let Some(previous) = self.body_bindings.get(name) {
+            return Err(entry_name_collision(actor, entry, name, &role, previous));
+        }
+        self.body_bindings.insert(name.to_string(), role);
+        Ok(())
+    }
+
+    fn reserve_output_label(&mut self, actor: &ActorDecl, entry: &EntryDecl, name: &str, role: ReservedEntryNameRole) -> Result<()> {
+        let Some(previous) = self.body_bindings.get(name) else {
+            self.body_bindings.insert(name.to_string(), role);
+            return Ok(());
+        };
+        if matches!(previous, ReservedEntryNameRole::ObservedOutputLabel { .. } | ReservedEntryNameRole::SpawnedOutputLabel { .. }) {
+            return Ok(());
+        }
+        Err(entry_name_collision(actor, entry, name, &role, previous))
+    }
+}
+
+fn reserved_entry_names(actor: &ActorDecl, entry: &EntryDecl) -> Result<ReservedEntryNames> {
+    let mut names = ReservedEntryNames::default();
+    names.reserve_unique(actor, entry, word::SELF, ReservedEntryNameRole::CurrentActor)?;
+    for consume in &entry.consumes {
+        names.reserve_unique(actor, entry, &consume.name, ReservedEntryNameRole::ConsumeHandle)?;
+    }
+    if let EmitSpec::Outputs(outputs) = &entry.emits {
+        for output in outputs {
+            names.reserve_unique(actor, entry, &output.name, ReservedEntryNameRole::EmitHandle)?;
+        }
+    }
+    for observe in &entry.observes {
+        names.reserve_unique(actor, entry, &observe.name, ReservedEntryNameRole::ObserveRoot)?;
+        for output in &observe.outputs {
+            names.reserve_output_label(
+                actor,
+                entry,
+                &output.name,
+                ReservedEntryNameRole::ObservedOutputLabel { observe: observe.name.clone() },
+            )?;
+        }
+        for binding in observed_open_bindings(observe).into_keys() {
+            names.reserve_unique(actor, entry, binding, ReservedEntryNameRole::OpenActorBinding { observe: observe.name.clone() })?;
+        }
+    }
+    for spawn in &entry.spawns {
+        names.reserve_unique(actor, entry, &spawn.name, ReservedEntryNameRole::SpawnRoot)?;
+        names.reserve_unique(actor, entry, &spawn.covenant, ReservedEntryNameRole::CovenantBinding { spawn: spawn.name.clone() })?;
+        for output in &spawn.outputs {
+            names.reserve_output_label(
+                actor,
+                entry,
+                &output.name,
+                ReservedEntryNameRole::SpawnedOutputLabel { spawn: spawn.name.clone() },
+            )?;
+        }
+    }
+    for param in &entry.params {
+        names.reserve_unique(actor, entry, &param.name, ReservedEntryNameRole::EntryParameter)?;
+    }
+    Ok(names)
+}
+
+fn entry_name_collision(
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    name: &str,
+    role: &ReservedEntryNameRole,
+    previous: &ReservedEntryNameRole,
+) -> ArgentError {
+    ArgentError::new(format!(
+        "entry `{}::{}` {} `{name}` collides with {} of the same name",
+        actor.name,
+        entry.name,
+        role.description(),
+        previous.description(),
+    ))
+}
+
+/// Builds non-input dotted-reference lowering for one entry body.
+fn entry_ref_replacements(output_values: &[OutputValueRef]) -> Vec<(String, String)> {
+    output_values.iter().map(|output| (output.source.clone(), output.lowered.clone())).collect()
+}
+
+impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
+    fn new(
+        actor: &'a ActorDecl,
+        entry: &'a EntryDecl,
+        model: &'m Model<'a>,
+        input_references: EntryInputReferenceView<'p>,
+        state_values: &'p ContractStateValuePlan,
+    ) -> Result<Self> {
         let selector_catalog = model.template_selectors_for_entry(actor, entry)?;
+        let active_reference = input_references.active(actor, model)?;
+        let reserved_entry_names = reserved_entry_names(actor, entry)?;
         let mut bindings = BodyBindings::new();
         let expanded_digest_fields = state_expansion_digest_fields_for_state(&actor.state, model);
         for field in &model.storage_state(&actor.state)?.fields {
             if expanded_digest_fields.contains(field.name.as_str()) {
                 continue;
             }
-            bindings.declare(field.name.clone(), BodyBinding::typed(source_type_ref(&field.ty), lower_type_ref(&field.ty, model)));
+            bindings.declare(
+                field.name.clone(),
+                BodyBinding::typed(source_type_ref(&field.ty), lower_type_ref(&field.ty, model), state_values)
+                    .with_active_field_projection(&field.name, false),
+            );
         }
         if let Some(expansion) = model.state(&actor.state)?.expansion.as_ref() {
             for digest in &expansion.digests {
-                bindings.declare(digest.field.clone(), BodyBinding::source_typed(digest.state.clone()));
+                bindings.declare(
+                    digest.field.clone(),
+                    BodyBinding::source_typed(digest.state.clone(), state_values).with_active_field_projection(&digest.field, true),
+                );
             }
         }
         for param in &entry.params {
-            let ty = lower_type_ref(&entry_param_sil_type(actor, &param.ty, model), model);
-            let mut binding = BodyBinding::typed(source_type_ref(&param.ty), ty);
+            let ty = state_values.sil_type_for_type_ref(&param.ty).unwrap_or_else(|| lower_type_ref(&param.ty, model));
+            let mut binding = BodyBinding::typed(source_type_ref(&param.ty), ty, state_values);
             if param.ty.array.is_none()
                 && let Some(selector) = selector_catalog.get(&param.name)
                 && selector.actor_enum == param.ty.name
@@ -267,34 +569,35 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         }
         for observe in &entry.observes {
             for (binding, state) in observed_open_bindings(observe) {
-                bindings.declare(binding.to_string(), BodyBinding::typed(format!("{}<{state}>", word::ACTOR_TYPE), "byte[32]"));
+                bindings.declare(
+                    binding.to_string(),
+                    BodyBinding::typed(format!("{}<{state}>", word::ACTOR_TYPE), "byte[32]", state_values),
+                );
             }
         }
         for spawn in &entry.spawns {
-            bindings.declare(spawn.covenant.clone(), BodyBinding::typed(word::COVENANT_ID, "byte[32]"));
+            bindings.declare(spawn.covenant.clone(), BodyBinding::typed(word::COVENANT_ID, "byte[32]", state_values));
         }
 
-        let mut input_names = BTreeSet::new();
         for consume in &entry.consumes {
-            input_names.insert(consume.name.clone());
-            let state = model.actor(&consume.actor)?.state.clone();
-            let ty = contract_state_type_for_actor(&consume.actor, actor, model)?;
-            bindings.declare(consume.name.clone(), BodyBinding::typed(state, ty));
+            if let Some(input) = input_references.consumed(&consume.name)? {
+                bindings.declare(consume.name.clone(), BodyBinding::input_root(input.scope()));
+                bindings.declare(hidden_consumed_input_state_name(&consume.name), BodyBinding::lowered_typed(input.physical_type()));
+            }
         }
-        let mut observed_input_state_refs = Vec::new();
         for observe in &entry.observes {
+            let mut observe_scope = None;
             for input in &observe.inputs {
-                let source_ref = format!("{}.inputs.{}.state", observe.name, input.name);
                 let lowered_ref = hidden_observed_input_state_name(&observe.name, &input.name);
-                observed_input_state_refs.push((source_ref.clone(), lowered_ref.clone()));
-                let state = if let Some(state) = observed_open_state_for_decl(actor, entry, observe, input, model)? {
-                    state.to_string()
-                } else {
-                    model.actor(&input.actor)?.state.clone()
-                };
-                let ty = contract_state_type_for_observed_actor(actor, entry, observe, input, model)?;
-                bindings.declare(source_ref, BodyBinding::typed(state, ty.clone()));
-                bindings.declare(lowered_ref, BodyBinding::lowered_typed(ty));
+                if let Some(input) = input_references.observed(&observe.name, &input.name)? {
+                    if let Some(scope) = observe_scope {
+                        debug_assert_eq!(scope, input.scope());
+                    } else {
+                        observe_scope = Some(input.scope());
+                        bindings.declare(observe.name.clone(), BodyBinding::input_root(input.scope()));
+                    }
+                    bindings.declare(lowered_ref, BodyBinding::lowered_typed(input.physical_type()));
+                }
             }
         }
 
@@ -319,19 +622,24 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         // Preserve most-specific-first ordering in value-policy diagnostics.
         output_values.sort_by(|left, right| right.source.len().cmp(&left.source.len()).then_with(|| left.source.cmp(&right.source)));
 
-        let ref_replacements = entry_ref_replacements(actor, model, input_names, &output_values, observed_input_state_refs)?;
+        let fixed_ref_replacements = entry_ref_replacements(&output_values);
         let observed_output_fields = observed_output_field_witness_specs(actor, entry, model);
 
         Ok(Self {
             actor,
             entry,
             model,
+            input_references,
+            active_reference,
+            state_values,
             bindings,
+            reserved_entry_names,
             selector_catalog,
             output_values,
-            ref_replacements,
+            fixed_ref_replacements,
             observed_output_fields,
             validated_spawns: BTreeSet::new(),
+            digest_helpers: RefCell::new(BTreeSet::new()),
             conditional_depth: 0,
             current_statement: None,
         })
@@ -352,7 +660,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             }
         }
         self.validate_output_value_refs()?;
-        Ok(LoweredEntryBody { sil: out })
+        Ok(LoweredEntryBody { sil: out, digest_helpers: self.digest_helpers.into_inner() })
     }
 
     fn validate_output_value_refs(&self) -> Result<()> {
@@ -377,6 +685,9 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     fn lower_statements(&mut self, out: &mut String, indent: usize, statements: &[EntryStatement]) -> Result<()> {
         for statement in statements {
             self.current_statement = Some(statement.span());
+            if let Some((name, role)) = binds_reserved_entry_name(statement, &self.reserved_entry_names) {
+                return Err(self.error(format!("entry binding `{name}` collides with {} of the same name", role.description())));
+            }
             match statement {
                 EntryStatement::If { condition, then_branch, else_branch, .. } => {
                     self.lower_if(out, indent, *condition, then_branch, else_branch.as_deref(), true)?;
@@ -464,8 +775,13 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         body: &EntryStatement,
     ) -> Result<()> {
         let header = self.entry.body.span_text(header).trim();
+        let header = split_top_level_commas(header)
+            .into_iter()
+            .map(|component| self.lower_expr(component.trim(), None, indent))
+            .collect::<Result<Vec<_>>>()?
+            .join(", ");
         push_indent(out, indent);
-        out.push_str(&format!("for ({}) {{\n", self.lower_expr(header, None, indent)?));
+        out.push_str(&format!("for ({header}) {{\n"));
 
         self.conditional_depth += 1;
         self.bindings.enter_scope();
@@ -494,18 +810,17 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             self.lower_actor_type_statement(out, indent, state, name, &expr)?;
             return Ok(());
         }
-        let lowered_ty = if self.model.has_state(source_ty) {
-            self.bindings.lowered_type_for_expr(expr.trim()).unwrap_or_else(|| self.lower_local_type(source_ty))
-        } else {
-            self.lower_local_type(source_ty)
-        };
+        let lowered_ty = self.lower_local_type(source_ty);
         let declared_type = self.entry.body.span_text(declaration.declared_type).trim();
         let type_suffix = declared_type.strip_prefix(source_ty).expect("declared type starts with its parsed source type");
         let emitted_type = format!("{lowered_ty}{type_suffix}");
         let lowered = self.lower_typed_local_initializer(source_ty, &lowered_ty, &expr, indent)?;
         push_indent(out, indent);
         out.push_str(&format!("{emitted_type} {name} = {lowered};\n"));
-        let mut binding = BodyBinding::typed(source_ty, lowered_ty);
+        let initializer_state_value =
+            parse_expression_ast(&lowered).ok().and_then(|initializer| self.planned_state_value_for_expr(&initializer));
+        let planned_state_value = self.state_values.plan_initialized_sil_type(source_ty, initializer_state_value.as_ref());
+        let mut binding = BodyBinding::typed(source_ty, lowered_ty, self.state_values).with_planned_state_value(planned_state_value);
         if let Some(selector) = self.selector_catalog.get(name)
             && selector.actor_enum == source_ty
         {
@@ -525,14 +840,49 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     ) -> Result<()> {
         let source = self.entry.body.span_text(span).trim();
         let mut statement = source.strip_suffix(';').ok_or_else(|| self.error("unterminated statement"))?.trim().to_string();
+        self.reject_physical_state_constructors(&statement)?;
+        let mut value_lowered = false;
 
         if let Some(destructuring) = destructuring {
             let source_type = self.entry.body.span_text(destructuring.declared_type);
             let value = self.entry.body.span_text(destructuring.value).trim();
-            let lowered_type = self.bindings.lowered_type_for_expr(value).unwrap_or_else(|| source_type.to_string());
-            let relative_start = destructuring.declared_type.start - span.start;
-            let relative_end = destructuring.declared_type.end - span.start;
-            statement.replace_range(relative_start..relative_end, &lowered_type);
+            if self.bindings.active_field_projection(value).is_some_and(|projection| projection.expanded) {
+                let projected_state =
+                    self.bindings.source_type(value).expect("active expanded-field bindings retain their source state");
+                let example = self
+                    .model
+                    .state(projected_state)?
+                    .fields
+                    .first()
+                    .map(|field| {
+                        format!(
+                            "; project its fields directly, for example `{} opened_{} = {value}.{};`",
+                            source_type_ref(&field.ty),
+                            field.name,
+                            field.name,
+                        )
+                    })
+                    .unwrap_or_else(|| "; project its fields directly".to_string());
+                return Err(
+                    self.error(format!("active expanded state field `{value}` cannot be destructured as a whole value{example}"))
+                );
+            }
+            let authored_state = self.model.has_state(source_type).then_some(source_type);
+            let lowered_type = authored_state
+                .map(|state| self.lower_local_type(state))
+                .or_else(|| self.bindings.lowered_type_for_expr(value))
+                .unwrap_or_else(|| source_type.to_string());
+            let lowered_value = self.lower_expr(value, authored_state, indent)?;
+            let relative = (destructuring.value.start - span.start)..(destructuring.value.end - span.start);
+            statement.replace_range(relative, &lowered_value);
+            value_lowered = true;
+            let relative = (destructuring.declared_type.start - span.start)..(destructuring.declared_type.end - span.start);
+            statement.replace_range(relative, &lowered_type);
+        } else if let Some((range, expected_state)) = self.plain_assignment_expr(&statement) {
+            let expected_type = expected_state.as_ref().map(|value| self.state_values.sil_type(value));
+            let lowered = self.lower_expr(&statement[range.clone()], expected_type.as_deref(), indent)?;
+            statement.replace_range(range, &lowered);
+            value_lowered = true;
         }
 
         if let Some(value) = parse_unrestricted_output_value(&statement) {
@@ -548,7 +898,16 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         }
 
         push_indent(out, indent);
-        out.push_str(&self.lower_expr(&statement, None, indent)?);
+        let statement = lower_co_spent_calls(&statement, &self.bindings)?;
+        let statement = lower_actor_enum_literals(&statement, self.model)?;
+        let statement = if value_lowered { statement } else { self.lower_nested_state_values(&statement, indent)? };
+        let statement = if self.state_values.has_equivalent_state_sources() {
+            lower_statement_state_types(&statement, self.state_values).map_err(|err| self.error(err.to_string()))?
+        } else {
+            statement
+        };
+        let statement = self.lower_refs(&statement, indent)?;
+        out.push_str(&statement);
         out.push_str(";\n");
         for binding in bindings {
             self.declare_sil_binding(binding);
@@ -556,9 +915,23 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         Ok(())
     }
 
+    fn plain_assignment_expr(&self, statement: &str) -> Option<(Range<usize>, Option<PlannedStateValue>)> {
+        let prefix = "function gen__entry_statement() { ";
+        let source = format!("{prefix}{statement}; }}");
+        let parsed = parse_function_ast(&source).ok()?;
+        let [SilStatement::Assign { name, name_span, expr, .. }] = parsed.body.as_slice() else {
+            return None;
+        };
+        let parsed_range = (expr.span.start() - prefix.len())..(expr.span.end() - prefix.len());
+        let binding_end = name_span.end().checked_sub(prefix.len())?;
+        let range = complete_assignment_rhs_range(statement, binding_end, parsed_range.clone()).unwrap_or(parsed_range);
+        let expected_state = self.bindings.state_value(name).cloned();
+        Some((range, expected_state))
+    }
+
     fn declare_sil_binding(&mut self, binding: &EntryBinding) {
         let lowered_type = self.lower_local_type(&binding.source_type);
-        self.bindings.declare(&binding.name, BodyBinding::typed(&binding.source_type, lowered_type));
+        self.bindings.declare(&binding.name, BodyBinding::typed(&binding.source_type, lowered_type, self.state_values));
     }
 
     fn validate_unrestricted_output_value(&self, value: &str) -> Result<()> {
@@ -588,8 +961,10 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         }
         self.validate_actor_type_initializer(name, expr, &selector)?;
         self.materialize_selector_template(out, indent, &selector)?;
-        let id =
-            self.bindings.declare(name, BodyBinding::source_typed(format!("{}<{state}>", word::ACTOR_TYPE)).with_selector(selector));
+        let id = self.bindings.declare(
+            name,
+            BodyBinding::source_typed(format!("{}<{state}>", word::ACTOR_TYPE), self.state_values).with_selector(selector),
+        );
         self.bindings.mark_selector_materialized(id);
         Ok(())
     }
@@ -631,6 +1006,20 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         Ok(template_var)
     }
 
+    fn input_reference_for_expr(&self, expr: &str) -> Option<&PlannedEntryInputReference> {
+        let reference = self.input_references.reference(strip_outer_parentheses(expr))?;
+        self.bindings.input_reference_is_visible(reference).then_some(reference)
+    }
+
+    fn input_reference_from_state_call(&self, expr: &str) -> Result<Option<&PlannedEntryInputReference>> {
+        let Some(reference_expr) = parse_state_reference_call(expr).map_err(|err| self.error(err))? else {
+            return Ok(None);
+        };
+        self.input_reference_for_expr(reference_expr).map(Some).ok_or_else(|| {
+            self.error(format!("`{}(...)` requires one visible entry input reference, but `{reference_expr}` is not one", word::STATE))
+        })
+    }
+
     fn materialize_selector_template(&self, out: &mut String, indent: usize, selector: &TemplateSelector) -> Result<()> {
         let selector_name = &selector.name;
         let template_var = hidden_template_selector_template_name(selector_name);
@@ -662,19 +1051,24 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     }
 
     fn lower_become(&mut self, out: &mut String, indent: usize, routes: &[EntryRoute]) -> Result<()> {
+        let entry_model = self.model.entry_model(self.actor, self.entry)?;
         for route in routes {
-            let route = self.route_call(route);
+            let route =
+                entry_model.route(route.id).ok_or_else(|| self.error(format!("missing resolved route {}", route.id.index())))?.clone();
             self.lower_route(out, indent, route)?;
         }
         Ok(())
     }
 
-    fn route_call(&self, route: &EntryRoute) -> RouteCall {
-        RouteCall {
+    fn constructed_route(&self, route: &EntryRoute) -> Result<ConstructedRoute> {
+        let EntrySuccessor::Constructed { actor, state } = route.successor else {
+            return Err(self.error("exact successor `self` is only valid for current emitted outputs"));
+        };
+        Ok(ConstructedRoute {
             output: route.output.clone(),
-            actor: self.entry.body.span_text(route.actor).trim().to_string(),
-            state: self.entry.body.span_text(route.state).trim().to_string(),
-        }
+            actor: self.entry.body.span_text(actor).trim().to_string(),
+            state: self.entry.body.span_text(state).trim().to_string(),
+        })
     }
 
     fn lower_outputs_become(&mut self, out: &mut String, indent: usize, group_name: &str, routes: &[EntryRoute]) -> Result<()> {
@@ -692,7 +1086,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                 return Err(self.error(format!("spawn `{group_name}` outputs are validated more than once")));
             }
         }
-        let routes = routes.iter().map(|route| self.route_call(route)).collect();
+        let routes = routes.iter().map(|route| self.constructed_route(route)).collect::<Result<Vec<_>>>()?;
         self.lower_covenant_outputs_become(out, indent, group, routes)
     }
 
@@ -701,7 +1095,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         out: &mut String,
         indent: usize,
         group: &CovenantGroup<'a>,
-        routes: Vec<RouteCall>,
+        routes: Vec<ConstructedRoute>,
     ) -> Result<()> {
         let outputs_by_name = group.outputs().iter().map(|output| (output.handle(), output)).collect::<BTreeMap<_, _>>();
         let group_name = group.name().expect("current covenant is not lowered through an external output clause");
@@ -750,7 +1144,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         indent: usize,
         context: CovenantOutputContext<'a>,
         target: &ActorTarget,
-        route: RouteCall,
+        route: ConstructedRoute,
     ) -> Result<()> {
         let actor_expr = context.actor();
         let static_target = match context {
@@ -758,13 +1152,6 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                 static_observed_actor_target(self.actor, self.entry, observe, output, self.model)?
             }
             CovenantOutputContext::Genesis { .. } => self.model.resolve_static_actor_target(target),
-        };
-        let local_actor = static_target.and_then(|target| target.in_app_actor()).map(|actor| actor.name.as_str());
-        let transition = match local_actor.filter(|target| *target != self.actor.name) {
-            Some(target) => Some(self.model.route_transition(&self.actor.name, target).ok_or_else(|| {
-                self.error(format!("entry model has no route transition from `{}` to in-app target `{target}`", self.actor.name))
-            })?),
-            None => None,
         };
         let state_name = match (context, static_target) {
             (_, Some(target)) => target.state().to_string(),
@@ -777,27 +1164,14 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
                     .expect("spawn target checked during model validation")
             }
         };
-        let state_ty = if static_target.is_some() {
-            contract_state_type_for_actor(actor_expr, self.actor, self.model)?
-        } else {
-            contract_state_type_for_dynamic_state(&state_name, self.actor, self.model)?
+        let output_target = match static_target {
+            Some(target) => plan_static_actor_output_state(self.actor, target, self.model)?,
+            None => plan_open_output_state(self.actor, &state_name, self.model)?,
         };
-        let state_expr = self.materialize_indexed_expanded_state(out, indent, &route)?;
-        let state_expr = state_expr.as_str();
-        let packs_family = transition.is_some_and(|transition| !transition.families_to_pack.is_empty());
-        let state_arg = if !packs_family && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
-            self.lower_expr(state_expr, Some(&state_ty), indent)?
-        } else {
-            let name = generated_state_name(&route, &state_ty);
-            let lowered = if static_target.is_some() {
-                self.lower_state_expr_for_actor(actor_expr, transition, state_expr, indent)?
-            } else {
-                self.lower_state_expr_for_dynamic_state(&state_name, &state_ty, state_expr, indent)?
-            };
-            push_indent(out, indent);
-            out.push_str(&format!("{state_ty} {name} = {lowered};\n"));
-            name
-        };
+        let state_ty = output_target.physical_type().to_string();
+        let authored = self.require_route_authored_state(out, indent, &route, &output_target)?;
+        let physical =
+            materialize_output_state(&output_target, authored, self.model.state_lowering(&self.actor.name)?, self.model, indent)?;
 
         let observed_spec = match context {
             CovenantOutputContext::Existing { observe, output } => {
@@ -832,6 +1206,29 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             },
         };
 
+        let output_idx = match context {
+            CovenantOutputContext::Existing { .. } => hidden_observed_output_idx_name(context.group_name(), context.output_name()),
+            CovenantOutputContext::Genesis { .. } => hidden_spawn_output_idx_name(context.group_name(), context.output_name()),
+        };
+        let state_binding = generated_state_name(&route, &state_ty);
+        let validation_context = match context {
+            CovenantOutputContext::Existing { observe, output } => OutputValidationContext::Observed {
+                observe,
+                output,
+                static_target,
+                witness: observed_spec.as_ref().expect("observed output has a witness spec"),
+                template,
+            },
+            CovenantOutputContext::Genesis { .. } => OutputValidationContext::Spawned {
+                static_target,
+                witness: spawn_spec.as_ref().expect("spawn output has a witness spec"),
+                template,
+            },
+        };
+        let validation =
+            plan_output_validation(self.actor, self.entry, validation_context, output_idx, physical, state_binding, self.model)?
+                .stabilize(out, indent);
+
         push_indent(out, indent);
         out.push_str(&format!(
             "// :: {} become {}.{} -> {}\n",
@@ -840,76 +1237,7 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             context.output_name(),
             actor_expr
         ));
-        let output_idx = match context {
-            CovenantOutputContext::Existing { .. } => hidden_observed_output_idx_name(context.group_name(), context.output_name()),
-            CovenantOutputContext::Genesis { .. } => hidden_spawn_output_idx_name(context.group_name(), context.output_name()),
-        };
-        if local_actor == Some(self.actor.name.as_str()) {
-            push_generated_call(out, indent, "", "validateOutputState", &[output_idx, state_arg]);
-        } else if let Some(target) = static_target
-            && let Some(input_idx) = template_input_index_for_target(self.actor, self.entry, target, self.model)?
-        {
-            let target_reference = target.artifact_reference();
-            push_generated_call(
-                out,
-                indent,
-                "",
-                "validateOutputStateWithInputTemplate",
-                &[
-                    output_idx,
-                    state_arg,
-                    input_idx,
-                    hidden_witness_prefix_len_name(&target_reference),
-                    hidden_witness_suffix_len_name(&target_reference),
-                    template,
-                ],
-            );
-        } else if let CovenantOutputContext::Existing { observe, output } = context
-            && observed_reuses_input_template(observe, output)
-        {
-            let input =
-                first_observed_input_for_actor(observe, actor_expr).expect("input-template reuse requires a matching observed input");
-            let input_spec = observed_input_spec(self.actor, self.entry, observe, input, self.model)?;
-            push_generated_call(
-                out,
-                indent,
-                "",
-                "validateOutputStateWithInputTemplate",
-                &[
-                    output_idx,
-                    state_arg,
-                    hidden_observed_input_idx_name(context.group_name(), &input.name),
-                    hidden_observed_actor_prefix_len_name(&input_spec),
-                    hidden_observed_actor_suffix_len_name(&input_spec),
-                    template,
-                ],
-            );
-        } else {
-            let target_reference = static_target.map(|target| target.artifact_reference());
-            let prefix = target_reference.as_deref().map_or_else(
-                || match (&observed_spec, &spawn_spec) {
-                    (Some(spec), None) => hidden_observed_actor_prefix_name(spec),
-                    (None, Some(spec)) => hidden_spawn_actor_prefix_name(spec),
-                    _ => unreachable!("output context has exactly one witness spec"),
-                },
-                hidden_witness_prefix_name,
-            );
-            let suffix = target_reference.as_deref().map_or_else(
-                || match (&observed_spec, &spawn_spec) {
-                    (Some(spec), None) => hidden_observed_actor_suffix_name(spec),
-                    (None, Some(spec)) => hidden_spawn_actor_suffix_name(spec),
-                    _ => unreachable!("output context has exactly one witness spec"),
-                },
-                hidden_witness_suffix_name,
-            );
-            push_generated_call(
-                out,
-                indent,
-                "",
-                "validateOutputStateWithTemplate",
-                &[output_idx, state_arg, prefix, suffix, template],
-            );
-        }
+        validation.emit(out, indent);
         Ok(())
     }
 
@@ -935,110 +1263,85 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         Ok(hidden_observed_actor_template_name(spec))
     }
 
-    fn lower_state_expr_for_actor(
-        &self,
-        actor: &str,
-        transition: Option<&CompilerRouteTransition>,
-        expr: &str,
+    /// Produce one stable authored value before crossing the storage boundary.
+    fn require_route_authored_state(
+        &mut self,
+        out: &mut String,
         indent: usize,
-    ) -> Result<String> {
-        let state_name = &self.model.actor(actor)?.state;
-        let state_ty = contract_state_type_for_actor(actor, self.actor, self.model)?;
-        let generated_fields = hidden_template_object_fields_for_actor(self.actor, actor, transition, self.model);
-        let force_materialization = transition.is_some_and(|transition| !transition.families_to_pack.is_empty());
-        self.lower_state_expr_for_layout(state_name, &state_ty, generated_fields, force_materialization, expr, indent)
-    }
-
-    fn lower_state_expr_for_dynamic_state(&self, state_name: &str, state_ty: &str, expr: &str, indent: usize) -> Result<String> {
-        let generated_fields = hidden_template_object_fields(self.actor, RouteFieldKind::None, &[], self.model);
-        self.lower_state_expr_for_layout(state_name, state_ty, generated_fields, false, expr, indent)
-    }
-
-    /// Sil flattens struct arrays, but cannot directly traverse a nested struct
-    /// field through an array index. Bind an indexed expanded value first.
-    fn materialize_indexed_expanded_state(&mut self, out: &mut String, indent: usize, route: &RouteCall) -> Result<String> {
+        route: &ConstructedRoute,
+        target: &OutputStateTarget,
+    ) -> Result<AuthoredStateExpr> {
         let expr = strip_outer_parentheses(route.state.trim());
-        if indexed_root_binding(expr).is_none() {
-            return Ok(expr.to_string());
+        self.reject_legacy_input_state_members(expr)?;
+        let source_state = target.source_identity().to_string();
+        let authored_sil_type = target.authored_sil_type().to_string();
+        let is_source_constructor = split_state_constructor(expr).is_some_and(|(state, _)| state == source_state);
+        let parsed_source = parse_expression_ast(expr)
+            .map_err(|err| self.error(format!("cannot classify route state `{expr}` as an authored value: {err}")))?;
+        let is_matching_input_state =
+            self.input_reference_from_state_call(expr)?.is_some_and(|reference| reference.source_identity() == source_state);
+        let is_planned_authored_value = self
+            .planned_state_value_for_expr(&parsed_source)
+            .is_some_and(|value| value.source().as_str() == source_state && value.shape().is_scalar());
+        if !is_source_constructor && !is_matching_input_state && !is_planned_authored_value {
+            if let SilExprKind::Identifier(name) = &parsed_source.kind
+                && self.bindings.lowered_type(name).is_some()
+            {
+                return Err(self.error(format!(
+                    "route state `{name}` is not an authored `{source_state}` value; construct `{source_state} {{ ... }}` explicitly"
+                )));
+            }
+            return Err(self.error(format!(
+                "route state `{expr}` is not a proven authored `{source_state}` value; bind or construct an authored value explicitly"
+            )));
         }
-        let Some(source_state) = self.bindings.source_type_for_expr(expr) else {
-            return Ok(expr.to_string());
-        };
-        if self.bindings.lowered_type_for_expr(expr).as_deref() != Some(source_state.as_str())
-            || self.model.state(&source_state)?.expansion.is_none()
-        {
-            return Ok(expr.to_string());
+        let authored = target.require_authored_value(|expected| self.lower_expr(expr, Some(expected), indent))?;
+        let lowered = authored.sil().to_string();
+        let parsed = parse_expression_ast(&lowered)
+            .map_err(|err| self.error(format!("lowered route state `{expr}` is not a valid Sil expression: {err}")))?;
+        if let SilExprKind::Identifier(name) = &parsed.kind {
+            if is_matching_input_state
+                || self
+                    .planned_state_value_for_expr(&parsed)
+                    .is_some_and(|value| value.source().as_str() == source_state && value.shape().is_scalar())
+            {
+                return Ok(authored.rebound(name.as_str()));
+            }
+            if self.bindings.lowered_type(name).is_some() {
+                return Err(self.error(format!(
+                    "route state `{name}` is not an authored `{source_state}` value; construct `{source_state} {{ ... }}` explicitly"
+                )));
+            }
         }
-
         let name = format!("{RESERVED_GENERATED_PREFIX}source_{}_{}", to_snake(&route.output), to_snake(&source_state));
-        let lowered = self.lower_expr(expr, Some(&source_state), indent)?;
         push_indent(out, indent);
-        out.push_str(&format!("{source_state} {name} = {lowered};\n"));
-        self.bindings.declare(name.clone(), BodyBinding::typed(source_state.clone(), source_state));
-        Ok(name)
+        out.push_str(&format!("{authored_sil_type} {name} = {lowered};\n"));
+        self.bindings.declare(name.clone(), BodyBinding::typed(source_state, authored_sil_type, self.state_values));
+        Ok(authored.rebound(name))
     }
 
-    fn lower_state_expr_for_layout(
-        &self,
-        state_name: &str,
-        state_ty: &str,
-        generated_fields: Vec<(String, String)>,
-        force_materialization: bool,
-        expr: &str,
-        indent: usize,
-    ) -> Result<String> {
-        let expr = strip_outer_parentheses(expr.trim());
-        if !force_materialization && self.bindings.lowered_type_for_expr(expr).is_some_and(|ty| ty == state_ty) {
-            return self.lower_expr(expr, Some(state_ty), indent);
+    fn lower_route(&mut self, out: &mut String, indent: usize, route: ResolvedRoute) -> Result<()> {
+        if matches!(route.successor, ResolvedSuccessor::ExactSelf) {
+            let output_idx = hidden_output_idx_name(&route.output);
+            push_indent(out, indent);
+            out.push_str(&format!("// :: become {}\n", self.actor.name));
+            preserve_exact_self(out, indent, &output_idx);
+            return Ok(());
         }
-        // A source expression may be caller-controlled. Materialization copies
-        // only authored fields from it; generated fields come from the route context.
-        if let Some((source_state, body)) = split_state_constructor(expr) {
-            if self.model.storage_state_name(source_state)? != self.model.storage_state_name(state_name)? {
-                return Err(ArgentError::new(format!("state `{source_state}` cannot initialize contract state `{state_name}`")));
-            }
-            return self.lower_state_object(source_state, state_ty, body, generated_fields, indent);
-        }
-
-        let source_state = if expr == "self.state" {
-            Some(self.actor.state.clone())
-        } else {
-            self.bindings.source_type_for_expr(expr).filter(|source_ty| self.model.has_state(source_ty))
-        };
-        if let Some(source_state) = source_state {
-            if self.model.storage_state_name(&source_state)? != self.model.storage_state_name(state_name)? {
-                return Err(ArgentError::new(format!("state `{source_state}` cannot initialize contract state `{state_name}`")));
-            }
-            let source_uses_authored_layout = expr != "self.state"
-                && self.bindings.lowered_type_for_expr(expr).as_deref() == Some(source_state.as_str())
-                && self.model.state(&source_state)?.expansion.is_some();
-            let fields = self
-                .model
-                .storage_state(state_name)?
-                .fields
-                .iter()
-                .map(|field| {
-                    let value = if expr == "self.state" { field.name.clone() } else { format!("{expr}.{}", field.name) };
-                    let value = if source_uses_authored_layout {
-                        self.model
-                            .state(&source_state)?
-                            .expansion
-                            .as_ref()
-                            .and_then(|expansion| expansion.digests.iter().find(|digest| digest.field == field.name))
-                            .map_or(Ok(value.clone()), |digest| state_payload_digest_expr(&digest.state, &value, self.model))?
-                    } else {
-                        value
-                    };
-                    Ok((field.name.clone(), value))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            return self.render_state_object(state_name, state_ty, &fields, generated_fields, indent);
-        }
-
-        self.lower_expr(expr, Some(state_ty), indent)
+        let ResolvedSuccessor::Constructed { actor, state } = route.successor else { unreachable!("exact successor returned above") };
+        self.lower_constructed_route(out, indent, ConstructedRoute { output: route.output, actor, state })
     }
 
-    fn lower_route(&mut self, out: &mut String, indent: usize, route: RouteCall) -> Result<()> {
+    fn lower_constructed_route(&mut self, out: &mut String, indent: usize, route: ConstructedRoute) -> Result<()> {
+        let state = strip_outer_parentheses(route.state.trim());
+        let reconstructs_self =
+            self.input_reference_from_state_call(state)?.is_some_and(|reference| reference.reference() == word::SELF);
+        if route.actor == self.actor.name && (state == "self.state" || reconstructs_self) {
+            return Err(self.error(format!(
+                "`{}({state})` reconstructs the current actor state; use `{} <- self` for exact continuation",
+                route.actor, route.output
+            )));
+        }
         if self.bindings.selector(&route.actor).is_some() {
             return self.lower_selector_route(out, indent, route);
         }
@@ -1049,83 +1352,30 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         }
         self.model.actor_state(&route.actor)?;
         let output_idx = hidden_output_idx_name(&route.output);
-        let validation = route_validation_kind(self.actor, &route);
 
-        if validation == RouteValidationKind::ExactScriptPublicKey {
-            push_indent(out, indent);
-            out.push_str(&format!("// :: become {}\n", route.actor));
-            push_generated_binary_require(
-                out,
-                indent,
-                &format!("tx.outputs[{output_idx}].scriptPubKey"),
-                "==",
-                "tx.inputs[this.activeInputIndex].scriptPubKey",
-            );
-            return Ok(());
-        }
-
-        let transition = (route.actor != self.actor.name).then(|| {
-            self.model.route_transition(&self.actor.name, &route.actor).expect("validated non-self route has a planned cut transition")
-        });
-        let state_ty = contract_state_type_for_actor(&route.actor, self.actor, self.model)?;
-        let state_expr = self.materialize_indexed_expanded_state(out, indent, &route)?;
-        let state_expr = state_expr.as_str();
-        let packs_family = transition.is_some_and(|transition| !transition.families_to_pack.is_empty());
-        let state_arg = if !packs_family && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
-            self.lower_expr(state_expr, Some(&state_ty), indent)?
-        } else {
-            let name = generated_state_name(&route, &state_ty);
-            let lowered = self.lower_state_expr_for_actor(&route.actor, transition, state_expr, indent)?;
-            push_indent(out, indent);
-            out.push_str(&format!("{state_ty} {name} = {lowered};\n"));
-            name
-        };
+        let output_target = plan_actor_output_state(self.actor, &route.actor, self.model)?;
+        let state_ty = output_target.physical_type().to_string();
+        let authored = self.require_route_authored_state(out, indent, &route, &output_target)?;
+        let physical =
+            materialize_output_state(&output_target, authored, self.model.state_lowering(&self.actor.name)?, self.model, indent)?;
+        let validation = plan_output_validation(
+            self.actor,
+            self.entry,
+            OutputValidationContext::Actor { target: &route.actor },
+            output_idx,
+            physical,
+            generated_state_name(&route, &state_ty),
+            self.model,
+        )?
+        .stabilize(out, indent);
 
         push_indent(out, indent);
         out.push_str(&format!("// :: become {}\n", route.actor));
-        match validation {
-            RouteValidationKind::ExactScriptPublicKey => unreachable!("exact continuation returned before state lowering"),
-            RouteValidationKind::SameTemplate => {
-                push_generated_call(out, indent, "", "validateOutputState", &[output_idx, state_arg]);
-            }
-            RouteValidationKind::ForeignTemplate => {
-                let template = hidden_template_name(&route.actor);
-                if let Some(input_idx) = template_input_index_for_actor(self.actor, self.entry, &route.actor, self.model)? {
-                    push_generated_call(
-                        out,
-                        indent,
-                        "",
-                        "validateOutputStateWithInputTemplate",
-                        &[
-                            output_idx,
-                            state_arg,
-                            input_idx,
-                            hidden_witness_prefix_len_name(&route.actor),
-                            hidden_witness_suffix_len_name(&route.actor),
-                            template,
-                        ],
-                    );
-                } else {
-                    push_generated_call(
-                        out,
-                        indent,
-                        "",
-                        "validateOutputStateWithTemplate",
-                        &[
-                            output_idx,
-                            state_arg,
-                            hidden_witness_prefix_name(&route.actor),
-                            hidden_witness_suffix_name(&route.actor),
-                            template,
-                        ],
-                    );
-                }
-            }
-        }
+        validation.emit(out, indent);
         Ok(())
     }
 
-    fn lower_selector_route(&mut self, out: &mut String, indent: usize, route: RouteCall) -> Result<()> {
+    fn lower_selector_route(&mut self, out: &mut String, indent: usize, route: ConstructedRoute) -> Result<()> {
         let selector = self
             .bindings
             .selector(&route.actor)
@@ -1133,45 +1383,27 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             .ok_or_else(|| ArgentError::new(format!("unknown actor handle `{}`", route.actor)))?
             .clone();
         let output_idx = hidden_output_idx_name(&route.output);
-        let layout_actor = selector.variants.first().expect("validated actor selector has at least one variant");
-        let transition = self
-            .model
-            .route_transition(&self.actor.name, layout_actor)
-            .expect("validated selector route has a planned cut transition");
-        debug_assert!(
-            selector.variants.iter().skip(1).all(|actor| self.model.route_transition(&self.actor.name, actor) == Some(transition)),
-            "selector variants must use one cut transition"
-        );
-        let state_ty = contract_state_type_for_actor(layout_actor, self.actor, self.model)?;
-        let state_expr = self.materialize_indexed_expanded_state(out, indent, &route)?;
-        let state_expr = state_expr.as_str();
-        let packs_family = !transition.families_to_pack.is_empty();
-        let state_arg = if !packs_family && self.bindings.lowered_type_for_expr(state_expr).is_some_and(|ty| ty == state_ty) {
-            self.lower_expr(state_expr, Some(&state_ty), indent)?
-        } else {
-            let name = generated_state_name(&route, &state_ty);
-            let lowered = self.lower_state_expr_for_actor(layout_actor, Some(transition), state_expr, indent)?;
-            push_indent(out, indent);
-            out.push_str(&format!("{state_ty} {name} = {lowered};\n"));
-            name
-        };
+        let output_target = plan_selector_output_state(self.actor, &selector, self.model)?;
+        let state_ty = output_target.physical_type().to_string();
+        let authored = self.require_route_authored_state(out, indent, &route, &output_target)?;
+        let physical =
+            materialize_output_state(&output_target, authored, self.model.state_lowering(&self.actor.name)?, self.model, indent)?;
 
-        let template = self.ensure_selector_template(out, indent, &route.actor)?;
+        let template = hidden_template_selector_template_name(&selector.name);
+        let validation = plan_output_validation(
+            self.actor,
+            self.entry,
+            OutputValidationContext::Selector { selector: &route.actor, template },
+            output_idx,
+            physical,
+            generated_state_name(&route, &state_ty),
+            self.model,
+        )?
+        .stabilize(out, indent);
+        self.ensure_selector_template(out, indent, &route.actor)?;
         push_indent(out, indent);
         out.push_str(&format!("// :: become {}\n", route.actor));
-        push_generated_call(
-            out,
-            indent,
-            "",
-            "validateOutputStateWithTemplate",
-            &[
-                output_idx,
-                state_arg,
-                hidden_template_selector_prefix_name(&route.actor),
-                hidden_template_selector_suffix_name(&route.actor),
-                template,
-            ],
-        );
+        validation.emit(out, indent);
         Ok(())
     }
 
@@ -1190,68 +1422,284 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
 
     fn lower_expr(&self, expr: &str, expected_ty: Option<&str>, indent: usize) -> Result<String> {
         let expr = expr.trim();
-        if expr == "self.state" {
-            let ty = expected_ty.ok_or_else(|| ArgentError::new("`self.state` requires a target state type during lowering"))?;
-            return self.lower_self_state_expr(ty, indent);
+        self.reject_legacy_input_state_members(expr)?;
+        self.reject_physical_state_constructors(expr)?;
+        let expected_state_value = expected_ty.and_then(|ty| self.state_values.plan_sil_type(ty));
+        if let Some(projection) = self.bindings.active_field_projection(expr) {
+            if let Some(expected) = expected_state_value.as_ref()
+                && let Some(actual) = self.bindings.state_value(expr)
+                && actual.is_proven_incompatible_with(expected)
+            {
+                return Err(self.state_value_mismatch(actual, expected));
+            }
+            return self.active_reference.project_field(&projection.field, indent).map_err(|err| self.error(err.to_string()));
         }
-        if let Some(value) = parse_digest_call(expr) {
-            return self.lower_digest_expr(value);
+        if let Some(expected) = expected_state_value.as_ref().filter(|value| !value.shape().is_scalar()) {
+            return self.lower_authored_state_array_expr(expr, expected, indent);
+        }
+        if let Some(value) = parse_digest_call(expr).map_err(|err| self.error(err))? {
+            return self.lower_digest_expr(value, indent);
+        }
+        if let Some(reference) = self.input_reference_from_state_call(expr)? {
+            let authored = reference.complete_authored_state(indent).map_err(|err| self.error(err.to_string()))?;
+            if let Some(expected) = expected_state_value.as_ref()
+                && (expected.source().as_str() != authored.source().as_str() || !expected.shape().is_scalar())
+            {
+                return Err(self.error(format!(
+                    "`{}({})` has authored type `{}`, not `{}`",
+                    word::STATE,
+                    reference.reference(),
+                    authored.source().as_str(),
+                    self.state_values.sil_type(expected)
+                )));
+            }
+            return Ok(authored.into_sil());
         }
         if let Some((state_name, body)) = split_state_constructor(expr) {
-            return self.lower_state_constructor(state_name, expected_ty.unwrap_or(state_name), body, indent);
+            if let Some(expected) = expected_state_value.as_ref()
+                && expected.shape().is_scalar()
+                && state_name != expected.source().as_str()
+            {
+                return Err(self
+                    .error(format!("state constructor `{state_name}` cannot initialize authored `{}`", expected.source().as_str())));
+            }
+            return self.lower_state_constructor(state_name, body, indent);
         }
-        self.lower_refs(expr)
+        if let Some(reference) = self.input_reference_for_expr(expr) {
+            return Err(self.error(format!(
+                "input reference `{expr}` is not an authored state value; use `{}({})` to reconstruct `{}`",
+                word::STATE,
+                reference.reference(),
+                reference.source_identity()
+            )));
+        }
+        // Normalize Argent-only syntax before asking Sil to classify calls and
+        // their exact argument spans.
+        let expr = lower_co_spent_calls(expr, &self.bindings)?;
+        let expr = lower_actor_enum_literals(&expr, self.model)?;
+        if let Some(expected) = expected_state_value.as_ref() {
+            let parsed = parse_expression_ast(&expr).ok();
+            if let Some(actual) = parsed.as_ref().and_then(|expr| self.planned_state_value_for_expr(expr))
+                && actual.is_proven_incompatible_with(expected)
+            {
+                return Err(self.state_value_mismatch(&actual, expected));
+            }
+            if let Some(parsed) = parsed.as_ref()
+                && matches!(parsed.kind, SilExprKind::ArrayIndex { .. })
+            {
+                return self.lower_authored_state_array_index(&expr, parsed, expected, indent);
+            }
+        }
+        let expr = self.lower_nested_state_values(&expr, indent)?;
+        let expr = lower_expression_state_types(&expr, self.state_values).map_err(|err| self.error(err.to_string()))?;
+        self.lower_refs(&expr, indent)
     }
 
-    fn lower_self_state_expr(&self, ty: &str, indent: usize) -> Result<String> {
-        let state_name = if ty == "State" { &self.actor.state } else { ty };
-        let fields = self
-            .model
-            .storage_state(state_name)?
-            .fields
-            .iter()
-            .map(|field| (field.name.clone(), field.name.clone()))
-            .collect::<Vec<_>>();
-        self.render_state_object_for_state(state_name, ty, &fields, indent)
+    fn reject_physical_state_constructors(&self, source: &str) -> Result<()> {
+        if contains_physical_state_constructor(source) {
+            return Err(self.error("physical `State` is compiler-owned and cannot be constructed in Argent source"));
+        }
+        Ok(())
     }
 
-    fn lower_state_constructor(&self, state_name: &str, sil_type: &str, body: &str, indent: usize) -> Result<String> {
-        self.model.state(state_name)?;
-        self.lower_state_object_for_state(state_name, sil_type, body, indent)
-    }
-
-    fn lower_digest_expr(&self, value: &str) -> Result<String> {
-        let value = value.trim();
-        let state_name = self.bindings.source_type(value).ok_or_else(|| {
-            ArgentError::new(format!("`digest(...)` requires a named state value, but `{value}` has no known source type"))
+    fn lower_authored_state_array_expr(&self, expr: &str, expected: &PlannedStateValue, indent: usize) -> Result<String> {
+        debug_assert!(!expected.shape().is_scalar());
+        let expr = lower_co_spent_calls(expr, &self.bindings)?;
+        let expr = lower_actor_enum_literals(&expr, self.model)?;
+        let mut parsed = parse_expression_ast(&expr).map_err(|err| {
+            self.error(format!(
+                "cannot classify authored state-array expression `{expr}` as `{}`: {err}",
+                self.state_values.sil_type(expected)
+            ))
         })?;
+        let actual = self.planned_state_value_for_expr(&parsed).ok_or_else(|| {
+            self.error(format!(
+                "unsupported authored state-array expression `{expr}` for `{}`; use a named array, a state-array function result, a typed array literal, or `append(...)`",
+                self.state_values.sil_type(expected)
+            ))
+        })?;
+        if actual.is_proven_incompatible_with(expected) {
+            return Err(self.state_value_mismatch(&actual, expected));
+        }
+
+        if !matches!(
+            &parsed.kind,
+            SilExprKind::Array { .. } | SilExprKind::Append { .. } | SilExprKind::Identifier(_) | SilExprKind::Call { .. }
+        ) {
+            return Err(self.error(format!(
+                "unsupported authored state-array expression shape in `{expr}` for `{}`",
+                self.state_values.sil_type(expected)
+            )));
+        }
+        let mut collector = StateValueSiteCollector { state_values: self.state_values, bindings: &self.bindings, sites: Vec::new() };
+        collector.visit_expr(&mut parsed);
+        let lowered = self.lower_planned_state_value_sites(&expr, collector.sites, indent)?;
+        let lowered = lower_expression_state_types(&lowered, self.state_values).map_err(|err| self.error(err.to_string()))?;
+        self.lower_refs(&lowered, indent)
+    }
+
+    fn lower_authored_state_array_index(
+        &self,
+        expr: &str,
+        parsed: &SilExpr<'_>,
+        expected: &PlannedStateValue,
+        indent: usize,
+    ) -> Result<String> {
+        debug_assert!(expected.shape().is_scalar());
+        let SilExprKind::ArrayIndex { source, index } = &parsed.kind else {
+            unreachable!("array index lowering requires an array index expression");
+        };
+        let source_plan = self
+            .planned_state_value_for_expr(source)
+            .ok_or_else(|| self.error(format!("cannot classify the authored state-array source indexed by `{expr}`")))?;
+        let Some(element) = source_plan.element() else {
+            return Err(self.error(format!("state value `{}` is scalar and cannot be indexed", source_plan.source().as_str())));
+        };
+        if element.is_proven_incompatible_with(expected) {
+            return Err(self.state_value_mismatch(&element, expected));
+        }
+
+        let source_type = self.state_values.sil_type(&source_plan);
+        let source_span = source.span.start()..source.span.end();
+        let index_span = index.span.start()..index.span.end();
+        let replacements = vec![
+            (source_span.clone(), self.lower_expr(&expr[source_span], Some(&source_type), indent)?),
+            (index_span.clone(), self.lower_expr(&expr[index_span], None, indent)?),
+        ];
+        let lowered = apply_expr_replacements(expr, replacements);
+        self.lower_refs(&lowered, indent)
+    }
+
+    fn planned_state_value_for_expr(&self, expr: &SilExpr<'_>) -> Option<PlannedStateValue> {
+        planned_state_value_for_expr(expr, self.state_values, &self.bindings)
+    }
+
+    fn state_value_mismatch(&self, actual: &PlannedStateValue, expected: &PlannedStateValue) -> ArgentError {
+        self.error(format!(
+            "authored state value has type `{}`, not `{}`",
+            self.state_values.sil_type(actual),
+            self.state_values.sil_type(expected)
+        ))
+    }
+
+    fn lower_nested_state_values(&self, expr: &str, indent: usize) -> Result<String> {
+        if !self.contains_state_value_context(expr)? {
+            return Ok(expr.to_string());
+        }
+        let mut collector = StateValueSiteCollector { state_values: self.state_values, bindings: &self.bindings, sites: Vec::new() };
+        if let Ok(mut parsed) = parse_expression_ast(expr) {
+            collector.visit_expr(&mut parsed);
+        } else {
+            let prefix = "function gen__entry_statement() { ";
+            let source = format!("{prefix}{expr}; }}");
+            let mut function = parse_function_ast(&source).map_err(|err| {
+                self.error(format!("cannot classify state-valued function arguments in expression or statement `{expr}`: {err}"))
+            })?;
+            visit_function_mut(&mut collector, &mut function);
+            for site in &mut collector.sites {
+                site.span = (site.span.start - prefix.len())..(site.span.end - prefix.len());
+            }
+        }
+        self.lower_planned_state_value_sites(expr, collector.sites, indent)
+    }
+
+    fn lower_planned_state_value_sites(&self, expr: &str, mut sites: Vec<PlannedStateValueSite>, indent: usize) -> Result<String> {
+        sites.sort_by(|left, right| left.span.start.cmp(&right.span.start).then_with(|| right.span.end.cmp(&left.span.end)));
+
+        let mut outermost: Vec<PlannedStateValueSite> = Vec::new();
+        for site in sites {
+            if outermost.iter().any(|outer| outer.span.start <= site.span.start && site.span.end <= outer.span.end) {
+                continue;
+            }
+            outermost.push(site);
+        }
+
+        let mut out = expr.to_string();
+        for site in outermost.into_iter().rev() {
+            let source = &expr[site.span.clone()];
+            let expected_type = self.state_values.sil_type(&site.expected);
+            let lowered = self.lower_expr(source, Some(&expected_type), indent)?;
+            out.replace_range(site.span, &lowered);
+        }
+        Ok(out)
+    }
+
+    fn contains_state_value_context(&self, expr: &str) -> Result<bool> {
+        let tokens =
+            lex(expr).map_err(|err| self.error(format!("cannot inspect function calls in expression `{expr}`: {}", err.message)))?;
+        Ok(tokens.windows(2).any(|tokens| {
+            matches!(tokens, [Token { kind: TokenKind::Symbol('.'), .. }, Token { kind: TokenKind::Ident(name), .. }] if name == "append")
+                || matches!(tokens, [Token { kind: TokenKind::Ident(name), .. }, Token { kind: TokenKind::Symbol('('), .. }]
+                    if self.state_values.signature(name).is_some_and(|signature| signature.has_state_param()))
+                || matches!(tokens, [Token { kind: TokenKind::Ident(name), .. }, Token { kind: TokenKind::Symbol('['), .. }]
+                    if self.state_values.plan_sil_type(name).is_some())
+        }))
+    }
+
+    fn lower_state_constructor(&self, state_name: &str, body: &str, indent: usize) -> Result<String> {
         self.model.state(state_name)?;
-        state_payload_digest_expr(state_name, value, self.model)
+        let sil_type = self
+            .state_values
+            .authored_sil_type_for_name(state_name)
+            .ok_or_else(|| self.error(format!("state `{state_name}` has no contract-local authored representation")))?;
+        self.lower_authored_state_object(state_name, sil_type, body, indent)
+    }
+
+    fn lower_digest_expr(&self, value: &str, indent: usize) -> Result<String> {
+        let value = value.trim();
+        let lowering = self.model.state_lowering(&self.actor.name)?;
+        if let Some(reference) = self.input_reference_from_state_call(value)? {
+            return reference.authored_payload_digest(lowering, self.model).map_err(|err| self.error(err.to_string()));
+        }
+        if let Some(reference) = self.input_reference_for_expr(value) {
+            return Err(self.error(format!(
+                "`{}(...)` requires an authored state value; use `{}({}({}))` for input reference `{}`",
+                word::DIGEST,
+                word::DIGEST,
+                word::STATE,
+                reference.reference(),
+                reference.reference()
+            )));
+        }
+        let parsed = parse_expression_ast(value)
+            .map_err(|err| self.error(format!("cannot classify authored state digest value `{value}`: {err}")))?;
+        let planned = self.planned_state_value_for_expr(&parsed).ok_or_else(|| {
+            self.error(format!(
+                "`{}(...)` requires a proven authored state value, but `{value}` has no known source type",
+                word::DIGEST
+            ))
+        })?;
+        if !planned.shape().is_scalar() {
+            return Err(self.error(format!(
+                "`{}(...)` requires one scalar authored state value, but `{value}` has type `{}`",
+                word::DIGEST,
+                self.state_values.sil_type(&planned)
+            )));
+        }
+        self.model.state(planned.source().as_str())?;
+        let expected = self.state_values.sil_type(&planned);
+        let lowered = self.lower_expr(value, Some(&expected), indent)?;
+        if matches!(parsed.kind, SilExprKind::Identifier(_)) {
+            return authored_state_payload_digest_expr(planned.source(), &lowered, lowering, self.model);
+        }
+        self.digest_helpers.borrow_mut().insert(planned.source().clone());
+        Ok(format!("{}({lowered})", self.state_values.digest_helper_name(planned.source())))
     }
 
     fn lower_typed_local_initializer(&self, source_ty: &str, lowered_ty: &str, expr: &str, indent: usize) -> Result<String> {
+        if source_ty == "State" && split_state_object_literal(expr).is_some() {
+            return Err(self.error("physical `State` is compiler-owned and cannot be constructed in Argent source"));
+        }
         if self.model.actor_enums.contains_key(source_ty) {
             return self.lower_actor_enum_initializer(source_ty, expr, indent);
         }
-        if let Some(state_name) = self.source_state_for_local_type(source_ty)
+        if self.model.has_state(source_ty)
             && let Some(body) = split_state_object_literal(expr)
         {
-            if lowered_ty == source_ty && self.model.state(&state_name)?.expansion.is_some() {
-                return self.lower_authored_state_object(&state_name, lowered_ty, body, indent);
-            }
-            return self.lower_state_object_for_state(&state_name, lowered_ty, body, indent);
+            return self.lower_authored_state_object(source_ty, lowered_ty, body, indent);
         }
-        if self.model.has_state(source_ty) && self.bindings.lowered_type_for_expr(expr.trim()).is_none_or(|ty| ty != lowered_ty) {
-            let lowered_expr = self.lower_expr(expr, None, indent)?;
-            let fields = self
-                .model
-                .storage_state(source_ty)?
-                .fields
-                .iter()
-                .map(|field| (field.name.clone(), format!("{lowered_expr}.{}", field.name)))
-                .collect::<Vec<_>>();
-            let generated_fields = hidden_template_object_fields_for_state(self.actor, source_ty, self.model);
-            return self.render_state_object(source_ty, lowered_ty, &fields, generated_fields, indent);
+        if self.model.has_state(source_ty) {
+            return self.lower_expr(expr, Some(source_ty), indent);
         }
         self.lower_expr(expr, Some(lowered_ty), indent)
     }
@@ -1283,37 +1731,54 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         self.lower_expr(expr, Some("int"), indent)
     }
 
-    fn lower_state_object_for_state(&self, state_name: &str, sil_type: &str, body: &str, indent: usize) -> Result<String> {
-        self.model.state(state_name)?;
-        let generated_fields = hidden_template_object_fields_for_state(self.actor, state_name, self.model);
-        self.lower_state_object(state_name, sil_type, body, generated_fields, indent)
-    }
-
     fn lower_authored_state_object(&self, state_name: &str, sil_type: &str, body: &str, indent: usize) -> Result<String> {
-        let fields = parse_state_fields(body)
-            .into_iter()
-            .map(|(name, expr)| self.lower_expr(&expr, None, indent + 4).map(|lowered| (name, lowered)))
-            .collect::<Result<Vec<_>>>()?;
-        self.render_state_object(state_name, sil_type, &fields, Vec::new(), indent)
-    }
-
-    fn lower_state_object(
-        &self,
-        state_name: &str,
-        sil_type: &str,
-        body: &str,
-        generated_fields: Vec<(String, String)>,
-        indent: usize,
-    ) -> Result<String> {
-        let raw_fields = parse_state_fields(body);
-        if self.model.state(state_name)?.expansion.is_some() {
-            return self.render_expanded_state_object(state_name, sil_type, &raw_fields, generated_fields, indent);
+        if let Some(expansion) = self.model.state(state_name)?.expansion.as_ref() {
+            let fields = parse_state_fields(body)?;
+            let mut pending = fields.iter().cloned().collect::<BTreeMap<_, _>>();
+            if pending.len() != fields.len() {
+                return Err(ArgentError::new(format!("state `{state_name}` constructor contains duplicate fields")));
+            }
+            let mut lowered_fields = Vec::new();
+            for field in &self.model.storage_state(state_name)?.fields {
+                let Some(raw_expr) = pending.remove(&field.name) else {
+                    if field.virtual_slot {
+                        continue;
+                    }
+                    return Err(ArgentError::new(format!("state `{state_name}` constructor is missing field `{}`", field.name)));
+                };
+                let lowered = if let Some(digest) = expansion.digests.iter().find(|digest| digest.field == field.name) {
+                    if split_state_object_literal(&raw_expr).is_some() {
+                        return Err(ArgentError::new(format!(
+                            "state `{state_name}` constructor slot `{}` must use `{} {{ ... }}`",
+                            digest.field, digest.state
+                        )));
+                    }
+                    self.lower_expr(&raw_expr, Some(&digest.state), indent + 4)?
+                } else {
+                    let expected = self.state_values.plan_type_ref(&field.ty).map(|value| self.state_values.sil_type(&value));
+                    self.lower_expr(&raw_expr, expected.as_deref(), indent + 4)?
+                };
+                lowered_fields.push((field.name.clone(), lowered));
+            }
+            if let Some(extra) = pending.keys().next() {
+                return Err(ArgentError::new(format!("state `{state_name}` constructor has unknown field `{extra}`")));
+            }
+            return self.render_state_object(state_name, sil_type, &lowered_fields, indent);
         }
-        let fields = raw_fields
+        let state = self.model.storage_state(state_name)?;
+        let fields = parse_state_fields(body)?
             .into_iter()
-            .map(|(name, expr)| self.lower_expr(&expr, None, indent + 4).map(|lowered| (name, lowered)))
+            .map(|(name, expr)| {
+                let expected = state
+                    .fields
+                    .iter()
+                    .find(|field| field.name == name)
+                    .and_then(|field| self.state_values.plan_type_ref(&field.ty))
+                    .map(|value| self.state_values.sil_type(&value));
+                self.lower_expr(&expr, expected.as_deref(), indent + 4).map(|lowered| (name, lowered))
+            })
             .collect::<Result<Vec<_>>>()?;
-        self.render_state_object(state_name, sil_type, &fields, generated_fields, indent)
+        self.render_state_object(state_name, sil_type, &fields, indent)
     }
 
     fn lower_local_type(&self, source_ty: &str) -> String {
@@ -1323,44 +1788,10 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         if source_ty == word::COVENANT_ID {
             return "byte[32]".to_string();
         }
-        let same_storage = match (self.model.storage_state_name(&self.actor.state), self.model.storage_state_name(source_ty)) {
-            (Ok(current_storage), Ok(source_storage)) => current_storage == source_storage,
-            _ => false,
-        };
-        if source_ty == self.actor.state || same_storage { "State".to_string() } else { source_ty.to_string() }
+        self.state_values.sil_type_for_sil_type(source_ty).unwrap_or_else(|| source_ty.to_string())
     }
 
-    fn source_state_for_local_type(&self, source_ty: &str) -> Option<String> {
-        if source_ty == "State" {
-            Some(self.actor.state.clone())
-        } else if self.model.has_state(source_ty) {
-            Some(source_ty.to_string())
-        } else {
-            None
-        }
-    }
-
-    fn render_state_object_for_state(
-        &self,
-        state_name: &str,
-        sil_type: &str,
-        fields: &[(String, String)],
-        indent: usize,
-    ) -> Result<String> {
-        let generated_fields = hidden_template_object_fields_for_state(self.actor, state_name, self.model);
-        self.render_state_object(state_name, sil_type, fields, generated_fields, indent)
-    }
-
-    /// `state_name` selects the authored/storage fields, while `sil_type`
-    /// names the concrete struct that contains those fields in generated Sil.
-    fn render_state_object(
-        &self,
-        state_name: &str,
-        sil_type: &str,
-        fields: &[(String, String)],
-        generated_fields: Vec<(String, String)>,
-        indent: usize,
-    ) -> Result<String> {
+    fn render_state_object(&self, state_name: &str, sil_type: &str, fields: &[(String, String)], indent: usize) -> Result<String> {
         let field_indent = " ".repeat(indent + 4);
         let close_indent = " ".repeat(indent);
         let mut pending = fields.iter().cloned().collect::<BTreeMap<_, _>>();
@@ -1368,12 +1799,6 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
             return Err(ArgentError::new(format!("state `{state_name}` constructor contains duplicate fields")));
         }
         let mut out = format!("{sil_type} {{\n");
-        if !generated_fields.is_empty() {
-            out.push_str(&format!("{field_indent}// :: generated fields\n"));
-        }
-        for (field, expr) in generated_fields {
-            out.push_str(&format!("{field_indent}{field}: {expr},\n"));
-        }
         let state = self.model.storage_state(state_name)?;
         if !state.fields.is_empty() {
             out.push_str(&format!("{field_indent}// :: user declared fields\n"));
@@ -1410,98 +1835,84 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
         }
     }
 
-    fn render_expanded_state_object(
-        &self,
-        state_name: &str,
-        sil_type: &str,
-        fields: &[(String, String)],
-        generated_fields: Vec<(String, String)>,
-        indent: usize,
-    ) -> Result<String> {
-        let state = self.model.state(state_name)?;
-        let expansion = state.expansion.as_ref().ok_or_else(|| ArgentError::new(format!("state `{state_name}` is not expanded")))?;
-        let storage_state = self.model.storage_state(state_name)?;
-        let mut pending = fields.iter().cloned().collect::<BTreeMap<_, _>>();
-        if pending.len() != fields.len() {
-            return Err(ArgentError::new(format!("state `{state_name}` constructor contains duplicate fields")));
-        }
-        let field_indent = " ".repeat(indent + 4);
-        let close_indent = " ".repeat(indent);
-        let mut out = format!("{sil_type} {{\n");
-        if !generated_fields.is_empty() {
-            out.push_str(&format!("{field_indent}// :: generated fields\n"));
-        }
-        for (field, expr) in generated_fields {
-            out.push_str(&format!("{field_indent}{field}: {expr},\n"));
-        }
-        if !storage_state.fields.is_empty() {
-            out.push_str(&format!("{field_indent}// :: user declared fields\n"));
-        }
-
-        for field in &storage_state.fields {
-            if let Some(digest) = expansion.digests.iter().find(|digest| digest.field == field.name) {
-                let expr = pending.remove(&digest.field).ok_or_else(|| {
-                    ArgentError::new(format!("state `{state_name}` constructor is missing expanded slot `{}`", digest.field))
-                })?;
-                if expr.trim() == digest.field {
-                    out.push_str(&format!("{field_indent}{}: {},\n", field.name, digest.field));
-                    continue;
-                }
-                let (slot_state, slot_body) = split_state_constructor(&expr).ok_or_else(|| {
-                    ArgentError::new(format!(
-                        "state `{state_name}` constructor slot `{}` must use `{} {{ ... }}`",
-                        digest.field, digest.state
-                    ))
-                })?;
-                if slot_state != digest.state {
-                    return Err(ArgentError::new(format!(
-                        "state `{state_name}` constructor slot `{}` expects `{}`, got `{slot_state}`",
-                        digest.field, digest.state
-                    )));
-                }
-                let mut slot_fields = parse_state_fields(slot_body).into_iter().collect::<BTreeMap<_, _>>();
-                let payload = state_packed_bytes_expr(&digest.state, self.model, |memory_field, _, _| {
-                    let expr = slot_fields.remove(&memory_field.name).ok_or_else(|| {
-                        ArgentError::new(format!(
-                            "state `{state_name}` constructor slot `{}` is missing field `{}`",
-                            digest.field, memory_field.name
-                        ))
-                    })?;
-                    let lowered = self.lower_expr(&expr, None, indent + 4)?;
-                    packed_field_expr(&memory_field.ty, &lowered)
-                })?;
-                if let Some(extra) = slot_fields.keys().next() {
-                    return Err(ArgentError::new(format!(
-                        "state `{state_name}` constructor slot `{}` has unknown field `{extra}`",
-                        digest.field
-                    )));
-                }
-                out.push_str(&format!("{field_indent}{}: blake3(byte[]({payload})),\n", field.name));
-            } else if field.virtual_slot {
-                let raw_expr = pending.remove(&field.name).unwrap_or_else(|| field.name.clone());
-                let expr = self.lower_expr(&raw_expr, None, indent + 4)?;
-                out.push_str(&format!("{field_indent}{}: {expr},\n", field.name));
-            } else {
-                let raw_expr = pending
-                    .remove(&field.name)
-                    .ok_or_else(|| ArgentError::new(format!("state `{state_name}` constructor is missing field `{}`", field.name)))?;
-                let expr = self.lower_expr(&raw_expr, None, indent + 4)?;
-                out.push_str(&format!("{field_indent}{}: {expr},\n", field.name));
+    fn lower_refs(&self, expr: &str, indent: usize) -> Result<String> {
+        self.reject_legacy_input_state_members(expr)?;
+        let expr = self.lower_digest_calls(expr, indent)?;
+        let expr = self.lower_input_state_calls(&expr, indent)?;
+        let mut replacements = self.fixed_ref_replacements.clone();
+        replacements.extend(self.active_reference.operation_replacements(indent)?);
+        for reference in self.input_references.external_references() {
+            if !self.bindings.input_reference_is_visible(reference) {
+                continue;
             }
+            replacements.extend(reference.operation_replacements(indent)?);
         }
-        if let Some(extra) = pending.keys().next() {
-            return Err(ArgentError::new(format!("state `{state_name}` constructor has unknown field `{extra}`")));
-        }
-        out.push_str(&close_indent);
-        out.push('}');
-        Ok(out)
+        RefReplacements::new(replacements)?.rewrite(&expr)
     }
 
-    fn lower_refs(&self, expr: &str) -> Result<String> {
-        // Lower source-level co-spend calls before general reference rewrites.
-        let out = lower_co_spent_calls(expr, &self.bindings)?;
-        let out = self.ref_replacements.rewrite(&out)?;
-        lower_actor_enum_literals(&out, self.model)
+    fn reject_legacy_input_state_members(&self, expr: &str) -> Result<()> {
+        self.active_reference.reject_unavailable_field_refs(expr).map_err(|err| self.error(err.to_string()))?;
+        for reference in self.input_references.external_references() {
+            if self.bindings.input_reference_is_visible(reference) {
+                reference.reject_unavailable_field_refs(expr).map_err(|err| self.error(err.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn lower_digest_calls(&self, expr: &str, indent: usize) -> Result<String> {
+        if !contains_call_named(expr, word::DIGEST)? {
+            return Ok(expr.to_string());
+        }
+        let mut lowered = expr.to_string();
+        for site in self.named_call_sites(expr, word::DIGEST)?.into_iter().rev() {
+            let call = &expr[site.clone()];
+            let value = parse_digest_call(call)
+                .map_err(|err| self.error(err))?
+                .ok_or_else(|| self.error(format!("cannot classify `{}` call `{call}`", word::DIGEST)))?;
+            lowered.replace_range(site, &self.lower_digest_expr(value, indent)?);
+        }
+        Ok(lowered)
+    }
+
+    fn lower_input_state_calls(&self, expr: &str, indent: usize) -> Result<String> {
+        if !contains_call_named(expr, word::STATE)? {
+            return Ok(expr.to_string());
+        }
+        let mut lowered = expr.to_string();
+        for site in self.named_call_sites(expr, word::STATE)?.into_iter().rev() {
+            let call = &expr[site.clone()];
+            let reference = self.input_reference_from_state_call(call)?.expect("collector found a state call");
+            let authored = reference.complete_authored_state(indent).map_err(|err| self.error(err.to_string()))?;
+            lowered.replace_range(site, authored.sil());
+        }
+        Ok(lowered)
+    }
+
+    fn named_call_sites(&self, expr: &str, name: &str) -> Result<Vec<Range<usize>>> {
+        let mut collector = NamedCallSiteCollector { name, sites: Vec::new() };
+        if let Ok(mut parsed) = parse_expression_ast(expr) {
+            collector.visit_expr(&mut parsed);
+        } else {
+            let prefix = "function gen__entry_named_calls() { ";
+            let source = format!("{prefix}{expr}; }}");
+            let mut function =
+                parse_function_ast(&source).map_err(|err| self.error(format!("cannot classify `{name}` calls in `{expr}`: {err}")))?;
+            visit_function_mut(&mut collector, &mut function);
+            for site in &mut collector.sites {
+                site.start -= prefix.len();
+                site.end -= prefix.len();
+            }
+        }
+        collector.sites.sort_by_key(|site| site.start);
+        let mut outermost = Vec::<Range<usize>>::new();
+        for site in collector.sites {
+            if outermost.iter().any(|outer| outer.start <= site.start && site.end <= outer.end) {
+                continue;
+            }
+            outermost.push(site);
+        }
+        Ok(outermost)
     }
 
     fn error(&self, message: impl Into<String>) -> ArgentError {
@@ -1515,17 +1926,112 @@ impl<'a, 'm> BodyLowerer<'a, 'm> {
     }
 }
 
+/// Temporary compatibility patch for incomplete Sil AST expression spans.
+///
+/// Sil currently gives a parenthesized root expression its inner semantic span,
+/// which can omit grouping delimiters.
+///
+/// TODO: Remove this range recovery when the Sil AST exposes the complete root
+/// expression span, including grouping delimiters.
+fn complete_assignment_rhs_range(statement: &str, binding_end: usize, parsed_range: Range<usize>) -> Option<Range<usize>> {
+    let before = statement.get(binding_end..parsed_range.start)?;
+    let before_tokens = lex(before).ok()?;
+    let equals = before_tokens.iter().position(|token| matches!(token.kind, TokenKind::Symbol('=')))?;
+    let start = before_tokens[equals + 1..]
+        .iter()
+        .find(|token| !matches!(token.kind, TokenKind::Eof))
+        .map_or(parsed_range.start, |token| binding_end + token.span.start);
+
+    let after = statement.get(parsed_range.end..)?;
+    let end = lex(after)
+        .ok()?
+        .iter()
+        .rfind(|token| !matches!(token.kind, TokenKind::Eof))
+        .map_or(parsed_range.end, |token| parsed_range.end + token.span.end);
+    let range = start..end;
+    parse_expression_ast(statement.get(range.clone())?).ok().map(|_| range)
+}
+
+fn binds_reserved_entry_name<'s, 'r>(
+    statement: &'s EntryStatement,
+    reserved_names: &'r ReservedEntryNames,
+) -> Option<(&'s str, &'r ReservedEntryNameRole)> {
+    let bindings = match statement {
+        EntryStatement::Local { declaration, .. } => std::slice::from_ref(&declaration.binding),
+        EntryStatement::For { binding, .. } => std::slice::from_ref(binding),
+        EntryStatement::Plain { bindings, .. } => bindings,
+        EntryStatement::If { .. }
+        | EntryStatement::Block { .. }
+        | EntryStatement::Become { .. }
+        | EntryStatement::ValidateOutputsBecome { .. } => return None,
+    };
+    bindings.iter().find_map(|binding| reserved_names.role_for_body_binding(&binding.name).map(|role| (binding.name.as_str(), role)))
+}
+
+fn contains_physical_state_constructor(source: &str) -> bool {
+    let mut detector = PhysicalStateConstructorDetector::default();
+    if let Ok(mut expr) = parse_expression_ast(source) {
+        detector.visit_expr(&mut expr);
+        return detector.found;
+    }
+    let wrapped = format!("function gen__physical_state_constructor_check() {{ {source}; }}");
+    if let Ok(mut function) = parse_function_ast(&wrapped) {
+        visit_function_mut(&mut detector, &mut function);
+    }
+    detector.found
+}
+
+pub(in crate::compiler::codegen) fn reject_function_physical_state_constructors(
+    function_name: &str,
+    body: &str,
+    context: &str,
+) -> Result<()> {
+    let source = format!("function gen__physical_state_constructor_check() {{ {body} }}");
+    let Ok(mut function) = parse_function_ast(&source) else {
+        return Ok(());
+    };
+    let mut detector = PhysicalStateConstructorDetector::default();
+    visit_function_mut(&mut detector, &mut function);
+    if detector.found {
+        return Err(ArgentError::new(format!(
+            "physical `State` is compiler-owned and cannot be constructed in Argent {context} function `{function_name}`"
+        )));
+    }
+    Ok(())
+}
+
+pub(in crate::compiler::codegen) fn reject_function_input_state_calls(function_name: &str, body: &str, context: &str) -> Result<()> {
+    if !contains_call_named(body, word::STATE)? {
+        return Ok(());
+    }
+    let source = format!("function gen__input_state_call_check() {{ {body} }}");
+    let Ok(mut function) = parse_function_ast(&source) else {
+        return Ok(());
+    };
+    let mut collector = NamedCallSiteCollector { name: word::STATE, sites: Vec::new() };
+    visit_function_mut(&mut collector, &mut function);
+    if !collector.sites.is_empty() {
+        return Err(ArgentError::new(format!(
+            "`{}(...)` input-state reconstruction is only available in entry bodies, not {context} function `{function_name}`",
+            word::STATE
+        )));
+    }
+    Ok(())
+}
+
 pub(in crate::compiler::codegen) fn lower_entry_expr(
     actor: &ActorDecl,
     entry: &EntryDecl,
     model: &Model<'_>,
+    input_references: EntryInputReferenceView<'_>,
     expr: &str,
     expected_ty: Option<&str>,
 ) -> Result<String> {
-    BodyLowerer::new(actor, entry, model)?.lower_expr(expr, expected_ty, 8)
+    let state_values = ContractStateValuePlan::new(actor, model)?;
+    BodyLowerer::new(actor, entry, model, input_references, &state_values)?.lower_expr(expr, expected_ty, 8)
 }
 
-fn generated_state_name(route: &RouteCall, state_ty: &str) -> String {
+fn generated_state_name(route: &ConstructedRoute, state_ty: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}state_{}_{}", to_snake(&route.output), to_snake(state_ty))
 }
 
@@ -1549,23 +2055,91 @@ fn split_state_object_literal(expr: &str) -> Option<&str> {
     expr.strip_prefix('{')?.strip_suffix('}').map(str::trim)
 }
 
-fn parse_digest_call(expr: &str) -> Option<&str> {
+fn parse_digest_call(expr: &str) -> std::result::Result<Option<&str>, String> {
     let expr = expr.trim();
-    expr.strip_prefix("digest(")?.strip_suffix(')').map(str::trim)
+    if !expr.starts_with(word::DIGEST) {
+        return Ok(None);
+    }
+    let tokens = lex(expr).map_err(|err| err.message)?;
+    if !matches!(tokens.as_slice(), [Token { kind: TokenKind::Ident(name), .. }, Token { kind: TokenKind::Symbol('('), .. }, ..]
+        if name == word::DIGEST)
+    {
+        return Ok(None);
+    }
+    let parsed =
+        parse_expression_ast(expr).map_err(|err| format!("invalid `{}(...)` state-digest expression: {err}", word::DIGEST))?;
+    let SilExprKind::Call { name, args, .. } = &parsed.kind else {
+        return Ok(None);
+    };
+    if name != word::DIGEST {
+        return Ok(None);
+    }
+    let [value] = args.as_slice() else {
+        return Err(format!("`{}(...)` requires exactly one authored state value", word::DIGEST));
+    };
+    Ok(Some(value.span.as_str().trim()))
 }
 
-fn parse_state_fields(body: &str) -> Vec<(String, String)> {
-    split_top_level_commas(body)
-        .into_iter()
-        .filter_map(|entry| {
-            let entry = entry.trim();
-            if entry.is_empty() {
-                return None;
+fn parse_state_reference_call(expr: &str) -> std::result::Result<Option<&str>, String> {
+    let expr = expr.trim();
+    if !expr.starts_with(word::STATE) {
+        return Ok(None);
+    }
+    let tokens = lex(expr).map_err(|err| err.message)?;
+    if !matches!(tokens.as_slice(), [Token { kind: TokenKind::Ident(name), .. }, Token { kind: TokenKind::Symbol('('), .. }, ..]
+        if name == word::STATE)
+    {
+        return Ok(None);
+    }
+    let parsed =
+        parse_expression_ast(expr).map_err(|err| format!("invalid `{}(...)` input-reference expression: {err}", word::STATE))?;
+    let SilExprKind::Call { name, args, .. } = &parsed.kind else {
+        return Ok(None);
+    };
+    if name != word::STATE {
+        return Ok(None);
+    }
+    let [reference] = args.as_slice() else {
+        return Err(format!("`{}(...)` requires exactly one input reference", word::STATE));
+    };
+    Ok(Some(reference.span.as_str().trim()))
+}
+
+fn contains_call_named(expr: &str, name: &str) -> Result<bool> {
+    let tokens = lex(expr)?;
+    Ok(tokens.windows(2).any(|tokens| {
+        matches!(tokens, [Token { kind: TokenKind::Ident(candidate), .. }, Token { kind: TokenKind::Symbol('('), .. }]
+            if candidate == name)
+    }))
+}
+
+fn parse_state_fields(body: &str) -> Result<Vec<(String, String)>> {
+    // TODO: Replace the character-based field splitters with Sil's structured
+    // struct-literal AST. The current code rejects comments before fields and
+    // silently ignores malformed empty comma components.
+    let mut fields = Vec::new();
+    for component in split_top_level_commas(body) {
+        let component = component.trim();
+        if component.is_empty() {
+            continue;
+        }
+        let Some((name, expr)) = split_top_level_colon(component) else {
+            if matches!(lex(component)?.as_slice(), [Token { kind: TokenKind::Eof, .. }]) {
+                continue;
             }
-            let (name, expr) = split_top_level_colon(entry)?;
-            Some((name.trim().to_string(), expr.trim().to_string()))
-        })
-        .collect()
+            return Err(ArgentError::new(format!("state constructor component `{component}` must use `name: expression`")));
+        };
+        let name = name.trim();
+        let expr = expr.trim();
+        if !is_identifier(name) {
+            return Err(ArgentError::new(format!("state constructor component `{component}` has invalid field name `{name}`")));
+        }
+        if expr.is_empty() {
+            return Err(ArgentError::new(format!("state constructor component `{component}` has an empty expression")));
+        }
+        fields.push((name.to_string(), expr.to_string()));
+    }
+    Ok(fields)
 }
 
 fn split_top_level_colon(input: &str) -> Option<(&str, &str)> {
@@ -1776,6 +2350,16 @@ fn strip_outer_parentheses(mut expr: &str) -> &str {
         }
         expr = expr[tokens[0].span.end..tokens[close].span.start].trim();
     }
+}
+
+fn apply_expr_replacements(source: &str, mut replacements: Vec<(Range<usize>, String)>) -> String {
+    replacements.sort_by_key(|(span, _)| span.start);
+    debug_assert!(replacements.windows(2).all(|pair| pair[0].0.end <= pair[1].0.start));
+    let mut out = source.to_string();
+    for (span, replacement) in replacements.into_iter().rev() {
+        out.replace_range(span, &replacement);
+    }
+    out
 }
 
 /// Return the bound root when the entire expression is one index access.

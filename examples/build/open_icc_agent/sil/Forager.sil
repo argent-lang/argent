@@ -28,8 +28,37 @@ contract Forager(
         int energy;
         int generation;
     }
+    struct ForagerState {
+        // :: user declared fields
+        byte[32] world_id;
+        byte[32] agent_id;
+        byte[32] species_id;
+        byte[32] controller_id;
+        byte[32] capabilities_digest;
+        ForagerStrategy strategy;
+        int x;
+        int y;
+        int energy;
+        int generation;
+    }
+    struct CellState {
+        // :: user declared fields
+        byte[32] world_id;
+        int x;
+        int y;
+        int food;
+        byte[32] occupant_agent_covid;
+        byte[32] occupant_agent_type;
+        byte[32] occupant_caps_digest;
+    }
+    struct ForagerStrategy {
+        // :: user declared fields
+        int hunger;
+        int mood;
+        byte[32] target_agent_id;
+    }
 
-    // :: global shared functions (vars prefixed with gen__glob_ for creating a unique namespace)
+    // :: global functions (isolated using the gen__glob_ namespace)
     function abs1(int gen__glob_value) : int {
         int gen__glob_result = gen__glob_value;
         if (gen__glob_value < 0) {
@@ -75,21 +104,39 @@ contract Forager(
         require(OpCovInputCount(controller_id) > 0);
         require(next_energy == energy - 1);
         require(next_energy >= 0);
-        State next_agent = State {
+        ForagerState next_agent = ForagerState {
             // :: user declared fields
             world_id: world_id,
             agent_id: agent_id,
             species_id: species_id,
             controller_id: controller_id,
             capabilities_digest: capabilities_digest,
-            strategy: blake3(byte[](((gen__strategy_hunger + 1) as byte[8]) + ((gen__strategy_mood) as byte[8]) + byte[](gen__strategy_target_agent_id))),
+            strategy: ForagerStrategy {
+                // :: user declared fields
+                hunger: gen__strategy_hunger + 1,
+                mood: gen__strategy_mood,
+                target_agent_id: gen__strategy_target_agent_id,
+            },
             x: next_x,
             y: next_y,
             energy: next_energy,
             generation: generation,
         };
+        State gen__state_agent_state = State {
+            // :: user declared fields
+            world_id: next_agent.world_id,
+            agent_id: next_agent.agent_id,
+            species_id: next_agent.species_id,
+            controller_id: next_agent.controller_id,
+            capabilities_digest: next_agent.capabilities_digest,
+            strategy: blake3(byte[](((next_agent.strategy.hunger) as byte[8]) + ((next_agent.strategy.mood) as byte[8]) + byte[](next_agent.strategy.target_agent_id))),
+            x: next_agent.x,
+            y: next_agent.y,
+            energy: next_agent.energy,
+            generation: next_agent.generation,
+        };
         // :: become Forager
-        validateOutputState(gen__agent_output_idx, next_agent);
+        validateOutputState(gen__agent_output_idx, gen__state_agent_state);
     }
 
 }

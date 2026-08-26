@@ -8,6 +8,10 @@ contract Launcher(
     int init_launches
 ) {
     // :: state layouts
+    struct LauncherState {
+        // :: user declared fields
+        int launches;
+    }
     struct ChildState {
         // :: user declared fields
         int amount;
@@ -40,7 +44,7 @@ contract Launcher(
         require(OpCovInputCount(gen__cov_id) == 2);
         require(OpCovInputIdx(gen__cov_id, 0) == this.activeInputIndex);
         int gen__source_input_idx = OpCovInputIdx(gen__cov_id, 1); // input Child at cov[1]
-        Gen__ChildState source = readInputStateWithTemplate(
+        Gen__ChildState gen__source_state = readInputStateWithTemplate(
             gen__source_input_idx,
             gen__child_prefix_len,
             gen__child_suffix_len,
@@ -67,12 +71,9 @@ contract Launcher(
 
         ChildState child_state = ChildState {
             // :: user declared fields
-            amount: source.amount + amount,
+            amount: gen__source_state.amount + amount,
         };
-        State next = State {
-            // :: generated fields
-            gen__child_template: gen__child_template,
-            gen__launcher_template: gen__launcher_template,
+        LauncherState next_state = LauncherState {
             // :: user declared fields
             launches: launches + 1,
         };
@@ -92,8 +93,15 @@ contract Launcher(
             gen__child_suffix_len,
             gen__child_template
         );
+        State gen__state_next_state = State {
+            // :: generated fields
+            gen__child_template: gen__child_template,
+            gen__launcher_template: gen__launcher_template,
+            // :: user declared fields
+            launches: next_state.launches,
+        };
         // :: become Launcher
-        validateOutputState(gen__next_output_idx, next);
+        validateOutputState(gen__next_output_idx, gen__state_next_state);
     }
 
 }

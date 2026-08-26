@@ -22,7 +22,7 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["Player"] }] },
           "consumes": [],
-          "routes": [{ "output": "next", "actor": "Player", "state": "next_player" }]
+          "routes": [{ "output": "next", "successor": { "kind": "constructed", "actor": "Player", "state": "next_player" } }]
         }
       ]
     },
@@ -36,7 +36,7 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["Mux"] }] },
           "consumes": [],
-          "routes": [{ "output": "next", "actor": "Mux", "state": "next_board" }]
+          "routes": [{ "output": "next", "successor": { "kind": "constructed", "actor": "Mux", "state": "next_board" } }]
         }
       ]
     },
@@ -50,28 +50,28 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["MoveActor"] }] },
           "consumes": [],
-          "routes": [{ "output": "next", "actor": "target", "state": "next_board" }]
+          "routes": [{ "output": "next", "successor": { "kind": "constructed", "actor": "target", "state": "next_board" } }]
         },
         {
           "name": "choose_knight_const",
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["MoveActor"] }] },
           "consumes": [],
-          "routes": [{ "output": "next", "actor": "target", "state": "next_board" }]
+          "routes": [{ "output": "next", "successor": { "kind": "constructed", "actor": "target", "state": "next_board" } }]
         },
         {
           "name": "choose_pawn",
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["Pawn"] }] },
           "consumes": [],
-          "routes": [{ "output": "next", "actor": "Pawn", "state": "next_board" }]
+          "routes": [{ "output": "next", "successor": { "kind": "constructed", "actor": "Pawn", "state": "next_board" } }]
         },
         {
           "name": "choose_knight",
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["Knight"] }] },
           "consumes": [],
-          "routes": [{ "output": "next", "actor": "Knight", "state": "next_board" }]
+          "routes": [{ "output": "next", "successor": { "kind": "constructed", "actor": "Knight", "state": "next_board" } }]
         }
       ]
     },
@@ -85,7 +85,7 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["Mux"] }] },
           "consumes": [],
-          "routes": [{ "output": "next", "actor": "Mux", "state": "next_board" }]
+          "routes": [{ "output": "next", "successor": { "kind": "constructed", "actor": "Mux", "state": "next_board" } }]
         }
       ]
     },
@@ -99,7 +99,7 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["Mux"] }] },
           "consumes": [],
-          "routes": [{ "output": "next", "actor": "Mux", "state": "next_board" }]
+          "routes": [{ "output": "next", "successor": { "kind": "constructed", "actor": "Mux", "state": "next_board" } }]
         }
       ]
     }

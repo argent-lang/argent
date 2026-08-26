@@ -7,6 +7,10 @@ contract Foreign(
     int init_amount
 ) {
     // :: state layouts
+    struct ForeignState {
+        // :: user declared fields
+        int amount;
+    }
     struct LocalState {
         // :: user declared fields
         byte[32] foreign_id;
@@ -15,6 +19,19 @@ contract Foreign(
     struct TargetState {
         // :: user declared fields
         int units;
+    }
+
+    // :: global functions (isolated using the gen__glob_ namespace)
+    function add_one(int gen__glob_value) : int {
+        return gen__glob_value + 1;
+    }
+
+    // :: actor functions
+    function amount_is_valid() : bool {
+        return amount >= 0;
+    }
+    function route_units() : int {
+        return 0;
     }
 
     // :: route templates
@@ -31,6 +48,7 @@ contract Foreign(
         // :: output next: Foreign
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
+        require(amount_is_valid());
         // :: become Foreign
         require(
             tx.outputs[gen__next_output_idx].scriptPubKey
@@ -44,14 +62,14 @@ contract Foreign(
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Target
 
-        TargetState next = TargetState {
+        TargetState next_state = TargetState {
             // :: user declared fields
-            units: 0,
+            units: route_units(),
         };
         // :: become Target
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            next,
+            next_state,
             gen__target_prefix,
             gen__target_suffix,
             gen__target_template

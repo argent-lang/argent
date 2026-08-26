@@ -18,7 +18,7 @@ actor Controller owns ControllerState {
     emits {
         controller: Controller,
     } {
-        BadgeState previous = asset.inputs.badge.state;
+        BadgeState previous = state(asset.inputs.badge);
         BadgeState next_badge = {
             owner: previous.owner,
             controller_id: self.cov_id,

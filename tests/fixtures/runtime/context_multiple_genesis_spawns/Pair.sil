@@ -6,6 +6,11 @@ contract Pair(
     int init_amount
 ) {
     // :: state layouts
+    struct ControllerState {
+        // :: user declared fields
+        byte[32] pair_type;
+        int launches;
+    }
 
     // :: route templates
 
