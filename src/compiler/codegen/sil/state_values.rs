@@ -1,12 +1,12 @@
 //! Plans authored state values for one emitted contract.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use silverscript_lang::ast::{
     ArrayDim as SilArrayDim, TypeBase as SilTypeBase, TypeRef as SilTypeRef, parse_type_ref as parse_sil_type_ref,
 };
 
-use crate::compiler::model::{Model, SilStateType, SourceStateId};
+use crate::compiler::model::{Model, ResolvedSuccessor, SilStateType, SourceStateId};
 use crate::compiler::syntax::{ActorDecl, ArrayDim, TypeRef};
 use crate::error::{ArgentError, Result};
 
@@ -41,6 +41,8 @@ pub(in crate::compiler::codegen) struct CallableSignaturePlan {
 /// Authored state values and callable signatures for one emitted contract.
 pub(in crate::compiler::codegen) struct ContractStateValuePlan {
     authored_sil_types: BTreeMap<SourceStateId, String>,
+    /// Source declarations reached by this contract's authored value sites.
+    required_source_declarations: BTreeSet<SourceStateId>,
     signatures: BTreeMap<String, CallableSignaturePlan>,
 }
 
@@ -139,13 +141,57 @@ impl ContractStateValuePlan {
                 let result = function.return_ty.as_ref().and_then(|ty| plan_type_ref(ty, &authored_sil_types));
                 (function.name.clone(), CallableSignaturePlan { params, result })
             })
-            .collect();
-        Ok(Self { authored_sil_types, signatures })
+            .collect::<BTreeMap<_, _>>();
+        let mut required_source_declarations = model.states.keys().map(SourceStateId::new).collect::<BTreeSet<_>>();
+        for ct in &model.consts {
+            collect_type_ref_source(&ct.ty, &authored_sil_types, &mut required_source_declarations);
+        }
+        for signature in signatures.values() {
+            required_source_declarations.extend(signature.params.iter().flatten().map(|value| value.source().clone()));
+            required_source_declarations.extend(signature.result.iter().map(|value| value.source().clone()));
+        }
+        for entry in &actor.entries {
+            for param in &entry.params {
+                collect_type_ref_source(&param.ty, &authored_sil_types, &mut required_source_declarations);
+            }
+            for source_type in entry.body.declared_value_types() {
+                collect_sil_type_source(source_type, &authored_sil_types, &mut required_source_declarations);
+            }
+            let entry_model = model.entry_model(actor, entry)?;
+            for route in entry_model.routes() {
+                let ResolvedSuccessor::Constructed { actor: target, .. } = &route.successor else {
+                    continue;
+                };
+                let source = if let Some(selector) = entry_model.template_selectors().get(target) {
+                    selector.state.as_str()
+                } else {
+                    model.actor(target)?.state.as_str()
+                };
+                collect_sil_type_source(source, &authored_sil_types, &mut required_source_declarations);
+            }
+            for group in entry_model.groups() {
+                for interaction in group.inputs() {
+                    for target in interaction.target().static_actors() {
+                        collect_sil_type_source(&model.actor(target)?.state, &authored_sil_types, &mut required_source_declarations);
+                    }
+                }
+            }
+            for group in entry_model.existing_groups().chain(entry_model.genesis_groups()) {
+                for interaction in group.outputs() {
+                    for target in interaction.target().static_actors() {
+                        collect_sil_type_source(&model.actor(target)?.state, &authored_sil_types, &mut required_source_declarations);
+                    }
+                }
+            }
+        }
+        collect_required_source_dependencies(model, &authored_sil_types, &mut required_source_declarations)?;
+        Ok(Self { authored_sil_types, required_source_declarations, signatures })
     }
 
     #[cfg(test)]
     pub(super) fn with_authored_sil_types(authored_sil_types: BTreeMap<SourceStateId, String>) -> Self {
-        Self { authored_sil_types, signatures: BTreeMap::new() }
+        let required_source_declarations = authored_sil_types.keys().cloned().collect();
+        Self { authored_sil_types, required_source_declarations, signatures: BTreeMap::new() }
     }
 
     pub(in crate::compiler::codegen) fn signature(&self, name: &str) -> Option<&CallableSignaturePlan> {
@@ -219,6 +265,12 @@ impl ContractStateValuePlan {
         self.authored_sil_types.iter().filter_map(|(source, sil_type)| (sil_type == "State").then_some(source))
     }
 
+    pub(in crate::compiler::codegen) fn required_named_source_declarations(&self) -> impl Iterator<Item = &SourceStateId> {
+        self.required_source_declarations
+            .iter()
+            .filter(|source| self.authored_sil_types.get(*source).is_some_and(|sil_type| sil_type != "State"))
+    }
+
     pub(in crate::compiler::codegen) fn has_equivalent_state_sources(&self) -> bool {
         self.equivalent_state_sources().next().is_some()
     }
@@ -238,6 +290,61 @@ impl ContractStateValuePlan {
             .cloned()
             .or(Some(declared))
     }
+}
+
+fn collect_type_ref_source(
+    ty: &TypeRef,
+    authored_sil_types: &BTreeMap<SourceStateId, String>,
+    required_sources: &mut BTreeSet<SourceStateId>,
+) {
+    if let Some(value) = plan_type_ref(ty, authored_sil_types) {
+        required_sources.insert(value.source);
+    }
+}
+
+fn collect_sil_type_source(
+    ty: &str,
+    authored_sil_types: &BTreeMap<SourceStateId, String>,
+    required_sources: &mut BTreeSet<SourceStateId>,
+) {
+    let Ok(ty) = parse_sil_type_ref(ty) else {
+        return;
+    };
+    let SilTypeBase::Custom(name) = ty.base else {
+        return;
+    };
+    let source = SourceStateId::new(name);
+    if authored_sil_types.contains_key(&source) {
+        required_sources.insert(source);
+    }
+}
+
+fn collect_required_source_dependencies(
+    model: &Model<'_>,
+    authored_sil_types: &BTreeMap<SourceStateId, String>,
+    required_sources: &mut BTreeSet<SourceStateId>,
+) -> Result<()> {
+    let mut pending = required_sources.iter().cloned().collect::<Vec<_>>();
+    let mut cursor = 0;
+    while let Some(source) = pending.get(cursor) {
+        let state = model.state(source.as_str())?;
+        let storage = model.storage_state(source.as_str())?;
+        for field in &storage.fields {
+            let dependency = state
+                .expansion
+                .as_ref()
+                .and_then(|expansion| expansion.digests.iter().find(|digest| digest.field == field.name))
+                .map(|digest| SourceStateId::new(&digest.state))
+                .or_else(|| plan_type_ref(&field.ty, authored_sil_types).map(|value| value.source));
+            if let Some(dependency) = dependency
+                && required_sources.insert(dependency.clone())
+            {
+                pending.push(dependency);
+            }
+        }
+        cursor += 1;
+    }
+    Ok(())
 }
 
 fn state_value_shape(ty: &SilTypeRef, inferred_len: Option<usize>) -> Option<StateValueShape> {
@@ -300,7 +407,7 @@ mod tests {
         );
         assert_eq!(plan_type_ref(&TypeRef::new("int"), &authored_sil_types), None);
 
-        let plan = ContractStateValuePlan { authored_sil_types, signatures: BTreeMap::new() };
+        let plan = ContractStateValuePlan::with_authored_sil_types(authored_sil_types);
         let fixed = plan.plan_sil_type("PeerState[3]").expect("fixed body binding is planned");
         assert_eq!(fixed.shape(), StateValueShape::FixedArray(FixedArrayLength::Known(3)));
         assert_eq!(plan.sil_type(&fixed), "PeerState[3]");
@@ -333,10 +440,7 @@ mod tests {
     #[test]
     fn renders_every_supported_authored_array_shape_with_selected_state() {
         let source = SourceStateId::new("PeerState");
-        let plan = ContractStateValuePlan {
-            authored_sil_types: [(source, "State".to_string())].into_iter().collect(),
-            signatures: BTreeMap::new(),
-        };
+        let plan = ContractStateValuePlan::with_authored_sil_types([(source, "State".to_string())].into_iter().collect());
 
         for (source_ty, expected) in [
             ("PeerState", "State"),

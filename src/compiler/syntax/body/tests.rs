@@ -144,6 +144,19 @@ fn local_declarations_keep_structured_selector_syntax() {
 }
 
 #[test]
+fn declared_value_types_include_uninitialized_locals_and_typed_destructuring() {
+    let body = EntryBody::new(
+        r#"
+            ChildState value;
+            ChildState { amount: int amount } = value;
+            "#,
+    )
+    .expect("body parses");
+
+    assert_eq!(body.declared_value_types(), ["ChildState", "int", "ChildState"]);
+}
+
+#[test]
 fn statements_distinguish_brace_assignments_from_standalone_blocks() {
     let body = EntryBody::new(
         r#"

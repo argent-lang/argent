@@ -108,9 +108,13 @@ Either lower bare `detail` through the active input reference or reject it with
 a clear Argent diagnostic. Apply the same rule in helper arguments, locals,
 destructuring, arrays, and successors.
 
-### 4. [ ] Restore linked authored state declarations
+### 4. [x] Restore linked authored state declarations
 
-**Status:** Confirmed locally. Regression from `master`.
+**Resolved:** `ContractStateValuePlan` now records the source representations
+required by local states, constants, callable signatures, entry parameters,
+entry-body declarations, and resolved input/output targets. It closes their
+nested state dependencies. State layout emission consumes that plan and no
+longer discovers authored types from observe or spawn clause syntax.
 
 A linked state used only in an entry signature is no longer declared in the
 generated contract:

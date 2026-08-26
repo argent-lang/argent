@@ -47,6 +47,15 @@ impl EntryBody {
         locals
     }
 
+    /// Return types introduced by body declarations, including opaque Sil bindings.
+    pub(crate) fn declared_value_types(&self) -> Vec<&str> {
+        let mut types = Vec::new();
+        for statement in &self.statements {
+            statement.collect_declared_value_types(self, &mut types);
+        }
+        types
+    }
+
     pub(crate) fn span_text(&self, span: Span) -> &str {
         &self.text[span.start..span.end]
     }
@@ -134,6 +143,34 @@ impl EntryStatement {
             }
             Self::Local { declaration, .. } => locals.push(declaration),
             Self::Become { .. } | Self::ValidateOutputsBecome { .. } | Self::Plain { .. } => {}
+        }
+    }
+
+    fn collect_declared_value_types<'a>(&'a self, body: &'a EntryBody, types: &mut Vec<&'a str>) {
+        match self {
+            Self::If { then_branch, else_branch, .. } => {
+                then_branch.collect_declared_value_types(body, types);
+                if let Some(else_branch) = else_branch {
+                    else_branch.collect_declared_value_types(body, types);
+                }
+            }
+            Self::For { binding, body: loop_body, .. } => {
+                types.push(&binding.source_type);
+                loop_body.collect_declared_value_types(body, types);
+            }
+            Self::Block { statements, .. } => {
+                for statement in statements {
+                    statement.collect_declared_value_types(body, types);
+                }
+            }
+            Self::Local { declaration, .. } => types.push(&declaration.binding.source_type),
+            Self::Plain { bindings, destructuring, .. } => {
+                types.extend(bindings.iter().map(|binding| binding.source_type.as_str()));
+                if let Some(destructuring) = destructuring {
+                    types.push(body.span_text(destructuring.declared_type));
+                }
+            }
+            Self::Become { .. } | Self::ValidateOutputsBecome { .. } => {}
         }
     }
 }

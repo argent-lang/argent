@@ -528,6 +528,205 @@ app RootApp {
 }
 
 #[test]
+fn linked_authored_state_declarations_follow_the_contract_value_plan() {
+    let temp = std::env::temp_dir().join(format!("argent-linked-authored-state-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp);
+    std::fs::create_dir_all(&temp).expect("temp dir created");
+
+    std::fs::write(
+        temp.join("child.ag"),
+        r#"
+state ChildStorage {
+    int amount;
+    virtual detail;
+}
+
+state ChildDetail {
+    int count;
+}
+
+state ChildState expands ChildStorage {
+    detail: ChildDetail;
+}
+
+state IdentityState {
+    int amount;
+}
+
+actor Child owns ChildState {
+    entry hold() emits none {
+        require(amount >= 0);
+    }
+}
+
+actor Identity owns IdentityState {
+    entry hold() emits none {
+        require(amount >= 0);
+    }
+}
+
+app ChildApp {
+    actor Child;
+    actor Identity;
+}
+"#,
+    )
+    .expect("child source written");
+
+    let cases = [
+        (
+            "entry-params",
+            "",
+            "",
+            r#"
+    entry hold(ChildState scalar, ChildState[2] fixed, ChildState[] dynamic) emits none {
+        require(scalar.amount >= 0);
+        require(fixed[0].amount >= 0);
+        require(dynamic.length >= 0);
+    }
+"#,
+            ["ChildState", "ChildDetail"].as_slice(),
+            ["ChildState scalar", "ChildState[2] fixed", "ChildState[] dynamic"].as_slice(),
+        ),
+        (
+            "function-signatures",
+            r#"
+fn global_amount(ChildState value) -> int {
+    return value.amount;
+}
+"#,
+            r#"
+    fn actor_amount(ChildState value) -> int {
+        return value.amount;
+    }
+"#,
+            r#"
+    entry hold() emits none {
+        require(global_amount(ChildState { amount: 1, detail: ChildDetail { count: 1 } }) == 1);
+        require(actor_amount(ChildState { amount: 2, detail: ChildDetail { count: 2 } }) == 2);
+    }
+"#,
+            ["ChildState", "ChildDetail"].as_slice(),
+            ["function global_amount(ChildState", "function actor_amount(ChildState"].as_slice(),
+        ),
+        (
+            "constant",
+            r#"
+const ChildState INITIAL_CHILD = ChildState {
+    amount: 1,
+    detail: ChildDetail { count: 1 },
+};
+"#,
+            "",
+            r#"
+    entry hold() emits none {
+        require(INITIAL_CHILD.amount == 1);
+    }
+"#,
+            ["ChildState", "ChildDetail"].as_slice(),
+            ["ChildState constant INITIAL_CHILD"].as_slice(),
+        ),
+        (
+            "body-local",
+            "",
+            "",
+            r#"
+    entry hold() emits none {
+        ChildState value = ChildState {
+            amount: 1,
+            detail: ChildDetail { count: 1 },
+        };
+        require(value.amount == 1);
+    }
+"#,
+            ["ChildState", "ChildDetail"].as_slice(),
+            ["ChildState value = ChildState"].as_slice(),
+        ),
+        (
+            "observed-input",
+            "",
+            "",
+            r#"
+    entry hold(cov_id child_id)
+    observes source by child_id {
+        inputs {
+            child: ChildApp::Identity,
+        }
+    }
+    emits none {
+        IdentityState value = state(source.inputs.child);
+        require(value.amount >= 0);
+    }
+"#,
+            ["IdentityState"].as_slice(),
+            ["IdentityState value = gen__source_child_state;"].as_slice(),
+        ),
+        (
+            "inline-route",
+            "",
+            "",
+            r#"
+    entry send()
+    spawns children by child_id {
+        outputs {
+            child: ChildApp::Child,
+        }
+    }
+    emits none {
+        unrestricted(children.outputs.child.value);
+        require children.outputs become {
+            child <- ChildApp::Child(ChildState {
+                amount: 1,
+                detail: ChildDetail { count: 1 },
+            }),
+        };
+    }
+"#,
+            ["ChildState", "ChildDetail"].as_slice(),
+            ["spawned become children.child -> ChildApp::Child"].as_slice(),
+        ),
+    ];
+
+    for (name, global, member, entry, declarations, expected) in cases {
+        let source = format!(
+            r#"
+import app ChildApp from "./child.ag";
+
+{global}
+
+state LocalState {{
+    int nonce;
+}}
+
+actor Local owns LocalState {{
+{member}
+{entry}
+}}
+
+app LocalApp {{
+    actor Local;
+}}
+"#
+        );
+        let local_path = temp.join(format!("local-{name}.ag"));
+        std::fs::write(&local_path, source).expect("local source written");
+
+        let out_dir = temp.join(format!("build-{name}"));
+        build_file_app_bundle(&local_path, "LocalApp", &out_dir)
+            .unwrap_or_else(|err| panic!("linked state used only by {name} must compile: {err}"));
+        let sil = std::fs::read_to_string(out_dir.join("sil/Local.sil")).expect("Local Sil exists");
+        for declaration in declarations {
+            assert!(sil.contains(&format!("struct {declaration} {{")), "{name}: {sil}");
+        }
+        for expected in expected {
+            assert!(sil.contains(expected), "{name} is missing `{expected}`: {sil}");
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
 fn app_bundle_compiles_a_diamond_dependency_once() {
     let temp = std::env::temp_dir().join(format!("argent-build-diamond-apps-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&temp);

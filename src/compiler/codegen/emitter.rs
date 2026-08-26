@@ -198,25 +198,16 @@ fn emit_state_layouts(
 ) -> Result<BTreeSet<String>> {
     emit_section_header(out, "State layouts");
     let mut emitted = BTreeSet::new();
-    let mut omitted_authored_structs = BTreeSet::new();
-    let mut state_names = model.actors.iter().map(|actor| actor.state.clone()).collect::<Vec<_>>();
-    state_names.extend(model.states.keys().cloned());
+    let mut omitted_authored_structs =
+        state_values.equivalent_state_sources().map(|source| source.as_str().to_string()).collect::<BTreeSet<_>>();
+    let named_authored_states =
+        state_values.required_named_source_declarations().map(|source| source.as_str().to_string()).collect::<BTreeSet<_>>();
     let mut open_output_states = BTreeSet::new();
     for entry in &current_actor.entries {
         for observe in &entry.observes {
-            for observed in &observe.inputs {
-                if let Some(state) = observed_open_state_for_decl(current_actor, entry, observe, observed, model)? {
-                    state_names.push(state.to_string());
-                } else {
-                    state_names.push(model.actor(&observed.actor)?.state.clone());
-                }
-            }
             for observed in &observe.outputs {
                 if let Some(state) = observed_open_state_for_decl(current_actor, entry, observe, observed, model)? {
-                    state_names.push(state.to_string());
                     open_output_states.insert(state.to_string());
-                } else {
-                    state_names.push(model.actor(&observed.actor)?.state.clone());
                 }
             }
         }
@@ -230,26 +221,17 @@ fn emit_state_layouts(
                 if model.resolve_static_actor_target(interaction.target()).is_none() {
                     open_output_states.insert(state.clone());
                 }
-                state_names.push(state);
             }
         }
     }
 
-    let mut state_idx = 0;
-    while state_idx < state_names.len() {
-        let state_name = &state_names[state_idx];
-        if let Some(expansion) = model.state(state_name)?.expansion.as_ref() {
-            state_names.extend(expansion.digests.iter().map(|digest| digest.state.clone()));
-        }
-        state_idx += 1;
-    }
-
+    // Keep local declarations in their established order, then append linked
+    // declarations discovered authoritatively by the contract value plan.
+    let mut state_names = model.actors.iter().map(|actor| actor.state.clone()).collect::<Vec<_>>();
+    state_names.extend(model.states.keys().cloned());
+    state_names.extend(named_authored_states.iter().cloned());
     for state_name in state_names {
-        if emitted.contains(&state_name) || omitted_authored_structs.contains(&state_name) {
-            continue;
-        }
-        if state_values.authored_sil_type_for_name(&state_name) == Some("State") {
-            omitted_authored_structs.insert(state_name);
+        if !named_authored_states.contains(&state_name) || emitted.contains(&state_name) {
             continue;
         }
         emitted.insert(state_name.clone());
