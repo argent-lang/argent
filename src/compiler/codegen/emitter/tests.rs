@@ -1930,6 +1930,33 @@ fn equivalent_state_literals_lower_in_plain_entry_statements() {
 }
 
 #[test]
+fn equivalent_state_assignment_retains_parenthesized_postfix_cast() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "equivalent-state-parenthesized-postfix-cast",
+        r#"
+            state CounterState {
+                byte status;
+            }
+
+            actor Counter owns CounterState {
+                entry inspect(byte increment) emits none {
+                    byte next_status = status;
+                    next_status = (signed(next_status) + signed(increment)) as byte;
+                    require(signed(next_status) >= signed(status));
+                }
+            }
+
+            app Test {
+                actor Counter;
+            }
+        "#,
+    );
+    let sil = &actor_sil["Counter"];
+
+    assert!(sil.contains("next_status = (signed(next_status) + signed(increment)) as byte;"), "{sil}");
+}
+
+#[test]
 fn typed_state_constant_can_supply_a_constructed_successor_directly() {
     let (actors, _) = inline_actor_sil_and_artifact(
         "state-constant-successor",
