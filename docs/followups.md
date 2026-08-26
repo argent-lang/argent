@@ -3,6 +3,26 @@
 This file contains small follow-up items. Each item gives its area, context,
 and required work.
 
+## Define conversion from physical `State`
+
+When both state-layout relations are identity, `CounterState` and physical
+`State` have exactly the same fields. This currently compiles:
+
+```rust
+State raw = readInputState(index);
+CounterState value = raw;
+```
+
+Using `raw` directly as the successor state is rejected:
+
+```rust
+become next <- Counter(raw);
+```
+
+Decide whether the typed assignment is an intentional conversion or whether
+both forms should follow the same rule. Direct `readInputState` use remains
+low-level and developer-managed; it does not authenticate the input.
+
 ## Infer the leader of a singleton-app delegate
 
 **Area:** Delegate modeling, covenant-input validation, and artifacts.

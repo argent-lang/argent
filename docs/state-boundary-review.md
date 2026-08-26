@@ -11,55 +11,13 @@ Reviewed code:
 - base: `ddde966` (`master`)
 - architecture review: through `bacb308`
 
-The order below is the suggested fix order. It puts semantic proof before the
-operations that consume that proof. Each correctness fix should start with a
-focused regression test when practical.
+The order below is the suggested fix order. It fixes shared state conversion
+operations before their remaining consumers. Each correctness fix should
+start with a focused regression test when practical.
 
 ## Required before merge
 
-### 1. [ ] Require positive authored-value proof
-
-**Status:** Confirmed locally. Blocker.
-
-An expression can enter an authored position when Argent cannot prove its
-origin. Equivalent-`State` lowering then erases the difference between an
-authored source value and a physical value.
-
-Both examples compile:
-
-```rust
-CounterState forged = readInputState(attacker_index);
-become next <- Counter(forged);
-```
-
-```rust
-fn identity(CounterState value) -> CounterState {
-    return value;
-}
-
-State physical = readInputState(attacker_index);
-become next <- Counter(identity(physical));
-```
-
-The generated Sil passes the physical value to `validateOutputState`. The
-direct physical-successor check does not protect assignment or function-call
-laundering.
-
-Replace the current “not proven incompatible” rule with positive provenance.
-Every authored initializer, assignment, function argument, array element,
-function result, and successor must carry a proven source identity and shape.
-Unknown and physical values must fail closed. Function bodies must prove their
-returns before equivalent-`State` rewriting changes the Sil spelling.
-
-Completion criteria:
-
-- reject both examples above;
-- preserve valid authored locals, calls, arrays, and successors;
-- prove shared state constants before they are treated as authored values;
-- keep physical `State` locals and helper signatures usable only in physical
-  positions.
-
-### 2. [ ] Use one source-to-storage digest operation
+### 1. [ ] Use one source-to-storage digest operation
 
 **Status:** Confirmed locally. Blocker; silent wrong code.
 
@@ -95,7 +53,7 @@ Completion criteria:
 - either support `digest(snapshot())` and other proven authored expressions,
   or explicitly document the narrower named-value rule.
 
-### 3. [ ] Make state-constructor parsing fail closed
+### 2. [ ] Make state-constructor parsing fail closed
 
 **Status:** Confirmed locally. Blocker; source code is silently removed.
 
@@ -123,7 +81,7 @@ become next <- Counter(CounterState /* authored */ {
 });
 ```
 
-### 4. [ ] Lower bare expanded current fields consistently
+### 3. [ ] Lower bare expanded current fields consistently
 
 **Status:** Confirmed locally. High.
 
@@ -142,7 +100,7 @@ Either lower bare `detail` through the active input reference or reject it with
 a clear Argent diagnostic. Apply the same rule in helper arguments, locals,
 destructuring, arrays, and successors.
 
-### 5. [ ] Restore linked authored state declarations
+### 4. [ ] Restore linked authored state declarations
 
 **Status:** Confirmed locally. Regression from `master`.
 
@@ -167,7 +125,7 @@ Drive authored struct emission from the named source representations in
 syntax. Cover linked states used only by scalar, fixed-array, and dynamic-array
 entry parameters, functions, constants, and body locals.
 
-### 6. [ ] Reject physical `State` in external entry parameters
+### 5. [ ] Reject physical `State` in external entry parameters
 
 **Status:** Confirmed locally. Pre-existing boundary gap.
 
@@ -187,9 +145,9 @@ known, but the external ABI contradicts the compiler boundary.
 Reject `State` and `State[]` in entry parameters. Keep intentional physical
 `State` locals and global or actor helper parameters/results.
 
-### 7. [ ] Complete authored-expression coverage
+### 6. [ ] Complete authored-expression coverage
 
-**Status:** Confirmed locally. This is a conformance pass after items 1–3.
+**Status:** Confirmed locally. This is a conformance pass after items 1–2.
 
 Some typed authored values still require an unnecessary local binding:
 
@@ -201,12 +159,13 @@ Binding `INITIAL` to a `CounterState` local first makes the route compile.
 Likewise, `digest(snapshot())` is rejected even when `snapshot()` has a proven
 state result.
 
-Use the positive provenance from item 1 in route, digest, call, array, and
-constructor lowering. Do not create separate syntax-specific type tests.
+Use the shared state-value and source-to-storage plans in route, digest, call,
+array, and constructor lowering. Do not create separate syntax-specific type
+tests.
 
 ## Decisions and documentation
 
-### 8. [ ] Define `SourceStateId` identity precisely
+### 7. [ ] Define `SourceStateId` identity precisely
 
 **Status:** Architecture ambiguity; no incorrect generated code is confirmed.
 
@@ -223,7 +182,7 @@ Choose and document one rule:
 
 The alias rule matches the current language and is the smaller clarification.
 
-### 9. [ ] Decide the pre-release artifact-version policy
+### 8. [ ] Decide the pre-release artifact-version policy
 
 **Status:** Policy decision, not a confirmed compiler bug.
 
@@ -235,7 +194,7 @@ The project has previously kept version 1 across pre-release breaking changes.
 Either keep that policy explicitly, or bump the schema to 2 because the
 artifact verifier treats the version as a compatibility contract.
 
-### 10. [ ] Correct small documentation drift
+### 9. [ ] Correct small documentation drift
 
 - `argent-design.md` still shows the template hash as Blake2b; the compiler
   uses Blake3.
@@ -246,26 +205,26 @@ artifact verifier treats the version as a compatibility contract.
 
 ## Non-blocking architectural follow-ups
 
-### 11. [ ] Remove the state-boundary dependency on `emitter::*`
+### 10. [ ] Remove the state-boundary dependency on `emitter::*`
 
 `state_boundary.rs` imports the complete emitter module. Extract the naming,
 packing, witness, and rendering inputs that the boundary actually needs. This
 can remain a follow-up if the correctness fixes do not expose the natural
 interface.
 
-### 12. [ ] Centralize generated symbol naming
+### 11. [ ] Centralize generated symbol naming
 
 Actor-template and route-family field names are calculated independently in
 `model/layout.rs` and `codegen/emitter.rs`. Move each algorithm to one shared
 naming API so layout planning and declaration emission cannot diverge.
 
-### 13. [ ] Type generated-field sources
+### 12. [ ] Type generated-field sources
 
 `OutputStateTarget` reduces trusted generated-field provenance to
 `BTreeMap<GeneratedFieldId, String>`. A later `GeneratedFieldSource` enum could
 keep the provenance typed until final Sil rendering.
 
-### 14. [ ] Split the remaining backend concentration
+### 13. [ ] Split the remaining backend concentration
 
 `emitter.rs` and `body.rs` still combine several responsibilities. Defer the
 split until the correctness work reveals stable interfaces. Likely boundaries
