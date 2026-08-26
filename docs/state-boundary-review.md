@@ -182,26 +182,11 @@ Choose and document one rule:
 
 The alias rule matches the current language and is the smaller clarification.
 
-### 8. [ ] Decide the pre-release artifact-version policy
+### 9. [x] Correct small documentation drift
 
-**Status:** Policy decision, not a confirmed compiler bug.
-
-`RouteArtifact` changed from flat constructed-route fields to the tagged
-`RouteSuccessorArtifact`, while the schema version remains 1. Old and new
-development artifacts are not mutually readable.
-
-The project has previously kept version 1 across pre-release breaking changes.
-Either keep that policy explicitly, or bump the schema to 2 because the
-artifact verifier treats the version as a compatibility contract.
-
-### 9. [ ] Correct small documentation drift
-
-- `argent-design.md` still shows the template hash as Blake2b; the compiler
-  uses Blake3.
-- `state_boundary.rs` describes only authenticated inputs, although it also
-  owns output materialization and proof selection.
-- After the fixes, update `compiler-design.md` so its provenance and digest
-  statements match the exact supported expression surface.
+- The template hash in `argent-design.md` uses Blake3.
+- `state_boundary.rs` describes its input and output responsibilities.
+- `compiler-design.md` states the current `digest(...)` expression surface.
 
 ## Non-blocking architectural follow-ups
 

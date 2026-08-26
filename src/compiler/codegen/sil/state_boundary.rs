@@ -1,4 +1,7 @@
-//! Typed boundary between authenticated physical inputs and authored state.
+//! Typed boundary between authored state and physical contract state.
+//!
+//! Plans authenticated input projection, successor materialization, and output
+//! template proof without exposing compiler-owned fields to authored values.
 
 use std::collections::BTreeMap;
 

@@ -193,8 +193,9 @@ then packs the storage fields in their declared ABI order and hashes the packed
 bytes.
 
 Expansion-backed fields contribute their validated storage digests. Generated
-route fields do not contribute. The compiler evaluates the authored expression
-once before it packs its fields.
+route fields do not contribute. The current entry-body surface accepts
+`state(ref)` and named authored bindings. Bind another typed authored
+expression to a local before passing it to `digest(...)`.
 
 ### Successor materialization
 

@@ -406,7 +406,7 @@ Argent uses Silverscript's template hash, which excludes all instance state,
 including compiler-owned state:
 
 ```text
-template_hash = blake2b(i64le(template_prefix.length) || template_prefix || i64le(template_suffix.length) || template_suffix)
+template_hash = blake3(i64le(template_prefix.length) || template_prefix || i64le(template_suffix.length) || template_suffix)
 ```
 
 The state bytes live between prefix and suffix, so template references stored in
