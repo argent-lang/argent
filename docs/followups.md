@@ -3,6 +3,20 @@
 This file contains small follow-up items. Each item gives its area, context,
 and required work.
 
+## Isolate state-boundary code generation
+
+**Area:** State-boundary code generation.
+
+**Context:** `state_boundary.rs` still imports the complete emitter module.
+Layout planning and emission also calculate some generated names separately.
+Generated output fields lose their typed provenance when they become a map of
+field IDs to Sil expressions.
+
+**Follow-up:** Give the state boundary explicit naming, packing, witness, and
+rendering inputs instead of importing `emitter::*`. Centralize generated actor
+template and route-family field names. Keep each generated field source typed
+until final Sil rendering instead of reducing it to a string expression.
+
 ## Define conversion from physical `State`
 
 When both state-layout relations are identity, `CounterState` and physical

@@ -11,3 +11,5 @@ Small implementation hints to revisit during the current compiler work.
 - Reject or define empty `become {}`; it currently becomes a no-op for `emits none`.
 - Retain each entry body's file offset so body diagnostics use source-file locations.
 - Match route-target delimiter kinds so malformed expressions receive structural errors.
+- Split `body.rs` and `emitter.rs` after their authored-value proof, state
+  conversion, naming, and rendering interfaces become stable.

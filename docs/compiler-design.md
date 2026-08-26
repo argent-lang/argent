@@ -202,7 +202,8 @@ bytes.
 Expansion-backed fields contribute their validated storage digests. Generated
 route fields do not contribute. The entry-body surface accepts `state(ref)`,
 typed authored bindings and constants, and direct global or actor function
-calls with a planned scalar authored-state result. A generated typed helper
+calls with a planned scalar authored-state result. It also accepts scalar
+elements selected from planned authored arrays. A generated typed helper
 evaluates a non-identifier value once before it projects and packs its fields.
 
 This is not general expression inference. A constructor is proven at a typed
