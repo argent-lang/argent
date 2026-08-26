@@ -50,7 +50,7 @@ actor ReserveAsset owns ReserveAssetState {
 actor WalletAsset owns ReserveAssetState {
     entry hold() emits next: WalletAsset {
         unrestricted(next.value);
-        become next <- WalletAsset(self.state);
+        become next <- self;
     }
 }
 

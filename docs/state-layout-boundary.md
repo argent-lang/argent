@@ -13,11 +13,11 @@ The immediate goals are:
 - make compiler-owned route fields absent from the Argent source model;
 - centralize every conversion between user state and physical contract state;
 - let layout-aligned codegen use Silverscript's native `State` object directly;
-- replace the special meaning of `self.state` with an explicit `become self` transition;
+- replace the special meaning of `self.state` with an explicit `output <- self` successor;
 - preserve the current route security rules and physical state encoding;
 - make future state-layout changes local and auditable.
 
-This is primarily an internal compiler architecture change. Except for replacing `self.state` with `self` in exact continuations, it should not change Argent application semantics, artifact-visible user state, or the runtime's physical state encoding.
+This is primarily an internal compiler architecture change. Except for replacing `Actor(self.state)` with `output <- self` in exact continuations, it should not change Argent application semantics, artifact-visible user state, or the runtime's physical state encoding.
 
 The invariants and semantic rules in this guide are normative. Rust type names, module names, enum variants, and function signatures are illustrative: an implementation may choose a cleaner API so long as it preserves the boundary and all conformance requirements.
 
@@ -119,13 +119,7 @@ User code controls only step 2. The compiler exclusively controls steps 3 and 4.
 
 ### 3.2 Exact self-continuation
 
-The exact continuation syntax is:
-
-```rust
-become self;
-```
-
-For a named route in a larger `become` set, the equivalent form is:
+Like every successor route, an exact continuation names its output:
 
 ```rust
 become next <- self;
@@ -148,7 +142,7 @@ Under the collision-resistance assumption of P2SH, this preserves the exact cont
 
 It lowers directly to a comparison between the successor output's script public key and the active input's script public key. It must not reconstruct a state object and must not be expressed internally as `CurrentActor(self.state)`.
 
-`become self` does not constrain the output's native KAS value. The existing explicit output-value policy remains unchanged. An entry that wants to preserve value must still state, for example:
+`next <- self` does not constrain the output's native KAS value. The existing explicit output-value policy remains unchanged. An entry that wants to preserve value must still state, for example:
 
 ```rust
 require(next.value == self.value);
@@ -156,15 +150,15 @@ require(next.value == self.value);
 
 ### 3.3 Resolution rules for `self`
 
-- `become self;` is valid only when exactly one emitted singleton output handle permits the current actor. Other emitted outputs do not make it ambiguous.
-- `output <- self` explicitly selects the output handle and is valid only when that output is singleton and permits the current actor.
+- `output <- self` is valid only when the selected output is singleton and permits the current actor.
+- Bare `become self` is invalid. Exact and constructed successors follow the same output-selection syntax.
 - Ranged output handles cannot use exact self-continuation until the language defines element selection for that case.
 - `self` is invalid as a local value, function argument, state constructor value, observed target, spawn target, or ordinary expression.
 - Exact self-continuation is valid regardless of whether route fields exist. It preserves the physical script without inspecting its layout.
 
 ### 3.4 Removal of `self.state`
 
-`self.state` should cease to be a source-level value. Its only important use was unchanged continuation, and `become self` expresses that operation more accurately and compiles more directly.
+`self.state` should cease to be a source-level value. Its only important use was unchanged continuation, and `output <- self` expresses that operation more accurately and compiles more directly.
 
 Changed transitions remain explicit. Users read the current fields and construct the new state:
 
@@ -175,12 +169,7 @@ AccountState next_state = {
 };
 ```
 
-An occurrence of `self.state` should produce a targeted diagnostic:
-
-```text
-`self.state` is not a value; use `become self` for an unchanged continuation,
-or construct the successor state explicitly from its fields
-```
+Argent performs no source-level lowering for `self.state`; invalid uses are rejected by ordinary semantic or Sil validation.
 
 Removing `self.state` also avoids an otherwise ambiguous question: whether it denotes source state, storage payload, or complete physical state.
 
@@ -210,7 +199,7 @@ struct ResolvedRoute {
 }
 ```
 
-Parsing may initially retain spans, but semantic resolution must produce a structured successor before SIL lowering begins. Output inference for `become self;` belongs in semantic resolution, where the entry's `emits` model is available.
+Parsing may initially retain spans, but semantic resolution must produce a structured successor and verify its selected output before SIL lowering begins.
 
 ### 4.2 One lowering environment per emitted contract
 
@@ -481,12 +470,12 @@ The chosen builtin always receives a `PhysicalStateExpr`. The selected target pl
 
 ### 4.9 Current compiler mapping
 
-The existing implementation already contains most required concepts, but they are distributed across large lowering functions:
+The implementation now places the boundary across these focused components:
 
-- `src/compiler/model/layout.rs` currently contains fixed-width layout facts and is the natural home for typed layout plans, or for a sibling `state_layout.rs` module.
-- `src/compiler/codegen/emitter.rs` emits physical state structs, reads peer states, selects input builtins, and currently recognizes exact self through a textual `self.state` comparison.
-- `src/compiler/codegen/sil/body.rs` owns state bindings, state-expression materialization, route lowering, and output builtin selection.
-- global and actor function lowering must consume the same per-contract state plan; it must not preserve the pending branches' direct-call and authored-local exceptions.
+- `src/compiler/model/layout.rs` owns typed source, storage, physical, and per-contract layout plans.
+- `src/compiler/codegen/sil/state_boundary.rs` owns authenticated input projection, output materialization, template-proof selection, and exact preservation.
+- `src/compiler/codegen/sil/body.rs` owns state bindings and control-flow ordering while requesting representation changes through the boundary.
+- `src/compiler/codegen/sil/state_values.rs` and `functions` apply the per-contract state plan to callable signatures, arguments, results, and arrays.
 - `src/compiler/codegen/emitter/tests.rs`, `tests/body_lowering_scopes.rs`, and generated example fixtures provide the existing test surfaces.
 
 The target is not a second codegen implementation. It is a small layout plan plus one boundary adapter used by the existing emitter and body lowerer.
@@ -501,7 +490,7 @@ The target is not a second codegen implementation. It is a small layout plan plu
 
 4. **Field identity is structural.** Map fields by stable IDs, not by concatenated names, generated prefixes, or positional arithmetic scattered through codegen.
 
-5. **Exact self is semantic, not an optimization heuristic.** `become self` produces `Successor::ExactSelf` and lowers directly to script-public-key equality.
+5. **Exact self is semantic, not an optimization heuristic.** `output <- self` produces `Successor::ExactSelf` and lowers directly to script-public-key equality.
 
 6. **Template proof and state layout stay orthogonal.** Choosing a template-validation builtin does not decide how state is represented, and materializing state does not decide how its template is authenticated.
 
@@ -650,25 +639,24 @@ Keep the legacy exact-continuation syntax working through the existing semantic 
 
 Exit condition: no output call site manually assembles physical fields or independently selects a physical SIL state type.
 
-### Commit 6: Add `become self` and remove `self.state`
+### Commit 6: Add an exact `self` successor and remove `self.state`
 
 Add the dedicated successor syntax and IR variant.
 
 Support:
 
 ```rust
-become self;
 become next <- self;
 become { next <- self, peer <- Peer(next_peer) };
 ```
 
-Perform output-handle inference and target compatibility checks during semantic resolution. Replace textual exact-self recognition in `route_validation_kind` with structured matching on `Successor::ExactSelf`.
+Perform output-handle target compatibility checks during semantic resolution. Replace textual exact-self recognition in `route_validation_kind` with structured matching on `Successor::ExactSelf`.
 
 Lower exact self directly to the existing script-public-key comparison. Do not create a state expression or call a state-validation builtin.
 
-Remove `self.state` from valid members and update examples, design notes, syntax highlighting, diagnostics, and fixtures. Keep a specific error for old syntax rather than allowing it to fail later in Silverscript.
+Remove `self.state` from valid members and update examples, design notes, syntax highlighting, and fixtures. Invalid uses fall through to ordinary semantic or Sil validation.
 
-Exit condition: exact-self generated SIL and template hashes match the baseline exact-continuation path, while every non-`become` use of `self` and every `self.state` use is rejected.
+Exit condition: exact-self generated SIL and template hashes match the baseline exact-continuation path. Bare `self` is valid only as the successor in `output <- self`, and every `self.state` use is rejected. Existing `self.value`, `self.cov_id`, and authored `self.<field>` expressions remain valid.
 
 ### Commit 7: Remove legacy paths and lock conformance
 
@@ -687,7 +675,7 @@ Regenerate tracked fixtures once, review every generated SIL and artifact diff, 
 
 Keep `entry-ranges-part1` paused during this commit. Document the shared array element rules it must consume when later resumed.
 
-Exit condition: `./check.sh --full` passes; every representation switch, including functions and arrays, is reachable through the typed boundary; documentation describes `become self`; and generated Sil ABI or contract-identity changes, if any, are explicitly enumerated rather than incidental.
+Exit condition: `./check.sh --full` passes; every representation switch, including functions and arrays, is reachable through the typed boundary; documentation describes `output <- self`; and generated Sil ABI or contract-identity changes, if any, are explicitly enumerated rather than incidental.
 
 ## 7. Sanity checks during the migration
 
@@ -736,7 +724,7 @@ The following invariants deserve explicit attention throughout the sequence.
 - User field references behave identically whether backed by direct `State` or a projected binding.
 - `.value` remains transaction-output value, not a state field.
 - `self.cov_id` and other `self` context members retain their current lowering.
-- `become self` does not silently add a native-value constraint.
+- `output <- self` does not silently add a native-value constraint.
 
 ### 7.5 Runtime and artifact stability
 
@@ -744,7 +732,7 @@ The following invariants deserve explicit attention throughout the sequence.
 - Hidden witness recipes remain complete and ordered.
 - Artifact dependency IDs and interface fingerprints change only if their documented inputs intentionally change.
 - Generated dispatch tags, scripts, template hashes, and artifact IDs may change when an aligned entry signature deliberately lowers to `State`; record the cause of each change.
-- Do not bump the artifact schema merely for internal Rust types. Bump it only if serialized artifact meaning or shape changes.
+- Before compatibility is promised, artifact meaning and shape may evolve without a schema bump. Once artifacts have compatibility obligations, serialized meaning or shape changes require one.
 
 ### 7.6 Function and evaluation stability
 
@@ -790,14 +778,13 @@ physical_fields == generated_fields + mapped_storage_fields
 
 Positive cases:
 
-- `become self;` with one compatible emitted output;
 - `become next <- self;`;
 - a multi-route block containing one exact-self route;
 - exact self in an actor that has route fields.
 
 Negative cases:
 
-- ambiguous `become self;` with multiple singleton outputs that permit the current actor;
+- bare `become self;` without an output handle;
 - exact self on a ranged output handle;
 - `output <- self` when the output cannot become the current actor;
 - `self` in an ordinary expression;
@@ -918,17 +905,17 @@ Source transition:
 
 ```rust
 require(next.value == self.value);
-become self;
+become next <- self;
 ```
 
 Expected:
 
-- output handle is inferred;
+- output handle is explicit;
 - generated code compares output and active-input script public keys;
 - no state object is constructed for the route;
 - no `validateOutputState*` builtin is used for the route;
 - changing any user state field fails;
-- changing the native value fails because of the explicit `require`, not because of `become self`.
+- changing the native value fails because of the explicit `require`, not because of `next <- self`.
 
 Repeat without the value `require` and with the existing explicit unrestricted-value declaration. A value-only change must then remain permitted by the exact-self check.
 
@@ -939,7 +926,7 @@ Setup: current actor has one or more generated route fields.
 Expected:
 
 - storage-to-physical: augmented;
-- `become self` still takes the exact script-public-key path;
+- `next <- self` still takes the exact script-public-key path;
 - neither source-state projection nor physical materialization occurs;
 - changing a user field fails;
 - changing a generated route field fails;
@@ -1034,7 +1021,6 @@ Expected:
 
 - exact self applies only to `current`;
 - the peer route follows ordinary materialization and template validation;
-- bare `become self;` resolves to `current` because it is the only output that permits the active actor;
 - swapping the two output roles fails the existing output-shape checks.
 
 ### V11: Invalid source-boundary access
@@ -1098,7 +1084,7 @@ Implement these vectors initially as focused Rust tests and small `.ag`/generate
 
 The change is complete when:
 
-- `self.state` is absent from the language and `become self` is the exact-continuation form;
+- `self.state` is absent from the language and `output <- self` is the exact-continuation form;
 - exact self is represented explicitly in the semantic IR and lowers directly to P2SH script-public-key equality;
 - every emitted contract owns one typed state-lowering environment with source representations and actor-keyed target physical plans;
 - all user-to-physical layout transitions go through the SIL state boundary;

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "0b0044f2b163af7b47a69a90fc61cea51e21b8fcab7189ff7db088158b1510d7",
+  "id": "d6f962ae8d5b37fa05264dc822c74bed1b5ac31a3d457d7b58b158785807edbc",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -661,15 +661,21 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "Spectator",
-                "template_id": "template/spectator",
-                "state_expr": "next_board"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Spectator",
+                  "template_id": "template/spectator",
+                  "state_expr": "next_board"
+                }
               },
               {
                 "output": "next",
-                "actor": "Mux",
-                "template_id": "template/mux",
-                "state_expr": "next_board"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Mux",
+                  "template_id": "template/mux",
+                  "state_expr": "next_board"
+                }
               }
             ]
           }
@@ -798,15 +804,21 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "Pawn",
-                "template_id": "template/pawn",
-                "state_expr": "next_board"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Pawn",
+                  "template_id": "template/pawn",
+                  "state_expr": "next_board"
+                }
               },
               {
                 "output": "next",
-                "actor": "Knight",
-                "template_id": "template/knight",
-                "state_expr": "next_board"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Knight",
+                  "template_id": "template/knight",
+                  "state_expr": "next_board"
+                }
               }
             ]
           }

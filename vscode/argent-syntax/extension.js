@@ -5,6 +5,7 @@ const path = require('node:path');
 const vscode = require('vscode');
 const {
   BUILTINS,
+  KEYWORD_DOCUMENTATION,
   KEYWORDS,
   PRIMITIVE_DOCUMENTATION,
   PRIMITIVE_TYPES,
@@ -309,6 +310,9 @@ function completionItems(catalog, actor) {
   for (const keyword of KEYWORDS) {
     const item = new vscode.CompletionItem(keyword, vscode.CompletionItemKind.Keyword);
     item.detail = 'Argent keyword';
+    if (KEYWORD_DOCUMENTATION[keyword]) {
+      item.documentation = new vscode.MarkdownString(KEYWORD_DOCUMENTATION[keyword]);
+    }
     item.sortText = `3-${keyword}`;
     items.push(item);
   }

@@ -27,7 +27,7 @@ actor Foreign owns ForeignState {
     entry hold() emits next: Foreign {
         require(amount_is_valid());
         unrestricted(next.value);
-        become next <- Foreign(self.state);
+        become next <- self;
     }
 
     entry route() emits next: Target {

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "c3e4a4f3416eccf45447f0bebc07804e7dec4c0728f1a091134e54620ba2956c",
+  "id": "aaef6ed92be20e90329c622c4fed7c80ff55244818d206bd441fb3ca82a625a4",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -448,9 +448,12 @@
             "routes": [
               {
                 "output": "cell",
-                "actor": "Cell",
-                "template_id": "template/cell",
-                "state_expr": "next_cell"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Cell",
+                  "template_id": "template/cell",
+                  "state_expr": "next_cell"
+                }
               }
             ]
           },
@@ -656,15 +659,21 @@
             "routes": [
               {
                 "output": "source_cell",
-                "actor": "Cell",
-                "template_id": "template/cell",
-                "state_expr": "next_source"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Cell",
+                  "template_id": "template/cell",
+                  "state_expr": "next_source"
+                }
               },
               {
                 "output": "target_cell",
-                "actor": "Cell",
-                "template_id": "template/cell",
-                "state_expr": "next_target"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Cell",
+                  "template_id": "template/cell",
+                  "state_expr": "next_target"
+                }
               }
             ]
           }

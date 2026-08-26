@@ -22,7 +22,7 @@ impl EntryBody {
         let text = text.into();
         let tokens = lex(&text)?;
         let mut body = Self { text, tokens, statements: Vec::new() };
-        body.statements = EntryStatementParser { cursor: body.cursor() }.parse_sequence(None)?;
+        body.statements = EntryStatementParser { cursor: body.cursor(), next_route_id: 0 }.parse_sequence(None)?;
         Ok(body)
     }
 
@@ -163,12 +163,29 @@ pub(crate) struct EntryStructDestructure {
     pub(crate) value: Span,
 }
 
+/// Stable identity for one source route within an entry body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct RouteId(usize);
+
+impl RouteId {
+    pub(crate) fn index(self) -> usize {
+        self.0
+    }
+}
+
+/// One parsed successor retaining source spans for diagnostics and lowering.
+#[derive(Debug, Clone)]
+pub(crate) enum EntrySuccessor {
+    ExactSelf { _span: Span },
+    Constructed { actor: Span, state: Span },
+}
+
 /// One parsed route in a `become` statement.
 #[derive(Debug, Clone)]
 pub(crate) struct EntryRoute {
+    pub(crate) id: RouteId,
     pub(crate) output: String,
-    pub(crate) actor: Span,
-    pub(crate) state: Span,
+    pub(crate) successor: EntrySuccessor,
 }
 
 /// Traverses a body's shared tokens while retaining access to their source text.
@@ -292,6 +309,7 @@ impl<'a> EntryBodyCursor<'a> {
 
 struct EntryStatementParser<'a> {
     cursor: EntryBodyCursor<'a>,
+    next_route_id: usize,
 }
 
 impl EntryStatementParser<'_> {
@@ -404,13 +422,28 @@ impl EntryStatementParser<'_> {
     fn parse_route(&mut self) -> Result<EntryRoute> {
         let output = self.expect_any_ident()?;
         if !self.consume_left_arrow() {
-            return Err(self.error("every `become` route must name its output with `output <- Actor(state)`"));
+            return Err(self.error("every `become` route must name its output with `output <- successor`"));
         }
-        let actor = self.take_route_actor_expr()?;
 
-        self.expect_symbol('(')?;
-        let state = self.cursor.take_balanced_after_open('(', ')').ok_or_else(|| self.error("unterminated route state expression"))?;
-        Ok(EntryRoute { output, actor, state })
+        let successor = if self.check_exact_self_successor() {
+            let span = self.cursor.current().span;
+            self.cursor.advance();
+            EntrySuccessor::ExactSelf { _span: span }
+        } else {
+            let actor = self.take_route_actor_expr()?;
+            self.expect_symbol('(')?;
+            let state =
+                self.cursor.take_balanced_after_open('(', ')').ok_or_else(|| self.error("unterminated route state expression"))?;
+            EntrySuccessor::Constructed { actor, state }
+        };
+        let id = RouteId(self.next_route_id);
+        self.next_route_id += 1;
+        Ok(EntryRoute { id, output, successor })
+    }
+
+    fn check_exact_self_successor(&self) -> bool {
+        self.cursor.check_ident(word::SELF)
+            && matches!(self.cursor.peek_kind(1), None | Some(TokenKind::Eof) | Some(TokenKind::Symbol(',' | ';' | '}')))
     }
 
     fn take_route_actor_expr(&mut self) -> Result<Span> {

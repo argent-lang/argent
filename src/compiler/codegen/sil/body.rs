@@ -1,15 +1,17 @@
 //! Lowers structured Argent entry bodies into generated Sil source.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ops::Range;
 
 use crate::compiler::model::{
-    ActorTarget, CovenantGroup, EntryInteraction, InteractionSource, Model, RouteFamily, StaticActorTarget, TemplateSelector,
-    actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding, observed_open_bindings,
-    observed_open_state_for_decl, parse_actor_enum_selector, parse_actor_enum_variant, spawn_target_state,
+    ActorTarget, CovenantGroup, EntryInteraction, InteractionSource, Model, ResolvedRoute, ResolvedSuccessor, RouteFamily,
+    StaticActorTarget, TemplateSelector, actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding,
+    observed_open_bindings, observed_open_state_for_decl, parse_actor_enum_selector, parse_actor_enum_variant, spawn_target_state,
 };
 use crate::compiler::naming::to_snake;
-use crate::compiler::syntax::body::{EntryBinding, EntryLocalDecl, EntryRoute, EntryStatement, EntryStructDestructure};
+use crate::compiler::syntax::body::{
+    EntryBinding, EntryLocalDecl, EntryRoute, EntryStatement, EntryStructDestructure, EntrySuccessor,
+};
 use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, Span, Token, TokenKind, lex};
 use crate::compiler::syntax::word;
 use crate::compiler::syntax::*;
@@ -96,6 +98,13 @@ struct BodyLowerer<'a, 'm, 'p> {
     validated_spawns: BTreeSet<String>,
     conditional_depth: usize,
     current_statement: Option<Span>,
+}
+
+#[derive(Clone)]
+struct ConstructedRoute {
+    output: String,
+    actor: String,
+    state: String,
 }
 
 struct PlannedStateValueSite {
@@ -512,8 +521,12 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     }
 
     fn lower_statements(&mut self, out: &mut String, indent: usize, statements: &[EntryStatement]) -> Result<()> {
+        let reserved_binding_keywords = HashSet::from([word::SELF]);
         for statement in statements {
             self.current_statement = Some(statement.span());
+            if let Some(keyword) = binds_keywords(statement, &reserved_binding_keywords) {
+                return Err(self.error(format!("entry binding `{keyword}` is reserved for the current actor context")));
+            }
             match statement {
                 EntryStatement::If { condition, then_branch, else_branch, .. } => {
                     self.lower_if(out, indent, *condition, then_branch, else_branch.as_deref(), true)?;
@@ -834,19 +847,24 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     }
 
     fn lower_become(&mut self, out: &mut String, indent: usize, routes: &[EntryRoute]) -> Result<()> {
+        let entry_model = self.model.entry_model(self.actor, self.entry)?;
         for route in routes {
-            let route = self.route_call(route);
+            let route =
+                entry_model.route(route.id).ok_or_else(|| self.error(format!("missing resolved route {}", route.id.index())))?.clone();
             self.lower_route(out, indent, route)?;
         }
         Ok(())
     }
 
-    fn route_call(&self, route: &EntryRoute) -> RouteCall {
-        RouteCall {
+    fn constructed_route(&self, route: &EntryRoute) -> Result<ConstructedRoute> {
+        let EntrySuccessor::Constructed { actor, state } = route.successor else {
+            return Err(self.error("exact successor `self` is only valid for current emitted outputs"));
+        };
+        Ok(ConstructedRoute {
             output: route.output.clone(),
-            actor: self.entry.body.span_text(route.actor).trim().to_string(),
-            state: self.entry.body.span_text(route.state).trim().to_string(),
-        }
+            actor: self.entry.body.span_text(actor).trim().to_string(),
+            state: self.entry.body.span_text(state).trim().to_string(),
+        })
     }
 
     fn lower_outputs_become(&mut self, out: &mut String, indent: usize, group_name: &str, routes: &[EntryRoute]) -> Result<()> {
@@ -864,7 +882,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                 return Err(self.error(format!("spawn `{group_name}` outputs are validated more than once")));
             }
         }
-        let routes = routes.iter().map(|route| self.route_call(route)).collect();
+        let routes = routes.iter().map(|route| self.constructed_route(route)).collect::<Result<Vec<_>>>()?;
         self.lower_covenant_outputs_become(out, indent, group, routes)
     }
 
@@ -873,7 +891,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         out: &mut String,
         indent: usize,
         group: &CovenantGroup<'a>,
-        routes: Vec<RouteCall>,
+        routes: Vec<ConstructedRoute>,
     ) -> Result<()> {
         let outputs_by_name = group.outputs().iter().map(|output| (output.handle(), output)).collect::<BTreeMap<_, _>>();
         let group_name = group.name().expect("current covenant is not lowered through an external output clause");
@@ -922,7 +940,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         indent: usize,
         context: CovenantOutputContext<'a>,
         target: &ActorTarget,
-        route: RouteCall,
+        route: ConstructedRoute,
     ) -> Result<()> {
         let actor_expr = context.actor();
         let static_target = match context {
@@ -1045,7 +1063,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         &mut self,
         out: &mut String,
         indent: usize,
-        route: &RouteCall,
+        route: &ConstructedRoute,
         target: &OutputStateTarget,
     ) -> Result<AuthoredStateExpr> {
         let expr = strip_outer_parentheses(route.state.trim());
@@ -1071,7 +1089,19 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         Ok(authored.rebound(name))
     }
 
-    fn lower_route(&mut self, out: &mut String, indent: usize, route: RouteCall) -> Result<()> {
+    fn lower_route(&mut self, out: &mut String, indent: usize, route: ResolvedRoute) -> Result<()> {
+        if matches!(route.successor, ResolvedSuccessor::ExactSelf) {
+            let output_idx = hidden_output_idx_name(&route.output);
+            push_indent(out, indent);
+            out.push_str(&format!("// :: become {}\n", self.actor.name));
+            preserve_exact_self(out, indent, &output_idx);
+            return Ok(());
+        }
+        let ResolvedSuccessor::Constructed { actor, state } = route.successor else { unreachable!("exact successor returned above") };
+        self.lower_constructed_route(out, indent, ConstructedRoute { output: route.output, actor, state })
+    }
+
+    fn lower_constructed_route(&mut self, out: &mut String, indent: usize, route: ConstructedRoute) -> Result<()> {
         if self.bindings.selector(&route.actor).is_some() {
             return self.lower_selector_route(out, indent, route);
         }
@@ -1082,13 +1112,6 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         }
         self.model.actor_state(&route.actor)?;
         let output_idx = hidden_output_idx_name(&route.output);
-
-        if is_legacy_exact_self_route(self.actor, &route) {
-            push_indent(out, indent);
-            out.push_str(&format!("// :: become {}\n", route.actor));
-            preserve_exact_self(out, indent, &output_idx);
-            return Ok(());
-        }
 
         let output_target = plan_actor_output_state(self.actor, &route.actor, self.model)?;
         let state_ty = output_target.physical_type().to_string();
@@ -1111,7 +1134,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         Ok(())
     }
 
-    fn lower_selector_route(&mut self, out: &mut String, indent: usize, route: RouteCall) -> Result<()> {
+    fn lower_selector_route(&mut self, out: &mut String, indent: usize, route: ConstructedRoute) -> Result<()> {
         let selector = self
             .bindings
             .selector(&route.actor)
@@ -1160,10 +1183,6 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let expected_state_value = expected_ty.and_then(|ty| self.state_values.plan_sil_type(ty));
         if let Some(expected) = expected_state_value.as_ref().filter(|value| !value.shape().is_scalar()) {
             return self.lower_authored_state_array_expr(expr, expected, indent);
-        }
-        if expr == "self.state" {
-            let ty = expected_ty.ok_or_else(|| ArgentError::new("`self.state` requires a target state type during lowering"))?;
-            return self.lower_self_state_expr(ty, indent);
         }
         if let Some(value) = parse_digest_call(expr) {
             return self.lower_digest_expr(value);
@@ -1347,52 +1366,6 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         }))
     }
 
-    fn lower_self_state_expr(&self, ty: &str, indent: usize) -> Result<String> {
-        if ty != "State" {
-            if ty != self.actor.state {
-                return Err(self.error(format!("`self.state` has authored type `{}`, not `{ty}`", self.actor.state)));
-            }
-            return self.lower_authored_self_state_expr(indent);
-        }
-        let state_name = &self.actor.state;
-        let fields = self
-            .model
-            .storage_state(state_name)?
-            .fields
-            .iter()
-            .map(|field| (field.name.clone(), field.name.clone()))
-            .collect::<Vec<_>>();
-        self.render_state_object_for_state(state_name, ty, &fields, indent)
-    }
-
-    fn lower_authored_self_state_expr(&self, indent: usize) -> Result<String> {
-        let source = self.model.state(&self.actor.state)?;
-        let storage = self.model.storage_state(&self.actor.state)?;
-        let mut fields = Vec::new();
-        for field in &storage.fields {
-            let value = if let Some(digest) =
-                source.expansion.as_ref().and_then(|expansion| expansion.digests.iter().find(|digest| digest.field == field.name))
-            {
-                let spec = state_expansion_witness_specs_for_actor(self.actor, self.model)
-                    .into_iter()
-                    .find(|spec| spec.field == digest.field)
-                    .expect("active expansion digest has an entry witness plan");
-                let memory_fields = self
-                    .model
-                    .state(&digest.state)?
-                    .fields
-                    .iter()
-                    .map(|memory_field| (memory_field.name.clone(), hidden_state_expansion_field_name(&spec, &memory_field.name)))
-                    .collect::<Vec<_>>();
-                self.render_state_object(&digest.state, &digest.state, &memory_fields, Vec::new(), indent + 4)?
-            } else {
-                field.name.clone()
-            };
-            fields.push((field.name.clone(), value));
-        }
-        self.render_state_object(&self.actor.state, &self.actor.state, &fields, Vec::new(), indent)
-    }
-
     fn lower_state_constructor(&self, state_name: &str, sil_type: &str, body: &str, indent: usize) -> Result<String> {
         self.model.state(state_name)?;
         if sil_type == state_name {
@@ -1548,17 +1521,6 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         } else {
             None
         }
-    }
-
-    fn render_state_object_for_state(
-        &self,
-        state_name: &str,
-        sil_type: &str,
-        fields: &[(String, String)],
-        indent: usize,
-    ) -> Result<String> {
-        let generated_fields = hidden_template_object_fields_for_state(self.actor, state_name, self.model);
-        self.render_state_object(state_name, sil_type, fields, generated_fields, indent)
     }
 
     /// `state_name` selects the authored/storage fields, while `sil_type`
@@ -1725,6 +1687,19 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     }
 }
 
+fn binds_keywords<'a>(statement: &'a EntryStatement, keywords: &HashSet<&str>) -> Option<&'a str> {
+    let bindings = match statement {
+        EntryStatement::Local { declaration, .. } => std::slice::from_ref(&declaration.binding),
+        EntryStatement::For { binding, .. } => std::slice::from_ref(binding),
+        EntryStatement::Plain { bindings, .. } => bindings,
+        EntryStatement::If { .. }
+        | EntryStatement::Block { .. }
+        | EntryStatement::Become { .. }
+        | EntryStatement::ValidateOutputsBecome { .. } => return None,
+    };
+    bindings.iter().map(|binding| binding.name.as_str()).find(|name| keywords.contains(name))
+}
+
 pub(in crate::compiler::codegen) fn lower_entry_expr(
     actor: &ActorDecl,
     entry: &EntryDecl,
@@ -1736,7 +1711,7 @@ pub(in crate::compiler::codegen) fn lower_entry_expr(
     BodyLowerer::new(actor, entry, model, None, &state_values)?.lower_expr(expr, expected_ty, 8)
 }
 
-fn generated_state_name(route: &RouteCall, state_ty: &str) -> String {
+fn generated_state_name(route: &ConstructedRoute, state_ty: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}state_{}_{}", to_snake(&route.output), to_snake(state_ty))
 }
 

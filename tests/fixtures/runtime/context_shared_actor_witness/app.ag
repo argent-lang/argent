@@ -63,7 +63,7 @@ actor Anchor owns AnchorState {
 actor Pair owns PairState {
     entry keep() emits next: Pair {
         unrestricted(next.value);
-        become next <- Pair(self.state);
+        become next <- self;
     }
 }
 

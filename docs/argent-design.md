@@ -180,15 +180,15 @@ transaction. `this` identifies the active input and script. `self` presents the
 active input as a logical Argent actor.
 
 `self` is a context namespace. It is not an actor handle or another first-class
-actor value. Its valid and reserved members are:
+actor value. Bare `self` is valid only as an exact successor in
+`output <- self`. Its valid and reserved members are:
 
 ```text
 self.value  // Native KAS value of the UTXO consumed by the active input.
             // Type: int.
-self.state  // Complete typed source-level state owned by the actor.
-            // Source type: the state in `owns`; backed by physical State.
 self.cov_id // Covenant ID carried by the active input. Type: cov_id.
             // Lowers to OpInputCovenantId(this.activeInputIndex).
+self.state  // Reserved and invalid. Construct authored state from its fields.
 self.type   // Reserved.
 self.ref    // Reserved.
 ```
@@ -283,7 +283,7 @@ cuts.
 Route lowering uses the strongest template identity already proved by the entry
 model:
 
-- An exact self-continuation with `self.state` compares the successor output's
+- An exact self-continuation with `output <- self` compares the successor output's
   script public key with the active input's script public key.
 - A same-actor continuation with new state uses `validateOutputState`.
 - A foreign continuation can use `validateOutputStateWithInputTemplate` when a

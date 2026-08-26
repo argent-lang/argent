@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "a530b154300488a8e07a08eb7018307ef14b981129c854466d3ca43ab290aea0",
+  "id": "e3f4f7f6257edd912699594ffcd59c28b2d4b68d7df9a1f1cb4f33b488db9d50",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -650,15 +650,18 @@
             "routes": [
               {
                 "output": "league",
-                "actor": "League",
-                "template_id": "template/league",
-                "state_expr": "self.state"
+                "successor": {
+                  "kind": "exact_self"
+                }
               },
               {
                 "output": "player",
-                "actor": "Player",
-                "template_id": "template/player",
-                "state_expr": "next_player"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Player",
+                  "template_id": "template/player",
+                  "state_expr": "next_player"
+                }
               }
             ]
           }
@@ -872,21 +875,30 @@
             "routes": [
               {
                 "output": "self_out",
-                "actor": "Player",
-                "template_id": "template/player",
-                "state_expr": "next_self"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Player",
+                  "template_id": "template/player",
+                  "state_expr": "next_self"
+                }
               },
               {
                 "output": "opponent_out",
-                "actor": "Player",
-                "template_id": "template/player",
-                "state_expr": "next_opponent"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Player",
+                  "template_id": "template/player",
+                  "state_expr": "next_opponent"
+                }
               },
               {
                 "output": "game",
-                "actor": "StonesGame",
-                "template_id": "template/stones_game",
-                "state_expr": "next_game"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "StonesGame",
+                  "template_id": "template/stones_game",
+                  "state_expr": "next_game"
+                }
               }
             ]
           },
@@ -1230,15 +1242,21 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "StonesSettle",
-                "template_id": "template/stones_settle",
-                "state_expr": "ticket"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "StonesSettle",
+                  "template_id": "template/stones_settle",
+                  "state_expr": "ticket"
+                }
               },
               {
                 "output": "next",
-                "actor": "StonesGame",
-                "template_id": "template/stones_game",
-                "state_expr": "next_game"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "StonesGame",
+                  "template_id": "template/stones_game",
+                  "state_expr": "next_game"
+                }
               }
             ]
           },
@@ -1346,9 +1364,12 @@
             "routes": [
               {
                 "output": "settle",
-                "actor": "StonesSettle",
-                "template_id": "template/stones_settle",
-                "state_expr": "ticket"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "StonesSettle",
+                  "template_id": "template/stones_settle",
+                  "state_expr": "ticket"
+                }
               }
             ]
           }
@@ -1505,15 +1526,21 @@
             "routes": [
               {
                 "output": "player_a_out",
-                "actor": "Player",
-                "template_id": "template/player",
-                "state_expr": "next_player_a"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Player",
+                  "template_id": "template/player",
+                  "state_expr": "next_player_a"
+                }
               },
               {
                 "output": "player_b_out",
-                "actor": "Player",
-                "template_id": "template/player",
-                "state_expr": "next_player_b"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Player",
+                  "template_id": "template/player",
+                  "state_expr": "next_player_b"
+                }
               }
             ]
           }

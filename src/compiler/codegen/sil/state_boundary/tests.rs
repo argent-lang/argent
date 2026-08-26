@@ -103,7 +103,7 @@ fn expanded_input_requires_a_validated_preimage_for_authored_access() {
                 entry inspect() consumes { vault: Vault, } emits next: Reader {
                     require(vault.nonce >= 0);
                     unrestricted(next.value);
-                    become next <- Reader(self.state);
+                    become next <- self;
                 }
             }
 

@@ -5,14 +5,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::compiler::naming::to_snake;
 use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX};
 use crate::compiler::syntax::word;
-use crate::compiler::syntax::{
-    ActorDecl, ArrayDim, EmitOutput, EmitSpec, EntryDecl, EntryKind, ObserveDecl, ObservedActorDecl, RouteCall,
-};
+use crate::compiler::syntax::{ActorDecl, ArrayDim, EmitOutput, EmitSpec, EntryDecl, EntryKind, ObserveDecl, ObservedActorDecl};
 use crate::error::{ArgentError, Result};
 
 use super::{
-    InteractionSource, Model, observed_open_bindings, observed_open_state_for_decl, packed_field_len,
-    resolve_observe_covenant_id_source, spawn_target_state,
+    EntryModel, InteractionSource, Model, ResolvedRoute, ResolvedSuccessor, observed_open_bindings, observed_open_state_for_decl,
+    packed_field_len, resolve_observe_covenant_id_source, spawn_target_state,
 };
 
 impl Model<'_> {
@@ -341,23 +339,26 @@ impl Model<'_> {
             )));
         }
 
-        for route in &entry.routes {
-            if route.state.trim().is_empty() {
-                return Err(ArgentError::new(format!(
-                    "entry `{}::{}` has an empty `become` state for actor `{}`",
-                    actor.name, entry.name, route.actor
-                )));
-            }
-            for target in self.route_targets(actor, entry, route)? {
-                self.require_template_actor(
-                    &target,
-                    format!("entry `{}::{}` routes to unknown actor `{target}`", actor.name, entry.name),
-                )?;
-                self.actor_state(&target)?;
+        let entry_model = self.entry_model(actor, entry)?;
+        for route in entry_model.routes() {
+            if let ResolvedSuccessor::Constructed { actor: target_expr, state } = &route.successor {
+                if state.trim().is_empty() {
+                    return Err(ArgentError::new(format!(
+                        "entry `{}::{}` has an empty `become` state for actor `{target_expr}`",
+                        actor.name, entry.name
+                    )));
+                }
+                for target in self.route_targets(actor, entry, route)? {
+                    self.require_template_actor(
+                        &target,
+                        format!("entry `{}::{}` routes to unknown actor `{target}`", actor.name, entry.name),
+                    )?;
+                    self.actor_state(&target)?;
+                }
             }
             self.validate_route_allowed(actor, entry, route)?;
         }
-        self.validate_route_coverage(actor, entry)?;
+        self.validate_route_coverage(actor, entry, entry_model)?;
         Ok(())
     }
 
@@ -545,11 +546,15 @@ impl Model<'_> {
         Ok(())
     }
 
-    fn validate_route_allowed(&self, actor: &ActorDecl, entry: &EntryDecl, route: &RouteCall) -> Result<()> {
+    fn validate_route_allowed(&self, actor: &ActorDecl, entry: &EntryDecl, route: &ResolvedRoute) -> Result<()> {
+        let target_label = match &route.successor {
+            ResolvedSuccessor::ExactSelf => word::SELF,
+            ResolvedSuccessor::Constructed { actor, .. } => actor,
+        };
         match &entry.emits {
             EmitSpec::None => Err(ArgentError::new(format!(
                 "entry `{}::{}` has a `become` route to `{}`, but declares `emits none`",
-                actor.name, entry.name, route.actor
+                actor.name, entry.name, target_label
             ))),
             EmitSpec::Outputs(outputs) => {
                 let output = outputs.iter().find(|output| output.name == route.output).ok_or_else(|| {
@@ -568,7 +573,7 @@ impl Model<'_> {
                         actor.name,
                         entry.name,
                         output.name,
-                        route.actor,
+                        target_label,
                         output.actors.join(" | ")
                     )))
                 }
@@ -576,14 +581,20 @@ impl Model<'_> {
         }
     }
 
-    fn validate_route_coverage(&self, actor: &ActorDecl, entry: &EntryDecl) -> Result<()> {
+    fn validate_route_coverage(&self, actor: &ActorDecl, entry: &EntryDecl, entry_model: &EntryModel<'_>) -> Result<()> {
         match &entry.emits {
             EmitSpec::None => Ok(()),
-            EmitSpec::Outputs(outputs) => self.validate_named_output_coverage(actor, entry, outputs),
+            EmitSpec::Outputs(outputs) => self.validate_named_output_coverage(actor, entry, entry_model, outputs),
         }
     }
 
-    fn validate_named_output_coverage(&self, actor: &ActorDecl, entry: &EntryDecl, outputs: &[EmitOutput]) -> Result<()> {
+    fn validate_named_output_coverage(
+        &self,
+        actor: &ActorDecl,
+        entry: &EntryDecl,
+        entry_model: &EntryModel<'_>,
+        outputs: &[EmitOutput],
+    ) -> Result<()> {
         if outputs.is_empty() {
             return Ok(());
         }
@@ -599,7 +610,8 @@ impl Model<'_> {
         let declared = outputs.iter().map(|output| output.name.as_str()).collect::<BTreeSet<_>>();
         for (path_idx, routes) in entry.terminal_route_sets.iter().enumerate() {
             let mut seen = BTreeSet::new();
-            for route in routes {
+            for route_id in routes {
+                let route = entry_model.route(*route_id).expect("terminal syntax route has a resolved route");
                 let output = route.output.as_str();
                 if !declared.contains(output) {
                     continue;
@@ -640,6 +652,9 @@ fn reject_reserved_identifier(context: &str, name: &str) -> Result<()> {
         [RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX].into_iter().find(|prefix| name.starts_with(prefix));
     if let Some(generated_prefix) = generated_prefix {
         return Err(ArgentError::new(format!("{context} identifier `{name}` uses reserved generated namespace `{generated_prefix}`")));
+    }
+    if name == word::SELF {
+        return Err(ArgentError::new(format!("{context} identifier `{}` is reserved for the current actor context", word::SELF)));
     }
     if name == "State" {
         return Err(ArgentError::new(format!("{context} identifier `State` is reserved for generated Silverscript state")));

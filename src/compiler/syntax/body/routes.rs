@@ -1,29 +1,50 @@
 //! Extracts body routes and verifies that every `become` is terminal.
 
-use super::{EntryBody, EntryRoute, EntryStatement};
-use crate::compiler::syntax::RouteCall;
+#[cfg(test)]
+use super::EntrySuccessor;
+use super::{EntryBody, EntryRoute, EntryStatement, RouteId};
 use crate::error::Result;
 
 #[derive(Debug, Clone)]
 pub struct RouteAnalysis {
-    pub routes: Vec<RouteCall>,
-    pub terminal_route_sets: Vec<Vec<RouteCall>>,
+    pub routes: Vec<EntryRoute>,
+    pub terminal_route_sets: Vec<Vec<RouteId>>,
 }
 
 #[cfg(test)]
-pub fn collect_routes(body: &str) -> Result<Vec<RouteCall>> {
-    analyze_routes(body).map(|analysis| analysis.routes)
+#[derive(Debug)]
+pub struct CollectedRoute {
+    pub output: String,
+    pub actor: Option<String>,
+    pub state: Option<String>,
+    pub exact_self: bool,
 }
 
 #[cfg(test)]
-pub fn analyze_routes(body: &str) -> Result<RouteAnalysis> {
-    analyze_entry_routes(&EntryBody::new(body)?)
+pub fn collect_routes(source: &str) -> Result<Vec<CollectedRoute>> {
+    let body = EntryBody::new(source)?;
+    analyze_entry_routes(&body).map(|analysis| {
+        analysis
+            .routes
+            .into_iter()
+            .map(|route| {
+                let (actor, state, exact_self) = match route.successor {
+                    EntrySuccessor::ExactSelf { .. } => (None, None, true),
+                    EntrySuccessor::Constructed { actor, state } => {
+                        (Some(body.span_text(actor).trim().to_string()), Some(body.span_text(state).trim().to_string()), false)
+                    }
+                };
+                CollectedRoute { output: route.output, actor, state, exact_self }
+            })
+            .collect()
+    })
 }
 
 pub(crate) fn analyze_entry_routes(body: &EntryBody) -> Result<RouteAnalysis> {
     let info = analyze_sequence(body, body.statements(), body.text().len())?;
     let routes = info.terminal_route_sets.iter().flatten().cloned().collect();
-    Ok(RouteAnalysis { routes, terminal_route_sets: info.terminal_route_sets })
+    let terminal_route_sets = info.terminal_route_sets.iter().map(|routes| routes.iter().map(|route| route.id).collect()).collect();
+    Ok(RouteAnalysis { routes, terminal_route_sets })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -37,7 +58,7 @@ impl TerminalInfo {
         Self { contains_become: false, all_paths_terminal: false }
     }
 
-    fn terminal(routes: Vec<RouteCall>) -> TerminalResult {
+    fn terminal(routes: Vec<EntryRoute>) -> TerminalResult {
         TerminalResult { info: Self { contains_become: true, all_paths_terminal: true }, terminal_route_sets: vec![routes] }
     }
 }
@@ -45,7 +66,7 @@ impl TerminalInfo {
 #[derive(Debug, Clone)]
 struct TerminalResult {
     info: TerminalInfo,
-    terminal_route_sets: Vec<Vec<RouteCall>>,
+    terminal_route_sets: Vec<Vec<EntryRoute>>,
 }
 
 impl TerminalResult {
@@ -97,9 +118,7 @@ fn analyze_statement(body: &EntryBody, statement: &EntryStatement) -> Result<Ter
 
             Ok(TerminalResult { info: TerminalInfo { contains_become, all_paths_terminal }, terminal_route_sets })
         }
-        EntryStatement::Become { routes, .. } => {
-            Ok(TerminalInfo::terminal(routes.iter().map(|route| route_call(body, route)).collect()))
-        }
+        EntryStatement::Become { routes, .. } => Ok(TerminalInfo::terminal(routes.clone())),
         EntryStatement::For { body: loop_body, .. } => {
             let result = analyze_statement(body, loop_body)?;
             if result.info.contains_become {
@@ -111,14 +130,6 @@ fn analyze_statement(body: &EntryBody, statement: &EntryStatement) -> Result<Ter
         EntryStatement::ValidateOutputsBecome { .. } | EntryStatement::Local { .. } | EntryStatement::Plain { .. } => {
             Ok(TerminalResult::empty())
         }
-    }
-}
-
-fn route_call(body: &EntryBody, route: &EntryRoute) -> RouteCall {
-    RouteCall {
-        output: route.output.clone(),
-        actor: body.span_text(route.actor).trim().to_string(),
-        state: body.span_text(route.state).trim().to_string(),
     }
 }
 

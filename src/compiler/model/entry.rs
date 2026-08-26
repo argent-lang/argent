@@ -3,10 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::compiler::naming::{is_identifier, to_snake};
+use crate::compiler::syntax::body::{EntryStatement, EntrySuccessor};
 use crate::compiler::syntax::lexer::{Token, TokenKind, lex};
 use crate::compiler::syntax::word;
 use crate::compiler::syntax::{
-    ActorDecl, ConsumeDecl, EmitOutput, EmitSpec, EntryDecl, ObserveDecl, ObservedActorDecl, RouteCall, SpawnDecl, SpawnOutputDecl,
+    ActorDecl, ConsumeDecl, EmitOutput, EmitSpec, EntryDecl, ObserveDecl, ObservedActorDecl, RouteId, SpawnDecl, SpawnOutputDecl,
     TypeRef,
 };
 use crate::error::{ArgentError, Result};
@@ -22,19 +23,40 @@ pub(crate) struct EntryModel<'a> {
     source: &'a EntryDecl,
     groups: Vec<CovenantGroup<'a>>,
     template_selectors: BTreeMap<String, TemplateSelector>,
+    routes: Vec<ResolvedRoute>,
+    route_indexes: BTreeMap<RouteId, usize>,
+}
+
+/// One semantically resolved current-covenant successor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedRoute {
+    pub(crate) id: RouteId,
+    pub(crate) output: String,
+    pub(crate) successor: ResolvedSuccessor,
+}
+
+/// The state-preservation intent of one resolved successor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ResolvedSuccessor {
+    ExactSelf,
+    Constructed { actor: String, state: String },
 }
 
 impl<'a> EntryModel<'a> {
     /// Build an entry model from its source actor and declaration.
     pub(crate) fn build(actor: &'a ActorDecl, source: &'a EntryDecl, actor_enums: &BTreeMap<String, ActorEnumInfo>) -> Result<Self> {
-        Ok(Self::new(source, actor_enums, template_selectors_for_entry(actor, source, actor_enums)?))
+        Self::new(actor, source, actor_enums, template_selectors_for_entry(actor, source, actor_enums)?)
     }
 
     fn new(
+        actor: &'a ActorDecl,
         source: &'a EntryDecl,
         actor_enums: &BTreeMap<String, ActorEnumInfo>,
         template_selectors: BTreeMap<String, TemplateSelector>,
-    ) -> Self {
+    ) -> Result<Self> {
+        reject_external_exact_successors(actor, source, source.body.statements())?;
+        let routes = resolve_current_routes(actor, source, actor_enums)?;
+        let route_indexes = routes.iter().enumerate().map(|(index, route)| (route.id, index)).collect();
         let current_inputs = source
             .consumes
             .iter()
@@ -102,7 +124,7 @@ impl<'a> EntryModel<'a> {
                     .collect(),
             }
         }));
-        Self { source, groups, template_selectors }
+        Ok(Self { source, groups, template_selectors, routes, route_indexes })
     }
 
     /// Return the source entry declaration.
@@ -135,9 +157,19 @@ impl<'a> EntryModel<'a> {
         &self.template_selectors
     }
 
-    /// Expand body-derived routes to their concrete artifact targets.
-    pub(crate) fn expanded_routes(&self) -> Vec<RouteCall> {
-        expand_routes(self.source.routes.iter(), &self.template_selectors)
+    /// Return resolved routes in terminal source order.
+    pub(crate) fn routes(&self) -> &[ResolvedRoute] {
+        &self.routes
+    }
+
+    /// Resolve a syntax route through its stable source identity.
+    pub(crate) fn route(&self, id: RouteId) -> Option<&ResolvedRoute> {
+        self.route_indexes.get(&id).and_then(|index| self.routes.get(*index))
+    }
+
+    /// Expand body-derived constructed routes to their concrete artifact targets.
+    pub(crate) fn expanded_routes(&self) -> Vec<ResolvedRoute> {
+        expand_routes(self.routes.iter(), &self.template_selectors)
     }
 
     /// Collect concrete app actors whose templates this entry reads or writes.
@@ -159,10 +191,12 @@ impl<'a> EntryModel<'a> {
 
         // Current declarations define allowed output domains; body routes identify
         // concrete template writes, while selector routes use selector witnesses.
-        for route in &self.source.routes {
-            if !self.template_selectors.contains_key(&route.actor) && app_actors.contains(&route.actor) && route.actor != source_actor
-            {
-                uses.writes.insert(route.actor.clone());
+        for route in &self.routes {
+            let ResolvedSuccessor::Constructed { actor, .. } = &route.successor else {
+                continue;
+            };
+            if !self.template_selectors.contains_key(actor) && app_actors.contains(actor) && actor != source_actor {
+                uses.writes.insert(actor.clone());
             }
         }
         for group in self.existing_groups().chain(self.genesis_groups()) {
@@ -177,6 +211,93 @@ impl<'a> EntryModel<'a> {
 
         uses
     }
+}
+
+fn resolve_current_routes(
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    actor_enums: &BTreeMap<String, ActorEnumInfo>,
+) -> Result<Vec<ResolvedRoute>> {
+    entry
+        .routes
+        .iter()
+        .map(|route| {
+            if matches!(route.successor, EntrySuccessor::ExactSelf { .. }) {
+                require_exact_self_output(actor, entry, actor_enums, &route.output)?;
+            }
+            let successor = match route.successor {
+                EntrySuccessor::ExactSelf { .. } => ResolvedSuccessor::ExactSelf,
+                EntrySuccessor::Constructed { actor: target, state } => ResolvedSuccessor::Constructed {
+                    actor: entry.body.span_text(target).trim().to_string(),
+                    state: entry.body.span_text(state).trim().to_string(),
+                },
+            };
+            Ok(ResolvedRoute { id: route.id, output: route.output.clone(), successor })
+        })
+        .collect()
+}
+
+fn require_exact_self_output(
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    actor_enums: &BTreeMap<String, ActorEnumInfo>,
+    output_name: &str,
+) -> Result<()> {
+    let EmitSpec::Outputs(outputs) = &entry.emits else {
+        return Err(ArgentError::new(format!(
+            "entry `{}::{}` cannot use exact successor `self` because it declares `emits none`",
+            actor.name, entry.name
+        )));
+    };
+    let output = outputs.iter().find(|output| output.name == output_name).ok_or_else(|| {
+        ArgentError::new(format!("entry `{}::{}` routes through unknown output `{output_name}`", actor.name, entry.name))
+    })?;
+    if output_permits_actor(output, &actor.name, actor_enums) {
+        return Ok(());
+    }
+    Err(ArgentError::new(format!(
+        "entry `{}::{}` cannot preserve exact self through output `{output_name}` because it allows only {}",
+        actor.name,
+        entry.name,
+        output.actors.join(" | ")
+    )))
+}
+
+fn output_permits_actor(output: &EmitOutput, actor: &str, actor_enums: &BTreeMap<String, ActorEnumInfo>) -> bool {
+    output.actors.iter().any(|candidate| {
+        candidate == actor
+            || actor_enums.get(candidate).is_some_and(|actor_enum| actor_enum.variants.iter().any(|variant| variant == actor))
+    })
+}
+
+fn reject_external_exact_successors(actor: &ActorDecl, entry: &EntryDecl, statements: &[EntryStatement]) -> Result<()> {
+    for statement in statements {
+        match statement {
+            EntryStatement::If { then_branch, else_branch, .. } => {
+                reject_external_exact_successors(actor, entry, std::slice::from_ref(then_branch.as_ref()))?;
+                if let Some(else_branch) = else_branch {
+                    reject_external_exact_successors(actor, entry, std::slice::from_ref(else_branch.as_ref()))?;
+                }
+            }
+            EntryStatement::For { body, .. } => {
+                reject_external_exact_successors(actor, entry, std::slice::from_ref(body.as_ref()))?;
+            }
+            EntryStatement::Block { statements, .. } => reject_external_exact_successors(actor, entry, statements)?,
+            EntryStatement::ValidateOutputsBecome { group, routes, .. }
+                if routes.iter().any(|route| matches!(route.successor, EntrySuccessor::ExactSelf { .. })) =>
+            {
+                return Err(ArgentError::new(format!(
+                    "entry `{}::{}` cannot use exact successor `self` for observe or spawn `{group}` outputs",
+                    actor.name, entry.name
+                )));
+            }
+            EntryStatement::Become { .. }
+            | EntryStatement::ValidateOutputsBecome { .. }
+            | EntryStatement::Local { .. }
+            | EntryStatement::Plain { .. } => {}
+        }
+    }
+    Ok(())
 }
 
 /// Actor template capabilities used while lowering one entry.
@@ -845,14 +966,22 @@ pub(crate) fn actor_enum_variant_const_expr(actor_enum: &ActorEnumInfo, variant:
         .map(|index| format!("{index} /*{}*/", to_snake(variant).to_ascii_uppercase()))
 }
 
-fn expand_routes<'a>(routes: impl Iterator<Item = &'a RouteCall>, selectors: &BTreeMap<String, TemplateSelector>) -> Vec<RouteCall> {
+fn expand_routes<'a>(
+    routes: impl Iterator<Item = &'a ResolvedRoute>,
+    selectors: &BTreeMap<String, TemplateSelector>,
+) -> Vec<ResolvedRoute> {
     let mut out = Vec::new();
     for route in routes {
-        if let Some(selector) = selectors.get(&route.actor) {
-            let actors = selector.route_actors();
-            out.extend(actors.into_iter().map(|actor| RouteCall { output: route.output.clone(), actor, state: route.state.clone() }));
-        } else {
-            out.push(route.clone());
+        match &route.successor {
+            ResolvedSuccessor::Constructed { actor, state } if selectors.contains_key(actor) => {
+                let selector = selectors.get(actor).expect("checked selector exists");
+                out.extend(selector.route_actors().into_iter().map(|actor| ResolvedRoute {
+                    id: route.id,
+                    output: route.output.clone(),
+                    successor: ResolvedSuccessor::Constructed { actor, state: state.clone() },
+                }));
+            }
+            ResolvedSuccessor::ExactSelf | ResolvedSuccessor::Constructed { .. } => out.push(route.clone()),
         }
     }
     out

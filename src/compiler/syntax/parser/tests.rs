@@ -196,8 +196,8 @@ fn parses_comma_separated_role_and_route_bindings() {
                     second: Actor
                 } {
                     become {
-                        first <- Actor(self.state),
-                        second <- Actor(self.state)
+                        first <- self,
+                        second <- self
                     };
                 }
             }
@@ -224,7 +224,7 @@ fn parses_named_single_output_shorthand() {
 
             actor Actor owns State {
                 entry update() emits result: Actor {
-                    become result <- Actor(self.state);
+                    become result <- self;
                 }
             }
             "#
@@ -252,7 +252,7 @@ fn allows_one_as_named_single_output_handle() {
 
             actor Actor owns State {
                 entry update() emits one: Actor {
-                    become one <- Actor(self.state);
+                    become one <- self;
                 }
             }
             "#
@@ -276,7 +276,7 @@ fn rejects_removed_emits_one_syntax() {
 
             actor Actor owns State {
                 entry update() emits one Actor {
-                    become Actor(self.state);
+                    become Actor(next);
                 }
             }
             "#

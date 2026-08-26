@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "809a9a8c7cc8c693d8500a1aaab22be9ce95d83fc8f2211196c4dff0d26a6139",
+  "id": "f0cafd168f062c1e9f4f217cfb154407909df8d186be66c9df98b36db9a75676",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -668,9 +668,12 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "Player",
-                "template_id": "template/player",
-                "state_expr": "next_player"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Player",
+                  "template_id": "template/player",
+                  "state_expr": "next_player"
+                }
               }
             ]
           }
@@ -814,9 +817,12 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "Mux",
-                "template_id": "template/mux",
-                "state_expr": "next_board"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Mux",
+                  "template_id": "template/mux",
+                  "state_expr": "next_board"
+                }
               }
             ]
           }
@@ -945,15 +951,21 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "Pawn",
-                "template_id": "template/pawn",
-                "state_expr": "next_board"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Pawn",
+                  "template_id": "template/pawn",
+                  "state_expr": "next_board"
+                }
               },
               {
                 "output": "next",
-                "actor": "Knight",
-                "template_id": "template/knight",
-                "state_expr": "next_board"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Knight",
+                  "template_id": "template/knight",
+                  "state_expr": "next_board"
+                }
               }
             ]
           },
@@ -1074,9 +1086,12 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "Knight",
-                "template_id": "template/knight",
-                "state_expr": "next_board"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Knight",
+                  "template_id": "template/knight",
+                  "state_expr": "next_board"
+                }
               }
             ]
           },
@@ -1184,9 +1199,12 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "Pawn",
-                "template_id": "template/pawn",
-                "state_expr": "next_board"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Pawn",
+                  "template_id": "template/pawn",
+                  "state_expr": "next_board"
+                }
               }
             ]
           },
@@ -1294,9 +1312,12 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "Knight",
-                "template_id": "template/knight",
-                "state_expr": "next_board"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Knight",
+                  "template_id": "template/knight",
+                  "state_expr": "next_board"
+                }
               }
             ]
           }
@@ -1413,9 +1434,12 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "Mux",
-                "template_id": "template/mux",
-                "state_expr": "next_board"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Mux",
+                  "template_id": "template/mux",
+                  "state_expr": "next_board"
+                }
               }
             ]
           }
@@ -1532,9 +1556,12 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "Mux",
-                "template_id": "template/mux",
-                "state_expr": "next_board"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Mux",
+                  "template_id": "template/mux",
+                  "state_expr": "next_board"
+                }
               }
             ]
           }

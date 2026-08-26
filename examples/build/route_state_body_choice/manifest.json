@@ -22,7 +22,7 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["Mux", "Spectator"] }] },
           "consumes": [],
-          "routes": [{ "output": "next", "actor": "Spectator", "state": "next_board" }, { "output": "next", "actor": "Mux", "state": "next_board" }]
+          "routes": [{ "output": "next", "successor": { "kind": "constructed", "actor": "Spectator", "state": "next_board" } }, { "output": "next", "successor": { "kind": "constructed", "actor": "Mux", "state": "next_board" } }]
         }
       ]
     },
@@ -36,7 +36,7 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["MoveActor"] }] },
           "consumes": [],
-          "routes": [{ "output": "next", "actor": "target", "state": "next_board" }]
+          "routes": [{ "output": "next", "successor": { "kind": "constructed", "actor": "target", "state": "next_board" } }]
         }
       ]
     },

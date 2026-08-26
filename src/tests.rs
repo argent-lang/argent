@@ -272,7 +272,7 @@ state GuardState {}
 actor Guard owns GuardState {
     entry hold() emits next: Guard {
         unrestricted(next.value);
-        become next <- Guard(self.state);
+        become next <- self;
     }
 }
 
@@ -694,7 +694,7 @@ state AssetState {
 actor Asset owns AssetState {
     entry keep() emits next: Asset {
         unrestricted(next.value);
-        become next <- Asset(self.state);
+        become next <- self;
     }
 }
 
@@ -730,7 +730,7 @@ actor Controller owns ControllerState {
         require asset.outputs become {
             next <- AssetApp::Asset(current),
         };
-        become next <- Controller(self.state);
+        become next <- self;
     }
 }
 

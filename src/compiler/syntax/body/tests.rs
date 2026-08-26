@@ -1,4 +1,4 @@
-use super::{EntryBody, EntryStatement, lex};
+use super::{EntryBody, EntryStatement, EntrySuccessor, lex};
 
 #[test]
 fn cursor_takes_nested_balanced_source() {
@@ -192,10 +192,16 @@ fn statements_keep_output_validation_and_dynamic_route_targets() {
         panic!("expected output validation followed by become");
     };
     assert_eq!(group, "children");
-    assert_eq!(body.span_text(validation_routes[0].actor).trim(), "self.child_type");
-    assert_eq!(body.span_text(validation_routes[0].state).trim(), "next_child");
-    assert_eq!(body.span_text(become_routes[0].actor).trim(), "target");
-    assert_eq!(body.span_text(become_routes[0].state).trim(), "next_state");
+    let EntrySuccessor::Constructed { actor, state } = validation_routes[0].successor else {
+        panic!("expected constructed validation successor")
+    };
+    assert_eq!(body.span_text(actor).trim(), "self.child_type");
+    assert_eq!(body.span_text(state).trim(), "next_child");
+    let EntrySuccessor::Constructed { actor, state } = become_routes[0].successor else {
+        panic!("expected constructed current successor")
+    };
+    assert_eq!(body.span_text(actor).trim(), "target");
+    assert_eq!(body.span_text(state).trim(), "next_state");
 }
 
 #[test]

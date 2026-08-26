@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "8bc42c4eecf29d962648729466e5bf37b8d831dfc440793677b147798a3ca037",
+  "id": "b44fddfc7c945b2dafa7a011ab62e2b7db033cc13f3117f68e24358b537d932d",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -725,9 +725,12 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "Mux",
-                "template_id": "template/mux",
-                "state_expr": "next_board"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Mux",
+                  "template_id": "template/mux",
+                  "state_expr": "next_board"
+                }
               }
             ]
           }
@@ -856,15 +859,21 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "Pawn",
-                "template_id": "template/pawn",
-                "state_expr": "next_board"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Pawn",
+                  "template_id": "template/pawn",
+                  "state_expr": "next_board"
+                }
               },
               {
                 "output": "next",
-                "actor": "Knight",
-                "template_id": "template/knight",
-                "state_expr": "next_board"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Knight",
+                  "template_id": "template/knight",
+                  "state_expr": "next_board"
+                }
               }
             ]
           },
@@ -972,9 +981,12 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "Archive",
-                "template_id": "template/archive",
-                "state_expr": "next_archive"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Archive",
+                  "template_id": "template/archive",
+                  "state_expr": "next_archive"
+                }
               }
             ]
           }
@@ -1238,9 +1250,12 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "Pawn",
-                "template_id": "template/pawn",
-                "state_expr": "next_board"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Pawn",
+                  "template_id": "template/pawn",
+                  "state_expr": "next_board"
+                }
               }
             ]
           }

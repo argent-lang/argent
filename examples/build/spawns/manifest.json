@@ -19,7 +19,7 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["Controller"] }] },
           "consumes": [],
-          "routes": [{ "output": "next", "actor": "Controller", "state": "next" }]
+          "routes": [{ "output": "next", "successor": { "kind": "constructed", "actor": "Controller", "state": "next" } }]
         }
       ]
     },
@@ -33,7 +33,7 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["Pair"] }] },
           "consumes": [],
-          "routes": [{ "output": "next", "actor": "Pair", "state": "self.state" }]
+          "routes": [{ "output": "next", "successor": { "kind": "exact_self" } }]
         }
       ]
     }

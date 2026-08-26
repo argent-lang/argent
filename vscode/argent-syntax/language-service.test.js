@@ -6,6 +6,7 @@ const path = require('node:path');
 const test = require('node:test');
 const {
   BUILTINS,
+  KEYWORD_DOCUMENTATION,
   PRIMITIVE_DOCUMENTATION,
   PRIMITIVE_TYPES,
   scanDocument,
@@ -15,6 +16,12 @@ const {
 
 test('includes temporal among Argent primitive types', () => {
   assert.ok(PRIMITIVE_TYPES.includes('temporal'));
+});
+
+test('documents exact self successor syntax without restoring self.state', () => {
+  assert.match(KEYWORD_DOCUMENTATION.become, /output <- self/);
+  assert.match(KEYWORD_DOCUMENTATION.self, /Bare `self`/);
+  assert.match(KEYWORD_DOCUMENTATION.self, /`self\.state` is not a value/);
 });
 
 test('resolves compiler-standard modules for import navigation and symbol indexing', () => {

@@ -33,6 +33,13 @@ const KEYWORDS = Object.freeze([
   'virtual',
 ]);
 
+const KEYWORD_DOCUMENTATION = Object.freeze({
+  become:
+    'Declares a terminal successor transition. Use `output <- self` to preserve the current script and complete physical state exactly.',
+  self:
+    'The current Argent actor context. Bare `self` is valid only as the successor in `output <- self`; qualified `self.value`, `self.cov_id`, and authored state fields remain expressions. `self.state` is not a value.',
+});
+
 const PRIMITIVE_TYPES = Object.freeze([
   'actor_type',
   'bool',
@@ -811,6 +818,7 @@ function scanDocument(source) {
 
 module.exports = {
   BUILTINS,
+  KEYWORD_DOCUMENTATION,
   KEYWORDS,
   PRIMITIVE_DOCUMENTATION,
   PRIMITIVE_TYPES,

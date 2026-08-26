@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::artifact::{AppDependencyArtifact, EntryRefArtifact};
 use crate::compiler::naming::to_snake;
-use crate::compiler::syntax::{ActorDecl, ConstDecl, EntryDecl, FunctionDecl, RouteCall, StateDecl, TypeRef};
+use crate::compiler::syntax::{ActorDecl, ConstDecl, EntryDecl, FunctionDecl, StateDecl, TypeRef};
 use crate::error::{ArgentError, Result};
 use crate::routing::{CommitmentNode, RouteGraph, RoutePlan as PlannerRoutePlan, SelectorRequirement, route_plan};
 
@@ -23,9 +23,9 @@ mod tests;
 pub(crate) use actor::ActorModel;
 pub(crate) use entry::{
     ActorTarget, ActorTemplateUses, ClauseActorTypeRef, CovenantGroup, CovenantIdSource, EntryInteraction, EntryModel,
-    InteractionSource, TemplateSelector, actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding,
-    observed_open_bindings, observed_open_state_for_decl, parse_actor_enum_selector, parse_actor_enum_variant,
-    resolve_observe_covenant_id_source, source_actor_type_state_for_expr, spawn_target_state,
+    InteractionSource, ResolvedRoute, ResolvedSuccessor, TemplateSelector, actor_enum_variant_const_expr, clause_actor_type_ref,
+    observed_is_dynamic_binding, observed_open_bindings, observed_open_state_for_decl, parse_actor_enum_selector,
+    parse_actor_enum_variant, resolve_observe_covenant_id_source, source_actor_type_state_for_expr, spawn_target_state,
 };
 pub(crate) use layout::{
     ContractStateLowering, GeneratedFieldId, OutputPhysicalTypePlan, PhysicalFieldId, PhysicalStateLayout, PhysicalTargetId,
@@ -359,9 +359,12 @@ impl<'a> Model<'a> {
     }
 
     /// Expand one body-selected route to its concrete targets.
-    pub(crate) fn route_targets(&self, actor: &ActorDecl, entry: &EntryDecl, route: &RouteCall) -> Result<Vec<String>> {
+    pub(crate) fn route_targets(&self, actor: &ActorDecl, entry: &EntryDecl, route: &ResolvedRoute) -> Result<Vec<String>> {
+        let ResolvedSuccessor::Constructed { actor: target, .. } = &route.successor else {
+            return Ok(vec![actor.name.clone()]);
+        };
         let selectors = self.template_selectors_for_entry(actor, entry)?;
-        Ok(selectors.get(&route.actor).map_or_else(|| vec![route.actor.clone()], TemplateSelector::route_actors))
+        Ok(selectors.get(target).map_or_else(|| vec![target.clone()], TemplateSelector::route_actors))
     }
 }
 

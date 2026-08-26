@@ -11,9 +11,10 @@ use crate::codec::encode_hex;
 use crate::compiler::model::link::LinkedActor;
 use crate::compiler::model::{
     ClauseActorTypeRef, CovenantGroup, CovenantIdSource, EntryModel, GeneratedFieldId, InteractionSource, Model, PhysicalFieldId,
-    PhysicalStateLayout, RouteFamily, RouteRootLeaf, SilStateType, SourceStateId, StaticActorTarget, actor_enum_variant_const_expr,
-    clause_actor_type_ref, lower_layout_type, observed_is_dynamic_binding, observed_open_state_for_decl, packed_field_len,
-    packed_layout_field_len, resolve_observe_covenant_id_source, source_actor_type_state_for_expr, spawn_target_state,
+    PhysicalStateLayout, ResolvedRoute, ResolvedSuccessor, RouteFamily, RouteRootLeaf, SilStateType, SourceStateId, StaticActorTarget,
+    actor_enum_variant_const_expr, clause_actor_type_ref, lower_layout_type, observed_is_dynamic_binding,
+    observed_open_state_for_decl, packed_field_len, packed_layout_field_len, resolve_observe_covenant_id_source,
+    source_actor_type_state_for_expr, spawn_target_state,
 };
 use crate::compiler::naming::{is_identifier, to_snake};
 use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, TokenKind, lex};
@@ -283,10 +284,14 @@ fn emit_state_layouts(
         referenced_actors
             .extend(entry.observes.iter().flat_map(|observe| observe.outputs.iter()).map(|observed| observed.actor.clone()));
         referenced_actors.extend(entry.spawns.iter().flat_map(|spawn| &spawn.outputs).map(|output| output.actor.clone()));
-        let selectors = model.entry_model(current_actor, entry)?.template_selectors();
-        for route in &entry.routes {
-            if !selectors.contains_key(&route.actor) {
-                referenced_actors.insert(route.actor.clone());
+        let entry_model = model.entry_model(current_actor, entry)?;
+        let selectors = entry_model.template_selectors();
+        for route in entry_model.routes() {
+            let ResolvedSuccessor::Constructed { actor, .. } = &route.successor else {
+                continue;
+            };
+            if !selectors.contains_key(actor) {
+                referenced_actors.insert(actor.clone());
             }
         }
     }
@@ -1017,10 +1022,6 @@ struct EntryWitnessSpecs {
     observed_output_fields: Vec<ObservedOutputFieldWitnessSpec>,
 }
 
-pub(super) fn is_legacy_exact_self_route(actor: &ActorDecl, route: &RouteCall) -> bool {
-    route.actor == actor.name && compact_expr(&route.state) == "self.state"
-}
-
 fn lower_entry_params(
     entry: &EntryDecl,
     witness_specs: &EntryWitnessSpecs,
@@ -1662,16 +1663,23 @@ fn emit_manifest(program: &Program, model: &Model<'_>) -> String {
             }
             out.push_str("],\n");
             out.push_str("          \"routes\": [");
-            for (route_idx, route) in entry.routes.iter().enumerate() {
+            let entry_model = model.entry_model(actor, entry).expect("manifest entry has a compiler model");
+            for (route_idx, route) in entry_model.routes().iter().enumerate() {
                 if route_idx > 0 {
                     out.push_str(", ");
                 }
-                out.push_str(&format!(
-                    "{{ \"output\": \"{}\", \"actor\": \"{}\", \"state\": \"{}\" }}",
-                    json_escape(&route.output),
-                    json_escape(&route.actor),
-                    json_escape(&compact_expr(&route.state))
-                ));
+                match &route.successor {
+                    ResolvedSuccessor::ExactSelf => out.push_str(&format!(
+                        "{{ \"output\": \"{}\", \"successor\": {{ \"kind\": \"exact_self\" }} }}",
+                        json_escape(&route.output)
+                    )),
+                    ResolvedSuccessor::Constructed { actor, state } => out.push_str(&format!(
+                        "{{ \"output\": \"{}\", \"successor\": {{ \"kind\": \"constructed\", \"actor\": \"{}\", \"state\": \"{}\" }} }}",
+                        json_escape(&route.output),
+                        json_escape(actor),
+                        json_escape(&compact_expr(state))
+                    )),
+                }
             }
             out.push_str("]\n");
             out.push_str("        }");
@@ -3059,13 +3067,16 @@ fn emit_spec_artifact(entry: &EntryModel<'_>) -> EmitArtifact {
     }
 }
 
-fn route_artifact(route: &RouteCall) -> RouteArtifact {
-    RouteArtifact {
-        output: route.output.clone(),
-        actor: route.actor.clone(),
-        template_id: template_receipt_id(&route.actor),
-        state_expr: compact_expr(&route.state),
-    }
+fn route_artifact(route: &ResolvedRoute) -> RouteArtifact {
+    let successor = match &route.successor {
+        ResolvedSuccessor::ExactSelf => RouteSuccessorArtifact::ExactSelf,
+        ResolvedSuccessor::Constructed { actor, state } => RouteSuccessorArtifact::Constructed {
+            actor: actor.clone(),
+            template_id: template_receipt_id(actor),
+            state_expr: compact_expr(state),
+        },
+    };
+    RouteArtifact { output: route.output.clone(), successor }
 }
 
 pub(super) fn lower_type_ref(ty: &TypeRef, model: &Model<'_>) -> String {

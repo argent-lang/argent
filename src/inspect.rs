@@ -15,7 +15,7 @@ use kaspa_txscript::script_builder::ScriptBuilder;
 
 use crate::artifact::{
     Artifact, EntryArtifact, EntryKindArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact,
-    ParamArtifact, SilContractArtifact, SilEntryArtifact, TypeArtifact,
+    ParamArtifact, RouteSuccessorArtifact, SilContractArtifact, SilEntryArtifact, TypeArtifact,
 };
 use crate::codec::decode_hex;
 use crate::{ArgentError, Result};
@@ -227,7 +227,14 @@ fn inspect_entry(
     inputs.extend(entry.route_plan.consumes.iter().map(|input| format!("{}: {}", input.name, input.actor)));
 
     let outputs = entry.route_plan.outputs.iter().map(|output| format!("{} -> {}", output.name, output.actors.join(" | "))).collect();
-    let routes = entry.routes.iter().map(|route| format!("{} -> {}", route.output, route.actor)).collect();
+    let routes = entry
+        .routes
+        .iter()
+        .map(|route| match &route.successor {
+            RouteSuccessorArtifact::ExactSelf => format!("{} -> self", route.output),
+            RouteSuccessorArtifact::Constructed { actor, .. } => format!("{} -> {actor}", route.output),
+        })
+        .collect();
 
     let mut signature_script_bytes = SizeEstimate::exact(ScriptBuilder::canonical_data_size(script));
     for param in &sil_entry.params {

@@ -12,8 +12,7 @@ use crate::routing::{CommitmentNode, RouteGraph, SelectorRequirement};
 #[test]
 fn rejects_route_outside_named_output_union() {
     let mut program = test_program();
-    program.modules[0].actors[0].entries[0].routes =
-        vec![RouteCall { output: "next".to_string(), actor: "Game".to_string(), state: "next_game".to_string() }];
+    set_entry_body(&mut program.modules[0].actors[0].entries[0], "become next <- Game(next_game);");
 
     let err = Model::from_program(&program).expect_err("route must be rejected");
     assert!(err.to_string().contains("routes output `next` to `Game`"), "unexpected error: {err}");
@@ -27,9 +26,7 @@ fn accepts_route_inside_named_output_union() {
         actors: vec!["Player".to_string(), "Game".to_string()],
         auth_index: 0,
     }]);
-    let route = RouteCall { output: "next".to_string(), actor: "Game".to_string(), state: "next_game".to_string() };
-    program.modules[0].actors[0].entries[0].routes = vec![route.clone()];
-    program.modules[0].actors[0].entries[0].terminal_route_sets = vec![vec![route]];
+    set_entry_body(&mut program.modules[0].actors[0].entries[0], "become next <- Game(next_game);");
 
     Model::from_program(&program).expect("route should be accepted");
 }
@@ -81,7 +78,7 @@ fn planning_uses_declared_emit_domain_not_body_routes() {
             .expect("entry model exists")
             .expanded_routes()
             .iter()
-            .map(|route| route.actor.as_str())
+            .map(resolved_constructed_actor)
             .collect::<Vec<_>>(),
         ["A"]
     );
@@ -119,9 +116,7 @@ fn rejects_missing_named_output_coverage() {
         EmitOutput { name: "a".to_string(), actors: vec!["Player".to_string()], auth_index: 0 },
         EmitOutput { name: "b".to_string(), actors: vec!["Player".to_string()], auth_index: 1 },
     ]);
-    let route = RouteCall { output: "a".to_string(), actor: "Player".to_string(), state: "next_a".to_string() };
-    program.modules[0].actors[0].entries[0].routes = vec![route.clone()];
-    program.modules[0].actors[0].entries[0].terminal_route_sets = vec![vec![route]];
+    set_entry_body(&mut program.modules[0].actors[0].entries[0], "become a <- Player(next_a);");
 
     let err = Model::from_program(&program).expect_err("missing output coverage must be rejected");
     assert!(err.to_string().contains("does not validate output `b`"), "unexpected error: {err}");
@@ -192,10 +187,10 @@ fn rejects_explicit_auth_output_index_syntax() {
 #[test]
 fn rejects_duplicate_named_output_coverage() {
     let mut program = test_program();
-    let first = RouteCall { output: "next".to_string(), actor: "Player".to_string(), state: "next_player".to_string() };
-    let second = RouteCall { output: "next".to_string(), actor: "Player".to_string(), state: "other_player".to_string() };
-    program.modules[0].actors[0].entries[0].routes = vec![first.clone(), second.clone()];
-    program.modules[0].actors[0].entries[0].terminal_route_sets = vec![vec![first, second]];
+    set_entry_body(
+        &mut program.modules[0].actors[0].entries[0],
+        "become { next <- Player(next_player), next <- Player(other_player) };",
+    );
 
     let err = Model::from_program(&program).expect_err("duplicate output coverage must be rejected");
     assert!(err.to_string().contains("validates output `next` more than once"), "unexpected error: {err}");
@@ -207,8 +202,7 @@ fn rejects_delegate_become() {
     program.modules[0].actors[0].entries[0].kind = EntryKind::Delegate;
     program.modules[0].actors[0].entries[0].consumes.push(ConsumeDecl { name: "leader".to_string(), actor: "Player".to_string() });
     program.modules[0].actors[0].entries[0].emits = EmitSpec::None;
-    program.modules[0].actors[0].entries[0].routes =
-        vec![RouteCall { output: "next".to_string(), actor: "Player".to_string(), state: "next_player".to_string() }];
+    set_entry_body(&mut program.modules[0].actors[0].entries[0], "become next <- Player(next_player);");
 
     let err = Model::from_program(&program).expect_err("delegate become must be rejected");
     assert!(err.to_string().contains("cannot use `become`"), "unexpected error: {err}");
@@ -254,7 +248,7 @@ fn leader_actors_close_all_leader_input_groups() {
             actor Leader owns LeaderState {
                 entry standalone() emits next: Leader {
                     unrestricted(next.value);
-                    become next <- Leader(self.state);
+                    become next <- self;
                 }
 
                 entry coordinated() consumes {
@@ -262,7 +256,7 @@ fn leader_actors_close_all_leader_input_groups() {
                 } emits next: Leader {
                     unrestricted(next.value);
                     require(worker.value >= 0);
-                    become next <- Leader(self.state);
+                    become next <- self;
                 }
             }
 
@@ -277,7 +271,7 @@ fn leader_actors_close_all_leader_input_groups() {
             actor Unrelated owns UnrelatedState {
                 entry standalone() emits next: Unrelated {
                     unrestricted(next.value);
-                    become next <- Unrelated(self.state);
+                    become next <- self;
                 }
             }
 
@@ -698,6 +692,7 @@ fn allows_reserved_self_member_names_in_nested_state_values() {
             state Payload {
                 int value;
                 int ref;
+                int state;
             }
 
             state WalletState {
@@ -757,13 +752,65 @@ fn rejects_reserved_entry_parameter_from_model() {
 }
 
 #[test]
+fn rejects_self_as_an_entry_parameter() {
+    let err = parse_and_validate(
+        r#"
+            state CounterState { int count; }
+
+            actor Counter owns CounterState {
+                entry inspect(int self) emits none {
+                    require(self.count >= 0);
+                }
+            }
+
+            app Test { actor Counter; }
+        "#,
+    )
+    .expect_err("`self` must remain the current actor context");
+
+    assert!(
+        err.to_string().contains("entry `Counter::inspect` parameter identifier `self` is reserved for the current actor context"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn rejects_self_as_an_entry_body_binding() {
+    let cases = [
+        ("local", "int self = 7; require(self.count >= 0);"),
+        ("loop", "for (self, 0, 1, 1) { require(self.count >= 0); }"),
+        ("tuple", "(int self, int other) = pair(); require(self.count >= 0);"),
+        ("destructuring", "CounterState { count: int self } = current; require(self.count >= 0);"),
+    ];
+
+    for (case, body) in cases {
+        let source = format!(
+            r#"
+                state CounterState {{ int count; }}
+
+                actor Counter owns CounterState {{
+                    entry inspect() emits none {{
+                        {body}
+                    }}
+                }}
+
+                app Test {{ actor Counter; }}
+            "#
+        );
+        let err = emit_inline_error(&source);
+        assert!(
+            err.to_string().contains("entry binding `self` is reserved for the current actor context"),
+            "{case}: unexpected error: {err}"
+        );
+    }
+}
+
+#[test]
 fn rejects_reserved_output_handle_from_model() {
     let mut program = test_program();
     program.modules[0].actors[0].entries[0].emits =
         EmitSpec::Outputs(vec![EmitOutput { name: "gen__next".to_string(), actors: vec!["Player".to_string()], auth_index: 0 }]);
-    let route = RouteCall { output: "gen__next".to_string(), actor: "Player".to_string(), state: "next_player".to_string() };
-    program.modules[0].actors[0].entries[0].routes = vec![route.clone()];
-    program.modules[0].actors[0].entries[0].terminal_route_sets = vec![vec![route]];
+    set_entry_body(&mut program.modules[0].actors[0].entries[0], "become gen__next <- Player(next_player);");
 
     let err = Model::from_program(&program).expect_err("reserved output handle must be rejected");
     assert!(err.to_string().contains("reserved generated namespace"), "unexpected error: {err}");
@@ -814,7 +861,7 @@ fn emits_reserved_generated_namespace_names() {
             actor Foo owns FooState {
                 entry step() emits next: Foo {
                     require(next.value == self.value);
-                    become next <- Foo(self.state);
+                    become next <- self;
                 }
             }
 
@@ -854,7 +901,7 @@ fn rejects_emit_output_without_value_policy() {
 
             actor Foo owns FooState {
                 entry step() emits next: Foo {
-                    become next <- Foo(self.state);
+                    become next <- self;
                 }
             }
 
@@ -878,7 +925,7 @@ fn commented_output_value_does_not_satisfy_the_reference_check() {
             actor Foo owns FooState {
                 entry step() emits next: Foo {
                     require(1 == 1 /* next.value */);
-                    become next <- Foo(self.state);
+                    become next <- self;
                 }
             }
 
@@ -899,7 +946,7 @@ fn output_value_reference_anywhere_in_the_entry_satisfies_the_check() {
             actor Foo owns FooState {
                 entry step() emits next: Foo {
                     int output_value = next.value;
-                    become next <- Foo(self.state);
+                    become next <- self;
                 }
             }
 
@@ -924,7 +971,7 @@ fn unrestricted_output_value_policy_is_compile_time_only() {
             actor Foo owns FooState {
                 entry allow() emits next: Foo {
                     unrestricted(next.value);
-                    become next <- Foo(self.state);
+                    become next <- self;
                 }
             }
 
@@ -950,7 +997,7 @@ fn unrestricted_output_value_policy_requires_a_current_output_handle() {
             actor Foo owns FooState {
                 entry step() emits next: Foo {
                     unrestricted(self.value);
-                    become next <- Foo(self.state);
+                    become next <- self;
                 }
             }
 
@@ -986,7 +1033,7 @@ fn spawn_output_value_can_be_constrained_by_qualified_handle() {
                     require children.outputs become {
                         child <- Child(ChildState {}),
                     };
-                    become next <- Launcher(self.state);
+                    become next <- self;
                 }
             }
 
@@ -1025,7 +1072,7 @@ fn rejects_spawn_output_without_value_policy() {
                     require children.outputs become {
                         child <- Child(ChildState {}),
                     };
-                    become next <- Launcher(self.state);
+                    become next <- self;
                 }
             }
 
@@ -1060,7 +1107,7 @@ fn qualified_spawn_value_does_not_cover_same_named_emit_value() {
                     require children.outputs become {
                         child <- Child(ChildState {}),
                     };
-                    become child <- Launcher(self.state);
+                    become child <- self;
                 }
             }
 
@@ -1122,7 +1169,7 @@ fn self_cov_id_lowers_to_the_active_input_covenant_id() {
                 entry step() emits next: Foo {
                     unrestricted(next.value);
                     require(self.cov_id == self.cov_id);
-                    become next <- Foo(self.state);
+                    become next <- self;
                 }
             }
 
@@ -1158,7 +1205,7 @@ fn self_member_prefixes_remain_state_field_refs() {
                     require(self.value_note == value_note);
                     require(self.cov_id_note == cov_id_note);
                     require(foo_self.value >= 0);
-                    become next <- Foo(self.state);
+                    become next <- self;
                 }
             }
 
@@ -1302,22 +1349,6 @@ fn output_template_proofs_are_independent_of_physical_state_type() {
 }
 
 #[test]
-fn legacy_exact_self_recognition_remains_narrow() {
-    let program = test_program();
-    let actor = &program.modules[0].actors[0];
-
-    let exact = RouteCall { output: "next".to_string(), actor: actor.name.clone(), state: " self.state ".to_string() };
-    let spaced_exact = RouteCall { output: "next".to_string(), actor: actor.name.clone(), state: "self . state".to_string() };
-    let changed = RouteCall { output: "next".to_string(), actor: actor.name.clone(), state: "next_state".to_string() };
-    let foreign = RouteCall { output: "next".to_string(), actor: "Game".to_string(), state: "next_game".to_string() };
-
-    assert!(is_legacy_exact_self_route(actor, &exact));
-    assert!(!is_legacy_exact_self_route(actor, &spaced_exact));
-    assert!(!is_legacy_exact_self_route(actor, &changed));
-    assert!(!is_legacy_exact_self_route(actor, &foreign));
-}
-
-#[test]
 fn state_returning_function_initializes_an_authored_local_once() {
     let (actor_sil, _) = inline_actor_sil_and_artifact(
         "state-function-local",
@@ -1354,6 +1385,214 @@ fn state_returning_function_initializes_an_authored_local_once() {
     assert!(!sil.contains("successor().right"), "{sil}");
     assert!(sil.contains("left: candidate.left"), "{sil}");
     assert!(sil.contains("right: candidate.right"), "{sil}");
+}
+
+#[test]
+fn named_exact_self_coexists_with_a_constructed_route() {
+    let (actor_sil, artifact) = inline_actor_sil_and_artifact(
+        "exact-self-mixed",
+        r#"
+            state CurrentState { int nonce; }
+            state PeerState { int nonce; }
+
+            actor Current owns CurrentState {
+                entry step() emits {
+                    current: Current,
+                    peer: Peer,
+                } {
+                    unrestricted(current.value);
+                    unrestricted(peer.value);
+                    PeerState next_peer = PeerState {
+                        nonce: nonce,
+                    };
+                    become {
+                        current <- self,
+                        peer <- Peer(next_peer),
+                    };
+                }
+            }
+
+            actor Peer owns PeerState {
+                entry hold() emits none {
+                    require(nonce >= 0);
+                }
+            }
+
+            app Test {
+                actor Current;
+                actor Peer;
+            }
+        "#,
+    );
+
+    let sil = actor_sil.get("Current").expect("Current emits");
+    assert!(sil.contains("// :: become Current"), "{sil}");
+    assert!(sil.contains("tx.outputs[gen__current_output_idx].scriptPubKey"), "{sil}");
+    assert!(sil.contains("== tx.inputs[this.activeInputIndex].scriptPubKey"), "{sil}");
+    assert!(sil.contains("// :: become Peer"), "{sil}");
+    assert_eq!(sil.matches("validateOutputStateWithTemplate(").count(), 1, "{sil}");
+
+    let entry = artifact
+        .argent
+        .actors
+        .iter()
+        .find(|actor| actor.name == "Current")
+        .and_then(|actor| actor.entries.iter().find(|entry| entry.name == "step"))
+        .expect("Current::step artifact exists");
+    assert_eq!(entry.routes[0].output, "current");
+    assert!(matches!(entry.routes[0].successor, RouteSuccessorArtifact::ExactSelf));
+    assert_eq!(artifact_constructed_actor(&entry.routes[1]), "Peer");
+    artifact.verify_template_plan().expect("exact and constructed successor metadata verifies");
+}
+
+#[test]
+fn exact_self_requires_an_output_handle_and_checks_its_actor_domain() {
+    let bare = parse_and_validate(
+        r#"
+            state CurrentState {}
+
+            actor Current owns CurrentState {
+                entry step() emits next: Current {
+                    unrestricted(next.value);
+                    become self;
+                }
+            }
+
+            app Test { actor Current; }
+        "#,
+    )
+    .expect_err("exact self must name an output like every other successor");
+    assert!(bare.to_string().contains("every `become` route must name its output"), "unexpected error: {bare}");
+
+    let incompatible = parse_and_validate(
+        r#"
+            state CurrentState {}
+            state PeerState {}
+
+            actor Current owns CurrentState {
+                entry step() emits next: Peer {
+                    unrestricted(next.value);
+                    become next <- self;
+                }
+            }
+
+            actor Peer owns PeerState {}
+
+            app Test {
+                actor Current;
+                actor Peer;
+            }
+        "#,
+    )
+    .expect_err("named exact self must target a compatible output");
+    assert!(incompatible.to_string().contains("cannot preserve exact self through output `next`"), "unexpected error: {incompatible}");
+
+    parse_and_validate(
+        r#"
+            state SharedState {}
+            state OtherState {}
+
+            actor enum CurrentDomain {
+                Current;
+                Peer;
+            }
+
+            actor Current owns SharedState {
+                entry step() emits {
+                    current: CurrentDomain,
+                    other: Other,
+                } {
+                    unrestricted(current.value);
+                    unrestricted(other.value);
+                    become {
+                        current <- self,
+                        other <- Other(OtherState {}),
+                    };
+                }
+            }
+
+            actor Peer owns SharedState {}
+            actor Other owns OtherState {}
+
+            app Test {
+                actor Current;
+                actor Peer;
+                actor Other;
+            }
+        "#,
+    )
+    .expect("an actor-enum output permits its current-actor variant for a named exact successor");
+}
+
+#[test]
+fn exact_self_is_rejected_for_external_covenant_outputs() {
+    let spawn = parse_and_validate(
+        r#"
+            state LauncherState {}
+            state ChildState {}
+
+            actor Launcher owns LauncherState {
+                entry launch()
+                spawns children by children_id {
+                    outputs {
+                        child: Child,
+                    }
+                }
+                emits next: Launcher {
+                    unrestricted(next.value);
+                    require children.outputs become {
+                        child <- self,
+                    };
+                    become next <- self;
+                }
+            }
+
+            actor Child owns ChildState {}
+
+            app Test {
+                actor Launcher;
+                actor Child;
+            }
+        "#,
+    )
+    .expect_err("spawn output validation cannot preserve the active input exactly");
+    assert!(
+        spawn.to_string().contains("cannot use exact successor `self` for observe or spawn `children` outputs"),
+        "unexpected error: {spawn}"
+    );
+
+    let observed = parse_and_validate(
+        r#"
+            state ObserverState {}
+            state PeerState {}
+
+            actor Observer owns ObserverState {
+                entry inspect(cov_id remote_id)
+                observes remote by remote_id {
+                    outputs {
+                        peer: Peer,
+                    }
+                }
+                emits none {
+                    require remote.outputs become {
+                        peer <- self,
+                    };
+                }
+            }
+
+            actor Peer owns PeerState {}
+
+            app Test {
+                actor Observer;
+                actor Peer;
+            }
+        "#,
+    )
+    .expect_err("observed output validation cannot preserve the active input exactly");
+    assert!(
+        observed.to_string().contains("cannot use exact successor `self` for observe or spawn `remote` outputs"),
+        "unexpected error: {observed}"
+    );
 }
 
 #[test]
@@ -1657,7 +1896,7 @@ fn expanded_entry_params_keep_the_authored_nested_layout() {
                     require(candidate.detail.count == 0);
 
                     unrestricted(next.value);
-                    become next <- Reader(self.state);
+                    become next <- self;
                 }
             }
 
@@ -1710,7 +1949,7 @@ fn expanded_input_fields_require_validated_preimages() {
                 entry inspect() consumes { vault: Vault, } emits next: Reader {
                     require(vault.detail.count >= 0);
                     unrestricted(next.value);
-                    become next <- Reader(self.state);
+                    become next <- self;
                 }
             }
 
@@ -1780,7 +2019,12 @@ fn expanded_actor_functions_require_explicit_authored_parameters() {
                 }
 
                 entry inspect(Expanded value) emits next: Vault {
-                    Expanded current = self.state;
+                    Expanded current = Expanded {
+                        nonce: nonce,
+                        detail: Details {
+                            count: detail.count,
+                        },
+                    };
                     Details next_detail = Details {
                         count: 2,
                     };
@@ -1946,7 +2190,7 @@ fn emits_portable_artifact_schema() {
             actor Foo owns FooState {
                 entry step(int amount) emits next: Foo {
                     require(next.value == self.value);
-                    become next <- Foo(self.state);
+                    become next <- self;
                 }
             }
 
@@ -2035,8 +2279,7 @@ fn emits_portable_artifact_schema() {
     assert!(entry.witnesses.is_empty(), "exact same-state continuation should not expose route witnesses");
     assert!(matches!(&entry.emits, EmitArtifact::Outputs { outputs } if outputs.len() == 1 && outputs[0].name == "next"));
     assert_eq!(entry.routes[0].output, "next");
-    assert_eq!(entry.routes[0].actor, "Foo");
-    assert_eq!(entry.routes[0].state_expr, "self.state");
+    assert!(matches!(entry.routes[0].successor, RouteSuccessorArtifact::ExactSelf));
     assert_eq!(entry.route_plan.active_input.as_ref().map(|input| (input.actor.as_str(), input.cov_index)), Some(("Foo", Some(0))));
     assert_eq!(entry.route_plan.outputs[0].auth_index, 0);
     assert_eq!(entry.route_plan.outputs[0].name, "next");
@@ -2078,7 +2321,7 @@ fn argent_states_preserve_lossy_source_types() {
             actor Holder owns HolderState {
                 entry hold() emits next: Holder {
                     unrestricted(next.value);
-                    become next <- Holder(self.state);
+                    become next <- self;
                 }
             }
 
@@ -2426,7 +2669,7 @@ fn expanded_actor_records_sil_and_capsule_template_cuts() {
     assert!(sil.contains("validateOutputStateWithTemplate("), "{sil}");
 
     // Migration debt: exact continuation is still recognized from the
-    // textual `CurrentActor(self.state)` route shape.
+    // exact-successor route intent.
     assert!(wallet_sil.contains("tx.outputs[gen__next_output_idx].scriptPubKey"), "{wallet_sil}");
     assert!(wallet_sil.contains("== tx.inputs[this.activeInputIndex].scriptPubKey"), "{wallet_sil}");
     assert!(!wallet_sil.contains("validateOutputState"), "{wallet_sil}");
@@ -2454,7 +2697,7 @@ fn expanded_actor_records_sil_and_capsule_template_cuts() {
 
     let wallet_actor = artifact.argent.actors.iter().find(|actor| actor.name == "WalletAsset").expect("WalletAsset actor exists");
     let hold = wallet_actor.entries.iter().find(|entry| entry.name == "hold").expect("WalletAsset hold entry exists");
-    assert_eq!(hold.routes[0].state_expr, "self.state");
+    assert!(matches!(hold.routes[0].successor, RouteSuccessorArtifact::ExactSelf));
 
     let runtime_plan = runtime_state_plan(&artifact, "ReserveAsset").expect("route context is recorded");
     assert_eq!(
@@ -3100,7 +3343,7 @@ fn lowers_co_spend_and_output_value_in_the_same_expression() {
             actor Counter owns CounterState {
                 entry bump() emits next: Counter {
                     require(guard.co_spent() && next.value >= 0);
-                    become next <- Counter(self.state);
+                    become next <- self;
                 }
             }
 
@@ -3499,7 +3742,7 @@ fn unselected_actors_do_not_shape_selected_app_state() {
             actor Current owns SharedState {
                 entry step() emits next: Current {
                     unrestricted(next.value);
-                    become next <- Current(self.state);
+                    become next <- self;
                 }
             }
 
@@ -4979,7 +5222,7 @@ fn direct_route_families_are_inferred_without_hints() {
             .collect::<Vec<_>>(),
         vec![("target", "MoveActor", "BoardState", vec!["Pawn", "Knight"], Some("Knight"))]
     );
-    assert_eq!(choose_knight_const.routes.iter().map(|route| route.actor.as_str()).collect::<Vec<_>>(), vec!["Knight"]);
+    assert_eq!(choose_knight_const.routes.iter().map(artifact_constructed_actor).collect::<Vec<_>>(), vec!["Knight"]);
     artifact.verify_template_plan().expect("template plan receipt verifies inferred route family");
 }
 
@@ -5253,7 +5496,7 @@ fn gate_less_family_appends_rep_after_selector_variants() {
             .collect::<Vec<_>>(),
         vec![("target", Some("Knight"))]
     );
-    assert_eq!(choose_knight_const.routes.iter().map(|route| route.actor.as_str()).collect::<Vec<_>>(), vec!["Knight"]);
+    assert_eq!(choose_knight_const.routes.iter().map(artifact_constructed_actor).collect::<Vec<_>>(), vec!["Knight"]);
 
     let mux_sil = actor_sil.get("Mux").expect("Mux Sil is emitted");
     assert!(mux_sil.contains("int gen__target_selector = 1 /*KNIGHT*/;"), "{mux_sil}");
@@ -5318,7 +5561,7 @@ fn actor_enum_local_drives_selector_domain_and_route_expansion() {
     let mux = artifact.argent.actors.iter().find(|actor| actor.name == "Mux").expect("Mux actor exists");
     let choose = mux.entries.iter().find(|entry| entry.name == "choose").expect("choose entry exists");
     assert_eq!(choose.template_selectors.iter().map(|selector| selector.name.as_str()).collect::<Vec<_>>(), vec!["target"]);
-    assert_eq!(choose.routes.iter().map(|route| route.actor.as_str()).collect::<Vec<_>>(), vec!["Pawn", "Knight"]);
+    assert_eq!(choose.routes.iter().map(artifact_constructed_actor).collect::<Vec<_>>(), vec!["Pawn", "Knight"]);
 
     let mux_sil = actor_sil.get("Mux").expect("Mux Sil is emitted");
     assert!(mux_sil.contains("int target = index;"), "{mux_sil}");
@@ -6436,7 +6679,7 @@ fn spawn_actor_type_sources_have_distinct_witness_names() {
                     require argument.outputs become {
                         pair <- self_pair_type(argument_pair),
                     };
-                    become next <- Launcher(self.state);
+                    become next <- self;
                 }
             }
 
@@ -6487,7 +6730,7 @@ fn spawn_witness_recipe_ids_are_scoped_to_the_entry() {
                     require child.outputs become {
                         pair <- self.first_type(pair),
                     };
-                    become next <- Launcher(self.state);
+                    become next <- self;
                 }
 
                 entry launch_second()
@@ -6503,7 +6746,7 @@ fn spawn_witness_recipe_ids_are_scoped_to_the_entry() {
                     require child.outputs become {
                         pair <- self.second_type(pair),
                     };
-                    become next <- Launcher(self.state);
+                    become next <- self;
                 }
             }
 
@@ -6565,7 +6808,7 @@ fn genesis_spawn_groups_must_follow_first_output_order() {
                     require second.outputs become {
                         pair <- self.pair_type(pair),
                     };
-                    become next <- Launcher(self.state);
+                    become next <- self;
                 }
             }
 
@@ -6906,7 +7149,7 @@ fn rejects_spawn_name_shared_with_observe() {
                     unrestricted(pair.outputs.next_pair.value);
                     unrestricted(next.value);
                     require(1 == 1);
-                    become next <- Launcher(self.state);
+                    become next <- self;
                 }
             }
 
@@ -6941,7 +7184,7 @@ fn rejects_spawn_covenant_binding_shared_with_source_value() {
                     unrestricted(pair.outputs.next_pair.value);
                     unrestricted(next.value);
                     require(1 == 1);
-                    become next <- Launcher(self.state);
+                    become next <- self;
                 }
             }
 
@@ -7381,4 +7624,24 @@ fn test_program() -> Program {
             apps: vec![AppDecl { name: "Test".to_string(), actors: vec!["Player".to_string(), "Game".to_string()] }],
         }],
     }
+}
+
+fn set_entry_body(entry: &mut EntryDecl, source: &str) {
+    let body = EntryBody::new(source).expect("test entry body parses");
+    let analysis = crate::compiler::syntax::body::routes::analyze_entry_routes(&body).expect("test entry routes analyze");
+    entry.body = body;
+    entry.routes = analysis.routes;
+    entry.terminal_route_sets = analysis.terminal_route_sets;
+}
+
+fn resolved_constructed_actor(route: &ResolvedRoute) -> &str {
+    let ResolvedSuccessor::Constructed { actor, .. } = &route.successor else { panic!("expected constructed successor") };
+    actor
+}
+
+fn artifact_constructed_actor(route: &RouteArtifact) -> &str {
+    let RouteSuccessorArtifact::Constructed { actor, .. } = &route.successor else {
+        panic!("expected constructed successor artifact")
+    };
+    actor
 }

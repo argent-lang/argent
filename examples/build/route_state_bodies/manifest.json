@@ -23,7 +23,7 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["Mux"] }] },
           "consumes": [],
-          "routes": [{ "output": "next", "actor": "Mux", "state": "next_board" }]
+          "routes": [{ "output": "next", "successor": { "kind": "constructed", "actor": "Mux", "state": "next_board" } }]
         }
       ]
     },
@@ -37,14 +37,14 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["MoveActor"] }] },
           "consumes": [],
-          "routes": [{ "output": "next", "actor": "target", "state": "next_board" }]
+          "routes": [{ "output": "next", "successor": { "kind": "constructed", "actor": "target", "state": "next_board" } }]
         },
         {
           "name": "archive",
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["Archive"] }] },
           "consumes": [],
-          "routes": [{ "output": "next", "actor": "Archive", "state": "next_archive" }]
+          "routes": [{ "output": "next", "successor": { "kind": "constructed", "actor": "Archive", "state": "next_archive" } }]
         }
       ]
     },
@@ -100,7 +100,7 @@
           "kind": "leader",
           "emits": { "kind": "outputs", "outputs": [{ "name": "next", "auth_index": 0, "actors": ["Pawn"] }] },
           "consumes": [],
-          "routes": [{ "output": "next", "actor": "Pawn", "state": "next_board" }]
+          "routes": [{ "output": "next", "successor": { "kind": "constructed", "actor": "Pawn", "state": "next_board" } }]
         }
       ]
     }

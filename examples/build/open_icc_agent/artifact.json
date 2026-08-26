@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "0ac9a0a6f25a838a5c750b6c4bbfa846adfad9a24a0a7972e35739df1960bbe6",
+  "id": "083fa6598b244056238d8e8b3e34c651a29f32016f46da1478bb7d65351f0659",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -403,9 +403,12 @@
             "routes": [
               {
                 "output": "agent",
-                "actor": "Agent",
-                "template_id": "template/agent",
-                "state_expr": "next_agent"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Agent",
+                  "template_id": "template/agent",
+                  "state_expr": "next_agent"
+                }
               }
             ]
           }
@@ -501,9 +504,12 @@
             "routes": [
               {
                 "output": "agent",
-                "actor": "Forager",
-                "template_id": "template/forager",
-                "state_expr": "next_agent"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Forager",
+                  "template_id": "template/forager",
+                  "state_expr": "next_agent"
+                }
               }
             ]
           }

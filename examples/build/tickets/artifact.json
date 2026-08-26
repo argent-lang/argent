@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "5ca8e116eb2cfb496283104b2dd8a3d2775809876a28030d9bffe232b98cc1fb",
+  "id": "d93c68e853ff010775406f54492452f968c518917521d6f5ddb50cf8c94730db",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -296,15 +296,21 @@
             "routes": [
               {
                 "output": "issuer",
-                "actor": "Issuer",
-                "template_id": "template/issuer",
-                "state_expr": "next_issuer"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Issuer",
+                  "template_id": "template/issuer",
+                  "state_expr": "next_issuer"
+                }
               },
               {
                 "output": "ticket",
-                "actor": "Ticket",
-                "template_id": "template/ticket",
-                "state_expr": "new_ticket"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Ticket",
+                  "template_id": "template/ticket",
+                  "state_expr": "new_ticket"
+                }
               }
             ]
           }
@@ -366,9 +372,12 @@
             "routes": [
               {
                 "output": "next",
-                "actor": "Ticket",
-                "template_id": "template/ticket",
-                "state_expr": "redeemed_ticket"
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Ticket",
+                  "template_id": "template/ticket",
+                  "state_expr": "redeemed_ticket"
+                }
               }
             ]
           }

@@ -1,9 +1,9 @@
 use super::*;
-use crate::compiler::syntax::{EmitOutput, EmitSpec, EntryBody, EntryKind};
+use crate::compiler::syntax::{ActorDecl, EmitOutput, EmitSpec, EntryBody, EntryKind};
 
 #[test]
 fn models_covenant_groups_and_preserves_source_nodes() {
-    let entry = EntryDecl {
+    let mut entry = EntryDecl {
         kind: EntryKind::Leader,
         name: "step".to_string(),
         params: Vec::new(),
@@ -21,9 +21,10 @@ fn models_covenant_groups_and_preserves_source_nodes() {
         }],
         emits: EmitSpec::Outputs(vec![EmitOutput { name: "next".to_string(), actors: vec!["Move".to_string()], auth_index: 0 }]),
         body: EntryBody::default(),
-        routes: vec![RouteCall { output: "next".to_string(), actor: "target".to_string(), state: "next".to_string() }],
+        routes: Vec::new(),
         terminal_route_sets: Vec::new(),
     };
+    set_entry_body(&mut entry, "become next <- target(next);");
     let selectors = BTreeMap::from([(
         "target".to_string(),
         TemplateSelector {
@@ -40,7 +41,8 @@ fn models_covenant_groups_and_preserves_source_nodes() {
         ActorEnumInfo { name: "Move".to_string(), state: "Game".to_string(), variants: vec!["Pawn".to_string(), "King".to_string()] },
     )]);
 
-    let model = EntryModel::new(&entry, &actor_enums, selectors);
+    let actor = test_actor();
+    let model = EntryModel::new(&actor, &entry, &actor_enums, selectors).expect("entry model builds");
 
     let InteractionSource::Consume(consume) = model.current().inputs()[0].source() else {
         panic!("current input must retain its consume declaration");
@@ -78,7 +80,10 @@ fn models_covenant_groups_and_preserves_source_nodes() {
     assert_eq!(spawn_group.outputs()[0].index(), 0);
     assert_eq!(spawn_group.outputs()[0].target().static_actors().collect::<Vec<_>>(), ["Child"]);
 
-    assert_eq!(model.expanded_routes()[0].actor, "King");
+    assert!(matches!(
+        &model.expanded_routes()[0].successor,
+        ResolvedSuccessor::Constructed { actor, .. } if actor == "King"
+    ));
     let app_actors = AppActors::new(["Source", "Peer", "Remote", "Child", "Pawn", "King"].into_iter().map(str::to_string).collect());
     assert_eq!(
         model.actor_template_uses("Source", &app_actors),
@@ -147,7 +152,8 @@ fn models_named_and_empty_emit_domains() {
         ActorEnumInfo { name: "Move".to_string(), state: "Game".to_string(), variants: vec!["Pawn".to_string(), "King".to_string()] },
     )]);
 
-    let model = EntryModel::new(&entry, &actor_enums, BTreeMap::new());
+    let actor = test_actor();
+    let model = EntryModel::new(&actor, &entry, &actor_enums, BTreeMap::new()).expect("entry model builds");
     let EmitSpec::Outputs(outputs) = &entry.emits else {
         panic!("test entry must have named outputs");
     };
@@ -168,6 +174,18 @@ fn models_named_and_empty_emit_domains() {
 
     let mut empty_entry = entry.clone();
     empty_entry.emits = EmitSpec::None;
-    let empty_model = EntryModel::new(&empty_entry, &actor_enums, BTreeMap::new());
+    let empty_model = EntryModel::new(&actor, &empty_entry, &actor_enums, BTreeMap::new()).expect("empty entry model builds");
     assert!(empty_model.current().outputs().is_empty());
+}
+
+fn test_actor() -> ActorDecl {
+    ActorDecl { name: "Source".to_string(), state: "Game".to_string(), functions: Vec::new(), entries: Vec::new() }
+}
+
+fn set_entry_body(entry: &mut EntryDecl, source: &str) {
+    let body = EntryBody::new(source).expect("test entry body parses");
+    let analysis = crate::compiler::syntax::body::routes::analyze_entry_routes(&body).expect("test entry routes analyze");
+    entry.body = body;
+    entry.routes = analysis.routes;
+    entry.terminal_route_sets = analysis.terminal_route_sets;
 }
