@@ -7,11 +7,6 @@ contract Controller(
     int init_launches
 ) {
     // :: state layouts
-    struct ControllerState {
-        // :: user declared fields
-        byte[32] pair_type;
-        int launches;
-    }
     struct PairState {
         // :: user declared fields
         int amount;
@@ -111,7 +106,7 @@ contract Controller(
             // :: user declared fields
             amount: third_right_amount,
         };
-        ControllerState next = ControllerState {
+        State next = State {
             // :: user declared fields
             pair_type: pair_type,
             launches: launches + 3,
@@ -156,13 +151,8 @@ contract Controller(
             gen__actor_type_self_pair_type_suffix,
             pair_type
         );
-        State gen__state_next_state = State {
-            // :: user declared fields
-            pair_type: next.pair_type,
-            launches: next.launches,
-        };
         // :: become Controller
-        validateOutputState(gen__next_output_idx, gen__state_next_state);
+        validateOutputState(gen__next_output_idx, next);
     }
 
 }

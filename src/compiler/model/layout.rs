@@ -319,18 +319,11 @@ pub(crate) struct SourceRepresentationPlan {
     source: SourceStateId,
     source_to_storage: SourceStorageRelation,
     sil_type: SilStateType,
-    active_state_eligible: bool,
 }
 
 impl SourceRepresentationPlan {
     pub(crate) fn sil_type(&self) -> &SilStateType {
         &self.sil_type
-    }
-
-    /// Eligibility is recorded now; selection of `State` is deliberately later.
-    #[cfg(test)]
-    fn active_state_eligible(&self) -> bool {
-        self.active_state_eligible
     }
 }
 
@@ -482,8 +475,7 @@ impl ContractStateLowering {
         &self.active
     }
 
-    #[cfg(test)]
-    fn source_representation(&self, source: &SourceStateId) -> Option<&SourceRepresentationPlan> {
+    pub(crate) fn source_representation(&self, source: &SourceStateId) -> Option<&SourceRepresentationPlan> {
         self.source_representations.get(source)
     }
 
@@ -557,17 +549,12 @@ fn build_contract_state_lowering(active_actor: &str, model: &Model<'_>) -> Resul
             continue;
         }
         let (_, _, source_to_storage) = state_layouts(&source, model)?;
-        let active_state_eligible =
-            source == active_source && source_to_storage.is_identity() && active.storage_to_physical.is_identity();
-        source_representations.insert(
-            source.clone(),
-            SourceRepresentationPlan {
-                source: source.clone(),
-                source_to_storage,
-                sil_type: SilStateType::Source(source),
-                active_state_eligible,
-            },
-        );
+        let sil_type = if source == active_source && source_to_storage.is_identity() && active.storage_to_physical.is_identity() {
+            SilStateType::State
+        } else {
+            SilStateType::Source(source.clone())
+        };
+        source_representations.insert(source.clone(), SourceRepresentationPlan { source, source_to_storage, sil_type });
     }
 
     let mut target_physical = BTreeMap::new();

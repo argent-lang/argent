@@ -15,19 +15,6 @@ contract Agent(
     int init_generation
 ) {
     // :: state layouts
-    struct AgentCapsule {
-        // :: user declared fields
-        byte[32] world_id;
-        byte[32] agent_id;
-        byte[32] species_id;
-        byte[32] controller_id;
-        byte[32] capabilities_digest;
-        byte[32] strategy;
-        int x;
-        int y;
-        int energy;
-        int generation;
-    }
     struct ForagerState {
         // :: user declared fields
         byte[32] world_id;
@@ -83,7 +70,7 @@ contract Agent(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entry step(AgentCapsule next_agent) {
+    entry step(State next_agent) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         // :: output agent: Agent
@@ -98,21 +85,8 @@ contract Agent(
         require(next_agent.capabilities_digest == capabilities_digest);
         require(next_agent.strategy == strategy);
         require(next_agent.generation == generation);
-        State gen__state_agent_state = State {
-            // :: user declared fields
-            world_id: next_agent.world_id,
-            agent_id: next_agent.agent_id,
-            species_id: next_agent.species_id,
-            controller_id: next_agent.controller_id,
-            capabilities_digest: next_agent.capabilities_digest,
-            strategy: next_agent.strategy,
-            x: next_agent.x,
-            y: next_agent.y,
-            energy: next_agent.energy,
-            generation: next_agent.generation,
-        };
         // :: become Agent
-        validateOutputState(gen__agent_output_idx, gen__state_agent_state);
+        validateOutputState(gen__agent_output_idx, next_agent);
     }
 
 }

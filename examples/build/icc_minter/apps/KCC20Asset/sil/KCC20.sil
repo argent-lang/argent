@@ -12,12 +12,6 @@ contract KCC20(
     byte constant IDENTIFIER_COVENANT_ID = 0x02;
 
     // :: state layouts
-    struct KCC20State {
-        // :: user declared fields
-        byte[32] owner_identifier;
-        byte identifier_type;
-        int amount;
-    }
     struct MinterProxyState {
         // :: user declared fields
         byte[32] controller_id;
@@ -45,20 +39,14 @@ contract KCC20(
         } else {
             require(false);
         }
-        KCC20State next_state = KCC20State {
+        State next_state = State {
             // :: user declared fields
             owner_identifier: new_owner_identifier,
             identifier_type: new_identifier_type,
             amount: amount,
         };
-        State gen__state_next_state = State {
-            // :: user declared fields
-            owner_identifier: next_state.owner_identifier,
-            identifier_type: next_state.identifier_type,
-            amount: next_state.amount,
-        };
         // :: become KCC20
-        validateOutputState(gen__next_output_idx, gen__state_next_state);
+        validateOutputState(gen__next_output_idx, next_state);
     }
 
 }

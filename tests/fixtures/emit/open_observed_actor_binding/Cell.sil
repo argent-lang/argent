@@ -8,12 +8,6 @@ contract Cell(
     int init_tick
 ) {
     // :: state layouts
-    struct CellState {
-        // :: user declared fields
-        byte[32] agent_covid;
-        byte[32] agent_type;
-        int tick;
-    }
     struct AgentCapsule {
         // :: user declared fields
         byte[32] controller_id;
@@ -73,20 +67,14 @@ contract Cell(
             gen__remote_observed_agent_suffix_len,
             observed_agent
         );
-        CellState next_cell = CellState {
+        State next_cell = State {
             // :: user declared fields
             agent_covid: agent_covid,
             agent_type: agent_type,
             tick: tick + 1,
         };
-        State gen__state_cell_state = State {
-            // :: user declared fields
-            agent_covid: next_cell.agent_covid,
-            agent_type: next_cell.agent_type,
-            tick: next_cell.tick,
-        };
         // :: become Cell
-        validateOutputState(gen__cell_output_idx, gen__state_cell_state);
+        validateOutputState(gen__cell_output_idx, next_cell);
     }
 
 }

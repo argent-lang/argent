@@ -7,6 +7,9 @@ contract Routed(
     int init_left,
     int init_right
 ) {
+    // :: shared constants
+    int constant SHARED_COUNT = 2;
+
     // :: state layouts
     struct SharedState {
         // :: user declared fields
@@ -20,7 +23,22 @@ contract Routed(
 
     // :: global functions (isolated using the gen__glob_ namespace)
     function global_identity(SharedState gen__glob_value) : SharedState {
-        return gen__glob_value;
+        SharedState gen__glob_local = SharedState {
+            left: gen__glob_value.left,
+            right: gen__glob_value.right,
+        };
+        SharedState[2] gen__glob_fixed_literal = SharedState[2]{ gen__glob_value, gen__glob_local };
+        SharedState[_] gen__glob_inferred_literal = SharedState[_]{ gen__glob_value, gen__glob_local };
+        SharedState[SHARED_COUNT] gen__glob_symbolic_literal = SharedState[SHARED_COUNT]{ gen__glob_value, gen__glob_local };
+        SharedState[] gen__glob_dynamic_literal = SharedState[]{ gen__glob_value, gen__glob_local };
+        SharedState {
+            left: int gen__glob_copied_left,
+            right: int gen__glob_copied_right,
+        } = gen__glob_local;
+        return SharedState {
+            left: gen__glob_copied_left,
+            right: gen__glob_copied_right,
+        };
     }
     function global_fixed(SharedState[2] gen__glob_values) : SharedState[2] {
         return gen__glob_values;
@@ -31,7 +49,11 @@ contract Routed(
 
     // :: actor functions
     function actor_identity(SharedState value) : SharedState {
-        return global_identity(value);
+        SharedState local = SharedState {
+            left: value.left,
+            right: value.right,
+        };
+        return global_identity(local);
     }
     function actor_fixed(SharedState[2] values) : SharedState[2] {
         return global_fixed(values);

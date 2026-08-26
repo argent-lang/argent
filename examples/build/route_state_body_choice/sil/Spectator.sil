@@ -10,10 +10,6 @@ contract Spectator(
         // :: user declared fields
         int nonce;
     }
-    struct BoardState {
-        // :: user declared fields
-        int ply;
-    }
 
     // :: route templates
 

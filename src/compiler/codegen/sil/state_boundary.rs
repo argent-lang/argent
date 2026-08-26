@@ -21,6 +21,7 @@ pub(in crate::compiler::codegen) struct OutputStateTarget {
     #[cfg(test)]
     canonical_target: PhysicalTargetId,
     sil_type: String,
+    authored_sil_type: String,
     named_physical_layout: Option<PhysicalStateLayout>,
     physical: TargetPhysicalPlan,
     generated_fields: BTreeMap<GeneratedFieldId, String>,
@@ -35,20 +36,28 @@ impl OutputStateTarget {
         self.named_physical_layout.as_ref().map(|layout| (self.sil_type.as_str(), layout))
     }
 
-    pub(in crate::compiler::codegen) fn source_type(&self) -> &str {
+    pub(in crate::compiler::codegen) fn source_identity(&self) -> &str {
         self.physical.source().as_str()
+    }
+
+    pub(in crate::compiler::codegen) fn authored_sil_type(&self) -> &str {
+        &self.authored_sil_type
     }
 
     pub(in crate::compiler::codegen) fn require_authored_value(
         &self,
         lower: impl FnOnce(&str) -> Result<String>,
     ) -> Result<AuthoredStateExpr> {
-        Ok(AuthoredStateExpr { source: self.physical.source().clone(), sil: lower(self.source_type())? })
+        Ok(AuthoredStateExpr {
+            source: self.physical.source().clone(),
+            sil_type: self.authored_sil_type.clone(),
+            sil: lower(&self.authored_sil_type)?,
+        })
     }
 
     #[cfg(test)]
     pub(in crate::compiler::codegen) fn authored_value(&self, sil: impl Into<String>) -> AuthoredStateExpr {
-        AuthoredStateExpr { source: self.physical.source().clone(), sil: sil.into() }
+        AuthoredStateExpr { source: self.physical.source().clone(), sil_type: self.authored_sil_type.clone(), sil: sil.into() }
     }
 
     #[cfg(test)]
@@ -147,6 +156,10 @@ fn output_state_target(
 ) -> Result<OutputStateTarget> {
     let physical =
         lowering.target(plan.target()).ok_or_else(|| ArgentError::new("output target has no physical layout plan"))?.clone();
+    let authored_sil_type = lowering
+        .source_representation(physical.source())
+        .ok_or_else(|| ArgentError::new("output target source has no authored representation plan"))
+        .and_then(|representation| render_sil_state_type(representation.sil_type()))?;
     let named_physical_layout = match plan.sil_type() {
         SilStateType::State | SilStateType::Source(_) => None,
         SilStateType::StoragePhysical(_) | SilStateType::TargetPhysical(_) => Some(
@@ -162,6 +175,7 @@ fn output_state_target(
         #[cfg(test)]
         canonical_target: plan.canonical_target().clone(),
         sil_type: render_sil_state_type(plan.sil_type())?,
+        authored_sil_type,
         named_physical_layout,
         physical,
         generated_fields,
@@ -244,6 +258,7 @@ impl AuthenticatedPhysicalInput {
 #[derive(Clone)]
 pub(in crate::compiler::codegen) struct ProjectedSourceAccess {
     source: SourceStateId,
+    authored_sil_type: String,
     physical: AuthenticatedPhysicalInput,
     fields: Vec<SourcePhysicalField>,
 }
@@ -261,6 +276,7 @@ pub(in crate::compiler::codegen) enum SourceStateAccess {
 #[derive(Debug)]
 pub(in crate::compiler::codegen) struct AuthoredStateExpr {
     source: SourceStateId,
+    sil_type: String,
     sil: String,
 }
 
@@ -367,7 +383,7 @@ pub(in crate::compiler::codegen) fn materialize_output_state(
     }
     if target.physical.source_to_storage().is_identity()
         && target.physical.storage_to_physical().is_identity()
-        && target.sil_type == authored.source.as_str()
+        && target.sil_type == authored.sil_type
     {
         return Ok(PhysicalStateExpr { sil_type: target.sil_type.clone(), sil: authored.sil, materialized: false });
     }
@@ -565,10 +581,18 @@ pub(in crate::compiler::codegen) fn preserve_exact_self(out: &mut String, indent
 }
 
 impl SourceStateAccess {
-    pub(in crate::compiler::codegen) fn source_type(&self) -> &str {
+    pub(in crate::compiler::codegen) fn source_identity(&self) -> &str {
         match self {
             Self::Authored { source, .. } => source.as_str(),
             Self::Projected(access) => access.source.as_str(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::compiler::codegen) fn authored_sil_type(&self) -> &str {
+        match self {
+            Self::Authored { physical, .. } => &physical.sil_type,
+            Self::Projected(access) => &access.authored_sil_type,
         }
     }
 
@@ -618,10 +642,10 @@ impl SourceStateAccess {
         Ok(())
     }
 
-    /// Produce a complete named source value, never a physical `State` alias.
+    /// Produce one complete value in the contract-selected authored representation.
     pub(in crate::compiler::codegen) fn require_authored_value(&self, indent: usize) -> Result<AuthoredStateExpr> {
-        let (source, sil) = match self {
-            Self::Authored { source, physical } => (source.clone(), physical.expr.clone()),
+        let (source, sil_type, sil) = match self {
+            Self::Authored { source, physical } => (source.clone(), physical.sil_type.clone(), physical.expr.clone()),
             Self::Projected(access) => {
                 if let Some(field) = access.fields.iter().find(|field| !field.is_identity()) {
                     return Err(ArgentError::new(format!(
@@ -633,7 +657,7 @@ impl SourceStateAccess {
                 }
                 let field_indent = " ".repeat(indent + 4);
                 let close_indent = " ".repeat(indent);
-                let mut out = format!("{} {{\n", access.source.as_str());
+                let mut out = format!("{} {{\n", access.authored_sil_type);
                 if !access.fields.is_empty() {
                     out.push_str(&format!("{field_indent}// :: user declared fields\n"));
                 }
@@ -647,10 +671,10 @@ impl SourceStateAccess {
                 }
                 out.push_str(&close_indent);
                 out.push('}');
-                (access.source.clone(), out)
+                (access.source.clone(), access.authored_sil_type.clone(), out)
             }
         };
-        Ok(AuthoredStateExpr { source, sil })
+        Ok(AuthoredStateExpr { source, sil_type, sil })
     }
 }
 
@@ -778,7 +802,7 @@ pub(in crate::compiler::codegen) fn plan_entry_input_states(
         };
         consumed.insert(
             consume.name.clone(),
-            input_binding(consume.name.clone(), consume.name.clone(), hidden_input_idx_name(&consume.name), proof, target)?,
+            input_binding(consume.name.clone(), consume.name.clone(), hidden_input_idx_name(&consume.name), proof, target, lowering)?,
         );
     }
 
@@ -817,7 +841,7 @@ pub(in crate::compiler::codegen) fn plan_entry_input_states(
                 };
             observed.insert(
                 (observe.name.clone(), input.name.clone()),
-                input_binding(source_ref, physical_expr, input_index, proof, target)?,
+                input_binding(source_ref, physical_expr, input_index, proof, target, lowering)?,
             );
         }
     }
@@ -830,26 +854,32 @@ fn input_binding(
     input_index: String,
     proof: InputTemplateProof,
     target: &TargetPhysicalPlan,
+    lowering: &ContractStateLowering,
 ) -> Result<InputStateBinding> {
     let fields = target.source_fields()?;
     if fields.iter().any(|field| !matches!(field.physical(), PhysicalFieldId::Storage(_))) {
         return Err(ArgentError::new("authored input fields cannot map to compiler-generated route fields"));
     }
+    let physical_sil_type = render_sil_state_type(target.sil_type())?;
+    let authored_sil_type = lowering
+        .source_representation(target.source())
+        .ok_or_else(|| ArgentError::new("input target source has no authored representation plan"))
+        .and_then(|representation| render_sil_state_type(representation.sil_type()))?;
     let physical = AuthenticatedPhysicalInput {
         expr: physical_expr,
-        sil_type: render_sil_state_type(target.sil_type())?,
+        sil_type: physical_sil_type.clone(),
         target: target.id().clone(),
         input_index,
         proof,
     };
     let source = target.source().clone();
-    let named_authored = target.source_to_storage().is_identity()
+    let direct_authored = target.source_to_storage().is_identity()
         && target.storage_to_physical().is_identity()
-        && matches!(target.sil_type(), SilStateType::Source(candidate) if candidate == &source);
-    let access = if named_authored {
+        && physical_sil_type == authored_sil_type;
+    let access = if direct_authored {
         SourceStateAccess::Authored { source, physical }
     } else {
-        SourceStateAccess::Projected(ProjectedSourceAccess { source, physical, fields })
+        SourceStateAccess::Projected(ProjectedSourceAccess { source, authored_sil_type, physical, fields })
     };
     Ok(InputStateBinding { source_ref, access })
 }

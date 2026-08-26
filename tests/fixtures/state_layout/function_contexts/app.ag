@@ -7,8 +7,25 @@ state ForeignState {
     int marker;
 }
 
+const int SHARED_COUNT = 2;
+
 fn global_identity(SharedState value) -> SharedState {
-    return value;
+    SharedState local = SharedState {
+        left: value.left,
+        right: value.right,
+    };
+    SharedState[2] fixed_literal = SharedState[2]{ value, local };
+    SharedState[_] inferred_literal = SharedState[_]{ value, local };
+    SharedState[SHARED_COUNT] symbolic_literal = SharedState[SHARED_COUNT]{ value, local };
+    SharedState[] dynamic_literal = SharedState[]{ value, local };
+    SharedState {
+        left: int copied_left,
+        right: int copied_right,
+    } = local;
+    return SharedState {
+        left: copied_left,
+        right: copied_right,
+    };
 }
 
 fn global_fixed(SharedState[2] values) -> SharedState[2] {
@@ -21,7 +38,11 @@ fn global_dynamic(SharedState[] values) -> SharedState[] {
 
 actor Aligned owns SharedState {
     fn actor_identity(SharedState value) -> SharedState {
-        return global_identity(value);
+        SharedState local = SharedState {
+            left: value.left,
+            right: value.right,
+        };
+        return global_identity(local);
     }
 
     fn actor_fixed(SharedState[2] values) -> SharedState[2] {
@@ -55,7 +76,11 @@ actor Aligned owns SharedState {
 
 actor Routed owns SharedState {
     fn actor_identity(SharedState value) -> SharedState {
-        return global_identity(value);
+        SharedState local = SharedState {
+            left: value.left,
+            right: value.right,
+        };
+        return global_identity(local);
     }
 
     fn actor_fixed(SharedState[2] values) -> SharedState[2] {

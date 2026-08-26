@@ -29,6 +29,7 @@ use super::state_boundary::{
     materialize_output_state, plan_actor_output_state, plan_open_output_state, plan_output_validation, plan_selector_output_state,
     plan_static_actor_output_state, preserve_exact_self,
 };
+use super::state_types::{lower_expression_state_types, lower_statement_state_types};
 use super::state_values::{ContractStateValuePlan, PlannedStateValue};
 use super::token_refs::{RefReplacements, count_qualified_ref};
 
@@ -188,7 +189,7 @@ struct BodyBinding {
 impl BodyBinding {
     fn typed(source_type: impl Into<String>, lowered_type: impl Into<String>, state_values: &ContractStateValuePlan) -> Self {
         let source_type = source_type.into();
-        let state_value = state_values.plan_sil_type(&source_type);
+        let state_value = state_values.plan_source_sil_type(&source_type);
         Self {
             source_type: Some(source_type),
             lowered_type: Some(lowered_type.into()),
@@ -200,7 +201,7 @@ impl BodyBinding {
 
     fn source_typed(source_type: impl Into<String>, state_values: &ContractStateValuePlan) -> Self {
         let source_type = source_type.into();
-        let state_value = state_values.plan_sil_type(&source_type);
+        let state_value = state_values.plan_source_sil_type(&source_type);
         Self { source_type: Some(source_type), lowered_type: None, state_value, selector: None, state_access: None }
     }
 
@@ -419,7 +420,8 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                 let access = input.access();
                 bindings.declare(
                     input.source_ref().to_string(),
-                    BodyBinding::typed(access.source_type(), access.physical_type(), state_values).with_state_access(access.clone()),
+                    BodyBinding::typed(access.source_identity(), access.physical_type(), state_values)
+                        .with_state_access(access.clone()),
                 );
             }
         }
@@ -431,7 +433,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                     let access = input.access();
                     bindings.declare(
                         input.source_ref().to_string(),
-                        BodyBinding::typed(access.source_type(), access.physical_type(), state_values)
+                        BodyBinding::typed(access.source_identity(), access.physical_type(), state_values)
                             .with_state_access(access.clone()),
                     );
                     bindings.declare(lowered_ref, BodyBinding::lowered_typed(access.physical_type()));
@@ -716,6 +718,11 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let statement = lower_co_spent_calls(&statement, &self.bindings)?;
         let statement = lower_actor_enum_literals(&statement, self.model)?;
         let statement = if value_lowered { statement } else { self.lower_nested_state_values(&statement, indent)? };
+        let statement = if self.state_values.has_equivalent_state_sources() {
+            lower_statement_state_types(&statement, self.state_values).map_err(|err| self.error(err.to_string()))?
+        } else {
+            statement
+        };
         let statement = self.lower_refs(&statement)?;
         out.push_str(&statement);
         out.push_str(";\n");
@@ -1065,13 +1072,39 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         target: &OutputStateTarget,
     ) -> Result<AuthoredStateExpr> {
         let expr = strip_outer_parentheses(route.state.trim());
-        let source_state = target.source_type().to_string();
+        let source_state = target.source_identity().to_string();
+        let authored_sil_type = target.authored_sil_type().to_string();
+        let is_source_constructor = split_state_constructor(expr).is_some_and(|(state, _)| state == source_state);
+        let parsed_source = parse_expression_ast(expr)
+            .map_err(|err| self.error(format!("cannot classify route state `{expr}` as an authored value: {err}")))?;
+        let is_matching_input_state =
+            self.bindings.state_access_for_expr(expr).is_some_and(|access| access.source_identity() == source_state);
+        let is_planned_authored_value = self
+            .planned_state_value_for_expr(&parsed_source)
+            .is_some_and(|value| value.source().as_str() == source_state && value.shape().is_scalar());
+        if !is_source_constructor && !is_matching_input_state && !is_planned_authored_value {
+            if let SilExprKind::Identifier(name) = &parsed_source.kind
+                && self.bindings.lowered_type(name).is_some()
+            {
+                return Err(self.error(format!(
+                    "route state `{name}` is not an authored `{source_state}` value; construct `{source_state} {{ ... }}` explicitly"
+                )));
+            }
+            return Err(self.error(format!(
+                "route state `{expr}` is not a proven authored `{source_state}` value; bind or construct an authored value explicitly"
+            )));
+        }
         let authored = target.require_authored_value(|expected| self.lower_expr(expr, Some(expected), indent))?;
         let lowered = authored.sil().to_string();
-        if let Ok(parsed) = parse_expression_ast(&lowered)
-            && let SilExprKind::Identifier(name) = &parsed.kind
-        {
-            if self.bindings.lowered_type(name) == Some(source_state.as_str()) {
+        let parsed = parse_expression_ast(&lowered)
+            .map_err(|err| self.error(format!("lowered route state `{expr}` is not a valid Sil expression: {err}")))?;
+        if let SilExprKind::Identifier(name) = &parsed.kind {
+            if is_matching_input_state
+                || self
+                    .bindings
+                    .state_value(name)
+                    .is_some_and(|value| value.source().as_str() == source_state && value.shape().is_scalar())
+            {
                 return Ok(authored.rebound(name.as_str()));
             }
             if self.bindings.lowered_type(name).is_some() {
@@ -1082,8 +1115,8 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         }
         let name = format!("{RESERVED_GENERATED_PREFIX}source_{}_{}", to_snake(&route.output), to_snake(&source_state));
         push_indent(out, indent);
-        out.push_str(&format!("{source_state} {name} = {lowered};\n"));
-        self.bindings.declare(name.clone(), BodyBinding::typed(source_state.clone(), source_state, self.state_values));
+        out.push_str(&format!("{authored_sil_type} {name} = {lowered};\n"));
+        self.bindings.declare(name.clone(), BodyBinding::typed(source_state, authored_sil_type, self.state_values));
         Ok(authored.rebound(name))
     }
 
@@ -1187,11 +1220,12 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             return self.lower_digest_expr(value);
         }
         if let Some((state_name, body)) = split_state_constructor(expr) {
-            if let Some(expected_ty) = expected_ty
-                && self.model.has_state(expected_ty)
-                && state_name != expected_ty
+            if let Some(expected) = expected_state_value.as_ref()
+                && expected.shape().is_scalar()
+                && state_name != expected.source().as_str()
             {
-                return Err(self.error(format!("state constructor `{state_name}` cannot initialize authored `{expected_ty}`")));
+                return Err(self
+                    .error(format!("state constructor `{state_name}` cannot initialize authored `{}`", expected.source().as_str())));
             }
             return self.lower_state_constructor(state_name, body, indent);
         }
@@ -1199,16 +1233,17 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             let Some(expected_ty) = expected_ty else {
                 return Err(self.error(format!(
                     "state input `{expr}` is physical at this boundary and requires an authored `{}` context",
-                    access.source_type()
+                    access.source_identity()
                 )));
             };
-            if expected_ty != access.source_type() {
+            let expected = expected_state_value.as_ref().map(PlannedStateValue::source);
+            if expected.is_none_or(|source| source.as_str() != access.source_identity()) {
                 return Err(
-                    self.error(format!("state input `{expr}` has authored type `{}`, not `{expected_ty}`", access.source_type()))
+                    self.error(format!("state input `{expr}` has authored type `{}`, not `{expected_ty}`", access.source_identity()))
                 );
             }
             let authored = access.require_authored_value(indent).map_err(|err| self.error(err.to_string()))?;
-            debug_assert_eq!(authored.source().as_str(), expected_ty);
+            debug_assert_eq!(authored.source(), expected.expect("checked above"));
             return Ok(authored.into_sil());
         }
         // Normalize Argent-only syntax before asking Sil to classify calls and
@@ -1229,6 +1264,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             }
         }
         let expr = self.lower_nested_state_values(&expr, indent)?;
+        let expr = lower_expression_state_types(&expr, self.state_values).map_err(|err| self.error(err.to_string()))?;
         self.lower_refs(&expr)
     }
 
@@ -1271,6 +1307,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let mut collector = StateValueSiteCollector { state_values: self.state_values, bindings: &self.bindings, sites: Vec::new() };
         collector.visit_expr(&mut parsed);
         let lowered = self.lower_planned_state_value_sites(&expr, collector.sites, indent)?;
+        let lowered = lower_expression_state_types(&lowered, self.state_values).map_err(|err| self.error(err.to_string()))?;
         self.lower_refs(&lowered)
     }
 
@@ -1374,7 +1411,11 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
 
     fn lower_state_constructor(&self, state_name: &str, body: &str, indent: usize) -> Result<String> {
         self.model.state(state_name)?;
-        self.lower_authored_state_object(state_name, state_name, body, indent)
+        let sil_type = self
+            .state_values
+            .authored_sil_type_for_name(state_name)
+            .ok_or_else(|| self.error(format!("state `{state_name}` has no contract-local authored representation")))?;
+        self.lower_authored_state_object(state_name, sil_type, body, indent)
     }
 
     fn lower_digest_expr(&self, value: &str) -> Result<String> {

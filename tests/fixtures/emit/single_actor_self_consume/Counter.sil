@@ -6,18 +6,14 @@ contract Counter(
     int init_count
 ) {
     // :: state layouts
-    struct CounterState {
-        // :: user declared fields
-        int count;
-    }
 
     // :: global functions (isolated using the gen__glob_ namespace)
-    function global_identity(CounterState gen__glob_value) : CounterState {
+    function global_identity(State gen__glob_value) : State {
         return gen__glob_value;
     }
 
     // :: actor functions
-    function actor_identity(CounterState value) : CounterState {
+    function actor_identity(State value) : State {
         return global_identity(value);
     }
 
@@ -42,25 +38,15 @@ contract Counter(
         // :: output next: Counter
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
-        CounterState copied = actor_identity(global_identity(CounterState {
-            // :: user declared fields
-            count: other.count,
-        }));
-        copied = global_identity(CounterState {
-            // :: user declared fields
-            count: other.count,
-        });
-        CounterState next = CounterState {
+        State copied = actor_identity(global_identity(other));
+        copied = global_identity(other);
+        State next = State {
             // :: user declared fields
             count: count + copied.count,
         };
         require(other.count >= 0);
-        State gen__state_next_state = State {
-            // :: user declared fields
-            count: next.count,
-        };
         // :: become Counter
-        validateOutputState(gen__next_output_idx, gen__state_next_state);
+        validateOutputState(gen__next_output_idx, next);
     }
 
     // :: leader entry (1:N)

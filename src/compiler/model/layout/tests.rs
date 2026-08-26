@@ -13,20 +13,18 @@ fn program(source: &str) -> Program {
 }
 
 #[test]
-fn contract_plans_keep_authored_types_named_and_record_context_eligibility() {
+fn contract_plans_select_state_only_for_the_aligned_active_source() {
     let program = program(include_str!("../../../../tests/fixtures/state_layout/function_contexts/app.ag"));
     let model = Model::from_program(&program).expect("function context fixture plans");
     let shared = SourceStateId::new("SharedState");
 
     let aligned = model.state_lowering("Aligned").expect("Aligned lowering exists");
     let aligned_shared = aligned.source_representation(&shared).expect("SharedState is planned for Aligned");
-    assert_eq!(aligned_shared.sil_type(), &SilStateType::Source(shared.clone()));
-    assert!(aligned_shared.active_state_eligible());
+    assert_eq!(aligned_shared.sil_type(), &SilStateType::State);
 
     let routed = model.state_lowering("Routed").expect("Routed lowering exists");
     let routed_shared = routed.source_representation(&shared).expect("SharedState is planned for Routed");
     assert_eq!(routed_shared.sil_type(), &SilStateType::Source(shared.clone()));
-    assert!(!routed_shared.active_state_eligible());
 
     let aligned_target = aligned.target_for_actor("Aligned").expect("active target exists");
     let routed_target = aligned.target_for_actor("Routed").expect("Routed target exists");
@@ -45,7 +43,7 @@ fn contract_plans_keep_authored_types_named_and_record_context_eligibility() {
 }
 
 #[test]
-fn compatible_foreign_template_stays_named_until_state_equivalence_is_selected() {
+fn compatible_foreign_target_does_not_select_the_active_authored_representation() {
     let program = program(
         r#"
             state SharedState { int count; }
@@ -61,6 +59,10 @@ fn compatible_foreign_template_stays_named_until_state_equivalence_is_selected()
     );
     let model = Model::from_program(&program).expect("compatible actors plan");
     let lowering = model.state_lowering("First").expect("First lowering exists");
+    assert_eq!(
+        lowering.source_representation(&SourceStateId::new("SharedState")).expect("active source is represented").sil_type(),
+        &SilStateType::State
+    );
     let second = lowering.target_for_actor("Second").expect("Second target exists");
 
     assert!(second.active_compatible());
@@ -73,6 +75,38 @@ fn compatible_foreign_template_stays_named_until_state_equivalence_is_selected()
     assert_eq!(output.target(), second.id());
     assert_eq!(output.canonical_target(), second.id());
     assert_eq!(output.sil_type(), &SilStateType::State);
+}
+
+#[test]
+fn equal_looking_foreign_source_remains_nominally_named() {
+    let program = program(
+        r#"
+            state LocalState { int count; }
+            state ForeignState { int count; }
+
+            actor Local owns LocalState {
+                entry inspect(ForeignState foreign) emits none {
+                    require(foreign.count + count >= 0);
+                }
+            }
+            actor Foreign owns ForeignState {}
+
+            app Test {
+                actor Local;
+                actor Foreign;
+            }
+        "#,
+    );
+    let model = Model::from_program(&program).expect("equal-looking foreign state plans");
+    let lowering = model.state_lowering("Local").expect("Local lowering exists");
+    let local = SourceStateId::new("LocalState");
+    let foreign = SourceStateId::new("ForeignState");
+
+    assert_eq!(lowering.source_representation(&local).expect("local source is represented").sil_type(), &SilStateType::State);
+    assert_eq!(
+        lowering.source_representation(&foreign).expect("foreign source is represented").sil_type(),
+        &SilStateType::Source(foreign)
+    );
 }
 
 #[test]

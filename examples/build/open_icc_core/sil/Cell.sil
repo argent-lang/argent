@@ -12,16 +12,6 @@ contract Cell(
     byte[32] init_occupant_caps_digest
 ) {
     // :: state layouts
-    struct CellState {
-        // :: user declared fields
-        byte[32] world_id;
-        int x;
-        int y;
-        int food;
-        byte[32] occupant_agent_covid;
-        byte[32] occupant_agent_type;
-        byte[32] occupant_caps_digest;
-    }
     struct AgentCapsule {
         // :: user declared fields
         byte[32] world_id;
@@ -107,7 +97,7 @@ contract Cell(
             gen__actor_type_self_occupant_agent_type_suffix_len,
             occupant_agent_type
         );
-        CellState next_cell = CellState {
+        State next_cell = State {
             // :: user declared fields
             world_id: world_id,
             x: x,
@@ -117,18 +107,8 @@ contract Cell(
             occupant_agent_type: occupant_agent_type,
             occupant_caps_digest: occupant_caps_digest,
         };
-        State gen__state_cell_state = State {
-            // :: user declared fields
-            world_id: next_cell.world_id,
-            x: next_cell.x,
-            y: next_cell.y,
-            food: next_cell.food,
-            occupant_agent_covid: next_cell.occupant_agent_covid,
-            occupant_agent_type: next_cell.occupant_agent_type,
-            occupant_caps_digest: next_cell.occupant_caps_digest,
-        };
         // :: become Cell
-        validateOutputState(gen__cell_output_idx, gen__state_cell_state);
+        validateOutputState(gen__cell_output_idx, next_cell);
     }
 
     // :: leader entry (M:N)
@@ -199,7 +179,7 @@ contract Cell(
             energy: prev_state.energy - 1,
             generation: prev_state.generation,
         };
-        CellState next_source = CellState {
+        State next_source = State {
             // :: user declared fields
             world_id: world_id,
             x: x,
@@ -209,7 +189,7 @@ contract Cell(
             occupant_agent_type: empty_agent_type,
             occupant_caps_digest: empty_caps_digest,
         };
-        CellState next_target = CellState {
+        State next_target = State {
             // :: user declared fields
             world_id: target_cell.world_id,
             x: target_cell.x,
@@ -228,30 +208,10 @@ contract Cell(
             gen__actor_type_self_occupant_agent_type_suffix_len,
             occupant_agent_type
         );
-        State gen__state_source_cell_state = State {
-            // :: user declared fields
-            world_id: next_source.world_id,
-            x: next_source.x,
-            y: next_source.y,
-            food: next_source.food,
-            occupant_agent_covid: next_source.occupant_agent_covid,
-            occupant_agent_type: next_source.occupant_agent_type,
-            occupant_caps_digest: next_source.occupant_caps_digest,
-        };
         // :: become Cell
-        validateOutputState(gen__source_cell_output_idx, gen__state_source_cell_state);
-        State gen__state_target_cell_state = State {
-            // :: user declared fields
-            world_id: next_target.world_id,
-            x: next_target.x,
-            y: next_target.y,
-            food: next_target.food,
-            occupant_agent_covid: next_target.occupant_agent_covid,
-            occupant_agent_type: next_target.occupant_agent_type,
-            occupant_caps_digest: next_target.occupant_caps_digest,
-        };
+        validateOutputState(gen__source_cell_output_idx, next_source);
         // :: become Cell
-        validateOutputState(gen__target_cell_output_idx, gen__state_target_cell_state);
+        validateOutputState(gen__target_cell_output_idx, next_target);
     }
 
 }

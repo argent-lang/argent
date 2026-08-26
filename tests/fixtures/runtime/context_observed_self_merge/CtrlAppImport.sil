@@ -6,13 +6,9 @@ contract Ctrl(
     int init_n
 ) {
     // :: linked templates
-    byte[32] constant gen__asset_app__asset_template_const = byte[32](0xb8c7a16bb35f2ce469693843a863a958f239d78857e0494a162239b9a344e382);
+    byte[32] constant gen__asset_app__asset_template_const = byte[32](0x29a9f175dc67b7c2a701fd9f4c0e646fa135a878fea8bcb898ba3689535c7800);
 
     // :: state layouts
-    struct CtrlState {
-        // :: user declared fields
-        int n;
-    }
     struct AssetState {
         // :: user declared fields
         byte[32] owner;
@@ -69,16 +65,12 @@ contract Ctrl(
             gen__asset_app__asset_suffix_len,
             gen__asset_app__asset_template
         );
-        CtrlState next_ctrl = CtrlState {
+        State next_ctrl = State {
             // :: user declared fields
             n: next_asset.amount,
         };
-        State gen__state_ctrl_state = State {
-            // :: user declared fields
-            n: next_ctrl.n,
-        };
         // :: become Ctrl
-        validateOutputState(gen__ctrl_output_idx, gen__state_ctrl_state);
+        validateOutputState(gen__ctrl_output_idx, next_ctrl);
     }
 
 }

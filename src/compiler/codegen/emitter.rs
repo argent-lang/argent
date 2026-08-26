@@ -24,9 +24,10 @@ use silverscript_lang::ast::Expr as SilExpr;
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract};
 
 use super::sil::{
-    ContractStateValuePlan, EntryInputBindingView, EntryInputStatePlan, GlobalFunctionLowerer, lower_entry_body, lower_entry_expr,
-    plan_actor_output_state, plan_entry_input_states, plan_open_output_state, plan_selector_output_state,
-    reject_function_physical_state_constructors, validate_actor_function_captures,
+    ContractStateValuePlan, EntryInputBindingView, EntryInputStatePlan, GlobalFunctionLowerer, audit_omitted_equivalent_state_structs,
+    lower_entry_body, lower_entry_expr, lower_expression_state_types, lower_function_body_state_types, plan_actor_output_state,
+    plan_entry_input_states, plan_open_output_state, plan_selector_output_state, reject_function_physical_state_constructors,
+    validate_actor_function_captures,
 };
 
 #[cfg(test)]
@@ -121,9 +122,9 @@ fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
     out.push_str(&args.join(",\n"));
     out.push_str("\n) {\n");
 
-    emit_shared_constants(&mut out, model)?;
+    emit_shared_constants(&mut out, model, &state_values)?;
     emit_imported_template_constants(&mut out, &imported_template_specs_for_actor(actor, model));
-    emit_state_layouts(&mut out, actor, model, &input_state_plans)?;
+    let omitted_authored_structs = emit_state_layouts(&mut out, actor, model, &input_state_plans, &state_values)?;
     emit_global_functions(&mut out, model, &state_values)?;
     emit_actor_functions(&mut out, actor, model, &state_values)?;
 
@@ -144,6 +145,7 @@ fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
     }
 
     out.push_str("}\n");
+    audit_omitted_equivalent_state_structs(&out, &omitted_authored_structs, &state_values)?;
     Ok(out)
 }
 
@@ -155,16 +157,15 @@ fn emit_section_header_raw(out: &mut String, title: &str) {
     out.push_str(&format!("    // :: {title}\n"));
 }
 
-fn emit_shared_constants(out: &mut String, model: &Model<'_>) -> Result<()> {
+fn emit_shared_constants(out: &mut String, model: &Model<'_>, state_values: &ContractStateValuePlan) -> Result<()> {
     if !model.consts.is_empty() {
         emit_section_header(out, "Shared constants");
         for ct in &model.consts {
-            out.push_str(&format!(
-                "    {} constant {} = {};\n",
-                lower_type_ref(&ct.ty, model),
-                ct.name,
-                lower_actor_enum_literals(&ct.value, model)?
-            ));
+            let sil_type = state_values.sil_type_for_type_ref(&ct.ty).unwrap_or_else(|| lower_type_ref(&ct.ty, model));
+            let value = lower_actor_enum_literals(&ct.value, model)?;
+            let value =
+                if state_values.has_equivalent_state_sources() { lower_expression_state_types(&value, state_values)? } else { value };
+            out.push_str(&format!("    {} constant {} = {};\n", sil_type, ct.name, value));
         }
         out.push('\n');
     }
@@ -192,11 +193,11 @@ fn emit_state_layouts(
     current_actor: &ActorDecl,
     model: &Model<'_>,
     input_state_plans: &[EntryInputStatePlan],
-) -> Result<()> {
+    state_values: &ContractStateValuePlan,
+) -> Result<BTreeSet<String>> {
     emit_section_header(out, "State layouts");
     let mut emitted = BTreeSet::new();
-    // Every declared state keeps its authored name alongside the current
-    // contract's physical `State`.
+    let mut omitted_authored_structs = BTreeSet::new();
     let mut state_names = model.actors.iter().map(|actor| actor.state.clone()).collect::<Vec<_>>();
     state_names.extend(model.states.keys().cloned());
     let mut open_output_states = BTreeSet::new();
@@ -243,9 +244,14 @@ fn emit_state_layouts(
     }
 
     for state_name in state_names {
-        if !emitted.insert(state_name.clone()) {
+        if emitted.contains(&state_name) || omitted_authored_structs.contains(&state_name) {
             continue;
         }
+        if state_values.authored_sil_type_for_name(&state_name) == Some("State") {
+            omitted_authored_structs.insert(state_name);
+            continue;
+        }
+        emitted.insert(state_name.clone());
         let state = model.state(&state_name)?;
         let storage_state = model.storage_state(&state_name)?;
         out.push_str(&format!("    struct {state_name} {{\n"));
@@ -256,7 +262,10 @@ fn emit_state_layouts(
                     .expansion
                     .as_ref()
                     .and_then(|expansion| expansion.digests.iter().find(|digest| digest.field == field.name))
-                    .map_or_else(|| lower_type_ref(&field.ty, model), |digest| digest.state.clone());
+                    .map_or_else(
+                        || state_values.sil_type_for_type_ref(&field.ty).unwrap_or_else(|| lower_type_ref(&field.ty, model)),
+                        |digest| state_values.authored_sil_type_for_name(&digest.state).unwrap_or(&digest.state).to_string(),
+                    );
                 out.push_str(&format!("        {ty} {};\n", field.name));
             }
         }
@@ -323,10 +332,11 @@ fn emit_state_layouts(
         if !emitted.insert(sil_type.clone()) {
             continue;
         }
+        omitted_authored_structs.remove(&sil_type);
         emit_planned_physical_struct(out, &sil_type, &layout);
     }
     out.push('\n');
-    Ok(())
+    Ok(omitted_authored_structs)
 }
 
 fn insert_named_physical_layout(
@@ -390,7 +400,8 @@ fn emit_global_functions(out: &mut String, model: &Model<'_>, state_values: &Con
                 .result()
                 .map(|value| state_values.sil_type(value))
                 .or_else(|| function.return_ty.map(|ty| lower_type_ref(ty, model)));
-            emit_function(out, function.name, &params, return_type.as_deref(), &function.body);
+            let body = lower_function_body_state_types(function.name, &params, return_type.as_deref(), &function.body, state_values)?;
+            emit_function(out, function.name, &params, return_type.as_deref(), &body);
         }
         out.push('\n');
     }
@@ -423,7 +434,8 @@ fn emit_actor_functions(out: &mut String, actor: &ActorDecl, model: &Model<'_>, 
             .result()
             .map(|value| state_values.sil_type(value))
             .or_else(|| function.return_ty.as_ref().map(|ty| lower_type_ref(ty, model)));
-        emit_function(out, &function.name, &params, return_type.as_deref(), &function.body);
+        let body = lower_function_body_state_types(&function.name, &params, return_type.as_deref(), &function.body, state_values)?;
+        emit_function(out, &function.name, &params, return_type.as_deref(), &body);
     }
     out.push('\n');
     Ok(())

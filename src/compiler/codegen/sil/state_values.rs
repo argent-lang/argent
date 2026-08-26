@@ -109,13 +109,7 @@ impl ContractStateValuePlan {
             .map(|(source, representation)| {
                 let sil_type = match representation.sil_type() {
                     SilStateType::Source(planned) if planned == source => source.as_str().to_string(),
-                    SilStateType::State => {
-                        return Err(ArgentError::new(format!(
-                            "source state `{}` selected equivalent `State` before the contract-wide optimization in actor `{}`",
-                            source.as_str(),
-                            actor.name
-                        )));
-                    }
+                    SilStateType::State => "State".to_string(),
                     SilStateType::Source(planned) => {
                         return Err(ArgentError::new(format!(
                             "source state `{}` uses unrelated authored SIL type `{}` in actor `{}`",
@@ -149,6 +143,11 @@ impl ContractStateValuePlan {
         Ok(Self { authored_sil_types, signatures })
     }
 
+    #[cfg(test)]
+    pub(super) fn with_authored_sil_types(authored_sil_types: BTreeMap<SourceStateId, String>) -> Self {
+        Self { authored_sil_types, signatures: BTreeMap::new() }
+    }
+
     pub(in crate::compiler::codegen) fn signature(&self, name: &str) -> Option<&CallableSignaturePlan> {
         self.signatures.get(name)
     }
@@ -162,6 +161,18 @@ impl ContractStateValuePlan {
         self.plan_ast_type_ref(&ty, None)
     }
 
+    pub(in crate::compiler::codegen) fn plan_source_sil_type(&self, ty: &str) -> Option<PlannedStateValue> {
+        let ty = parse_sil_type_ref(ty).ok()?;
+        let SilTypeBase::Custom(name) = &ty.base else {
+            return None;
+        };
+        let source = SourceStateId::new(name);
+        if !self.authored_sil_types.contains_key(&source) {
+            return None;
+        }
+        state_value_shape(&ty, None).map(|shape| PlannedStateValue { source, shape })
+    }
+
     pub(in crate::compiler::codegen) fn plan_ast_type_ref(
         &self,
         ty: &SilTypeRef,
@@ -170,18 +181,14 @@ impl ContractStateValuePlan {
         let SilTypeBase::Custom(name) = &ty.base else {
             return None;
         };
-        let shape = match ty.array_dims.as_slice() {
-            [] => StateValueShape::Scalar,
-            [SilArrayDim::Fixed(len)] => StateValueShape::FixedArray(FixedArrayLength::Known(*len)),
-            [SilArrayDim::Dynamic] => StateValueShape::DynamicArray,
-            [SilArrayDim::Inferred] => {
-                StateValueShape::FixedArray(inferred_len.map_or(FixedArrayLength::Unresolved, FixedArrayLength::Known))
-            }
-            [SilArrayDim::Constant(_)] => StateValueShape::FixedArray(FixedArrayLength::Unresolved),
-            _ => return None,
+        let shape = state_value_shape(ty, inferred_len)?;
+        let named_source = SourceStateId::new(name.clone());
+        let source = if self.authored_sil_types.contains_key(&named_source) {
+            named_source
+        } else {
+            self.authored_sil_types.iter().find_map(|(source, sil_type)| (sil_type == name).then(|| source.clone()))?
         };
-        let source = SourceStateId::new(name.clone());
-        self.authored_sil_types.contains_key(&source).then_some(PlannedStateValue { source, shape })
+        Some(PlannedStateValue { source, shape })
     }
 
     pub(in crate::compiler::codegen) fn sil_type(&self, value: &PlannedStateValue) -> String {
@@ -194,10 +201,26 @@ impl ContractStateValuePlan {
     }
 
     pub(in crate::compiler::codegen) fn sil_type_for_sil_type(&self, ty: &str) -> Option<String> {
-        self.plan_sil_type(ty).map(|value| match value.shape() {
-            StateValueShape::FixedArray(FixedArrayLength::Unresolved) => ty.to_string(),
-            _ => self.sil_type(&value),
-        })
+        let mut parsed = parse_sil_type_ref(ty).ok()?;
+        let value = self.plan_ast_type_ref(&parsed, None)?;
+        parsed.base = SilTypeBase::Custom(self.authored_sil_types.get(value.source())?.clone());
+        Some(parsed.type_name())
+    }
+
+    pub(in crate::compiler::codegen) fn authored_sil_type(&self, source: &SourceStateId) -> Option<&str> {
+        self.authored_sil_types.get(source).map(String::as_str)
+    }
+
+    pub(in crate::compiler::codegen) fn authored_sil_type_for_name(&self, source: &str) -> Option<&str> {
+        self.authored_sil_type(&SourceStateId::new(source))
+    }
+
+    pub(in crate::compiler::codegen) fn equivalent_state_sources(&self) -> impl Iterator<Item = &SourceStateId> {
+        self.authored_sil_types.iter().filter_map(|(source, sil_type)| (sil_type == "State").then_some(source))
+    }
+
+    pub(in crate::compiler::codegen) fn has_equivalent_state_sources(&self) -> bool {
+        self.equivalent_state_sources().next().is_some()
     }
 
     pub(in crate::compiler::codegen) fn plan_initialized_sil_type(
@@ -206,7 +229,7 @@ impl ContractStateValuePlan {
         initializer: Option<&PlannedStateValue>,
     ) -> Option<PlannedStateValue> {
         let ty = parse_sil_type_ref(declared_ty).ok()?;
-        let declared = self.plan_ast_type_ref(&ty, None)?;
+        let declared = self.plan_source_sil_type(declared_ty)?;
         if !matches!(ty.array_dims.as_slice(), [SilArrayDim::Inferred]) {
             return Some(declared);
         }
@@ -214,6 +237,19 @@ impl ContractStateValuePlan {
             .filter(|value| value.source() == declared.source() && matches!(value.shape(), StateValueShape::FixedArray(_)))
             .cloned()
             .or(Some(declared))
+    }
+}
+
+fn state_value_shape(ty: &SilTypeRef, inferred_len: Option<usize>) -> Option<StateValueShape> {
+    match ty.array_dims.as_slice() {
+        [] => Some(StateValueShape::Scalar),
+        [SilArrayDim::Fixed(len)] => Some(StateValueShape::FixedArray(FixedArrayLength::Known(*len))),
+        [SilArrayDim::Dynamic] => Some(StateValueShape::DynamicArray),
+        [SilArrayDim::Inferred] => {
+            Some(StateValueShape::FixedArray(inferred_len.map_or(FixedArrayLength::Unresolved, FixedArrayLength::Known)))
+        }
+        [SilArrayDim::Constant(_)] => Some(StateValueShape::FixedArray(FixedArrayLength::Unresolved)),
+        _ => None,
     }
 }
 
@@ -292,5 +328,24 @@ mod tests {
         let inferred_local =
             plan.plan_initialized_sil_type("PeerState[_]", Some(&fixed)).expect("an inferred local uses its fixed initializer shape");
         assert_eq!(inferred_local, fixed);
+    }
+
+    #[test]
+    fn renders_every_supported_authored_array_shape_with_selected_state() {
+        let source = SourceStateId::new("PeerState");
+        let plan = ContractStateValuePlan {
+            authored_sil_types: [(source, "State".to_string())].into_iter().collect(),
+            signatures: BTreeMap::new(),
+        };
+
+        for (source_ty, expected) in [
+            ("PeerState", "State"),
+            ("PeerState[2]", "State[2]"),
+            ("PeerState[_]", "State[_]"),
+            ("PeerState[COUNT]", "State[COUNT]"),
+            ("PeerState[]", "State[]"),
+        ] {
+            assert_eq!(plan.sil_type_for_sil_type(source_ty).as_deref(), Some(expected));
+        }
     }
 }

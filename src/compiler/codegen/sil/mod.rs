@@ -5,6 +5,7 @@
 mod body;
 mod functions;
 mod state_boundary;
+mod state_types;
 mod state_values;
 mod token_refs;
 
@@ -14,4 +15,5 @@ pub(super) use state_boundary::{
     EntryInputBindingView, EntryInputStatePlan, plan_actor_output_state, plan_entry_input_states, plan_open_output_state,
     plan_selector_output_state,
 };
+pub(super) use state_types::{audit_omitted_equivalent_state_structs, lower_expression_state_types, lower_function_body_state_types};
 pub(super) use state_values::ContractStateValuePlan;

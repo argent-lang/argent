@@ -19,7 +19,7 @@ fn actor_entry<'a>(model: &'a Model<'a>, actor: &str, entry: &str) -> (&'a Actor
 }
 
 #[test]
-fn active_input_state_remains_physical_and_uses_the_covenant_domain_proof() {
+fn aligned_active_input_is_direct_authored_state_with_the_covenant_domain_proof() {
     let program = program(include_str!("../../../../../tests/fixtures/emit/single_actor_self_consume/app.ag"));
     let model = Model::from_program(&program).expect("self-consume fixture plans");
     let (actor, entry) = actor_entry(&model, "Counter", "merge");
@@ -28,11 +28,9 @@ fn active_input_state_remains_physical_and_uses_the_covenant_domain_proof() {
 
     assert!(input.uses_covenant_domain_proof());
     assert_eq!(input.physical_type(), "State");
-    assert!(matches!(input.access(), SourceStateAccess::Projected(_)));
-    assert_eq!(
-        input.access().require_authored_value(8).expect("identity projection materializes").into_sil(),
-        "CounterState {\n            // :: user declared fields\n            count: other.count,\n        }"
-    );
+    assert_eq!(input.access().authored_sil_type(), "State");
+    assert!(matches!(input.access(), SourceStateAccess::Authored { .. }));
+    assert_eq!(input.access().require_authored_value(8).expect("aligned input is authored").into_sil(), "other");
 }
 
 #[test]
@@ -174,7 +172,7 @@ fn observed_input_binding_owns_its_source_to_physical_reference() {
     let input = plan.observed("asset", "src").expect("observed input exists");
 
     assert_eq!(input.source_ref(), "asset.inputs.src.state");
-    assert_eq!(input.access().source_type(), "ForeignState");
+    assert_eq!(input.access().source_identity(), "ForeignState");
     assert_eq!(input.access().physical_expr(), "gen__asset_src_state");
     assert!(matches!(input.access(), SourceStateAccess::Authored { .. }));
 }

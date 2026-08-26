@@ -6,10 +6,6 @@ contract Pair(
     int init_amount
 ) {
     // :: state layouts
-    struct PairState {
-        // :: user declared fields
-        int amount;
-    }
     struct ControllerState {
         // :: user declared fields
         byte[32] pair_type;

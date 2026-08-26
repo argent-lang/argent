@@ -13,12 +13,6 @@ contract Ticket(
         byte[32] admin;
         int next_serial;
     }
-    struct TicketState {
-        // :: user declared fields
-        byte[32] owner;
-        int serial;
-        int redeemed;
-    }
 
     // :: route templates
 
@@ -38,20 +32,14 @@ contract Ticket(
         require(checkSig(owner_sig, owner_pk));
         require(redeemed == 0);
         require(tx.outputs[gen__next_output_idx].value == tx.inputs[this.activeInputIndex].value);
-        TicketState redeemed_ticket = TicketState {
+        State redeemed_ticket = State {
             // :: user declared fields
             owner: owner,
             serial: serial,
             redeemed: 1,
         };
-        State gen__state_next_state = State {
-            // :: user declared fields
-            owner: redeemed_ticket.owner,
-            serial: redeemed_ticket.serial,
-            redeemed: redeemed_ticket.redeemed,
-        };
         // :: become Ticket
-        validateOutputState(gen__next_output_idx, gen__state_next_state);
+        validateOutputState(gen__next_output_idx, redeemed_ticket);
     }
 
 }

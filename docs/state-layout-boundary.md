@@ -153,12 +153,13 @@ require(next.value == self.value);
 - `output <- self` is valid only when the selected output is singleton and permits the current actor.
 - Bare `become self` is invalid. Exact and constructed successors follow the same output-selection syntax.
 - Ranged output handles cannot use exact self-continuation until the language defines element selection for that case.
-- `self` is invalid as a local value, function argument, state constructor value, observed target, spawn target, or ordinary expression.
+- Bare `self` is not an ordinary value. It is valid only as the exact successor in `output <- self` and, under the
+  uniform input-reference follow-up below, as the reference operand in `state(self)`.
 - Exact self-continuation is valid regardless of whether route fields exist. It preserves the physical script without inspecting its layout.
 
 ### 3.4 Removal of `self.state`
 
-`self.state` should cease to be a source-level value. Its only important use was unchanged continuation, and `output <- self` expresses that operation more accurately and compiles more directly.
+`self.state` should cease to be a source-level value. Its previously supported role in unchanged continuation is replaced by `output <- self`, which expresses that operation more accurately and compiles more directly. Complete authored-state reconstruction uses the explicit `state(self)` follow-up described below.
 
 Changed transitions remain explicit. Users read the current fields and construct the new state:
 
@@ -172,6 +173,51 @@ AccountState next_state = {
 Argent performs no source-level lowering for `self.state`; invalid uses are rejected by ordinary semantic or Sil validation.
 
 Removing `self.state` also avoids an otherwise ambiguous question: whether it denotes source state, storage payload, or complete physical state.
+
+### 3.5 Approved follow-up: uniform input references and explicit state reconstruction
+
+The target input surface treats the current input, consumed inputs, and observed inputs as the same kind of reference:
+
+```text
+self
+peer
+asset.inputs.src
+```
+
+An input reference is not an authored state value. All references expose the same read operations:
+
+```rust
+ref.value
+ref.cov_id
+ref.<authored_field>
+```
+
+Field access is a projection from authenticated physical state. Converting the complete reference to its authored state is a separate, explicit operation:
+
+```rust
+AccountState current = state(self);
+AccountState consumed = state(peer);
+AccountState observed = state(asset.inputs.src);
+```
+
+`state(ref)` is an entry-only Argent builtin. It produces the one statically known `SourceStateId` associated with the reference, excludes compiler-owned route fields, and preserves nominal source identity. It evaluates the reference and any required openings exactly once and in source order. When source, storage, and physical representations are fully aligned, lowering may be a no-op; this does not change its authored-state semantics.
+
+For expanded state, compilation accepts `state(ref)` only when the entry plan supplies validated openings for every expanded field. A direct ordinary-field projection does not require openings for unrelated expanded fields, and an expanded-field projection requires only its own opening.
+
+The concrete actor behind an open observed reference may be authenticated at runtime, but its nominal source state type is still known at compile time. Future ranged inputs are homogeneous: `state(inputs[i])` converts one selected reference. `state(inputs)` does not implicitly map an entire range.
+
+Exact continuation remains narrower than the shared read interface. Only `output <- self` preserves the exact active input covenant. Generalizing exact continuation to another input reference is a separate language decision.
+
+This surface intentionally replaces the current implicit and observed-state forms:
+
+```text
+helper(peer)                    -> helper(state(peer))
+Actor(peer)                     -> Actor(state(peer))
+asset.inputs.src.state          -> state(asset.inputs.src)
+asset.inputs.src.state.amount   -> asset.inputs.src.amount
+```
+
+This is an approved follow-up language clarification, not part of the equivalent-`State` optimization currently under review. Until the follow-up is implemented as a complete migration, that optimization must preserve the existing consumed-reference and observed `.state` behavior from master rather than introducing only part of the new surface.
 
 ## 4. Target architecture
 
@@ -409,14 +455,14 @@ The compiler must distinguish a projected user view from a materialized authored
 - An **authored value** is a complete source-level value. It can be bound as a local, passed to a function expecting `PeerState`, returned from a function, stored in an array, destructured, or used as a successor source expression.
 - A **storage payload** and a **physical value** are boundary representations and are not authored values unless the applicable identity predicates prove they coincide.
 
-Converting a whole projected peer state to an authored value is a real operation. For ordinary fields it can construct the source struct from projections. For expansion-backed fields it requires validated payload preimages according to the existing expansion rules. A digest can support equality or storage validation, but cannot reconstruct the authored nested value. Codegen must reject an unavailable whole-value conversion rather than pretending that the physical digest layout has the source type.
+Converting a whole input reference with `state(ref)` to an authored value is a real operation. For ordinary fields it can construct the source struct from projections. For expansion-backed fields it requires validated payload preimages according to the existing expansion rules. A digest can support equality or storage validation, but cannot reconstruct the authored nested value. Codegen must reject an unavailable whole-value conversion rather than pretending that the physical digest layout has the source type.
 
 Function calls are representation boundaries even though they are not physical builtins. Each emitted function instance receives a per-contract lowering plan for every state-valued parameter, result, local, destructuring binding, constructor, and array element. The call and callee must agree on that plan.
 
 The following invariants are mandatory:
 
 1. Entry parameter to function parameter, authored local to function parameter, and function result to local use the same authored-value contract.
-2. A consumed or observed physical state may be passed as a whole authored argument only after authored-value reconstruction has produced that value; direct field projection alone is insufficient.
+2. An input reference may be passed as a whole authored argument only through `state(ref)`, after authored-value reconstruction has produced that value; direct field projection alone is insufficient.
 3. Nested calls compose the declared representation plan. No call-site decision depends on whether the initializer happens to be a direct call.
 4. State-returning calls are evaluated exactly once before any projection, expansion lowering, route materialization, or repeated element access.
 5. The same rules apply recursively to scalar state values, fixed arrays, and dynamic arrays. Array representation is an element-wise consequence of the shared plan, not a separate range feature.
@@ -476,9 +522,16 @@ The implementation now places the boundary across these focused components:
 - `src/compiler/codegen/sil/state_boundary.rs` owns authenticated input projection, output materialization, template-proof selection, and exact preservation.
 - `src/compiler/codegen/sil/body.rs` owns state bindings and control-flow ordering while requesting representation changes through the boundary.
 - `src/compiler/codegen/sil/state_values.rs` and `functions` apply the per-contract state plan to callable signatures, arguments, results, and arrays.
+- `src/compiler/codegen/sil/state_types.rs` applies checked AST-directed edits to type and constructor positions retained in authored function bodies, then reparses the result.
 - `src/compiler/codegen/emitter/tests.rs`, `tests/body_lowering_scopes.rs`, and generated example fixtures provide the existing test surfaces.
 
 The target is not a second codegen implementation. It is a small layout plan plus one boundary adapter used by the existing emitter and body lowerer.
+
+### 4.10 Equivalent `State` selection
+
+The equivalent-`State` optimization is implemented as a contract-local source-representation decision. An authored state uses Sil's built-in `State` exactly when it is the active actor's owned source state, source-to-storage is identity, storage-to-active-physical is identity, and the active physical type is `State`. Expanded or route-bearing active states remain named, as do foreign, linked, open, and selector source identities that are merely layout-compatible.
+
+The model and artifact continue carrying the nominal authored `SourceStateId`; only the generated Sil spelling changes. The selected spelling is consumed consistently by entry parameters, global and actor functions, locals, destructuring, arrays, constructors, authenticated inputs, and successor materialization. When no generated physical use needs the same named struct, codegen omits the redundant authored declaration and audits the complete generated contract AST to prove that the omitted name is no longer used in a type or constructor position.
 
 ## 5. Architectural principles
 
@@ -593,7 +646,7 @@ Replace `entry_param_sil_type` checks, direct-call recognition, authored-local p
 
 - entry parameter -> function parameter;
 - authored local -> function parameter;
-- consumed or observed physical state -> projected field or materialized authored function parameter;
+- input reference -> projected field or explicit `state(ref)` authored function parameter;
 - function result -> local -> `become`;
 - nested global and actor function calls;
 - function parameters and results, local and destructuring declarations, assignments and reassignments, constructors, and genuine type expressions;
@@ -604,9 +657,9 @@ For plain global and actor function text, use Sil's AST and exact source spans. 
 
 During the scalar and array migration legs, keep every authored value in its named source type. This removes the tactical physical aliases and initializer-shape exceptions without selecting the equivalent-`State` optimization at the same time. In augmented, expanded, or physically incompatible cases, authored values remain named permanently and cross to the selected physical type only through the boundary.
 
-After the boundary migration is complete, the fully aligned case may select one coherent contract-wide optimization: when both relations are identity and the relevant physical plan uses active `State`, parameters, results, compatible locals, arrays, constructors, and consumed inputs may all use SIL `State` directly. Apply that as a distinct reviewed change, and do not emit a duplicate source-named struct solely for an optimized state.
+The completed follow-up selects one coherent contract-wide optimization for the fully aligned case: when both relations are identity and the active physical plan uses `State`, parameters, results, compatible locals, arrays, constructors, and consumed inputs all use SIL `State` directly. It does not emit a duplicate source-named struct solely for that optimized state.
 
-Generated SIL changes are expected here where tactical physical locals return to named authored types. Review those diffs semantically; do not require byte-for-byte preservation of the tactical form. Generated changes from selecting equivalent `State` belong to the later optimization review.
+Generated SIL changes were expected here where tactical physical locals returned to named authored types. The equivalent-`State` changes were reviewed separately after the boundary was complete.
 
 Implement this surface as separate reviewable commits for scalar/function lowering and array lowering. Array type substitution does not imply element-wise conversion: converting a dynamic array requires a compiler-known maximum, and an unbounded conversion must be rejected. Any required Sil visitor extension should remain an isolated dependency commit.
 
@@ -666,7 +719,7 @@ Delete:
 - duplicated physical state type selection;
 - manual route-field insertion outside the boundary;
 - dead physical structs and any source-state structs proven unused. Keep named
-  authored structs while the equivalent-`State` optimization remains deferred;
+  authored structs unless the contract-local equivalent-`State` plan selects and audits their omission;
 - direct-call, entry-parameter, authored-local, and route materialization exceptions from `actor_functions`;
 - transitional assertions comparing old and new layout logic.
 
@@ -872,7 +925,7 @@ The `A` column's direct-`State` cases assume that the selected target physical l
 | --- | --- | --- | --- |
 | Entry parameter -> function parameter | direct `State` permitted | authored value | authored value |
 | Authored local -> function parameter | direct `State` permitted | authored value | authored value |
-| Validated physical peer -> whole authored parameter | direct `State` only when both relations are identity and target/active physical layouts are compatible | requires validated preimages | materialize source fields; hide routes |
+| `state(peer)` -> whole authored parameter | direct `State` only when both relations are identity and target/active physical layouts are compatible | requires validated preimages | materialize source fields; hide routes |
 | Function result -> local -> `become` | direct through boundary | expansion lowering | route materialization |
 | Nested function calls | one consistent contract plan | one consistent contract plan | one consistent contract plan |
 | Fixed/dynamic arrays of state | apply `A` element plan | apply `X` element plan | apply `R` element plan |
@@ -1067,7 +1120,7 @@ Pass an entry state parameter and an authored local through an actor helper, bin
 
 ### V15: Validated peer projection versus whole value
 
-Read `peer.balance` directly from an authenticated physical peer without constructing `PeerState`. In a second call, pass the complete peer to a function expecting `PeerState`; require a real authored value. For expansion, succeed with validated preimages and reject when only the digest is available.
+Read `peer.balance` directly from an authenticated physical peer without constructing `PeerState`. In a second call, pass `state(peer)` to a function expecting `PeerState`; require a real authored value. For expansion, succeed with validated preimages and reject when only the digest is available.
 
 ### V16: Nested calls and single evaluation
 
@@ -1094,6 +1147,8 @@ Implement these vectors initially as focused Rust tests and small `.ag`/generate
 The change is complete when:
 
 - `self.state` is absent from the language and `output <- self` is the exact-continuation form;
+- `self`, consumed inputs, and observed inputs share one input-reference read interface;
+- complete authored input state is produced only by the explicit entry-only `state(ref)` builtin;
 - exact self is represented explicitly in the semantic IR and lowers directly to P2SH script-public-key equality;
 - every emitted contract owns one typed state-lowering environment with source representations and actor-keyed target physical plans;
 - all user-to-physical layout transitions go through the SIL state boundary;

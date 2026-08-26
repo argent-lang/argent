@@ -6,10 +6,6 @@ contract Child(
     int init_amount
 ) {
     // :: state layouts
-    struct ChildState {
-        // :: user declared fields
-        int amount;
-    }
 
     // :: route templates
 

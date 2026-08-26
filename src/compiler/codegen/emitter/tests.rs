@@ -1260,8 +1260,9 @@ fn self_transition_uses_same_template_shortcut() {
     let actor_sil = actor_sil_for_model(&model);
     let artifact = emit_artifact(&program, &model, &actor_sil).expect("artifact emits");
 
-    assert!(sil.contains("FooState next_state = FooState {"), "{sil}");
-    assert!(sil.contains("validateOutputState(gen__next_output_idx, gen__state_next_state);"), "{sil}");
+    assert!(!sil.contains("FooState"), "{sil}");
+    assert!(sil.contains("State next_state = State {"), "{sil}");
+    assert!(sil.contains("validateOutputState(gen__next_output_idx, next_state);"), "{sil}");
     assert!(!sil.contains("validateOutputStateWithTemplate"), "{sil}");
     assert!(!sil.contains("byte[] gen__foo_prefix"), "{sil}");
 
@@ -1380,11 +1381,12 @@ fn state_returning_function_initializes_an_authored_local_once() {
     );
 
     let sil = actor_sil.get("Counter").expect("Counter emits");
-    assert!(sil.contains("CounterState candidate = successor();"), "{sil}");
+    assert!(!sil.contains("CounterState"), "{sil}");
+    assert!(sil.contains("function successor() : State"), "{sil}");
+    assert!(sil.contains("State candidate = successor();"), "{sil}");
     assert!(!sil.contains("successor().left"), "{sil}");
     assert!(!sil.contains("successor().right"), "{sil}");
-    assert!(sil.contains("left: candidate.left"), "{sil}");
-    assert!(sil.contains("right: candidate.right"), "{sil}");
+    assert!(sil.contains("validateOutputState(gen__next_output_idx, candidate);"), "{sil}");
 }
 
 #[test]
@@ -1606,18 +1608,27 @@ fn state_valued_functions_are_characterized_in_aligned_and_augmented_contexts() 
     assert_eq!(routed_sil, include_str!("../../../../tests/fixtures/state_layout/function_contexts/Routed.sil"));
     assert_eq!(reader_sil, include_str!("../../../../tests/fixtures/state_layout/function_contexts/Reader.sil"));
 
-    // Authored values stay nominally named until the distinct equivalent-State
-    // optimization is selected for the whole contract surface.
-    for sil in [&aligned_sil, &routed_sil] {
-        assert!(sil.contains("function global_identity(SharedState gen__glob_value) : SharedState"), "{sil}");
-        assert!(sil.contains("function global_fixed(SharedState[2] gen__glob_values) : SharedState[2]"), "{sil}");
-        assert!(sil.contains("function global_dynamic(SharedState[] gen__glob_values) : SharedState[]"), "{sil}");
-        assert!(sil.contains("function actor_identity(SharedState value) : SharedState"), "{sil}");
-        assert!(sil.contains("function actor_fixed(SharedState[2] values) : SharedState[2]"), "{sil}");
-        assert!(sil.contains("function actor_dynamic(SharedState[] values) : SharedState[]"), "{sil}");
-        assert!(sil.contains("SharedState constructed = SharedState {"), "{sil}");
-        assert!(!sil.contains("State constructed = State {"), "{sil}");
-    }
+    assert!(!aligned_sil.contains("SharedState"), "{aligned_sil}");
+    assert!(!aligned_sil.contains("struct SharedState"), "{aligned_sil}");
+    assert!(aligned_sil.contains("function global_identity(State gen__glob_value) : State"), "{aligned_sil}");
+    assert!(aligned_sil.contains("function global_fixed(State[2] gen__glob_values) : State[2]"), "{aligned_sil}");
+    assert!(aligned_sil.contains("function global_dynamic(State[] gen__glob_values) : State[]"), "{aligned_sil}");
+    assert!(aligned_sil.contains("function actor_identity(State value) : State"), "{aligned_sil}");
+    assert!(aligned_sil.contains("function actor_fixed(State[2] values) : State[2]"), "{aligned_sil}");
+    assert!(aligned_sil.contains("function actor_dynamic(State[] values) : State[]"), "{aligned_sil}");
+    assert!(aligned_sil.contains("State[2] gen__glob_fixed_literal = State[2]"), "{aligned_sil}");
+    assert!(aligned_sil.contains("State[_] gen__glob_inferred_literal = State[_]"), "{aligned_sil}");
+    assert!(aligned_sil.contains("State[SHARED_COUNT] gen__glob_symbolic_literal = State[SHARED_COUNT]"), "{aligned_sil}");
+    assert!(aligned_sil.contains("State[] gen__glob_dynamic_literal = State[]"), "{aligned_sil}");
+    assert!(aligned_sil.contains("State constructed = State {"), "{aligned_sil}");
+
+    assert!(routed_sil.contains("struct SharedState"), "{routed_sil}");
+    assert!(routed_sil.contains("function global_identity(SharedState gen__glob_value) : SharedState"), "{routed_sil}");
+    assert!(routed_sil.contains("function global_fixed(SharedState[2] gen__glob_values) : SharedState[2]"), "{routed_sil}");
+    assert!(routed_sil.contains("function global_dynamic(SharedState[] gen__glob_values) : SharedState[]"), "{routed_sil}");
+    assert!(routed_sil.contains("function actor_identity(SharedState value) : SharedState"), "{routed_sil}");
+    assert!(routed_sil.contains("SharedState constructed = SharedState {"), "{routed_sil}");
+    assert!(!routed_sil.contains("State constructed = State {"), "{routed_sil}");
     assert!(aligned_sil.contains("reassigned = global_identity(value);"), "{aligned_sil}");
     assert!(aligned_sil.contains("} = reassigned;"), "{aligned_sil}");
 
@@ -1676,14 +1687,169 @@ fn state_valued_functions_are_characterized_in_aligned_and_augmented_contexts() 
     let templates = &artifact.argent.template_plan.templates;
     let aligned_template = templates.iter().find(|template| template.actor == "Aligned").expect("Aligned template exists");
     let routed_template = templates.iter().find(|template| template.actor == "Routed").expect("Routed template exists");
-    assert_eq!(aligned_template.sil_template_hash, "948772c7053c50726fe0a0258a827e09926fd41c814b56fb331ef8ec91fe9997");
-    assert_eq!(routed_template.sil_template_hash, "1fd9657070babdf25ff5798c871578037ce6d9a6f94f7f2817c4d35ab4e2b9be");
+    assert_eq!(aligned_template.sil_template_hash, "1e53efdb95d8b504889f7ae86ae51d4ac54c988e6435a010c29141d1936ade7a");
+    assert_eq!(routed_template.sil_template_hash, "f4ae67cf1f069160b3a70383fb977335446c555a05cc16066e47937bdc9b2d19");
     assert!(aligned_template.actor_type_handle.context_fields.is_empty());
     assert_eq!(routed_template.actor_type_handle.context_fields, ["gen__foreign_template"]);
 }
 
 #[test]
-fn current_state_array_entry_param_uses_authored_state_type() {
+fn equivalent_state_shared_constants_use_the_contract_plan() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "equivalent-state-shared-constant",
+        r#"
+            const CounterState INITIAL = CounterState {
+                count: 1,
+            };
+
+            state CounterState {
+                int count;
+            }
+
+            state TargetState {
+                int count;
+            }
+
+            actor Counter owns CounterState {
+                entry inspect() emits none {
+                    require(INITIAL.count >= count);
+                }
+            }
+
+            actor Routed owns CounterState {
+                entry advance() emits next: Target {
+                    unrestricted(next.value);
+                    become next <- Target(TargetState {
+                        count: INITIAL.count,
+                    });
+                }
+            }
+
+            actor Target owns TargetState {
+                entry inspect() emits none {
+                    require(count >= 0);
+                }
+            }
+
+            app Test {
+                actor Counter;
+                actor Routed;
+                actor Target;
+            }
+        "#,
+    );
+    let sil = &actor_sil["Counter"];
+    let routed = &actor_sil["Routed"];
+
+    assert!(sil.contains("State constant INITIAL = State {"), "{sil}");
+    assert!(!sil.contains("CounterState"), "{sil}");
+    assert!(routed.contains("CounterState constant INITIAL = CounterState {"), "{routed}");
+    assert!(!routed.contains("State constant INITIAL = State {"), "{routed}");
+}
+
+#[test]
+fn equivalent_state_literals_lower_in_plain_entry_statements() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "equivalent-state-plain-expression",
+        r#"
+            state CounterState {
+                int count;
+            }
+
+            actor Counter owns CounterState {
+                entry inspect() emits none {
+                    require(CounterState[]{ CounterState { count: count } }.length == 1);
+                }
+            }
+
+            app Test {
+                actor Counter;
+            }
+        "#,
+    );
+    let sil = &actor_sil["Counter"];
+
+    assert!(sil.contains("require(State[]{ State {"), "{sil}");
+    assert!(sil.contains("}.length == 1);"), "{sil}");
+    assert!(!sil.contains("CounterState"), "{sil}");
+}
+
+#[test]
+fn observed_state_reference_can_supply_a_matching_route_state() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "observed-state-route-source",
+        r#"
+            state ForeignState {
+                cov_id group_id;
+                int amount;
+            }
+
+            state PeerState {
+                int amount;
+            }
+
+            actor Foreign owns ForeignState {
+                entry relay()
+                observes asset by self.group_id {
+                    inputs {
+                        src: Foreign,
+                    }
+                    outputs {
+                        dst: Foreign,
+                    }
+                }
+                emits none {
+                    require asset.outputs become {
+                        dst <- Foreign(asset.inputs.src.state),
+                    };
+                }
+
+                entry forward() emits next: Peer {
+                    unrestricted(next.value);
+                    become next <- Peer(PeerState {
+                        amount: amount,
+                    });
+                }
+            }
+
+            actor Peer owns PeerState {
+                entry inspect() emits none {
+                    require(amount >= 0);
+                }
+            }
+
+            app Test {
+                actor Foreign;
+                actor Peer;
+            }
+        "#,
+    );
+    let sil = &actor_sil["Foreign"];
+    let relay = sil
+        .split_once("entry relay")
+        .map(|(_, tail)| tail)
+        .and_then(|tail| tail.split_once("entry forward").map(|(body, _)| body))
+        .expect("relay entry is delimited in the generated Sil");
+    let authored = relay
+        .split_once("ForeignState gen__source_dst_foreign_state = ForeignState {")
+        .map(|(_, tail)| tail)
+        .and_then(|tail| tail.split_once("        };").map(|(body, _)| body))
+        .expect("relay reconstructs one authored ForeignState");
+
+    assert_eq!(relay.matches("State gen__asset_src_state = readInputStateWithTemplate(").count(), 1, "{relay}");
+    assert!(authored.contains("group_id: gen__asset_src_state.group_id,"), "{authored}");
+    assert!(authored.contains("amount: gen__asset_src_state.amount,"), "{authored}");
+    assert!(!authored.contains("gen__foreign_template"), "{authored}");
+    assert!(!authored.contains("gen__peer_template"), "{authored}");
+    assert!(relay.contains("gen__foreign_template: gen__foreign_template,"), "{relay}");
+    assert!(relay.contains("gen__peer_template: gen__peer_template,"), "{relay}");
+    assert!(!relay.contains("gen__asset_src_state.gen__foreign_template"), "{relay}");
+    assert!(!relay.contains("gen__asset_src_state.gen__peer_template"), "{relay}");
+    assert!(relay.contains("validateOutputState(gen__asset_dst_output_idx, gen__state_dst_state);"), "{relay}");
+}
+
+#[test]
+fn current_state_array_entry_param_uses_selected_state_type() {
     let (actor_sil, artifact) = inline_actor_sil_and_artifact(
         "current-state-array-entry-param",
         r#"
@@ -1704,7 +1870,8 @@ fn current_state_array_entry_param_uses_authored_state_type() {
     );
 
     let sil = actor_sil.get("Note").expect("Note emits");
-    assert!(sil.contains("entry inspect(NoteState[2] notes)"), "{sil}");
+    assert!(!sil.contains("NoteState"), "{sil}");
+    assert!(sil.contains("entry inspect(State[2] notes)"), "{sil}");
 
     let inspect = artifact.sil_abi.contract("Note").expect("Note Sil ABI exists").entry("inspect").expect("inspect entry exists");
     assert_eq!(
@@ -1745,7 +1912,7 @@ fn rejects_mismatched_authored_state_array_shapes_at_function_boundaries() {
     let model = Model::from_program(&program).expect("model validates");
     let err = emit_actor(model.actor("Note").expect("Note exists"), &model).expect_err("array shapes must agree at the call boundary");
 
-    assert!(err.to_string().contains("authored state value has type `NoteState[]`, not `NoteState[2]`"), "unexpected error: {err}");
+    assert!(err.to_string().contains("authored state value has type `State[]`, not `State[2]`"), "unexpected error: {err}");
 }
 
 #[test]
@@ -1753,18 +1920,18 @@ fn constant_sized_state_array_local_remains_planned() {
     let sil = emit_unresolved_fixed_state_array_local("constant-state-array-local", "const int COUNT = 2;", "COUNT");
 
     assert!(sil.contains("int constant COUNT = 2;"), "{sil}");
-    assert!(sil.contains("NoteState[COUNT] values = NoteState[COUNT]{"), "{sil}");
-    assert!(sil.contains("NoteState indexed = values[0];"), "{sil}");
-    assert!(sil.contains("NoteState[2] result = fixed(values);"), "{sil}");
+    assert!(sil.contains("State[COUNT] values = State[COUNT]{"), "{sil}");
+    assert!(sil.contains("State indexed = values[0];"), "{sil}");
+    assert!(sil.contains("State[2] result = fixed(values);"), "{sil}");
 }
 
 #[test]
 fn inferred_state_array_local_uses_initializer_shape() {
     let sil = emit_unresolved_fixed_state_array_local("inferred-state-array-local", "", "_");
 
-    assert!(sil.contains("NoteState[_] values = NoteState[_]{"), "{sil}");
-    assert!(sil.contains("NoteState indexed = values[0];"), "{sil}");
-    assert!(sil.contains("NoteState[2] result = fixed(values);"), "{sil}");
+    assert!(sil.contains("State[_] values = State[_]{"), "{sil}");
+    assert!(sil.contains("State indexed = values[0];"), "{sil}");
+    assert!(sil.contains("State[2] result = fixed(values);"), "{sil}");
 }
 
 fn emit_unresolved_fixed_state_array_local(case: &str, constant: &str, dimension: &str) -> String {
@@ -2059,7 +2226,7 @@ fn expanded_actor_functions_require_explicit_authored_parameters() {
 }
 
 #[test]
-fn entry_state_params_keep_authored_types_for_actor_function_calls() {
+fn entry_state_params_use_selected_types_for_actor_function_calls() {
     let (actor_sil, artifact) = inline_actor_sil_and_artifact(
         "current-state-dynamic-array-entry-param",
         r#"
@@ -2089,10 +2256,10 @@ fn entry_state_params_keep_authored_types_for_actor_function_calls() {
     );
 
     let sil = actor_sil.get("Note").expect("Note emits");
-    assert!(sil.contains("struct NoteState {"), "{sil}");
-    assert!(sil.contains("function read_nonce(NoteState note) : int"), "{sil}");
-    assert!(sil.contains("entry inspect(NoteState note)"), "{sil}");
-    assert!(sil.contains("entry inspect_many(NoteState[] notes)"), "{sil}");
+    assert!(!sil.contains("NoteState"), "{sil}");
+    assert!(sil.contains("function read_nonce(State note) : int"), "{sil}");
+    assert!(sil.contains("entry inspect(State note)"), "{sil}");
+    assert!(sil.contains("entry inspect_many(State[] notes)"), "{sil}");
 
     let note = artifact.sil_abi.contract("Note").expect("Note Sil ABI exists");
     assert_eq!(
@@ -2157,8 +2324,9 @@ fn terminal_state_does_not_carry_its_own_template() {
 
     assert!(!terminal_sil.contains("byte[32] gen__init_terminal_template"), "{terminal_sil}");
     assert!(!terminal_sil.contains("byte[32] gen__terminal_template ="), "{terminal_sil}");
-    assert!(terminal_sil.contains("TerminalState next = TerminalState {"), "{terminal_sil}");
-    assert!(terminal_sil.contains("validateOutputState(gen__next_output_idx, gen__state_next_state);"), "{terminal_sil}");
+    assert!(!terminal_sil.contains("TerminalState"), "{terminal_sil}");
+    assert!(terminal_sil.contains("State next = State {"), "{terminal_sil}");
+    assert!(terminal_sil.contains("validateOutputState(gen__next_output_idx, next);"), "{terminal_sil}");
     assert!(runtime_state_plan(&artifact, "Terminal").is_none());
     assert_eq!(
         runtime_state_plan(&artifact, "Source")
@@ -2627,6 +2795,30 @@ fn physical_state_values_cannot_supply_authored_successors() {
 }
 
 #[test]
+fn physical_state_function_results_cannot_supply_authored_successors() {
+    let err = emit_inline_error(
+        r#"
+            state CounterState { int count; }
+
+            actor Counter owns CounterState {
+                fn retain(State value) -> State {
+                    return value;
+                }
+
+                entry advance() emits next: Counter {
+                    State physical = readInputState(this.activeInputIndex);
+                    unrestricted(next.value);
+                    become next <- Counter(retain(physical));
+                }
+            }
+
+            app Test { actor Counter; }
+        "#,
+    );
+    assert!(err.to_string().contains("is not a proven authored `CounterState` value"), "unexpected error: {err}");
+}
+
+#[test]
 fn non_active_selector_declares_and_uses_its_canonical_named_type() {
     use crate::compiler::model::PhysicalTargetId;
     use crate::routing::{CommitmentForest, CommitmentPlan, Cut, FamilyPlan, NodePath, RoutePlan};
@@ -2969,7 +3161,7 @@ fn builds_examples_with_compiled_artifacts() {
         "tickets",
         &[
             ("Issuer", "a6af0ca5bff28389fd687b7ca8ac8cf0dd270276927037a9f212a3ea8ff27166"),
-            ("Ticket", "fa27bea44d0e1d34e3b8c2e7b801d1ca87c9604414080f096a820b2a6a28d93f"),
+            ("Ticket", "0480dbcb791c1d53b7f4668bf684c14be77fd7cf4ee02e49c9f9f2528e2fbd3e"),
         ],
     );
     assert_example_build_artifact("examples/stones/app.ag", "stones", &[]);
@@ -3400,8 +3592,9 @@ fn icc_asset_lowers_cov_id_co_spend_and_else_if() {
     assert!(kcc20_sil.contains("require(checkSig(owner_sig, pubkey(owner_identifier)));"), "{kcc20_sil}");
     assert!(kcc20_sil.contains("// :: co-spent with owner_identifier"), "{kcc20_sil}");
     assert!(kcc20_sil.contains("require(OpCovInputCount(owner_identifier) > 0);"), "{kcc20_sil}");
-    assert!(kcc20_sil.contains("KCC20State next_state = KCC20State {"), "{kcc20_sil}");
-    assert!(kcc20_sil.contains("State gen__state_next_state = State {"), "{kcc20_sil}");
+    assert!(!kcc20_sil.contains("KCC20State"), "{kcc20_sil}");
+    assert!(kcc20_sil.contains("State next_state = State {"), "{kcc20_sil}");
+    assert!(kcc20_sil.contains("validateOutputState(gen__next_output_idx, next_state);"), "{kcc20_sil}");
 
     let proxy_sil = fs::read_to_string(out_dir.join("sil/MinterProxy.sil")).expect("MinterProxy.sil exists");
     assert!(proxy_sil.contains("byte[32] controller_id = init_controller_id;"), "{proxy_sil}");
@@ -3710,17 +3903,17 @@ fn single_actor_self_consume_is_pinned() {
     assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/single_actor_self_consume/Counter.sil"));
     assert!(sil.contains("State other = readInputState(gen__other_input_idx);"), "{sil}");
     assert!(!sil.contains("readInputStateWithTemplate"), "{sil}");
-    assert!(sil.contains("CounterState copied = actor_identity(global_identity(CounterState {"), "{sil}");
+    assert!(!sil.contains("CounterState"), "{sil}");
+    assert!(sil.contains("State copied = actor_identity(global_identity(other));"), "{sil}");
     assert_eq!(sil.matches("actor_identity(global_identity(").count(), 1, "{sil}");
-    assert!(sil.contains("copied = global_identity(CounterState {"), "{sil}");
-    assert_eq!(sil.matches("global_identity(CounterState {").count(), 2, "{sil}");
-    assert!(sil.contains("validateOutputState(gen__next_output_idx, gen__state_next_state);"), "{sil}");
+    assert!(sil.contains("copied = global_identity(other);"), "{sil}");
+    assert!(sil.contains("validateOutputState(gen__next_output_idx, next);"), "{sil}");
 
     let source_state = artifact.argent.states.iter().find(|state| state.name == "CounterState").expect("CounterState exists");
     assert_eq!(source_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["count"]);
     let contract = artifact.sil_abi.contract("Counter").expect("Counter contract exists");
     assert_eq!(contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["count"]);
-    assert_eq!(contract.compiled.template_hash_hex, "0ac0821ed7c1f8c54f8e1fc97dfa1db61e1f4cb60e6e16e061f411f9385936c7");
+    assert_eq!(contract.compiled.template_hash_hex, "7e3775a25b2ed4594671eb43b72ca5389252ec0a11f3f0b8b255f91d7851e44a");
     let template = artifact
         .argent
         .template_plan
@@ -6462,9 +6655,9 @@ fn scalar_state_arguments_lower_inside_for_headers() {
         "#,
     );
     let sil = actor_sil.get("Counter").expect("Counter emits");
-    assert!(sil.contains("for (i, 0, read_count(CounterState {"), "{sil}");
-    assert!(sil.contains("count: other.count"), "{sil}");
-    assert!(!sil.contains("read_count(other)"), "{sil}");
+    assert!(!sil.contains("CounterState"), "{sil}");
+    assert!(sil.contains("function read_count(State gen__glob_value) : int"), "{sil}");
+    assert!(sil.contains("for (i, 0, read_count(other), 8)"), "{sil}");
 }
 
 #[test]

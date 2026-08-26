@@ -6,36 +6,53 @@ contract Aligned(
     int init_left,
     int init_right
 ) {
+    // :: shared constants
+    int constant SHARED_COUNT = 2;
+
     // :: state layouts
-    struct SharedState {
-        // :: user declared fields
-        int left;
-        int right;
-    }
     struct ForeignState {
         // :: user declared fields
         int marker;
     }
 
     // :: global functions (isolated using the gen__glob_ namespace)
-    function global_identity(SharedState gen__glob_value) : SharedState {
-        return gen__glob_value;
+    function global_identity(State gen__glob_value) : State {
+        State gen__glob_local = State {
+            left: gen__glob_value.left,
+            right: gen__glob_value.right,
+        };
+        State[2] gen__glob_fixed_literal = State[2]{ gen__glob_value, gen__glob_local };
+        State[_] gen__glob_inferred_literal = State[_]{ gen__glob_value, gen__glob_local };
+        State[SHARED_COUNT] gen__glob_symbolic_literal = State[SHARED_COUNT]{ gen__glob_value, gen__glob_local };
+        State[] gen__glob_dynamic_literal = State[]{ gen__glob_value, gen__glob_local };
+        State {
+            left: int gen__glob_copied_left,
+            right: int gen__glob_copied_right,
+        } = gen__glob_local;
+        return State {
+            left: gen__glob_copied_left,
+            right: gen__glob_copied_right,
+        };
     }
-    function global_fixed(SharedState[2] gen__glob_values) : SharedState[2] {
+    function global_fixed(State[2] gen__glob_values) : State[2] {
         return gen__glob_values;
     }
-    function global_dynamic(SharedState[] gen__glob_values) : SharedState[] {
+    function global_dynamic(State[] gen__glob_values) : State[] {
         return gen__glob_values;
     }
 
     // :: actor functions
-    function actor_identity(SharedState value) : SharedState {
-        return global_identity(value);
+    function actor_identity(State value) : State {
+        State local = State {
+            left: value.left,
+            right: value.right,
+        };
+        return global_identity(local);
     }
-    function actor_fixed(SharedState[2] values) : SharedState[2] {
+    function actor_fixed(State[2] values) : State[2] {
         return global_fixed(values);
     }
-    function actor_dynamic(SharedState[] values) : SharedState[] {
+    function actor_dynamic(State[] values) : State[] {
         return global_dynamic(values);
     }
 
@@ -47,24 +64,24 @@ contract Aligned(
 
     // :: entrypoints
     // :: leader entry (1:N)
-    entry inspect(SharedState value, SharedState[2] fixed, SharedState[] dynamic) {
+    entry inspect(State value, State[2] fixed, State[] dynamic) {
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 0);
 
-        SharedState scalar = actor_identity(global_identity(value));
-        SharedState constructed = SharedState {
+        State scalar = actor_identity(global_identity(value));
+        State constructed = State {
             // :: user declared fields
             left: scalar.left,
             right: scalar.right,
         };
-        SharedState reassigned = constructed;
+        State reassigned = constructed;
         reassigned = global_identity(value);
-        SharedState {
+        State {
             left: int extracted_left,
             right: int extracted_right,
         } = reassigned;
-        SharedState[2] fixed_result = actor_fixed(global_fixed(fixed));
-        SharedState[] dynamic_result = actor_dynamic(global_dynamic(dynamic));
+        State[2] fixed_result = actor_fixed(global_fixed(fixed));
+        State[] dynamic_result = actor_dynamic(global_dynamic(dynamic));
         require(scalar.left + scalar.right + extracted_left + extracted_right >= 0);
         require(fixed_result[0].left >= 0);
         require(dynamic_result.length >= 0);
