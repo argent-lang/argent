@@ -74,10 +74,17 @@ function standardModuleRelativePath(moduleName) {
 const BUILTINS = Object.freeze([
   {
     name: 'state',
-    signature: 'state(inputReference) -> AuthoredState',
-    params: ['inputReference'],
+    signature: 'state(input_reference) -> AuthoredState',
+    params: ['input_reference'],
     documentation:
       'Argent entry builtin: Reconstruct complete authored state from `self`, a consumed input handle, or an observed input reference.',
+  },
+  {
+    name: 'digest',
+    signature: 'digest(authored_state) -> byte[32]',
+    params: ['authored_state'],
+    documentation:
+      'Argent entry builtin: Compute the Blake3 digest of an authored state storage payload. Reconstruct input references explicitly, for example `digest(state(peer))`; compiler-owned route fields are excluded.',
   },
   {
     name: 'blake2b',
@@ -297,6 +304,14 @@ function ident(token, value) {
 
 function symbol(token, value) {
   return token && token.kind === 'symbol' && token.value === value;
+}
+
+function builtinCall(tokens, index) {
+  const token = tokens[index];
+  if (!ident(token) || !symbol(tokens[index + 1], '(')) {
+    return undefined;
+  }
+  return BUILTINS.find((builtin) => builtin.name === token.value);
 }
 
 function normalizedSlice(source, start, end) {
@@ -829,6 +844,7 @@ module.exports = {
   KEYWORDS,
   PRIMITIVE_DOCUMENTATION,
   PRIMITIVE_TYPES,
+  builtinCall,
   scanDocument,
   standardModuleRelativePath,
   tokenize,

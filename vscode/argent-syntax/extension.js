@@ -9,6 +9,7 @@ const {
   KEYWORDS,
   PRIMITIVE_DOCUMENTATION,
   PRIMITIVE_TYPES,
+  builtinCall,
   scanDocument,
   standardModuleRelativePath,
 } = require('./language-service');
@@ -554,7 +555,9 @@ function activate(context) {
           return parameterHover(parameter);
         }
 
-        const builtin = BUILTINS.find((candidate) => candidate.name === word.value);
+        const current = catalog.modules.find((module) => module.uri.toString() === document.uri.toString());
+        const tokenIndex = current?.scan.tokens.findIndex((token) => token.start === document.offsetAt(word.range.start)) ?? -1;
+        const builtin = current ? builtinCall(current.scan.tokens, tokenIndex) : undefined;
         if (builtin) {
           const markdown = new vscode.MarkdownString();
           markdown.appendCodeblock(builtin.signature, 'argent');
@@ -622,7 +625,7 @@ function activate(context) {
               .flatMap((state) => state.fields ?? [])
               .map((field) => [field.start, field]),
           );
-          for (const token of current.scan.tokens) {
+          for (const [tokenIndex, token] of current.scan.tokens.entries()) {
             if (token.kind !== 'ident') {
               continue;
             }
@@ -651,7 +654,7 @@ function activate(context) {
             } else if (PRIMITIVE_TYPES.includes(token.value)) {
               type = 'type';
               modifiers = ['defaultLibrary'];
-            } else if (BUILTINS.some((candidate) => candidate.name === token.value)) {
+            } else if (builtinCall(current.scan.tokens, tokenIndex)) {
               type = 'function';
               modifiers = ['defaultLibrary'];
             }

@@ -9,6 +9,7 @@ const {
   KEYWORD_DOCUMENTATION,
   PRIMITIVE_DOCUMENTATION,
   PRIMITIVE_TYPES,
+  builtinCall,
   scanDocument,
   standardModuleRelativePath,
   tokenize,
@@ -28,10 +29,34 @@ test('documents exact self successor syntax without restoring self.state', () =>
 test('offers explicit authored input-state reconstruction', () => {
   const state = BUILTINS.find((builtin) => builtin.name === 'state');
   assert.ok(state);
-  assert.equal(state.signature, 'state(inputReference) -> AuthoredState');
-  assert.deepEqual(state.params, ['inputReference']);
+  assert.equal(state.signature, 'state(input_reference) -> AuthoredState');
+  assert.deepEqual(state.params, ['input_reference']);
   assert.match(state.documentation, /consumed input handle/);
   assert.match(state.documentation, /observed input reference/);
+});
+
+test('offers authored state digests and classifies state only when called', () => {
+  const digest = BUILTINS.find((builtin) => builtin.name === 'digest');
+  assert.ok(digest);
+  assert.equal(digest.signature, 'digest(authored_state) -> byte[32]');
+  assert.deepEqual(digest.params, ['authored_state']);
+  assert.match(digest.documentation, /`digest\(state\(peer\)\)`/);
+  assert.match(digest.documentation, /route fields are excluded/);
+
+  const tokens = tokenize('state AccountState {} state /* reconstruct */ (self); digest (state(peer));');
+  const calls = tokens.map((token, index) => builtinCall(tokens, index)?.name).filter(Boolean);
+  assert.deepEqual(calls, ['state', 'digest', 'state']);
+});
+
+test('highlights state and digest calls as Argent functions', () => {
+  const grammar = JSON.parse(fs.readFileSync(path.join(__dirname, 'syntaxes/argent.tmLanguage.json'), 'utf8'));
+  assert.equal(grammar.patterns[0].include, '#argent-builtins');
+
+  const operationPattern = grammar.repository['argent-builtins'].patterns[0];
+  assert.equal(operationPattern.name, 'support.function.argent');
+  assert.match('state(self)', new RegExp(operationPattern.match));
+  assert.match('digest (state(peer))', new RegExp(operationPattern.match));
+  assert.doesNotMatch('state AccountState', new RegExp(operationPattern.match));
 });
 
 test('resolves compiler-standard modules for import navigation and symbol indexing', () => {

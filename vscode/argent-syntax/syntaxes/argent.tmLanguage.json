@@ -4,10 +4,10 @@
   "scopeName": "source.argent",
   "patterns": [
     {
-      "include": "#argent-keywords"
+      "include": "#argent-builtins"
     },
     {
-      "include": "#argent-builtins"
+      "include": "#argent-keywords"
     },
     {
       "include": "#argent-assertions"
@@ -46,6 +46,10 @@
     },
     "argent-builtins": {
       "patterns": [
+        {
+          "name": "support.function.argent",
+          "match": "\\b(state|digest)\\b(?=\\s*\\()"
+        },
         {
           "name": "support.function.argent",
           "match": "\\b(Op[A-Za-z0-9_]+|op_[A-Za-z0-9_]+|co_spent|sha256|blake2b|blake2bWithKey|blake3|blake3WithKey|templateHash|checkSig|checkSigEcdsa|checkMsgSig|checkMsgSigEcdsa)\\b"
