@@ -2091,21 +2091,55 @@ fn input_references_reject_implicit_and_legacy_whole_state_forms() {
     );
     assert!(bare.to_string().contains("use `state(peer)`"), "unexpected error: {bare}");
 
-    let legacy = emit_inline_error(
+    for (legacy_expr, replacement) in
+        [("self.state", "state(self)"), ("peer.state", "state(peer)"), ("remote.inputs.src.state", "state(remote.inputs.src)")]
+    {
+        let legacy = emit_inline_error(&format!(
+            r#"
+                state SharedState {{ cov_id group_id; int count; }}
+                actor Counter owns SharedState {{
+                    entry inspect()
+                    consumes {{ peer: Counter, }}
+                    observes remote by self.group_id {{ inputs {{ src: Counter, }} }}
+                    emits none {{
+                        SharedState value = {legacy_expr};
+                        require(value.count >= 0);
+                    }}
+                }}
+                app Test {{ actor Counter; }}
+            "#
+        ));
+        assert!(legacy.to_string().contains("has no `.state` member"), "unexpected error for {legacy_expr}: {legacy}");
+        assert!(legacy.to_string().contains(&format!("use `{replacement}`")), "unexpected error for {legacy_expr}: {legacy}");
+    }
+
+    let successor = emit_inline_error(
         r#"
-            state SharedState { cov_id group_id; int count; }
+            state SharedState { int count; }
             actor Counter owns SharedState {
-                entry inspect()
-                observes remote by self.group_id { inputs { src: Counter, } }
-                emits none {
-                    SharedState value = remote.inputs.src.state;
-                    require(value.count >= 0);
+                entry inspect() emits next: Counter {
+                    unrestricted(next.value);
+                    become next <- Counter(self.state);
                 }
             }
             app Test { actor Counter; }
         "#,
     );
-    assert!(legacy.to_string().contains("has no `.state` member"), "unexpected error: {legacy}");
+    assert!(successor.to_string().contains("use `state(self)`"), "unexpected error: {successor}");
+
+    let nested = emit_inline_error(
+        r#"
+            state SharedState { int count; }
+            actor Counter owns SharedState {
+                entry inspect() consumes { peer: Counter, } emits none {
+                    byte[32] value = digest(peer.state);
+                    require(value.length == 32);
+                }
+            }
+            app Test { actor Counter; }
+        "#,
+    );
+    assert!(nested.to_string().contains("use `state(peer)`"), "unexpected error: {nested}");
 }
 
 #[test]

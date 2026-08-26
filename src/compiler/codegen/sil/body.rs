@@ -1194,6 +1194,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         target: &OutputStateTarget,
     ) -> Result<AuthoredStateExpr> {
         let expr = strip_outer_parentheses(route.state.trim());
+        self.reject_legacy_input_state_members(expr)?;
         let source_state = target.source_identity().to_string();
         let authored_sil_type = target.authored_sil_type().to_string();
         let is_source_constructor = split_state_constructor(expr).is_some_and(|(state, _)| state == source_state);
@@ -1333,6 +1334,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
 
     fn lower_expr(&self, expr: &str, expected_ty: Option<&str>, indent: usize) -> Result<String> {
         let expr = expr.trim();
+        self.reject_legacy_input_state_members(expr)?;
         self.reject_physical_state_constructors(expr)?;
         let expected_state_value = expected_ty.and_then(|ty| self.state_values.plan_sil_type(ty));
         if let Some(expected) = expected_state_value.as_ref().filter(|value| !value.shape().is_scalar()) {
@@ -1718,6 +1720,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     }
 
     fn lower_refs(&self, expr: &str, indent: usize) -> Result<String> {
+        self.reject_legacy_input_state_members(expr)?;
         let expr = self.lower_digest_calls(expr)?;
         let expr = self.lower_input_state_calls(&expr, indent)?;
         let mut replacements = self.fixed_ref_replacements.clone();
@@ -1726,10 +1729,19 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             if !self.bindings.input_reference_is_visible(reference) {
                 continue;
             }
-            reference.reject_unavailable_field_refs(&expr).map_err(|err| self.error(err.to_string()))?;
             replacements.extend(reference.operation_replacements(indent)?);
         }
         RefReplacements::new(replacements)?.rewrite(&expr)
+    }
+
+    fn reject_legacy_input_state_members(&self, expr: &str) -> Result<()> {
+        self.active_reference.reject_unavailable_field_refs(expr).map_err(|err| self.error(err.to_string()))?;
+        for reference in self.input_references.external_references() {
+            if self.bindings.input_reference_is_visible(reference) {
+                reference.reject_unavailable_field_refs(expr).map_err(|err| self.error(err.to_string()))?;
+            }
+        }
+        Ok(())
     }
 
     fn lower_digest_calls(&self, expr: &str) -> Result<String> {
