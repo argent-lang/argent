@@ -2264,19 +2264,21 @@ fn input_references_reject_implicit_and_legacy_whole_state_forms() {
         assert!(legacy.to_string().contains(&format!("use `{replacement}`")), "unexpected error for {legacy_expr}: {legacy}");
     }
 
-    let successor = emit_inline_error(
-        r#"
-            state SharedState { int count; }
-            actor Counter owns SharedState {
-                entry inspect() emits next: Counter {
-                    unrestricted(next.value);
-                    become next <- Counter(self.state);
-                }
-            }
-            app Test { actor Counter; }
-        "#,
-    );
-    assert!(successor.to_string().contains("use `state(self)`"), "unexpected error: {successor}");
+    for state in ["self.state", "state(self)"] {
+        let successor = emit_inline_error(&format!(
+            r#"
+                state SharedState {{ int count; }}
+                actor Counter owns SharedState {{
+                    entry inspect() emits next: Counter {{
+                        unrestricted(next.value);
+                        become next <- Counter({state});
+                    }}
+                }}
+                app Test {{ actor Counter; }}
+            "#
+        ));
+        assert!(successor.to_string().contains("use `next <- self`"), "unexpected error for {state}: {successor}");
+    }
 
     let nested = emit_inline_error(
         r#"

@@ -1331,6 +1331,15 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     }
 
     fn lower_constructed_route(&mut self, out: &mut String, indent: usize, route: ConstructedRoute) -> Result<()> {
+        let state = strip_outer_parentheses(route.state.trim());
+        let reconstructs_self =
+            self.input_reference_from_state_call(state)?.is_some_and(|reference| reference.reference() == word::SELF);
+        if route.actor == self.actor.name && (state == "self.state" || reconstructs_self) {
+            return Err(self.error(format!(
+                "`{}({state})` reconstructs the current actor state; use `{} <- self` for exact continuation",
+                route.actor, route.output
+            )));
+        }
         if self.bindings.selector(&route.actor).is_some() {
             return self.lower_selector_route(out, indent, route);
         }
