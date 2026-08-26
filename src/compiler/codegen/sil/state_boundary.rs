@@ -4,10 +4,9 @@ use std::collections::BTreeMap;
 
 use crate::compiler::model::{
     CompilerRouteTransition, ContractStateLowering, GeneratedFieldId, Model, OutputPhysicalTypePlan, PhysicalFieldId,
-    PhysicalStateLayout, PhysicalTargetId, SilStateType, SourcePhysicalField, SourceStateId, StaticActorTarget, TargetPhysicalPlan,
-    TemplateSelector,
+    PhysicalStateLayout, PhysicalTargetId, SilStateType, SourceStateId, StaticActorTarget, TargetPhysicalPlan, TemplateSelector,
 };
-use crate::compiler::syntax::{ActorDecl, EntryDecl, ObserveDecl, ObservedActorDecl};
+use crate::compiler::syntax::{ActorDecl, EntryDecl, ObserveDecl, ObservedActorDecl, word};
 use crate::error::{ArgentError, Result};
 
 use super::super::emitter::*;
@@ -233,10 +232,9 @@ enum InputTemplateProof {
 }
 
 #[derive(Clone)]
-pub(in crate::compiler::codegen) struct AuthenticatedPhysicalInput {
+struct AuthenticatedPhysicalInput {
     expr: String,
     sil_type: String,
-    target: PhysicalTargetId,
     input_index: String,
     proof: InputTemplateProof,
 }
@@ -256,20 +254,47 @@ impl AuthenticatedPhysicalInput {
 }
 
 #[derive(Clone)]
-pub(in crate::compiler::codegen) struct ProjectedSourceAccess {
-    source: SourceStateId,
-    authored_sil_type: String,
-    physical: AuthenticatedPhysicalInput,
-    fields: Vec<SourcePhysicalField>,
+enum PlannedSourceExpr {
+    Value(String),
+    Struct { sil_type: String, fields: Vec<(String, String)> },
 }
 
-/// Source-level access granted by one authenticated physical input.
+impl PlannedSourceExpr {
+    fn render(&self, indent: usize) -> String {
+        match self {
+            Self::Value(expr) => expr.clone(),
+            Self::Struct { sil_type, fields } => {
+                let field_indent = " ".repeat(indent + 4);
+                let close_indent = " ".repeat(indent);
+                let mut out = format!("{sil_type} {{\n");
+                if !fields.is_empty() {
+                    out.push_str(&format!("{field_indent}// :: user declared fields\n"));
+                }
+                for (field, expr) in fields {
+                    out.push_str(&format!("{field_indent}{field}: {expr},\n"));
+                }
+                out.push_str(&close_indent);
+                out.push('}');
+                out
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
-pub(in crate::compiler::codegen) enum SourceStateAccess {
-    /// The physical read already has the nominal authored source type.
-    Authored { source: SourceStateId, physical: AuthenticatedPhysicalInput },
-    /// User fields are reached through typed source-to-physical projections.
-    Projected(ProjectedSourceAccess),
+struct PlannedSourceField {
+    name: String,
+    value: Option<PlannedSourceExpr>,
+}
+
+/// Opaque source-level access derived from validated input provenance.
+#[derive(Clone)]
+struct SourceStateAccess {
+    source: SourceStateId,
+    authored_sil_type: String,
+    complete: Option<String>,
+    fields: Vec<PlannedSourceField>,
+    target: PhysicalTargetId,
 }
 
 /// A complete expression in one nominal authored state representation.
@@ -581,212 +606,317 @@ pub(in crate::compiler::codegen) fn preserve_exact_self(out: &mut String, indent
 }
 
 impl SourceStateAccess {
-    pub(in crate::compiler::codegen) fn source_identity(&self) -> &str {
-        match self {
-            Self::Authored { source, .. } => source.as_str(),
-            Self::Projected(access) => access.source.as_str(),
-        }
+    fn source_identity(&self) -> &str {
+        self.source.as_str()
     }
 
     #[cfg(test)]
-    pub(in crate::compiler::codegen) fn authored_sil_type(&self) -> &str {
-        match self {
-            Self::Authored { physical, .. } => &physical.sil_type,
-            Self::Projected(access) => &access.authored_sil_type,
-        }
-    }
-
-    pub(in crate::compiler::codegen) fn physical_type(&self) -> &str {
-        self.physical().sil_type.as_str()
+    fn authored_sil_type(&self) -> &str {
+        &self.authored_sil_type
     }
 
     #[cfg(test)]
-    pub(in crate::compiler::codegen) fn physical_expr(&self) -> &str {
-        self.physical().expr.as_str()
+    fn is_complete(&self) -> bool {
+        self.complete.is_some()
     }
 
-    fn physical(&self) -> &AuthenticatedPhysicalInput {
-        match self {
-            Self::Authored { physical, .. } | Self::Projected(ProjectedSourceAccess { physical, .. }) => physical,
-        }
+    fn projected_replacements(&self, source_ref: &str) -> Result<Vec<(String, String)>> {
+        self.fields
+            .iter()
+            .filter(|field| matches!(field.value, Some(PlannedSourceExpr::Value(_))))
+            .map(|field| Ok((format!("{source_ref}.{}", field.name), self.project_field(&field.name, 0)?)))
+            .collect()
     }
 
-    fn reference_replacements(&self, source_ref: &str) -> Vec<(String, String)> {
-        match self {
-            Self::Authored { physical, .. } => vec![(source_ref.to_string(), physical.expr.clone())],
-            Self::Projected(access) => access
-                .fields
-                .iter()
-                .filter(|field| field.is_identity())
-                .map(|field| {
-                    (format!("{source_ref}.{}", field.source().field()), format!("{}.{}", access.physical.expr, field.sil_name()))
-                })
-                .collect(),
-        }
+    fn project_field(&self, field_name: &str, indent: usize) -> Result<String> {
+        let field = self
+            .fields
+            .iter()
+            .find(|field| field.name == field_name)
+            .ok_or_else(|| ArgentError::new(format!("state `{}` has no field `{field_name}`", self.source.as_str())))?;
+        field.value.as_ref().map(|value| value.render(indent)).ok_or_else(|| {
+            ArgentError::new(format!(
+                "expanded input field `{field_name}` cannot be projected from authenticated physical state without its validated preimage"
+            ))
+        })
     }
 
     fn reject_unavailable_field_refs(&self, source_ref: &str, input: &str) -> Result<()> {
-        let Self::Projected(access) = self else {
-            return Ok(());
-        };
         let tokens = crate::compiler::syntax::lexer::lex(input)?;
-        for field in access.fields.iter().filter(|field| !field.is_identity()) {
-            let reference = format!("{source_ref}.{}", field.source().field());
+        for field in self.fields.iter().filter(|field| field.value.is_none()) {
+            let reference = format!("{source_ref}.{}", field.name);
             if count_qualified_ref(&tokens, &reference) > 0 {
                 return Err(ArgentError::new(format!(
                     "expanded input field `{}` cannot be projected from authenticated physical state without its validated preimage",
-                    field.source().field()
+                    field.name
                 )));
             }
         }
         Ok(())
     }
+}
 
-    /// Produce one complete value in the contract-selected authored representation.
-    pub(in crate::compiler::codegen) fn require_authored_value(&self, indent: usize) -> Result<AuthoredStateExpr> {
-        let (source, sil_type, sil) = match self {
-            Self::Authored { source, physical } => (source.clone(), physical.sil_type.clone(), physical.expr.clone()),
-            Self::Projected(access) => {
-                if let Some(field) = access.fields.iter().find(|field| !field.is_identity()) {
-                    return Err(ArgentError::new(format!(
-                        "expanded input state `{}` from target `{:?}` cannot be materialized without a validated preimage for field `{}`",
-                        access.source.as_str(),
-                        access.physical.target,
-                        field.source().field()
-                    )));
-                }
-                let field_indent = " ".repeat(indent + 4);
-                let close_indent = " ".repeat(indent);
-                let mut out = format!("{} {{\n", access.authored_sil_type);
-                if !access.fields.is_empty() {
-                    out.push_str(&format!("{field_indent}// :: user declared fields\n"));
-                }
-                for field in &access.fields {
-                    out.push_str(&format!(
-                        "{field_indent}{}: {}.{},\n",
-                        field.source().field(),
-                        access.physical.expr,
-                        field.sil_name()
-                    ));
-                }
-                out.push_str(&close_indent);
-                out.push('}');
-                (access.source.clone(), access.authored_sil_type.clone(), out)
-            }
-        };
-        Ok(AuthoredStateExpr { source, sil_type, sil })
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::compiler::codegen) struct EntryInputReferenceId(usize);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::compiler::codegen) struct EntryInputScopeId(usize);
+
+#[derive(Clone, Copy)]
+enum EntryInputReferenceKind {
+    Active,
+    Consumed,
+    Observed,
+}
+
+struct InputReferenceSpec {
+    id: EntryInputReferenceId,
+    scope: EntryInputScopeId,
+    kind: EntryInputReferenceKind,
+    reference: String,
+    compatibility_state_ref: String,
+    lexical_root: String,
+    physical_expr: String,
+    input_index: String,
+}
+
+#[derive(Clone)]
+struct InputReferenceCompatibility {
+    state_ref: Option<String>,
+    replacements: Vec<(String, String)>,
+}
+
+impl InputReferenceCompatibility {
+    fn matches_state_ref(&self, reference: &str, expr: &str) -> bool {
+        self.state_ref.as_deref().is_some_and(|state_ref| {
+            debug_assert!(state_ref == reference || state_ref.strip_prefix(reference) == Some(".state"));
+            state_ref == expr
+        })
     }
 }
 
-/// One consumed or observed state binding shared by emission and body lowering.
-pub(in crate::compiler::codegen) struct InputStateBinding {
-    source_ref: String,
+#[derive(Clone)]
+struct InputIndexExpr(String);
+
+impl InputIndexExpr {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// One input reference whose physical provenance remains private to the boundary.
+#[derive(Clone)]
+pub(in crate::compiler::codegen) struct PlannedEntryInputReference {
+    id: EntryInputReferenceId,
+    scope: EntryInputScopeId,
+    kind: EntryInputReferenceKind,
+    reference: String,
+    lexical_root: String,
+    input_index: InputIndexExpr,
+    lowered_sil_type: String,
     access: SourceStateAccess,
+    physical: Option<AuthenticatedPhysicalInput>,
+    compatibility: InputReferenceCompatibility,
 }
 
-impl InputStateBinding {
-    pub(in crate::compiler::codegen) fn source_ref(&self) -> &str {
-        &self.source_ref
+impl PlannedEntryInputReference {
+    pub(in crate::compiler::codegen) fn scope(&self) -> EntryInputScopeId {
+        self.scope
     }
 
-    pub(in crate::compiler::codegen) fn access(&self) -> &SourceStateAccess {
-        &self.access
+    pub(in crate::compiler::codegen) fn lexical_root(&self) -> &str {
+        &self.lexical_root
+    }
+
+    #[cfg(test)]
+    fn reference(&self) -> &str {
+        &self.reference
+    }
+
+    #[cfg(test)]
+    fn authored_sil_type(&self) -> &str {
+        self.access.authored_sil_type()
+    }
+
+    #[cfg(test)]
+    fn is_direct_authored(&self) -> bool {
+        self.access.is_complete()
+    }
+
+    pub(in crate::compiler::codegen) fn source_identity(&self) -> &str {
+        self.access.source_identity()
     }
 
     pub(in crate::compiler::codegen) fn physical_type(&self) -> &str {
-        self.access.physical_type()
+        &self.lowered_sil_type
     }
 
     pub(in crate::compiler::codegen) fn physical_target(&self) -> &PhysicalTargetId {
-        &self.access.physical().target
+        &self.access.target
     }
 
     pub(in crate::compiler::codegen) fn emit_read(&self, out: &mut String, indent: usize) {
-        self.access.physical().emit_read(out, indent);
+        self.physical.as_ref().expect("only authenticated external references are emitted as reads").emit_read(out, indent);
     }
 
     pub(in crate::compiler::codegen) fn uses_covenant_domain_proof(&self) -> bool {
-        matches!(self.access.physical().proof, InputTemplateProof::CovenantDomain)
+        self.physical.as_ref().is_some_and(|physical| matches!(physical.proof, InputTemplateProof::CovenantDomain))
+    }
+
+    pub(in crate::compiler::codegen) fn native_value(&self) -> String {
+        format!("tx.inputs[{}].value", self.input_index.as_str())
+    }
+
+    pub(in crate::compiler::codegen) fn covenant_id(&self) -> String {
+        format!("OpInputCovenantId({})", self.input_index.as_str())
+    }
+
+    pub(in crate::compiler::codegen) fn project_field(&self, field_name: &str, indent: usize) -> Result<String> {
+        self.access.project_field(field_name, indent)
+    }
+
+    pub(in crate::compiler::codegen) fn complete_authored_state(&self, indent: usize) -> Result<AuthoredStateExpr> {
+        if let Some(sil) = &self.access.complete {
+            return Ok(AuthoredStateExpr {
+                source: self.access.source.clone(),
+                sil_type: self.access.authored_sil_type.clone(),
+                sil: sil.clone(),
+            });
+        }
+        if let Some(field) = self.access.fields.iter().find(|field| field.value.is_none()) {
+            return Err(ArgentError::new(format!(
+                "expanded input state `{}` from target `{:?}` cannot be materialized without a validated preimage for field `{}`",
+                self.access.source.as_str(),
+                self.access.target,
+                field.name
+            )));
+        }
+        let field_indent = " ".repeat(indent + 4);
+        let close_indent = " ".repeat(indent);
+        let mut out = format!("{} {{\n", self.access.authored_sil_type);
+        if !self.access.fields.is_empty() {
+            out.push_str(&format!("{field_indent}// :: user declared fields\n"));
+        }
+        for field in &self.access.fields {
+            let value = self.project_field(&field.name, indent + 4)?;
+            out.push_str(&format!("{field_indent}{}: {value},\n", field.name));
+        }
+        out.push_str(&close_indent);
+        out.push('}');
+        Ok(AuthoredStateExpr { source: self.access.source.clone(), sil_type: self.access.authored_sil_type.clone(), sil: out })
+    }
+
+    /// Compatibility bridge for the current surface; implicit whole-state spellings are removed by 8b.
+    pub(in crate::compiler::codegen) fn compatibility_replacements(&self) -> Vec<(String, String)> {
+        let mut replacements = self.compatibility.replacements.clone();
+        match self.kind {
+            EntryInputReferenceKind::Active => {
+                replacements.push((format!("{}.{}", word::SELF, word::VALUE), self.native_value()));
+                replacements.push((format!("{}.{}", word::SELF, word::COVENANT_ID), self.covenant_id()));
+            }
+            EntryInputReferenceKind::Consumed => {
+                replacements.push((format!("{}.{}", self.reference, word::VALUE), self.native_value()));
+            }
+            EntryInputReferenceKind::Observed => {}
+        }
+        replacements
+    }
+
+    pub(in crate::compiler::codegen) fn reject_unavailable_field_refs(&self, input: &str) -> Result<()> {
+        let state_ref =
+            self.compatibility.state_ref.as_deref().expect("only external compatibility references can have unavailable fields");
+        self.access.reject_unavailable_field_refs(state_ref, input)
     }
 }
 
-/// Ordered input bindings for one emitted entry.
-pub(in crate::compiler::codegen) struct EntryInputStatePlan {
-    consumed: BTreeMap<String, InputStateBinding>,
-    observed: BTreeMap<(String, String), InputStateBinding>,
+/// All compiler-planned input references for one emitted entry.
+pub(in crate::compiler::codegen) struct EntryInputReferencePlan {
+    references: Vec<PlannedEntryInputReference>,
+    active: EntryInputReferenceId,
+    consumed: BTreeMap<String, EntryInputReferenceId>,
+    observed: BTreeMap<(String, String), EntryInputReferenceId>,
 }
 
-/// Input bindings available at one entry-lowering phase.
+/// External input references available at one entry-lowering phase.
 #[derive(Clone, Copy)]
-pub(in crate::compiler::codegen) enum EntryInputBindingView<'a> {
+pub(in crate::compiler::codegen) enum EntryInputReferenceView<'a> {
     None,
-    Complete(&'a EntryInputStatePlan),
+    Complete(&'a EntryInputReferencePlan),
 }
 
-impl<'a> EntryInputBindingView<'a> {
-    pub(in crate::compiler::codegen) fn consumed(self, name: &str) -> Result<Option<&'a InputStateBinding>> {
+impl<'a> EntryInputReferenceView<'a> {
+    pub(in crate::compiler::codegen) fn active(self, actor: &ActorDecl, model: &Model<'_>) -> Result<PlannedEntryInputReference> {
+        match self {
+            Self::None => active_input_reference(actor, model, model.state_lowering(&actor.name)?),
+            Self::Complete(plan) => Ok(plan.active().clone()),
+        }
+    }
+
+    pub(in crate::compiler::codegen) fn consumed(self, name: &str) -> Result<Option<&'a PlannedEntryInputReference>> {
         match self {
             Self::None => Ok(None),
             Self::Complete(plan) => plan.consumed(name).map(Some),
         }
     }
 
-    pub(in crate::compiler::codegen) fn observed(self, observe: &str, handle: &str) -> Result<Option<&'a InputStateBinding>> {
+    pub(in crate::compiler::codegen) fn observed(self, observe: &str, handle: &str) -> Result<Option<&'a PlannedEntryInputReference>> {
         match self {
             Self::Complete(plan) => plan.observed(observe, handle).map(Some),
             Self::None => Ok(None),
         }
     }
 
-    pub(in crate::compiler::codegen) fn reference_replacements(self) -> Vec<(String, String)> {
+    pub(in crate::compiler::codegen) fn external_references(self) -> &'a [PlannedEntryInputReference] {
         match self {
-            Self::None => Vec::new(),
-            Self::Complete(plan) => input_reference_replacements(plan.consumed.values().chain(plan.observed.values())),
+            Self::None => &[],
+            Self::Complete(plan) => plan.external_references(),
         }
     }
 
-    pub(in crate::compiler::codegen) fn reject_unavailable_field_refs(self, input: &str) -> Result<()> {
-        match self {
-            Self::None => Ok(()),
-            Self::Complete(plan) => reject_unavailable_input_field_refs(plan.consumed.values().chain(plan.observed.values()), input),
-        }
+    pub(in crate::compiler::codegen) fn compatibility_reference(self, expr: &str) -> Option<&'a PlannedEntryInputReference> {
+        // Migration debt: 8b replaces these implicit whole-state spellings with `state(ref)`.
+        self.external_references().iter().find(|reference| reference.compatibility.matches_state_ref(&reference.reference, expr))
     }
 }
 
-fn input_reference_replacements<'a>(bindings: impl Iterator<Item = &'a InputStateBinding>) -> Vec<(String, String)> {
-    bindings.flat_map(|binding| binding.access.reference_replacements(&binding.source_ref)).collect()
-}
-
-fn reject_unavailable_input_field_refs<'a>(bindings: impl Iterator<Item = &'a InputStateBinding>, input: &str) -> Result<()> {
-    for binding in bindings {
-        binding.access.reject_unavailable_field_refs(&binding.source_ref, input)?;
-    }
-    Ok(())
-}
-
-impl EntryInputStatePlan {
-    pub(in crate::compiler::codegen) fn consumed(&self, name: &str) -> Result<&InputStateBinding> {
-        self.consumed.get(name).ok_or_else(|| ArgentError::new(format!("missing consumed input state binding `{name}`")))
+impl EntryInputReferencePlan {
+    fn reference(&self, id: EntryInputReferenceId) -> Option<&PlannedEntryInputReference> {
+        self.references.get(id.0).filter(|reference| reference.id == id)
     }
 
-    pub(in crate::compiler::codegen) fn observed(&self, observe: &str, handle: &str) -> Result<&InputStateBinding> {
+    pub(in crate::compiler::codegen) fn active(&self) -> &PlannedEntryInputReference {
+        self.reference(self.active).expect("entry input reference plan retains its active input")
+    }
+
+    pub(in crate::compiler::codegen) fn consumed(&self, name: &str) -> Result<&PlannedEntryInputReference> {
+        self.consumed
+            .get(name)
+            .and_then(|id| self.reference(*id))
+            .ok_or_else(|| ArgentError::new(format!("missing consumed input reference `{name}`")))
+    }
+
+    pub(in crate::compiler::codegen) fn observed(&self, observe: &str, handle: &str) -> Result<&PlannedEntryInputReference> {
         self.observed
             .get(&(observe.to_string(), handle.to_string()))
-            .ok_or_else(|| ArgentError::new(format!("missing observed input state binding `{observe}.{handle}`")))
+            .and_then(|id| self.reference(*id))
+            .ok_or_else(|| ArgentError::new(format!("missing observed input reference `{observe}.{handle}`")))
     }
 
-    pub(in crate::compiler::codegen) fn bindings(&self) -> impl Iterator<Item = &InputStateBinding> {
-        self.consumed.values().chain(self.observed.values())
+    pub(in crate::compiler::codegen) fn external_references(&self) -> &[PlannedEntryInputReference] {
+        &self.references[1..]
     }
 }
 
-pub(in crate::compiler::codegen) fn plan_entry_input_states(
+pub(in crate::compiler::codegen) fn plan_entry_input_references(
     actor: &ActorDecl,
     entry: &EntryDecl,
     model: &Model<'_>,
-) -> Result<EntryInputStatePlan> {
+) -> Result<EntryInputReferencePlan> {
     let lowering = model.state_lowering(&actor.name)?;
+    let active = active_input_reference(actor, model, lowering)?;
+    let mut references = vec![active];
     let mut consumed = BTreeMap::new();
+    let mut next_scope = 1usize;
     for consume in &entry.consumes {
         let target = lowering.target_for_actor(&consume.actor).ok_or_else(|| {
             ArgentError::new(format!("actor `{}` has no input state target plan for `{}`", actor.name, consume.actor))
@@ -800,16 +930,34 @@ pub(in crate::compiler::codegen) fn plan_entry_input_states(
                 template: hidden_template_name(&consume.actor),
             }
         };
-        consumed.insert(
-            consume.name.clone(),
-            input_binding(consume.name.clone(), consume.name.clone(), hidden_input_idx_name(&consume.name), proof, target, lowering)?,
-        );
+        let id = EntryInputReferenceId(references.len());
+        let scope = EntryInputScopeId(next_scope);
+        next_scope += 1;
+        references.push(input_reference(
+            InputReferenceSpec {
+                id,
+                scope,
+                kind: EntryInputReferenceKind::Consumed,
+                reference: consume.name.clone(),
+                compatibility_state_ref: consume.name.clone(),
+                lexical_root: consume.name.clone(),
+                physical_expr: consume.name.clone(),
+                input_index: hidden_input_idx_name(&consume.name),
+            },
+            proof,
+            target,
+            lowering,
+        )?);
+        consumed.insert(consume.name.clone(), id);
     }
 
     let mut observed = BTreeMap::new();
     for observe in &entry.observes {
+        let scope = EntryInputScopeId(next_scope);
+        next_scope += 1;
         for input in &observe.inputs {
-            let source_ref = format!("{}.inputs.{}.state", observe.name, input.name);
+            let reference = format!("{}.inputs.{}", observe.name, input.name);
+            let compatibility_state_ref = format!("{reference}.state");
             let physical_expr = hidden_observed_input_state_name(&observe.name, &input.name);
             let input_index = hidden_observed_input_idx_name(&observe.name, &input.name);
             let open_state = crate::compiler::model::observed_open_state_for_decl(actor, entry, observe, input, model)?;
@@ -839,23 +987,106 @@ pub(in crate::compiler::codegen) fn plan_entry_input_states(
                         template: observed_actor_template_expr_for_entry(actor, entry, model, observe, input, &spec)?,
                     }
                 };
-            observed.insert(
-                (observe.name.clone(), input.name.clone()),
-                input_binding(source_ref, physical_expr, input_index, proof, target, lowering)?,
-            );
+            let id = EntryInputReferenceId(references.len());
+            references.push(input_reference(
+                InputReferenceSpec {
+                    id,
+                    scope,
+                    kind: EntryInputReferenceKind::Observed,
+                    reference,
+                    compatibility_state_ref,
+                    lexical_root: observe.name.clone(),
+                    physical_expr,
+                    input_index,
+                },
+                proof,
+                target,
+                lowering,
+            )?);
+            observed.insert((observe.name.clone(), input.name.clone()), id);
         }
     }
-    Ok(EntryInputStatePlan { consumed, observed })
+    Ok(EntryInputReferencePlan { references, active: EntryInputReferenceId(0), consumed, observed })
 }
 
-fn input_binding(
-    source_ref: String,
-    physical_expr: String,
-    input_index: String,
+fn active_input_reference(
+    actor: &ActorDecl,
+    model: &Model<'_>,
+    lowering: &ContractStateLowering,
+) -> Result<PlannedEntryInputReference> {
+    let target = lowering
+        .target_for_actor(&actor.name)
+        .ok_or_else(|| ArgentError::new(format!("actor `{}` has no active input reference target", actor.name)))?;
+    let authored_sil_type = lowering
+        .source_representation(target.source())
+        .ok_or_else(|| ArgentError::new("active input source has no authored representation plan"))
+        .and_then(|representation| render_sil_state_type(representation.sil_type()))?;
+    let expansion_specs = state_expansion_witness_specs_for_actor(actor, model);
+    let fields = target
+        .source_fields()?
+        .into_iter()
+        .map(|field| {
+            let name = field.source().field().to_string();
+            let value = if field.is_identity() {
+                PlannedSourceExpr::Value(name.clone())
+            } else {
+                let spec = expansion_specs
+                    .iter()
+                    .find(|spec| spec.state == actor.state && spec.field == name)
+                    .ok_or_else(|| ArgentError::new(format!("active expanded field `{name}` has no validated opening plan")))?;
+                let memory_source = SourceStateId::new(&spec.memory_state);
+                let sil_type = lowering
+                    .source_representation(&memory_source)
+                    .ok_or_else(|| {
+                        ArgentError::new(format!("expanded state `{}` has no authored representation plan", spec.memory_state))
+                    })
+                    .and_then(|representation| render_sil_state_type(representation.sil_type()))?;
+                let fields = model
+                    .state(&spec.memory_state)?
+                    .fields
+                    .iter()
+                    .map(|field| (field.name.clone(), hidden_state_expansion_field_name(spec, &field.name)))
+                    .collect();
+                PlannedSourceExpr::Struct { sil_type, fields }
+            };
+            Ok(PlannedSourceField { name, value: Some(value) })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let access =
+        SourceStateAccess { source: target.source().clone(), authored_sil_type, complete: None, fields, target: target.id().clone() };
+    let input_index = "this.activeInputIndex".to_string();
+    let mut compatibility_replacements = Vec::new();
+    for spec in &expansion_specs {
+        for field in &model.state(&spec.memory_state)?.fields {
+            let local = hidden_state_expansion_field_name(spec, &field.name);
+            compatibility_replacements.push((format!("{}.{}.{}", word::SELF, spec.field, field.name), local.clone()));
+            compatibility_replacements.push((format!("{}.{}", spec.field, field.name), local));
+        }
+    }
+    for field in &model.storage_state(&actor.state)?.fields {
+        compatibility_replacements.push((format!("{}.{}", word::SELF, field.name), field.name.clone()));
+    }
+    Ok(PlannedEntryInputReference {
+        id: EntryInputReferenceId(0),
+        scope: EntryInputScopeId(0),
+        kind: EntryInputReferenceKind::Active,
+        reference: word::SELF.to_string(),
+        lexical_root: word::SELF.to_string(),
+        input_index: InputIndexExpr(input_index),
+        lowered_sil_type: "State".to_string(),
+        access,
+        physical: None,
+        compatibility: InputReferenceCompatibility { state_ref: None, replacements: compatibility_replacements },
+    })
+}
+
+fn input_reference(
+    spec: InputReferenceSpec,
     proof: InputTemplateProof,
     target: &TargetPhysicalPlan,
     lowering: &ContractStateLowering,
-) -> Result<InputStateBinding> {
+) -> Result<PlannedEntryInputReference> {
+    let InputReferenceSpec { id, scope, kind, reference, compatibility_state_ref, lexical_root, physical_expr, input_index } = spec;
     let fields = target.source_fields()?;
     if fields.iter().any(|field| !matches!(field.physical(), PhysicalFieldId::Storage(_))) {
         return Err(ArgentError::new("authored input fields cannot map to compiler-generated route fields"));
@@ -866,22 +1097,48 @@ fn input_binding(
         .ok_or_else(|| ArgentError::new("input target source has no authored representation plan"))
         .and_then(|representation| render_sil_state_type(representation.sil_type()))?;
     let physical = AuthenticatedPhysicalInput {
-        expr: physical_expr,
+        expr: physical_expr.clone(),
         sil_type: physical_sil_type.clone(),
-        target: target.id().clone(),
-        input_index,
+        input_index: input_index.clone(),
         proof,
     };
-    let source = target.source().clone();
     let direct_authored = target.source_to_storage().is_identity()
         && target.storage_to_physical().is_identity()
         && physical_sil_type == authored_sil_type;
-    let access = if direct_authored {
-        SourceStateAccess::Authored { source, physical }
-    } else {
-        SourceStateAccess::Projected(ProjectedSourceAccess { source, authored_sil_type, physical, fields })
+    let planned_fields = fields
+        .iter()
+        .map(|field| PlannedSourceField {
+            name: field.source().field().to_string(),
+            value: field.is_identity().then(|| PlannedSourceExpr::Value(format!("{physical_expr}.{}", field.sil_name()))),
+        })
+        .collect::<Vec<_>>();
+    let access = SourceStateAccess {
+        source: target.source().clone(),
+        authored_sil_type,
+        complete: direct_authored.then(|| physical_expr.clone()),
+        fields: planned_fields,
+        target: target.id().clone(),
     };
-    Ok(InputStateBinding { source_ref, access })
+    let compatibility_replacements = if direct_authored {
+        vec![(compatibility_state_ref.clone(), physical_expr.clone())]
+    } else {
+        access.projected_replacements(&compatibility_state_ref)?
+    };
+    Ok(PlannedEntryInputReference {
+        id,
+        scope,
+        kind,
+        reference,
+        lexical_root,
+        input_index: InputIndexExpr(input_index),
+        lowered_sil_type: physical_sil_type,
+        access,
+        physical: Some(physical),
+        compatibility: InputReferenceCompatibility {
+            state_ref: Some(compatibility_state_ref),
+            replacements: compatibility_replacements,
+        },
+    })
 }
 
 fn render_sil_state_type(ty: &SilStateType) -> Result<String> {

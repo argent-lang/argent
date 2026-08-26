@@ -24,10 +24,10 @@ use silverscript_lang::ast::Expr as SilExpr;
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract};
 
 use super::sil::{
-    ContractStateValuePlan, EntryInputBindingView, EntryInputStatePlan, GlobalFunctionLowerer, audit_omitted_equivalent_state_structs,
-    lower_entry_body, lower_entry_expr, lower_expression_state_types, lower_function_body_state_types, plan_actor_output_state,
-    plan_entry_input_states, plan_open_output_state, plan_selector_output_state, reject_function_physical_state_constructors,
-    validate_actor_function_captures,
+    ContractStateValuePlan, EntryInputReferencePlan, EntryInputReferenceView, GlobalFunctionLowerer,
+    audit_omitted_equivalent_state_structs, lower_entry_body, lower_entry_expr, lower_expression_state_types,
+    lower_function_body_state_types, plan_actor_output_state, plan_entry_input_references, plan_open_output_state,
+    plan_selector_output_state, reject_function_physical_state_constructors, validate_actor_function_captures,
 };
 
 #[cfg(test)]
@@ -97,15 +97,15 @@ fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
     validate_actor_function_captures(actor, model)?;
     let state = model.storage_state(&actor.state)?;
     let state_values = ContractStateValuePlan::new(actor, model)?;
-    let input_state_plans =
-        actor.entries.iter().map(|entry| plan_entry_input_states(actor, entry, model)).collect::<Result<Vec<_>>>()?;
+    let input_reference_plans =
+        actor.entries.iter().map(|entry| plan_entry_input_references(actor, entry, model)).collect::<Result<Vec<_>>>()?;
     let emitted_entries = actor
         .entries
         .iter()
-        .zip(&input_state_plans)
-        .map(|(entry, input_states)| {
+        .zip(&input_reference_plans)
+        .map(|(entry, input_references)| {
             let mut out = String::new();
-            emit_entry(&mut out, actor, entry, model, input_states, &state_values)?;
+            emit_entry(&mut out, actor, entry, model, input_references, &state_values)?;
             Ok(out)
         })
         .collect::<Result<Vec<_>>>()?;
@@ -124,7 +124,7 @@ fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
 
     emit_shared_constants(&mut out, model, &state_values)?;
     emit_imported_template_constants(&mut out, &imported_template_specs_for_actor(actor, model));
-    let omitted_authored_structs = emit_state_layouts(&mut out, actor, model, &input_state_plans, &state_values)?;
+    let omitted_authored_structs = emit_state_layouts(&mut out, actor, model, &input_reference_plans, &state_values)?;
     emit_global_functions(&mut out, model, &state_values)?;
     emit_actor_functions(&mut out, actor, model, &state_values)?;
 
@@ -192,7 +192,7 @@ fn emit_state_layouts(
     out: &mut String,
     current_actor: &ActorDecl,
     model: &Model<'_>,
-    input_state_plans: &[EntryInputStatePlan],
+    input_reference_plans: &[EntryInputReferencePlan],
     state_values: &ContractStateValuePlan,
 ) -> Result<BTreeSet<String>> {
     emit_section_header(out, "State layouts");
@@ -274,8 +274,8 @@ fn emit_state_layouts(
 
     let lowering = model.state_lowering(&current_actor.name)?;
     let mut named_physical_layouts = BTreeMap::new();
-    for input_states in input_state_plans {
-        for input in input_states.bindings() {
+    for input_references in input_reference_plans {
+        for input in input_references.external_references() {
             let sil_type = input.physical_type();
             if sil_type == "State" {
                 continue;
@@ -453,10 +453,10 @@ fn emit_entry(
     actor: &ActorDecl,
     entry: &EntryDecl,
     model: &Model<'_>,
-    input_states: &EntryInputStatePlan,
+    input_references: &EntryInputReferencePlan,
     state_values: &ContractStateValuePlan,
 ) -> Result<()> {
-    let lowered_body = lower_entry_body(actor, entry, model, input_states, state_values)?;
+    let lowered_body = lower_entry_body(actor, entry, model, input_references, state_values)?;
     let witness_specs = entry_witness_specs(actor, entry, model)?;
     let sil_params = lower_entry_params(entry, &witness_specs, model, state_values);
     match entry.kind {
@@ -521,17 +521,17 @@ fn emit_entry(
             // only for a self-consume in a single-actor covenant domain. The domain
             // restricts every input with this covenant ID to one of its contracts.
             // With one actor, every group input has this contract's template.
-            let input_state = input_states.consumed(&consume.name)?;
-            if input_state.uses_covenant_domain_proof() {
+            let input_reference = input_references.consumed(&consume.name)?;
+            if input_reference.uses_covenant_domain_proof() {
                 out.push_str("        // :: direct input state (single-actor covenant has one template)\n");
             }
-            input_state.emit_read(out, 8);
+            input_reference.emit_read(out, 8);
         }
         out.push('\n');
     }
 
     if !entry.observes.is_empty() {
-        emit_observed_inputs(out, actor, entry, model, input_states)?;
+        emit_observed_inputs(out, actor, entry, model, input_references)?;
     }
 
     emit_state_expansion_prelude(out, actor, model)?;
@@ -686,12 +686,12 @@ fn emit_observed_inputs(
     actor: &ActorDecl,
     entry: &EntryDecl,
     model: &Model<'_>,
-    input_states: &EntryInputStatePlan,
+    input_references: &EntryInputReferencePlan,
 ) -> Result<()> {
     out.push_str("        // :: observed covenants\n");
     for observe in &entry.observes {
         let cov_id = hidden_observe_cov_id_name(&observe.name);
-        let cov_expr = lower_entry_expr(actor, entry, model, EntryInputBindingView::None, &observe.covenant_expr, Some("byte[32]"))?;
+        let cov_expr = lower_entry_expr(actor, entry, model, EntryInputReferenceView::None, &observe.covenant_expr, Some("byte[32]"))?;
         out.push_str(&format!("        byte[32] {cov_id} = {cov_expr}; // observe {}\n", observe.name));
         out.push_str(&format!("        require(OpCovInputCount({cov_id}) == {});\n", observe.inputs.len()));
         out.push_str(&format!("        require(OpCovOutputCount({cov_id}) == {});\n", observe.outputs.len()));
@@ -713,7 +713,7 @@ fn emit_observed_inputs(
                 &format!("int {input_idx} = OpCovInputIdx({cov_id}, {idx})"),
                 &format!("observed input {}.{}: {}", observe.name, input.name, input.actor),
             );
-            input_states.observed(&observe.name, &input.name)?.emit_read(out, 8);
+            input_references.observed(&observe.name, &input.name)?.emit_read(out, 8);
         }
         for (idx, output) in observe.outputs.iter().enumerate() {
             let output_idx = hidden_observed_output_idx_name(&observe.name, &output.name);
@@ -1543,7 +1543,7 @@ pub(super) fn observed_actor_template_expr_for_entry(
         return Ok(observed.actor.clone());
     }
     if observed_is_source_actor_type(actor, entry, observed, model)? {
-        return lower_entry_expr(actor, entry, model, EntryInputBindingView::None, &observed.actor, Some("byte[32]"));
+        return lower_entry_expr(actor, entry, model, EntryInputReferenceView::None, &observed.actor, Some("byte[32]"));
     }
     Ok(hidden_observed_actor_template_name(spec))
 }

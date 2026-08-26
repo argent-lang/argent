@@ -23,14 +23,20 @@ fn aligned_active_input_is_direct_authored_state_with_the_covenant_domain_proof(
     let program = program(include_str!("../../../../../tests/fixtures/emit/single_actor_self_consume/app.ag"));
     let model = Model::from_program(&program).expect("self-consume fixture plans");
     let (actor, entry) = actor_entry(&model, "Counter", "merge");
-    let plan = plan_entry_input_states(actor, entry, &model).expect("input states plan");
+    let plan = plan_entry_input_references(actor, entry, &model).expect("input references plan");
     let input = plan.consumed("other").expect("self input exists");
 
     assert!(input.uses_covenant_domain_proof());
     assert_eq!(input.physical_type(), "State");
-    assert_eq!(input.access().authored_sil_type(), "State");
-    assert!(matches!(input.access(), SourceStateAccess::Authored { .. }));
-    assert_eq!(input.access().require_authored_value(8).expect("aligned input is authored").into_sil(), "other");
+    assert_eq!(input.authored_sil_type(), "State");
+    assert!(input.is_direct_authored());
+    assert_eq!(input.complete_authored_state(8).expect("aligned input is authored").into_sil(), "other");
+
+    let active = plan.active();
+    assert_eq!(active.native_value(), "tx.inputs[this.activeInputIndex].value");
+    assert_eq!(active.covenant_id(), "OpInputCovenantId(this.activeInputIndex)");
+    assert_eq!(active.project_field("count", 8).expect("active field projects"), "count");
+    assert!(active.complete_authored_state(8).expect("active state reconstructs").into_sil().starts_with("State {"));
 }
 
 #[test]
@@ -38,13 +44,13 @@ fn named_identity_input_is_already_an_authored_source_value() {
     let program = program(include_str!("../../../../../tests/fixtures/emit/input_template_route_reuse/app.ag"));
     let model = Model::from_program(&program).expect("peer input fixture plans");
     let (actor, entry) = actor_entry(&model, "Controller", "step");
-    let plan = plan_entry_input_states(actor, entry, &model).expect("input states plan");
+    let plan = plan_entry_input_references(actor, entry, &model).expect("input references plan");
     let input = plan.consumed("peer").expect("peer input exists");
 
     assert!(!input.uses_covenant_domain_proof());
     assert_eq!(input.physical_type(), "PeerState");
-    assert!(matches!(input.access(), SourceStateAccess::Authored { .. }));
-    let authored = input.access().require_authored_value(8).expect("named input is authored");
+    assert!(input.is_direct_authored());
+    let authored = input.complete_authored_state(8).expect("named input is authored");
     assert_eq!(authored.source().as_str(), "PeerState");
     assert_eq!(authored.into_sil(), "peer");
 }
@@ -74,12 +80,12 @@ fn augmented_input_projects_only_user_fields_from_its_actor_keyed_type() {
     );
     let model = Model::from_program(&program).expect("paired actors plan");
     let (actor, entry) = actor_entry(&model, "Left", "shift");
-    let plan = plan_entry_input_states(actor, entry, &model).expect("input states plan");
+    let plan = plan_entry_input_references(actor, entry, &model).expect("input references plan");
     let input = plan.consumed("peer").expect("peer input exists");
-    let authored = input.access().require_authored_value(8).expect("identity user fields materialize").into_sil();
+    let authored = input.complete_authored_state(8).expect("identity user fields materialize").into_sil();
 
     assert_eq!(input.physical_type(), "Gen__RightState");
-    assert!(matches!(input.access(), SourceStateAccess::Projected(_)));
+    assert!(!input.is_direct_authored());
     assert!(authored.contains("units: peer.units"), "{authored}");
     assert!(!authored.contains("gen__"), "generated route fields must not enter authored state: {authored}");
 }
@@ -110,16 +116,33 @@ fn expanded_input_requires_a_validated_preimage_for_authored_access() {
     );
     let model = Model::from_program(&program).expect("expanded input plans");
     let (actor, entry) = actor_entry(&model, "Reader", "inspect");
-    let plan = plan_entry_input_states(actor, entry, &model).expect("input states plan");
+    let plan = plan_entry_input_references(actor, entry, &model).expect("input references plan");
     let input = plan.consumed("vault").expect("vault input exists");
 
     assert_eq!(input.physical_type(), "Gen__PhysicalExpanded");
-    let inputs = EntryInputBindingView::Complete(&plan);
-    inputs.reject_unavailable_field_refs("vault.nonce >= 0").expect("ordinary field projects");
-    let projection_err = inputs.reject_unavailable_field_refs("vault.detail.count >= 0").expect_err("digest field does not project");
+    input.reject_unavailable_field_refs("vault.nonce >= 0").expect("ordinary field projects");
+    let projection_err = input.reject_unavailable_field_refs("vault.detail.count >= 0").expect_err("digest field does not project");
     assert!(projection_err.to_string().contains("validated preimage"), "unexpected error: {projection_err}");
-    let authored_err = input.access().require_authored_value(8).expect_err("expanded value needs its preimage");
+    let authored_err = input.complete_authored_state(8).expect_err("expanded value needs its preimage");
     assert!(authored_err.to_string().contains("field `detail`"), "unexpected error: {authored_err}");
+}
+
+#[test]
+fn active_expanded_reference_reconstructs_from_validated_openings() {
+    let program = program(include_str!("../../../../../tests/fixtures/emit/state_expansion/app.ag"));
+    let model = Model::from_program(&program).expect("expanded active state plans");
+    let (actor, entry) = actor_entry(&model, "Forager", "hold");
+    let plan = plan_entry_input_references(actor, entry, &model).expect("input references plan");
+    let active = plan.active();
+
+    let strategy = active.project_field("strategy", 8).expect("validated opening projects");
+    assert!(strategy.starts_with("ForagerStrategy {"), "{strategy}");
+    assert!(strategy.contains("hunger: gen__strategy_hunger,"), "{strategy}");
+
+    let authored = active.complete_authored_state(8).expect("expanded active state reconstructs").into_sil();
+    assert!(authored.starts_with("ForagerState {"), "{authored}");
+    assert!(authored.contains("strategy: ForagerStrategy {"), "{authored}");
+    assert!(authored.contains("energy: energy,"), "{authored}");
 }
 
 #[test]
@@ -154,27 +177,32 @@ fn entry_input_views_distinguish_complete_body_lowering_from_clause_expressions(
     );
     let model = Model::from_program(&program).expect("mixed input entry plans");
     let (actor, entry) = actor_entry(&model, "Observer", "inspect");
-    let plan = plan_entry_input_states(actor, entry, &model).expect("input states plan");
+    let plan = plan_entry_input_references(actor, entry, &model).expect("input references plan");
 
-    let complete = EntryInputBindingView::Complete(&plan);
+    let complete = EntryInputReferenceView::Complete(&plan);
     assert!(complete.consumed("source").expect("complete consumed lookup succeeds").is_some());
     assert!(complete.observed("remote", "peer").expect("complete observed lookup succeeds").is_some());
-    assert!(EntryInputBindingView::None.consumed("source").expect("empty lookup succeeds").is_none());
-    assert!(EntryInputBindingView::None.observed("remote", "peer").expect("empty lookup succeeds").is_none());
+    assert!(EntryInputReferenceView::None.consumed("source").expect("empty lookup succeeds").is_none());
+    assert!(EntryInputReferenceView::None.observed("remote", "peer").expect("empty lookup succeeds").is_none());
 }
 
 #[test]
-fn observed_input_binding_owns_its_source_to_physical_reference() {
+fn observed_input_plan_separates_reference_identity_from_legacy_state_access() {
     let program = program(include_str!("../../../../../tests/fixtures/emit/observed_template_witnesses/app.ag"));
     let model = Model::from_program(&program).expect("observed input fixture plans");
     let (actor, entry) = actor_entry(&model, "Local", "step");
-    let plan = plan_entry_input_states(actor, entry, &model).expect("input states plan");
+    let plan = plan_entry_input_references(actor, entry, &model).expect("input references plan");
     let input = plan.observed("asset", "src").expect("observed input exists");
 
-    assert_eq!(input.source_ref(), "asset.inputs.src.state");
-    assert_eq!(input.access().source_identity(), "ForeignState");
-    assert_eq!(input.access().physical_expr(), "gen__asset_src_state");
-    assert!(matches!(input.access(), SourceStateAccess::Authored { .. }));
+    assert_eq!(input.reference(), "asset.inputs.src");
+    let view = EntryInputReferenceView::Complete(&plan);
+    assert!(view.compatibility_reference("asset.inputs.src.state").is_some());
+    assert!(view.compatibility_reference("asset.inputs.src").is_none());
+    assert_eq!(input.source_identity(), "ForeignState");
+    assert!(input.is_direct_authored());
+    let mut read = String::new();
+    input.emit_read(&mut read, 8);
+    assert!(read.contains("ForeignState gen__asset_src_state = readInputStateWithTemplate("), "{read}");
 }
 
 #[test]

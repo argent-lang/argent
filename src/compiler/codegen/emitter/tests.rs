@@ -1849,6 +1849,98 @@ fn observed_state_reference_can_supply_a_matching_route_state() {
 }
 
 #[test]
+fn consumed_input_reference_resolution_respects_local_shadowing() {
+    let path = PathBuf::from("consumed-reference-shadowing.ag");
+    let module = crate::compiler::syntax::parser::parse_module(
+        path.clone(),
+        r#"
+            state LocalState {
+                int count;
+            }
+
+            state PeerState {
+                int amount;
+            }
+
+            actor Local owns LocalState {
+                entry inspect() consumes { peer: Peer, } emits next: Local {
+                    {
+                        LocalState peer = LocalState {
+                            count: count + 1,
+                        };
+                        LocalState copy = peer;
+                        require(copy.count == peer.count);
+                    }
+                    require(peer.amount >= 0);
+                    unrestricted(next.value);
+                    become next <- self;
+                }
+            }
+
+            actor Peer owns PeerState {
+                delegate accept() consumes { local: Local, } {}
+            }
+
+            app Test {
+                actor Local;
+                actor Peer;
+            }
+        "#
+        .to_string(),
+    )
+    .expect("source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let model = Model::from_program(&program).expect("model validates");
+    let actor_sil = actor_sil_for_model(&model);
+    let sil = &actor_sil["Local"];
+
+    // 8a keeps the physical local name for byte parity; Sil still rejects the duplicate after Argent resolves this scope correctly.
+    assert!(sil.contains("LocalState peer = LocalState {"), "{sil}");
+    assert!(sil.contains("LocalState copy = peer;"), "{sil}");
+    assert!(sil.contains("require(copy.count == peer.count);"), "{sil}");
+    let err = emit_artifact(&program, &model, &actor_sil).expect_err("Sil retains its existing no-shadowing rule");
+    assert!(err.to_string().contains("variable 'peer' is already defined"), "unexpected error: {err}");
+}
+
+#[test]
+fn observed_input_reference_resolution_respects_root_shadowing() {
+    let err = emit_inline_error(
+        r#"
+            state ForeignState {
+                cov_id group_id;
+                int amount;
+            }
+
+            actor Foreign owns ForeignState {
+                entry relay()
+                observes asset by self.group_id {
+                    inputs {
+                        src: Foreign,
+                    }
+                    outputs {
+                        dst: Foreign,
+                    }
+                }
+                emits none {
+                    {
+                        int asset = 0;
+                        require asset.outputs become {
+                            dst <- Foreign(asset.inputs.src.state),
+                        };
+                    }
+                }
+            }
+
+            app Test {
+                actor Foreign;
+            }
+        "#,
+    );
+
+    assert!(err.to_string().contains("is not a proven authored `ForeignState` value"), "unexpected error: {err}");
+}
+
+#[test]
 fn current_state_array_entry_param_uses_selected_state_type() {
     let (actor_sil, artifact) = inline_actor_sil_and_artifact(
         "current-state-array-entry-param",
