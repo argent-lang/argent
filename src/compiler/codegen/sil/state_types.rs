@@ -297,9 +297,10 @@ mod tests {
     CounterState[_] inferred = CounterState[_]{ value, value };
     CounterState[COUNT] fixed = CounterState[COUNT]{ value };
     CounterState[] dynamic = CounterState[]{ CounterState { count: value.count } };
+    CounterStateSuffix suffix = CounterStateSuffix { count: value.count };
     CounterState { count: int copied } = dynamic[0];
     CounterState { count: int from_call } = identity(value);
-    return CounterState { count: copied + from_call + CounterState };
+    return CounterState { count: copied + from_call + suffix.count + CounterState };
 }"#;
         let lowered = lower_function_source(source, &state_values()).expect("classified state sites lower");
 
@@ -308,12 +309,13 @@ mod tests {
         assert!(lowered.contains("State[_] inferred = State[_]{ value, value };"), "{lowered}");
         assert!(lowered.contains("State[COUNT] fixed = State[COUNT]{ value };"), "{lowered}");
         assert!(lowered.contains("State[] dynamic = State[]{ State {"), "{lowered}");
+        assert!(lowered.contains("CounterStateSuffix suffix = CounterStateSuffix {"), "{lowered}");
         assert!(lowered.contains("State { count: int copied } = dynamic[0];"), "{lowered}");
         assert!(lowered.contains("State { count: int from_call } = identity(value);"), "{lowered}");
         assert!(lowered.contains("// CounterState remains in comments."), "{lowered}");
         assert!(lowered.contains("\"CounterState remains in strings\""), "{lowered}");
         assert!(lowered.contains("int CounterState = 1;"), "{lowered}");
-        assert!(lowered.contains("from_call + CounterState"), "{lowered}");
+        assert!(lowered.contains("suffix.count + CounterState"), "{lowered}");
     }
 
     #[test]
