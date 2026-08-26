@@ -116,11 +116,53 @@ fn expanded_input_requires_a_validated_preimage_for_authored_access() {
     let input = plan.consumed("vault").expect("vault input exists");
 
     assert_eq!(input.physical_type(), "Gen__PhysicalExpanded");
-    plan.reject_unavailable_field_refs("vault.nonce >= 0").expect("ordinary field projects");
-    let projection_err = plan.reject_unavailable_field_refs("vault.detail.count >= 0").expect_err("digest field does not project");
+    let inputs = EntryInputBindingView::Complete(&plan);
+    inputs.reject_unavailable_field_refs("vault.nonce >= 0").expect("ordinary field projects");
+    let projection_err = inputs.reject_unavailable_field_refs("vault.detail.count >= 0").expect_err("digest field does not project");
     assert!(projection_err.to_string().contains("validated preimage"), "unexpected error: {projection_err}");
     let authored_err = input.access().require_authored_value(8).expect_err("expanded value needs its preimage");
     assert!(authored_err.to_string().contains("field `detail`"), "unexpected error: {authored_err}");
+}
+
+#[test]
+fn entry_input_views_distinguish_complete_body_lowering_from_clause_expressions() {
+    let program = program(
+        r#"
+            state ObserverState {}
+            state SourceState { int amount; }
+            state PeerState { int amount; }
+
+            actor Observer owns ObserverState {
+                entry inspect(cov_id remote_id)
+                consumes { source: Source, }
+                observes remote by remote_id {
+                    inputs { peer: Peer, }
+                }
+                emits none {
+                    require(source.amount >= remote.inputs.peer.state.amount);
+                }
+            }
+
+            actor Source owns SourceState {
+                entry hold() emits none { require(amount >= 0); }
+            }
+
+            actor Peer owns PeerState {
+                entry hold() emits none { require(amount >= 0); }
+            }
+
+            app Test { actor Observer; actor Source; actor Peer; }
+        "#,
+    );
+    let model = Model::from_program(&program).expect("mixed input entry plans");
+    let (actor, entry) = actor_entry(&model, "Observer", "inspect");
+    let plan = plan_entry_input_states(actor, entry, &model).expect("input states plan");
+
+    let complete = EntryInputBindingView::Complete(&plan);
+    assert!(complete.consumed("source").expect("complete consumed lookup succeeds").is_some());
+    assert!(complete.observed("remote", "peer").expect("complete observed lookup succeeds").is_some());
+    assert!(EntryInputBindingView::None.consumed("source").expect("empty lookup succeeds").is_none());
+    assert!(EntryInputBindingView::None.observed("remote", "peer").expect("empty lookup succeeds").is_none());
 }
 
 #[test]

@@ -692,6 +692,54 @@ pub(in crate::compiler::codegen) struct EntryInputStatePlan {
     observed: BTreeMap<(String, String), InputStateBinding>,
 }
 
+/// Input bindings available at one entry-lowering phase.
+#[derive(Clone, Copy)]
+pub(in crate::compiler::codegen) enum EntryInputBindingView<'a> {
+    None,
+    Complete(&'a EntryInputStatePlan),
+}
+
+impl<'a> EntryInputBindingView<'a> {
+    pub(in crate::compiler::codegen) fn consumed(self, name: &str) -> Result<Option<&'a InputStateBinding>> {
+        match self {
+            Self::None => Ok(None),
+            Self::Complete(plan) => plan.consumed(name).map(Some),
+        }
+    }
+
+    pub(in crate::compiler::codegen) fn observed(self, observe: &str, handle: &str) -> Result<Option<&'a InputStateBinding>> {
+        match self {
+            Self::Complete(plan) => plan.observed(observe, handle).map(Some),
+            Self::None => Ok(None),
+        }
+    }
+
+    pub(in crate::compiler::codegen) fn reference_replacements(self) -> Vec<(String, String)> {
+        match self {
+            Self::None => Vec::new(),
+            Self::Complete(plan) => input_reference_replacements(plan.consumed.values().chain(plan.observed.values())),
+        }
+    }
+
+    pub(in crate::compiler::codegen) fn reject_unavailable_field_refs(self, input: &str) -> Result<()> {
+        match self {
+            Self::None => Ok(()),
+            Self::Complete(plan) => reject_unavailable_input_field_refs(plan.consumed.values().chain(plan.observed.values()), input),
+        }
+    }
+}
+
+fn input_reference_replacements<'a>(bindings: impl Iterator<Item = &'a InputStateBinding>) -> Vec<(String, String)> {
+    bindings.flat_map(|binding| binding.access.reference_replacements(&binding.source_ref)).collect()
+}
+
+fn reject_unavailable_input_field_refs<'a>(bindings: impl Iterator<Item = &'a InputStateBinding>, input: &str) -> Result<()> {
+    for binding in bindings {
+        binding.access.reject_unavailable_field_refs(&binding.source_ref, input)?;
+    }
+    Ok(())
+}
+
 impl EntryInputStatePlan {
     pub(in crate::compiler::codegen) fn consumed(&self, name: &str) -> Result<&InputStateBinding> {
         self.consumed.get(name).ok_or_else(|| ArgentError::new(format!("missing consumed input state binding `{name}`")))
@@ -705,21 +753,6 @@ impl EntryInputStatePlan {
 
     pub(in crate::compiler::codegen) fn bindings(&self) -> impl Iterator<Item = &InputStateBinding> {
         self.consumed.values().chain(self.observed.values())
-    }
-
-    pub(in crate::compiler::codegen) fn reference_replacements(&self) -> Vec<(String, String)> {
-        self.consumed
-            .values()
-            .chain(self.observed.values())
-            .flat_map(|binding| binding.access.reference_replacements(&binding.source_ref))
-            .collect()
-    }
-
-    pub(in crate::compiler::codegen) fn reject_unavailable_field_refs(&self, input: &str) -> Result<()> {
-        for binding in self.consumed.values().chain(self.observed.values()) {
-            binding.access.reject_unavailable_field_refs(&binding.source_ref, input)?;
-        }
-        Ok(())
     }
 }
 

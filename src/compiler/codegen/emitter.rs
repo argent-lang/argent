@@ -11,10 +11,9 @@ use crate::codec::encode_hex;
 use crate::compiler::model::link::LinkedActor;
 use crate::compiler::model::{
     ClauseActorTypeRef, CovenantGroup, CovenantIdSource, EntryModel, GeneratedFieldId, InteractionSource, Model, PhysicalFieldId,
-    PhysicalStateLayout, ResolvedRoute, ResolvedSuccessor, RouteFamily, RouteRootLeaf, SilStateType, SourceStateId, StaticActorTarget,
-    actor_enum_variant_const_expr, clause_actor_type_ref, lower_layout_type, observed_is_dynamic_binding,
-    observed_open_state_for_decl, packed_field_len, packed_layout_field_len, resolve_observe_covenant_id_source,
-    source_actor_type_state_for_expr, spawn_target_state,
+    PhysicalStateLayout, ResolvedRoute, ResolvedSuccessor, RouteFamily, StaticActorTarget, actor_enum_variant_const_expr,
+    clause_actor_type_ref, observed_is_dynamic_binding, observed_open_state_for_decl, packed_field_len,
+    resolve_observe_covenant_id_source, source_actor_type_state_for_expr, spawn_target_state,
 };
 use crate::compiler::naming::{is_identifier, to_snake};
 use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, TokenKind, lex};
@@ -25,8 +24,9 @@ use silverscript_lang::ast::Expr as SilExpr;
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract};
 
 use super::sil::{
-    ContractStateValuePlan, EntryInputStatePlan, GlobalFunctionLowerer, lower_entry_body, lower_entry_expr, plan_actor_output_state,
-    plan_entry_input_states, plan_open_output_state, plan_selector_output_state, validate_actor_function_captures,
+    ContractStateValuePlan, EntryInputBindingView, EntryInputStatePlan, GlobalFunctionLowerer, lower_entry_body, lower_entry_expr,
+    plan_actor_output_state, plan_entry_input_states, plan_open_output_state, plan_selector_output_state,
+    reject_function_physical_state_constructors, validate_actor_function_captures,
 };
 
 #[cfg(test)]
@@ -93,7 +93,6 @@ fn emit_build_selected(
 }
 
 fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
-    verify_state_lowering_plan(actor, model)?;
     validate_actor_function_captures(actor, model)?;
     let state = model.storage_state(&actor.state)?;
     let state_values = ContractStateValuePlan::new(actor, model)?;
@@ -115,7 +114,7 @@ fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
 
     out.push_str(&format!("contract {}(\n", actor.name));
     let mut args = Vec::new();
-    args.extend(hidden_template_init_args_for_actor(actor, model).into_iter().map(|arg| format!("    {arg}")));
+    args.extend(hidden_template_init_args_for_actor(actor, model)?.into_iter().map(|arg| format!("    {arg}")));
     for field in &state.fields {
         args.push(format!("    {} init_{}", lower_type_ref(&field.ty, model), field.name));
     }
@@ -129,7 +128,7 @@ fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
     emit_actor_functions(&mut out, actor, model, &state_values)?;
 
     emit_section_header(&mut out, "Route templates");
-    emit_route_template_table(&mut out, actor, model);
+    emit_route_template_table(&mut out, actor, model)?;
     out.push('\n');
 
     emit_section_header_raw(&mut out, &format!("state fields: {}", actor.name));
@@ -372,6 +371,7 @@ fn emit_global_functions(out: &mut String, model: &Model<'_>, state_values: &Con
         emit_section_header(out, "Global functions (isolated using the gen__glob_ namespace)");
         let lowerer = GlobalFunctionLowerer::new(model);
         for function in &model.functions {
+            reject_function_physical_state_constructors(&function.name, &function.body, "global")?;
             let function = lowerer.lower(function)?;
             let signature = state_values.signature(function.name).expect("global function has a contract-local signature plan");
             let params = function
@@ -405,6 +405,7 @@ fn emit_actor_functions(out: &mut String, actor: &ActorDecl, model: &Model<'_>, 
 
     emit_section_header(out, "Actor functions");
     for function in actor_model.functions() {
+        reject_function_physical_state_constructors(&function.name, &function.body, &format!("actor `{}`", actor.name))?;
         let signature = state_values.signature(&function.name).expect("actor function has a contract-local signature plan");
         let params = function
             .params
@@ -678,7 +679,7 @@ fn emit_observed_inputs(
     out.push_str("        // :: observed covenants\n");
     for observe in &entry.observes {
         let cov_id = hidden_observe_cov_id_name(&observe.name);
-        let cov_expr = lower_entry_expr(actor, entry, model, &observe.covenant_expr, Some("byte[32]"))?;
+        let cov_expr = lower_entry_expr(actor, entry, model, EntryInputBindingView::None, &observe.covenant_expr, Some("byte[32]"))?;
         out.push_str(&format!("        byte[32] {cov_id} = {cov_expr}; // observe {}\n", observe.name));
         out.push_str(&format!("        require(OpCovInputCount({cov_id}) == {});\n", observe.inputs.len()));
         out.push_str(&format!("        require(OpCovOutputCount({cov_id}) == {});\n", observe.outputs.len()));
@@ -1530,7 +1531,7 @@ pub(super) fn observed_actor_template_expr_for_entry(
         return Ok(observed.actor.clone());
     }
     if observed_is_source_actor_type(actor, entry, observed, model)? {
-        return lower_entry_expr(actor, entry, model, &observed.actor, Some("byte[32]"));
+        return lower_entry_expr(actor, entry, model, EntryInputBindingView::None, &observed.actor, Some("byte[32]"));
     }
     Ok(hidden_observed_actor_template_name(spec))
 }
@@ -2263,28 +2264,29 @@ fn sil_contract_artifact(actor: &ActorDecl, model: &Model<'_>, actor_sil: &BTree
 
 fn constructor_args_for_actor<'i>(actor: &ActorDecl, model: &Model<'_>) -> Result<Vec<SilExpr<'i>>> {
     let state = model.storage_state(&actor.state)?;
-    let hidden_args = hidden_template_init_args_for_actor(actor, model);
-    let mut args = Vec::with_capacity(hidden_args.len() + state.fields.len());
+    let lowering = model.state_lowering(&actor.name)?;
+    let generated_fields = lowering
+        .active()
+        .physical()
+        .fields()
+        .iter()
+        .filter(|field| matches!(field.id(), PhysicalFieldId::Generated(_)))
+        .collect::<Vec<_>>();
+    let mut args = Vec::with_capacity(generated_fields.len() + state.fields.len());
 
     // These placeholders are valid because Argent-generated constructor
     // arguments are state initializers: hidden template commitments and source
     // state fields. If a constructor argument affects code shape outside the
     // compiled state span, the template hash changes and the contract must be
     // recompiled for that value.
-    match route_field_kind_for_actor(&actor.name, model) {
-        RouteFieldKind::None => {}
-        RouteFieldKind::Direct { actor_templates, family_commitments } => {
-            args.extend(actor_templates.into_iter().map(|_| zero_byte_array_expr(32)));
-            args.extend(family_commitments.into_iter().map(|_| zero_byte_array_expr(32)));
-        }
-        RouteFieldKind::FamilyTables { actor_templates, family_commitments, families } => {
-            args.extend(actor_templates.into_iter().map(|_| zero_byte_array_expr(32)));
-            args.extend(family_commitments.into_iter().map(|_| zero_byte_array_expr(32)));
-            for family in families {
-                args.extend(family.direct_template_actors().iter().map(|_| zero_byte_array_expr(32)));
-                args.push(zero_byte_array_expr(family.table_byte_len()));
-            }
-        }
+    for field in generated_fields {
+        args.push(placeholder_expr_for_type(field.ty()).map_err(|err| {
+            ArgentError::new(format!(
+                "cannot build placeholder constructor argument for actor `{}` generated field `{}`: {err}",
+                actor.name,
+                field.sil_name()
+            ))
+        })?);
     }
     for field in &state.fields {
         args.push(placeholder_expr_for_type(&field.ty).map_err(|err| {
@@ -2365,231 +2367,30 @@ fn runtime_state_field_defs_for_actor(
     actor: &ActorDecl,
     model: &Model<'_>,
 ) -> Result<Vec<(String, TypeArtifact, Option<RuntimeFieldRoleArtifact>)>> {
-    let state = model.storage_state(&actor.state)?;
-    let mut fields = Vec::new();
-    match route_field_kind_for_actor(&actor.name, model) {
-        RouteFieldKind::None => {}
-        RouteFieldKind::Direct { actor_templates, family_commitments } => {
-            for actor in actor_templates {
-                fields.push((
-                    hidden_template_name(actor),
-                    TypeArtifact::from_parts("byte", Some(32)),
-                    Some(RuntimeFieldRoleArtifact::Template { contract: actor.to_string() }),
-                ));
-            }
-            for family in family_commitments {
-                fields.push((
-                    hidden_route_family_commitment_name(family),
-                    TypeArtifact::from_parts("byte", Some(32)),
-                    Some(RuntimeFieldRoleArtifact::TemplateDigest { id: family.id.clone() }),
-                ));
-            }
-        }
-        RouteFieldKind::FamilyTables { actor_templates, family_commitments, families } => {
-            for actor in actor_templates {
-                fields.push((
-                    hidden_template_name(actor),
-                    TypeArtifact::from_parts("byte", Some(32)),
-                    Some(RuntimeFieldRoleArtifact::Template { contract: actor.to_string() }),
-                ));
-            }
-            for family in family_commitments {
-                fields.push((
-                    hidden_route_family_commitment_name(family),
-                    TypeArtifact::from_parts("byte", Some(32)),
-                    Some(RuntimeFieldRoleArtifact::TemplateDigest { id: family.id.clone() }),
-                ));
-            }
-            for family in families {
-                for actor in family.direct_template_actors() {
-                    fields.push((
-                        hidden_template_name(actor),
-                        TypeArtifact::from_parts("byte", Some(32)),
-                        Some(RuntimeFieldRoleArtifact::Template { contract: actor.to_string() }),
-                    ));
+    model
+        .state_lowering(&actor.name)?
+        .active()
+        .physical()
+        .fields()
+        .iter()
+        .map(|field| {
+            let role = match field.id() {
+                PhysicalFieldId::Storage(_) => None,
+                PhysicalFieldId::Generated(GeneratedFieldId::Template(actor)) => {
+                    Some(RuntimeFieldRoleArtifact::Template { contract: actor.actor().to_string() })
                 }
-                fields.push((
-                    hidden_route_family_table_name(family),
-                    TypeArtifact::from_parts("byte", Some(family.table_byte_len())),
-                    Some(RuntimeFieldRoleArtifact::TemplateTable { contracts: family.table_actors().to_vec() }),
-                ));
-            }
-        }
-    }
-    for field in &state.fields {
-        fields.push((field.name.clone(), type_artifact(&field.ty, model), None));
-    }
-    Ok(fields)
-}
-
-/// Keep the parallel layout model checked against the authoritative physical
-/// encoding until codegen consumes the boundary directly.
-fn verify_state_lowering_plan(actor: &ActorDecl, model: &Model<'_>) -> Result<()> {
-    let lowering = model.state_lowering(&actor.name)?;
-    if lowering.active().actor().app() != model.app_name || lowering.active().actor().actor() != actor.name {
-        return Err(ArgentError::new(format!("actor `{}` has a mismatched active state lowering identity", actor.name)));
-    }
-
-    let active_source = SourceStateId::new(&actor.state);
-    if lowering.active().source().id() != &active_source {
-        return Err(ArgentError::new(format!("actor `{}` has a mismatched active source state plan", actor.name)));
-    }
-    let storage = model.storage_state(&actor.state)?;
-    if lowering.active().storage().id().as_str() != storage.name {
-        return Err(ArgentError::new(format!("actor `{}` has a mismatched storage payload plan", actor.name)));
-    }
-    if lowering.active().source().fields().len() != storage.fields.len()
-        || lowering.active().storage().fields().len() != storage.fields.len()
-    {
-        return Err(ArgentError::new(format!("actor `{}` has an incomplete source/storage field plan", actor.name)));
-    }
-    for field in &storage.fields {
-        let source_field = lowering
-            .active()
-            .source()
-            .field_id(&field.name)
-            .ok_or_else(|| ArgentError::new(format!("actor `{}` source layout is missing field `{}`", actor.name, field.name)))?;
-        if source_field.state() != &active_source {
-            return Err(ArgentError::new(format!("actor `{}` source field identity has the wrong owner", actor.name)));
-        }
-        let storage_field =
-            lowering.active().source_to_storage().storage_field(source_field).ok_or_else(|| {
-                ArgentError::new(format!("actor `{}` source field `{}` has no storage mapping", actor.name, field.name))
-            })?;
-        if lowering.active().storage().field_id(&field.name) != Some(storage_field)
-            || storage_field.state() != lowering.active().storage().id()
-        {
-            return Err(ArgentError::new(format!("actor `{}` storage field `{}` has an unstable identity", actor.name, field.name)));
-        }
-        let physical_field = lowering.active().storage_to_physical().physical_field(storage_field).ok_or_else(|| {
-            ArgentError::new(format!("actor `{}` storage field `{}` has no physical mapping", actor.name, field.name))
-        })?;
-        if lowering.active().physical().field(physical_field).is_none() {
-            return Err(ArgentError::new(format!("actor `{}` physical field map is incomplete", actor.name)));
-        }
-    }
-
-    for state in model.all_states() {
-        let source = SourceStateId::new(&state.name);
-        let representation = lowering.source_representation(&source).ok_or_else(|| {
-            ArgentError::new(format!("actor `{}` has no source representation for state `{}`", actor.name, state.name))
-        })?;
-        if representation.source() != &source || representation.sil_type() != &SilStateType::Source(source.clone()) {
-            return Err(ArgentError::new(format!(
-                "actor `{}` source representation for `{}` is not its named authored type",
-                actor.name, state.name
-            )));
-        }
-        let expected_eligibility = source == active_source
-            && representation.source_to_storage().is_identity()
-            && lowering.active().storage_to_physical().is_identity();
-        if representation.active_state_eligible() != expected_eligibility {
-            return Err(ArgentError::new(format!("actor `{}` has an inconsistent `State` eligibility fact", actor.name)));
-        }
-    }
-    if lowering.active().source_to_storage()
-        != lowering.source_representation(&active_source).expect("active source representation checked above").source_to_storage()
-    {
-        return Err(ArgentError::new(format!("actor `{}` has inconsistent active source/storage relations", actor.name)));
-    }
-    if lowering.source_representations().len() != model.all_states().map(|state| state.name.as_str()).collect::<BTreeSet<_>>().len() {
-        return Err(ArgentError::new(format!("actor `{}` has duplicate or missing source representation decisions", actor.name)));
-    }
-
-    let active_target = lowering
-        .target_for_actor(&actor.name)
-        .ok_or_else(|| ArgentError::new(format!("actor `{}` has no active physical target plan", actor.name)))?;
-    if active_target.sil_type() != &SilStateType::State || !active_target.has_source_identity(&active_source) {
-        return Err(ArgentError::new(format!("actor `{}` active target does not select its physical `State`", actor.name)));
-    }
-
-    verify_planned_physical_fields(
-        &format!("active actor `{}`", actor.name),
-        lowering.active().physical(),
-        &runtime_state_field_defs_for_actor(actor, model)?,
-        model,
-    )?;
-    for actor_ref in model.app_actors.iter().chain(model.linked_actors.keys()) {
-        let target = lowering
-            .target_for_actor(actor_ref)
-            .ok_or_else(|| ArgentError::new(format!("actor `{}` has no physical target plan for `{actor_ref}`", actor.name)))?;
-        verify_planned_physical_fields(
-            &format!("actor `{actor_ref}` as seen from `{}`", actor.name),
-            target.physical(),
-            &runtime_state_field_defs_for_actor(model.actor(actor_ref)?, model)?,
-            model,
-        )?;
-        let generated = target.storage_to_physical().generated_fields();
-        if generated.len()
-            != target.physical().fields().iter().filter(|field| matches!(field.id(), PhysicalFieldId::Generated(_))).count()
-        {
-            return Err(ArgentError::new(format!("target `{actor_ref}` has an inconsistent generated-field map")));
-        }
-    }
-
-    for target in lowering.targets().values() {
-        let source = lowering
-            .source_representation(target.source())
-            .ok_or_else(|| ArgentError::new(format!("target `{:?}` references an unplanned source state", target.id())))?;
-        if target.source_to_storage() != source.source_to_storage() {
-            return Err(ArgentError::new(format!("target `{:?}` has an inconsistent source/storage relation", target.id())));
-        }
-        let compatible = target.physical().is_sil_compatible_with(lowering.active().physical());
-        if target.active_compatible() != compatible {
-            return Err(ArgentError::new(format!("target `{:?}` has an inconsistent active-layout compatibility fact", target.id())));
-        }
-        if matches!(target.id(), crate::compiler::model::PhysicalTargetId::OpenState(_))
-            && lowering.open_state_target(target.source()).is_none()
-        {
-            return Err(ArgentError::new("open-state target lookup is inconsistent"));
-        }
-    }
-    Ok(())
-}
-
-fn verify_planned_physical_fields(
-    label: &str,
-    planned: &PhysicalStateLayout,
-    existing: &[(String, TypeArtifact, Option<RuntimeFieldRoleArtifact>)],
-    model: &Model<'_>,
-) -> Result<()> {
-    if planned.fields().len() != existing.len() {
-        return Err(ArgentError::new(format!("{label} physical field count differs from existing codegen")));
-    }
-    for (field, (name, ty, role)) in planned.fields().iter().zip(existing) {
-        let planned_role = match field.id() {
-            PhysicalFieldId::Storage(_) => None,
-            PhysicalFieldId::Generated(GeneratedFieldId::Template(actor)) => {
-                Some(RuntimeFieldRoleArtifact::Template { contract: actor.actor().to_string() })
-            }
-            PhysicalFieldId::Generated(GeneratedFieldId::RouteFamilyDigest { family, .. }) => {
-                Some(RuntimeFieldRoleArtifact::TemplateDigest { id: family.clone() })
-            }
-            PhysicalFieldId::Generated(GeneratedFieldId::RouteFamilyTable { actors, .. }) => {
-                Some(RuntimeFieldRoleArtifact::TemplateTable {
-                    contracts: actors.iter().map(|actor| actor.actor().to_string()).collect(),
-                })
-            }
-        };
-        if field.sil_name() != name
-            || type_artifact(field.ty(), model) != *ty
-            || field.sil_type() != lower_layout_type(field.ty(), model)
-            || field.sil_type() != lower_type_ref(field.ty(), model)
-            || field.packed_len() != packed_layout_field_len(field.ty(), model)?
-            || planned_role != *role
-        {
-            return Err(ArgentError::new(format!(
-                "{label} field `{name}` differs from existing physical codegen: planned name `{}`, type `{:?}`, width {}, role {:?}; existing type `{:?}`, role {:?}",
-                field.sil_name(),
-                type_artifact(field.ty(), model),
-                field.packed_len(),
-                planned_role,
-                ty,
-                role
-            )));
-        }
-    }
-    Ok(())
+                PhysicalFieldId::Generated(GeneratedFieldId::RouteFamilyDigest { family, .. }) => {
+                    Some(RuntimeFieldRoleArtifact::TemplateDigest { id: family.clone() })
+                }
+                PhysicalFieldId::Generated(GeneratedFieldId::RouteFamilyTable { actors, .. }) => {
+                    Some(RuntimeFieldRoleArtifact::TemplateTable {
+                        contracts: actors.iter().map(|actor| actor.actor().to_string()).collect(),
+                    })
+                }
+            };
+            Ok((field.sil_name().to_string(), type_artifact(field.ty(), model), role))
+        })
+        .collect()
 }
 
 fn runtime_state_fields_for_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<Vec<RuntimeFieldArtifact>> {
@@ -3221,10 +3022,6 @@ pub(super) fn hidden_storage_state_type_name(state: &str) -> String {
     format!("{RESERVED_GENERATED_TYPE_PREFIX}Physical{}", to_upper_camel(state))
 }
 
-fn hidden_template_init_name(actor: &str) -> String {
-    format!("{RESERVED_GENERATED_PREFIX}init_{}_template", hidden_actor_suffix(actor))
-}
-
 pub(super) fn hidden_template_name(actor: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{}_template", hidden_actor_suffix(actor))
 }
@@ -3238,20 +3035,8 @@ fn route_family_suffix_by_id(family_id: &str) -> String {
     to_snake(hub)
 }
 
-fn hidden_route_family_commitment_init_name(family: &RouteFamily) -> String {
-    format!("{RESERVED_GENERATED_PREFIX}init_{}_routes_digest", route_family_suffix_by_id(&family.id))
-}
-
-fn hidden_route_family_commitment_name(family: &RouteFamily) -> String {
-    hidden_route_family_commitment_name_by_id(&family.id)
-}
-
 fn hidden_route_family_commitment_name_by_id(family_id: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{}_routes_digest", route_family_suffix_by_id(family_id))
-}
-
-fn hidden_route_family_table_init_name(family: &RouteFamily) -> String {
-    format!("{RESERVED_GENERATED_PREFIX}init_{}_routes", route_family_suffix_by_id(&family.id))
 }
 
 pub(super) fn hidden_route_family_table_name(family: &RouteFamily) -> String {
@@ -3278,192 +3063,40 @@ fn route_family_proof_id_from_id(family_id: &str) -> String {
     route_template_proof_receipt_id(state, &hidden_template_root_name())
 }
 
-fn route_field_kind_for_actor<'a>(actor: &str, model: &'a Model<'_>) -> RouteFieldKind<'a> {
-    if model.linked_actor(actor).is_some() {
-        // A linked actor is used through its exported actor-type cut. Its
-        // defining app's generated context is already part of that template
-        // prefix and is not part of the importing app's state layout.
-        return RouteFieldKind::None;
-    }
-    let leaves = model.route_leaves_by_actor.get(actor).expect("selected app actor has a planned route cut");
-    let families = model.route_family_for_actor(actor).into_iter().collect::<Vec<_>>();
-    route_field_kind_from_leaves(leaves, families, model)
+fn hidden_physical_field_init_name(field: &str) -> String {
+    let suffix = field.strip_prefix(RESERVED_GENERATED_PREFIX).expect("generated physical fields use the reserved namespace");
+    format!("{RESERVED_GENERATED_PREFIX}init_{suffix}")
 }
 
-fn route_field_kind_from_leaves<'a>(
-    leaves: &'a [RouteRootLeaf],
-    families: Vec<&'a RouteFamily>,
-    model: &'a Model<'_>,
-) -> RouteFieldKind<'a> {
-    if !families.is_empty() {
-        let family_actors = families.iter().flat_map(|family| family.actors.iter().map(String::as_str)).collect::<BTreeSet<_>>();
-        let family_ids = families.iter().map(|family| family.id.as_str()).collect::<BTreeSet<_>>();
-        let actor_templates = leaves
-            .iter()
-            .filter_map(|leaf| match leaf {
-                RouteRootLeaf::Actor(actor) if !family_actors.contains(actor.as_str()) => Some(actor.as_str()),
-                RouteRootLeaf::Actor(_) | RouteRootLeaf::Family(_) => None,
-            })
-            .collect::<Vec<_>>();
-        let family_commitments = leaves
-            .iter()
-            .filter_map(|leaf| match leaf {
-                RouteRootLeaf::Family(family_id) if !family_ids.contains(family_id.as_str()) => {
-                    model.route_families.iter().find(|family| family.id == *family_id)
-                }
-                RouteRootLeaf::Actor(_) | RouteRootLeaf::Family(_) => None,
-            })
-            .collect::<Vec<_>>();
-        return RouteFieldKind::FamilyTables { actor_templates, family_commitments, families };
-    }
-
-    let actor_templates = leaves
+fn hidden_template_init_args_for_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<Vec<String>> {
+    Ok(model
+        .state_lowering(&actor.name)?
+        .active()
+        .physical()
+        .fields()
         .iter()
-        .filter_map(|leaf| match leaf {
-            RouteRootLeaf::Actor(actor) => Some(actor.as_str()),
-            RouteRootLeaf::Family(_) => None,
-        })
-        .collect::<Vec<_>>();
-    let family_commitments = leaves
+        .filter(|field| matches!(field.id(), PhysicalFieldId::Generated(_)))
+        .map(|field| format!("{} {}", field.sil_type(), hidden_physical_field_init_name(field.sil_name())))
+        .collect())
+}
+
+fn emit_route_template_table(out: &mut String, actor: &ActorDecl, model: &Model<'_>) -> Result<()> {
+    for field in model
+        .state_lowering(&actor.name)?
+        .active()
+        .physical()
+        .fields()
         .iter()
-        .filter_map(|leaf| match leaf {
-            RouteRootLeaf::Actor(_) => None,
-            RouteRootLeaf::Family(family_id) => model.route_families.iter().find(|family| family.id == *family_id),
-        })
-        .collect::<Vec<_>>();
-
-    if actor_templates.is_empty() && family_commitments.is_empty() {
-        RouteFieldKind::None
-    } else {
-        RouteFieldKind::Direct { actor_templates, family_commitments }
+        .filter(|field| matches!(field.id(), PhysicalFieldId::Generated(_)))
+    {
+        out.push_str(&format!(
+            "    {} {} = {};\n",
+            field.sil_type(),
+            field.sil_name(),
+            hidden_physical_field_init_name(field.sil_name())
+        ));
     }
-}
-
-#[derive(PartialEq, Eq)]
-pub(super) enum RouteFieldKind<'a> {
-    None,
-    Direct { actor_templates: Vec<&'a str>, family_commitments: Vec<&'a RouteFamily> },
-    FamilyTables { actor_templates: Vec<&'a str>, family_commitments: Vec<&'a RouteFamily>, families: Vec<&'a RouteFamily> },
-}
-
-fn hidden_template_init_args_for_actor(actor: &ActorDecl, model: &Model<'_>) -> Vec<String> {
-    match route_field_kind_for_actor(&actor.name, model) {
-        RouteFieldKind::None => Vec::new(),
-        RouteFieldKind::Direct { actor_templates, family_commitments } => {
-            let mut args =
-                actor_templates.into_iter().map(|actor| format!("byte[32] {}", hidden_template_init_name(actor))).collect::<Vec<_>>();
-            args.extend(
-                family_commitments.into_iter().map(|family| format!("byte[32] {}", hidden_route_family_commitment_init_name(family))),
-            );
-            args
-        }
-        RouteFieldKind::FamilyTables { actor_templates, family_commitments, families } => {
-            let mut args =
-                actor_templates.into_iter().map(|actor| format!("byte[32] {}", hidden_template_init_name(actor))).collect::<Vec<_>>();
-            args.extend(
-                family_commitments.into_iter().map(|family| format!("byte[32] {}", hidden_route_family_commitment_init_name(family))),
-            );
-            for family in families {
-                args.extend(
-                    family.direct_template_actors().iter().map(|actor| format!("byte[32] {}", hidden_template_init_name(actor))),
-                );
-                args.push(format!("byte[{}] {}", family.table_byte_len(), hidden_route_family_table_init_name(family)));
-            }
-            args
-        }
-    }
-}
-
-fn emit_route_template_table(out: &mut String, actor: &ActorDecl, model: &Model<'_>) {
-    match route_field_kind_for_actor(&actor.name, model) {
-        RouteFieldKind::None => {}
-        RouteFieldKind::Direct { actor_templates, family_commitments } => {
-            for actor in actor_templates {
-                out.push_str(&format!("    byte[32] {} = {};\n", hidden_template_name(actor), hidden_template_init_name(actor)));
-            }
-            for family in family_commitments {
-                out.push_str(&format!(
-                    "    byte[32] {} = {};\n",
-                    hidden_route_family_commitment_name(family),
-                    hidden_route_family_commitment_init_name(family)
-                ));
-            }
-        }
-        RouteFieldKind::FamilyTables { actor_templates, family_commitments, families } => {
-            for actor in actor_templates {
-                out.push_str(&format!("    byte[32] {} = {};\n", hidden_template_name(actor), hidden_template_init_name(actor)));
-            }
-            for family in family_commitments {
-                out.push_str(&format!(
-                    "    byte[32] {} = {};\n",
-                    hidden_route_family_commitment_name(family),
-                    hidden_route_family_commitment_init_name(family)
-                ));
-            }
-            for family in families {
-                for actor in family.direct_template_actors() {
-                    out.push_str(&format!("    byte[32] {} = {};\n", hidden_template_name(actor), hidden_template_init_name(actor)));
-                }
-                out.push_str(&format!(
-                    "    byte[{}] {} = {};\n",
-                    family.table_byte_len(),
-                    hidden_route_family_table_name(family),
-                    hidden_route_family_table_init_name(family)
-                ));
-            }
-        }
-    }
-}
-
-pub(super) fn hidden_template_object_fields_for_state(
-    source_actor: &ActorDecl,
-    target_state: &str,
-    model: &Model<'_>,
-) -> Vec<(String, String)> {
-    let same_storage = matches!(
-        (model.storage_state_name(&source_actor.state), model.storage_state_name(target_state)),
-        (Ok(source_storage), Ok(target_storage)) if source_storage == target_storage
-    );
-    if !same_storage {
-        // A named state carries payload fields, not any app actor's route cut.
-        return hidden_template_object_fields(RouteFieldKind::None);
-    }
-    hidden_template_object_fields(route_field_kind_for_actor(&source_actor.name, model))
-}
-
-fn hidden_template_object_fields(target_fields: RouteFieldKind<'_>) -> Vec<(String, String)> {
-    match target_fields {
-        RouteFieldKind::None => Vec::new(),
-        RouteFieldKind::Direct { actor_templates, family_commitments } => {
-            let mut fields = actor_templates
-                .into_iter()
-                .map(|actor| (hidden_template_name(actor), hidden_template_name(actor)))
-                .collect::<Vec<_>>();
-            fields.extend(family_commitments.into_iter().map(|family| {
-                let name = hidden_route_family_commitment_name(family);
-                (name.clone(), name)
-            }));
-            fields
-        }
-        RouteFieldKind::FamilyTables { actor_templates, family_commitments, families } => {
-            let mut fields = actor_templates
-                .into_iter()
-                .map(|actor| (hidden_template_name(actor), hidden_template_name(actor)))
-                .collect::<Vec<_>>();
-            fields.extend(family_commitments.into_iter().map(|family| {
-                let name = hidden_route_family_commitment_name(family);
-                (name.clone(), name)
-            }));
-            for family in families {
-                let table_expr = hidden_route_family_table_name(family);
-                fields.extend(
-                    family.direct_template_actors().iter().map(|actor| (hidden_template_name(actor), hidden_template_name(actor))),
-                );
-                fields.push((hidden_route_family_table_name(family), table_expr));
-            }
-            fields
-        }
-    }
+    Ok(())
 }
 
 fn template_receipt_id(actor: &str) -> String {
@@ -3736,56 +3369,6 @@ pub(super) fn hidden_input_idx_name(input: &str) -> String {
 
 pub(super) fn hidden_output_idx_name(output: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{output}_output_idx")
-}
-
-/// Select the concrete state layout carried by a known actor template.
-///
-/// Named state structs remain authored. App-local route context uses an
-/// actor-qualified physical struct; linked expanded states need only their
-/// state-qualified digest layout because their route context is in the prefix.
-pub(super) fn contract_state_type_for_actor(actor: &str, current_actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
-    let target_state = model.actor(actor)?.state.as_str();
-    if model.linked_actor(actor).is_some() && model.state(target_state)?.expansion.is_some() {
-        return Ok(hidden_storage_state_type_name(target_state));
-    }
-    if target_state == current_actor.state {
-        return Ok(if route_field_kind_for_actor(actor, model) == route_field_kind_for_actor(&current_actor.name, model) {
-            "State".to_string()
-        } else {
-            hidden_actor_state_type_name(actor)
-        });
-    }
-
-    if matches!(route_field_kind_for_actor(actor, model), RouteFieldKind::None) && model.state(target_state)?.expansion.is_none() {
-        Ok(target_state.to_string())
-    } else {
-        Ok(hidden_actor_state_type_name(actor))
-    }
-}
-
-/// Select the physical layout used by an open actor with a known state type.
-pub(super) fn contract_state_type_for_dynamic_state(state: &str, current_actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
-    if state == current_actor.state {
-        Ok("State".to_string())
-    } else if model.state(state)?.expansion.is_some() {
-        Ok(hidden_storage_state_type_name(state))
-    } else {
-        Ok(state.to_string())
-    }
-}
-
-pub(super) fn contract_state_type_for_observed_actor(
-    actor: &ActorDecl,
-    entry: &EntryDecl,
-    observe: &ObserveDecl,
-    observed: &ObservedActorDecl,
-    model: &Model<'_>,
-) -> Result<String> {
-    if let Some(target_state) = observed_open_state_for_decl(actor, entry, observe, observed, model)? {
-        contract_state_type_for_dynamic_state(&target_state, actor, model)
-    } else {
-        contract_state_type_for_actor(&observed.actor, actor, model)
-    }
 }
 
 fn compact_expr(input: &str) -> String {

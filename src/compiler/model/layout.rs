@@ -31,12 +31,6 @@ impl SourceStateId {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct StorageStateId(String);
 
-impl StorageStateId {
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 /// Canonical actor identity across local and linked source spellings.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct CompiledActorId {
@@ -45,10 +39,6 @@ pub(crate) struct CompiledActorId {
 }
 
 impl CompiledActorId {
-    pub(crate) fn app(&self) -> &str {
-        &self.app
-    }
-
     pub(crate) fn actor(&self) -> &str {
         &self.actor
     }
@@ -79,11 +69,8 @@ pub(crate) struct StorageFieldId {
 }
 
 impl StorageFieldId {
-    pub(crate) fn state(&self) -> &StorageStateId {
-        &self.state
-    }
-
-    pub(crate) fn field(&self) -> &str {
+    #[cfg(test)]
+    fn field(&self) -> &str {
         &self.field
     }
 }
@@ -130,7 +117,8 @@ impl LayoutField {
         &self.sil_type
     }
 
-    pub(crate) fn packed_len(&self) -> usize {
+    #[cfg(test)]
+    fn packed_len(&self) -> usize {
         self.packed_len
     }
 }
@@ -169,15 +157,8 @@ pub(crate) struct SourceStateLayout {
 }
 
 impl SourceStateLayout {
-    pub(crate) fn id(&self) -> &SourceStateId {
-        &self.id
-    }
-
-    pub(crate) fn fields(&self) -> &[(SourceFieldId, TypeRef)] {
-        &self.fields
-    }
-
-    pub(crate) fn field_id(&self, name: &str) -> Option<&SourceFieldId> {
+    #[cfg(test)]
+    fn field_id(&self, name: &str) -> Option<&SourceFieldId> {
         self.fields.iter().find_map(|(id, _)| (id.field() == name).then_some(id))
     }
 }
@@ -187,20 +168,6 @@ impl SourceStateLayout {
 pub(crate) struct StorageStateLayout {
     id: StorageStateId,
     fields: Vec<(StorageFieldId, TypeRef, usize)>,
-}
-
-impl StorageStateLayout {
-    pub(crate) fn id(&self) -> &StorageStateId {
-        &self.id
-    }
-
-    pub(crate) fn fields(&self) -> &[(StorageFieldId, TypeRef, usize)] {
-        &self.fields
-    }
-
-    pub(crate) fn field_id(&self, name: &str) -> Option<&StorageFieldId> {
-        self.fields.iter().find_map(|(id, _, _)| (id.field() == name).then_some(id))
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -221,7 +188,8 @@ impl SourceStorageRelation {
         matches!(self, Self::Identity { .. })
     }
 
-    pub(crate) fn storage_field(&self, source: &SourceFieldId) -> Option<&StorageFieldId> {
+    #[cfg(test)]
+    fn storage_field(&self, source: &SourceFieldId) -> Option<&StorageFieldId> {
         let fields = match self {
             Self::Identity { fields } | Self::Expanded { fields } => fields,
         };
@@ -355,20 +323,13 @@ pub(crate) struct SourceRepresentationPlan {
 }
 
 impl SourceRepresentationPlan {
-    pub(crate) fn source(&self) -> &SourceStateId {
-        &self.source
-    }
-
-    pub(crate) fn source_to_storage(&self) -> &SourceStorageRelation {
-        &self.source_to_storage
-    }
-
     pub(crate) fn sil_type(&self) -> &SilStateType {
         &self.sil_type
     }
 
     /// Eligibility is recorded now; selection of `State` is deliberately later.
-    pub(crate) fn active_state_eligible(&self) -> bool {
+    #[cfg(test)]
+    fn active_state_eligible(&self) -> bool {
         self.active_state_eligible
     }
 }
@@ -415,7 +376,8 @@ impl TargetPhysicalPlan {
     }
 
     /// Nominal identity remains separate from physical compatibility.
-    pub(crate) fn has_source_identity(&self, requested: &SourceStateId) -> bool {
+    #[cfg(test)]
+    fn has_source_identity(&self, requested: &SourceStateId) -> bool {
         &self.source == requested
     }
 
@@ -485,27 +447,22 @@ pub(crate) struct ContractStateLayout {
 }
 
 impl ContractStateLayout {
-    pub(crate) fn actor(&self) -> &CompiledActorId {
-        &self.actor
-    }
-
     pub(crate) fn physical(&self) -> &PhysicalStateLayout {
         &self.physical
     }
 
-    pub(crate) fn source(&self) -> &SourceStateLayout {
+    #[cfg(test)]
+    fn source(&self) -> &SourceStateLayout {
         &self.source
     }
 
-    pub(crate) fn storage(&self) -> &StorageStateLayout {
-        &self.storage
-    }
-
-    pub(crate) fn source_to_storage(&self) -> &SourceStorageRelation {
+    #[cfg(test)]
+    fn source_to_storage(&self) -> &SourceStorageRelation {
         &self.source_to_storage
     }
 
-    pub(crate) fn storage_to_physical(&self) -> &StoragePhysicalRelation {
+    #[cfg(test)]
+    fn storage_to_physical(&self) -> &StoragePhysicalRelation {
         &self.storage_to_physical
     }
 }
@@ -525,7 +482,8 @@ impl ContractStateLowering {
         &self.active
     }
 
-    pub(crate) fn source_representation(&self, source: &SourceStateId) -> Option<&SourceRepresentationPlan> {
+    #[cfg(test)]
+    fn source_representation(&self, source: &SourceStateId) -> Option<&SourceRepresentationPlan> {
         self.source_representations.get(source)
     }
 
@@ -535,10 +493,6 @@ impl ContractStateLowering {
 
     pub(crate) fn target(&self, id: &PhysicalTargetId) -> Option<&TargetPhysicalPlan> {
         self.target_physical.get(id)
-    }
-
-    pub(crate) fn targets(&self) -> &BTreeMap<PhysicalTargetId, TargetPhysicalPlan> {
-        &self.target_physical
     }
 
     pub(crate) fn target_for_actor(&self, actor: &str) -> Option<&TargetPhysicalPlan> {
@@ -1016,7 +970,7 @@ fn hidden_route_family_table_name(family: &RouteFamily) -> String {
 }
 
 /// Return the SIL spelling used by layout compatibility checks.
-pub(crate) fn lower_layout_type(ty: &TypeRef, model: &Model<'_>) -> String {
+fn lower_layout_type(ty: &TypeRef, model: &Model<'_>) -> String {
     if model.is_actor_enum_type(ty) {
         "int".to_string()
     } else if ty.name == word::COVENANT_ID && ty.array.is_none() {
@@ -1026,7 +980,7 @@ pub(crate) fn lower_layout_type(ty: &TypeRef, model: &Model<'_>) -> String {
     }
 }
 
-pub(crate) fn packed_layout_field_len(ty: &TypeRef, model: &Model<'_>) -> Result<usize> {
+fn packed_layout_field_len(ty: &TypeRef, model: &Model<'_>) -> Result<usize> {
     packed_layout_field_len_inner(ty, model, &mut BTreeSet::new())
 }
 

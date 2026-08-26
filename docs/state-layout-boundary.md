@@ -665,7 +665,8 @@ Delete:
 - textual `self.state` recognition;
 - duplicated physical state type selection;
 - manual route-field insertion outside the boundary;
-- dead source-state structs emitted only because old codegen could not use `State`;
+- dead physical structs and any source-state structs proven unused. Keep named
+  authored structs while the equivalent-`State` optimization remains deferred;
 - direct-call, entry-parameter, authored-local, and route materialization exceptions from `actor_functions`;
 - transitional assertions comparing old and new layout logic.
 
@@ -1025,16 +1026,24 @@ Expected:
 
 ### V11: Invalid source-boundary access
 
-Each of the following must fail with an Argent diagnostic:
+Each of the following ordinary expressions must fail through Argent semantic
+validation or Silverscript type checking:
 
 ```rust
 AccountState x = self.state;
 foo(self);
 AccountState x = self;
+```
+
+Argent does not scan arbitrary expressions to provide a dedicated `self` or
+`self.state` diagnostic. The structured successor form is different:
+
+```rust
 become foreign <- self; // where foreign cannot be the current actor
 ```
 
-Expected diagnostics should identify the representation error directly and should not defer it to Silverscript type checking.
+An incompatible exact successor must fail during Argent route resolution,
+before Silverscript lowering.
 
 ### V12: Artifact and runtime compatibility
 

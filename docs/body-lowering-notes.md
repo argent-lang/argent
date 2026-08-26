@@ -4,7 +4,6 @@ Small implementation hints to revisit during the current compiler work.
 
 - Give helper `fn` bodies token lowering for `cov_id` locals and `.co_spent()`, using parameter, field, and local types.
 - Define actor-function `self` semantics. Actor functions currently access contract fields by bare Sil names and do not receive entry `self.*` lowering; if that syntax is added, reserve `self` as a function binding at the same time.
-- Complete the staged [state layout boundary](state-layout-boundary.md) plan.
 - Accept Sil ternaries, bitwise XOR, and single-quoted strings in the shared lexer.
 - Reject locals that shadow fixed Argent references before applying entry-wide rewrites.
 - Put entry-root bindings in one namespace. Reject a local such as `Turn next` when `next` is already an emit handle; contextual resolution of `next.value` and `Pong(next)` currently makes this legal but visually ambiguous.

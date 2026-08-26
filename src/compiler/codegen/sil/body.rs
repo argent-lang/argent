@@ -25,8 +25,8 @@ use silverscript_lang::ast::{
 // layout helpers, and generated names.
 use super::super::emitter::*;
 use super::state_boundary::{
-    AuthoredStateExpr, EntryInputStatePlan, OutputStateTarget, OutputValidationContext, SourceStateAccess, materialize_output_state,
-    plan_actor_output_state, plan_open_output_state, plan_output_validation, plan_selector_output_state,
+    AuthoredStateExpr, EntryInputBindingView, EntryInputStatePlan, OutputStateTarget, OutputValidationContext, SourceStateAccess,
+    materialize_output_state, plan_actor_output_state, plan_open_output_state, plan_output_validation, plan_selector_output_state,
     plan_static_actor_output_state, preserve_exact_self,
 };
 use super::state_values::{ContractStateValuePlan, PlannedStateValue};
@@ -43,7 +43,7 @@ pub(in crate::compiler::codegen) fn lower_entry_body(
     input_states: &EntryInputStatePlan,
     state_values: &ContractStateValuePlan,
 ) -> Result<LoweredEntryBody> {
-    BodyLowerer::new(actor, entry, model, Some(input_states), state_values)?.lower()
+    BodyLowerer::new(actor, entry, model, EntryInputBindingView::Complete(input_states), state_values)?.lower()
 }
 
 /// Source details needed while lowering one non-current covenant output.
@@ -87,7 +87,7 @@ struct BodyLowerer<'a, 'm, 'p> {
     actor: &'a ActorDecl,
     entry: &'a EntryDecl,
     model: &'m Model<'a>,
-    input_states: Option<&'p EntryInputStatePlan>,
+    input_bindings: EntryInputBindingView<'p>,
     state_values: &'p ContractStateValuePlan,
     bindings: BodyBindings,
     /// Entry-wide candidates; the current binding decides selector visibility.
@@ -116,6 +116,20 @@ struct StateValueSiteCollector<'a> {
     state_values: &'a ContractStateValuePlan,
     bindings: &'a BodyBindings,
     sites: Vec<PlannedStateValueSite>,
+}
+
+#[derive(Default)]
+struct PhysicalStateConstructorDetector {
+    found: bool,
+}
+
+impl<'i> AstVisitorMut<'i> for PhysicalStateConstructorDetector {
+    fn visit_expr(&mut self, expr: &mut SilExpr<'i>) {
+        if matches!(&expr.kind, SilExprKind::StructLiteral { name, .. } if name == "State") {
+            self.found = true;
+        }
+        walk_expr_mut(self, expr);
+    }
 }
 
 impl<'i> AstVisitorMut<'i> for StateValueSiteCollector<'_> {
@@ -355,7 +369,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         actor: &'a ActorDecl,
         entry: &'a EntryDecl,
         model: &'m Model<'a>,
-        input_states: Option<&'p EntryInputStatePlan>,
+        input_bindings: EntryInputBindingView<'p>,
         state_values: &'p ContractStateValuePlan,
     ) -> Result<Self> {
         let selector_catalog = model.template_selectors_for_entry(actor, entry)?;
@@ -400,27 +414,20 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
 
         let mut input_names = BTreeSet::new();
         for consume in &entry.consumes {
-            input_names.insert(consume.name.clone());
-            if let Some(input_states) = input_states {
-                let input = input_states.consumed(&consume.name)?;
+            if let Some(input) = input_bindings.consumed(&consume.name)? {
+                input_names.insert(consume.name.clone());
                 let access = input.access();
                 bindings.declare(
                     input.source_ref().to_string(),
                     BodyBinding::typed(access.source_type(), access.physical_type(), state_values).with_state_access(access.clone()),
                 );
-            } else {
-                let state = model.actor(&consume.actor)?.state.clone();
-                let ty = contract_state_type_for_actor(&consume.actor, actor, model)?;
-                bindings.declare(consume.name.clone(), BodyBinding::typed(state, ty, state_values));
             }
         }
-        let mut input_state_refs = input_states.map(EntryInputStatePlan::reference_replacements).unwrap_or_default();
+        let input_state_refs = input_bindings.reference_replacements();
         for observe in &entry.observes {
             for input in &observe.inputs {
-                let source_ref = format!("{}.inputs.{}.state", observe.name, input.name);
                 let lowered_ref = hidden_observed_input_state_name(&observe.name, &input.name);
-                if let Some(input_states) = input_states {
-                    let input = input_states.observed(&observe.name, &input.name)?;
+                if let Some(input) = input_bindings.observed(&observe.name, &input.name)? {
                     let access = input.access();
                     bindings.declare(
                         input.source_ref().to_string(),
@@ -428,16 +435,6 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                             .with_state_access(access.clone()),
                     );
                     bindings.declare(lowered_ref, BodyBinding::lowered_typed(access.physical_type()));
-                } else {
-                    input_state_refs.push((source_ref.clone(), lowered_ref.clone()));
-                    let state = if let Some(state) = observed_open_state_for_decl(actor, entry, observe, input, model)? {
-                        state.to_string()
-                    } else {
-                        model.actor(&input.actor)?.state.clone()
-                    };
-                    let ty = contract_state_type_for_observed_actor(actor, entry, observe, input, model)?;
-                    bindings.declare(source_ref, BodyBinding::typed(state, ty.clone(), state_values));
-                    bindings.declare(lowered_ref, BodyBinding::lowered_typed(ty));
                 }
             }
         }
@@ -470,7 +467,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             actor,
             entry,
             model,
-            input_states,
+            input_bindings,
             state_values,
             bindings,
             selector_catalog,
@@ -679,6 +676,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     ) -> Result<()> {
         let source = self.entry.body.span_text(span).trim();
         let mut statement = source.strip_suffix(';').ok_or_else(|| self.error("unterminated statement"))?.trim().to_string();
+        self.reject_physical_state_constructors(&statement)?;
         let mut value_lowered = false;
 
         if let Some(destructuring) = destructuring {
@@ -1180,6 +1178,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
 
     fn lower_expr(&self, expr: &str, expected_ty: Option<&str>, indent: usize) -> Result<String> {
         let expr = expr.trim();
+        self.reject_physical_state_constructors(expr)?;
         let expected_state_value = expected_ty.and_then(|ty| self.state_values.plan_sil_type(ty));
         if let Some(expected) = expected_state_value.as_ref().filter(|value| !value.shape().is_scalar()) {
             return self.lower_authored_state_array_expr(expr, expected, indent);
@@ -1194,7 +1193,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             {
                 return Err(self.error(format!("state constructor `{state_name}` cannot initialize authored `{expected_ty}`")));
             }
-            return self.lower_state_constructor(state_name, expected_ty.unwrap_or(state_name), body, indent);
+            return self.lower_state_constructor(state_name, body, indent);
         }
         if let Some(access) = self.bindings.state_access_for_expr(expr) {
             let Some(expected_ty) = expected_ty else {
@@ -1231,6 +1230,13 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         }
         let expr = self.lower_nested_state_values(&expr, indent)?;
         self.lower_refs(&expr)
+    }
+
+    fn reject_physical_state_constructors(&self, source: &str) -> Result<()> {
+        if contains_physical_state_constructor(source) {
+            return Err(self.error("physical `State` is compiler-owned and cannot be constructed in Argent source"));
+        }
+        Ok(())
     }
 
     fn lower_authored_state_array_expr(&self, expr: &str, expected: &PlannedStateValue, indent: usize) -> Result<String> {
@@ -1366,12 +1372,9 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         }))
     }
 
-    fn lower_state_constructor(&self, state_name: &str, sil_type: &str, body: &str, indent: usize) -> Result<String> {
+    fn lower_state_constructor(&self, state_name: &str, body: &str, indent: usize) -> Result<String> {
         self.model.state(state_name)?;
-        if sil_type == state_name {
-            return self.lower_authored_state_object(state_name, sil_type, body, indent);
-        }
-        self.lower_state_object_for_state(state_name, sil_type, body, indent)
+        self.lower_authored_state_object(state_name, state_name, body, indent)
     }
 
     fn lower_digest_expr(&self, value: &str) -> Result<String> {
@@ -1384,16 +1387,16 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     }
 
     fn lower_typed_local_initializer(&self, source_ty: &str, lowered_ty: &str, expr: &str, indent: usize) -> Result<String> {
+        if source_ty == "State" && split_state_object_literal(expr).is_some() {
+            return Err(self.error("physical `State` is compiler-owned and cannot be constructed in Argent source"));
+        }
         if self.model.actor_enums.contains_key(source_ty) {
             return self.lower_actor_enum_initializer(source_ty, expr, indent);
         }
-        if let Some(state_name) = self.source_state_for_local_type(source_ty)
+        if self.model.has_state(source_ty)
             && let Some(body) = split_state_object_literal(expr)
         {
-            if lowered_ty == source_ty {
-                return self.lower_authored_state_object(&state_name, lowered_ty, body, indent);
-            }
-            return self.lower_state_object_for_state(&state_name, lowered_ty, body, indent);
+            return self.lower_authored_state_object(source_ty, lowered_ty, body, indent);
         }
         if self.model.has_state(source_ty) {
             return self.lower_expr(expr, Some(source_ty), indent);
@@ -1428,12 +1431,6 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         self.lower_expr(expr, Some("int"), indent)
     }
 
-    fn lower_state_object_for_state(&self, state_name: &str, sil_type: &str, body: &str, indent: usize) -> Result<String> {
-        self.model.state(state_name)?;
-        let generated_fields = hidden_template_object_fields_for_state(self.actor, state_name, self.model);
-        self.lower_state_object(state_name, sil_type, body, generated_fields, indent)
-    }
-
     fn lower_authored_state_object(&self, state_name: &str, sil_type: &str, body: &str, indent: usize) -> Result<String> {
         if let Some(expansion) = self.model.state(state_name)?.expansion.as_ref() {
             let fields = parse_state_fields(body);
@@ -1466,7 +1463,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             if let Some(extra) = pending.keys().next() {
                 return Err(ArgentError::new(format!("state `{state_name}` constructor has unknown field `{extra}`")));
             }
-            return self.render_state_object(state_name, sil_type, &lowered_fields, Vec::new(), indent);
+            return self.render_state_object(state_name, sil_type, &lowered_fields, indent);
         }
         let state = self.model.storage_state(state_name)?;
         let fields = parse_state_fields(body)
@@ -1481,26 +1478,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                 self.lower_expr(&expr, expected.as_deref(), indent + 4).map(|lowered| (name, lowered))
             })
             .collect::<Result<Vec<_>>>()?;
-        self.render_state_object(state_name, sil_type, &fields, Vec::new(), indent)
-    }
-
-    fn lower_state_object(
-        &self,
-        state_name: &str,
-        sil_type: &str,
-        body: &str,
-        generated_fields: Vec<(String, String)>,
-        indent: usize,
-    ) -> Result<String> {
-        let raw_fields = parse_state_fields(body);
-        if self.model.state(state_name)?.expansion.is_some() {
-            return self.render_expanded_state_object(state_name, sil_type, &raw_fields, generated_fields, indent);
-        }
-        let fields = raw_fields
-            .into_iter()
-            .map(|(name, expr)| self.lower_expr(&expr, None, indent + 4).map(|lowered| (name, lowered)))
-            .collect::<Result<Vec<_>>>()?;
-        self.render_state_object(state_name, sil_type, &fields, generated_fields, indent)
+        self.render_state_object(state_name, sil_type, &fields, indent)
     }
 
     fn lower_local_type(&self, source_ty: &str) -> String {
@@ -1513,26 +1491,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         self.state_values.sil_type_for_sil_type(source_ty).unwrap_or_else(|| source_ty.to_string())
     }
 
-    fn source_state_for_local_type(&self, source_ty: &str) -> Option<String> {
-        if source_ty == "State" {
-            Some(self.actor.state.clone())
-        } else if self.model.has_state(source_ty) {
-            Some(source_ty.to_string())
-        } else {
-            None
-        }
-    }
-
-    /// `state_name` selects the authored/storage fields, while `sil_type`
-    /// names the concrete struct that contains those fields in generated Sil.
-    fn render_state_object(
-        &self,
-        state_name: &str,
-        sil_type: &str,
-        fields: &[(String, String)],
-        generated_fields: Vec<(String, String)>,
-        indent: usize,
-    ) -> Result<String> {
+    fn render_state_object(&self, state_name: &str, sil_type: &str, fields: &[(String, String)], indent: usize) -> Result<String> {
         let field_indent = " ".repeat(indent + 4);
         let close_indent = " ".repeat(indent);
         let mut pending = fields.iter().cloned().collect::<BTreeMap<_, _>>();
@@ -1540,12 +1499,6 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             return Err(ArgentError::new(format!("state `{state_name}` constructor contains duplicate fields")));
         }
         let mut out = format!("{sil_type} {{\n");
-        if !generated_fields.is_empty() {
-            out.push_str(&format!("{field_indent}// :: generated fields\n"));
-        }
-        for (field, expr) in generated_fields {
-            out.push_str(&format!("{field_indent}{field}: {expr},\n"));
-        }
         let state = self.model.storage_state(state_name)?;
         if !state.fields.is_empty() {
             out.push_str(&format!("{field_indent}// :: user declared fields\n"));
@@ -1582,97 +1535,8 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         }
     }
 
-    fn render_expanded_state_object(
-        &self,
-        state_name: &str,
-        sil_type: &str,
-        fields: &[(String, String)],
-        generated_fields: Vec<(String, String)>,
-        indent: usize,
-    ) -> Result<String> {
-        let state = self.model.state(state_name)?;
-        let expansion = state.expansion.as_ref().ok_or_else(|| ArgentError::new(format!("state `{state_name}` is not expanded")))?;
-        let storage_state = self.model.storage_state(state_name)?;
-        let mut pending = fields.iter().cloned().collect::<BTreeMap<_, _>>();
-        if pending.len() != fields.len() {
-            return Err(ArgentError::new(format!("state `{state_name}` constructor contains duplicate fields")));
-        }
-        let field_indent = " ".repeat(indent + 4);
-        let close_indent = " ".repeat(indent);
-        let mut out = format!("{sil_type} {{\n");
-        if !generated_fields.is_empty() {
-            out.push_str(&format!("{field_indent}// :: generated fields\n"));
-        }
-        for (field, expr) in generated_fields {
-            out.push_str(&format!("{field_indent}{field}: {expr},\n"));
-        }
-        if !storage_state.fields.is_empty() {
-            out.push_str(&format!("{field_indent}// :: user declared fields\n"));
-        }
-
-        for field in &storage_state.fields {
-            if let Some(digest) = expansion.digests.iter().find(|digest| digest.field == field.name) {
-                let expr = pending.remove(&digest.field).ok_or_else(|| {
-                    ArgentError::new(format!("state `{state_name}` constructor is missing expanded slot `{}`", digest.field))
-                })?;
-                if expr.trim() == digest.field {
-                    out.push_str(&format!("{field_indent}{}: {},\n", field.name, digest.field));
-                    continue;
-                }
-                let (slot_state, slot_body) = split_state_constructor(&expr).ok_or_else(|| {
-                    ArgentError::new(format!(
-                        "state `{state_name}` constructor slot `{}` must use `{} {{ ... }}`",
-                        digest.field, digest.state
-                    ))
-                })?;
-                if slot_state != digest.state {
-                    return Err(ArgentError::new(format!(
-                        "state `{state_name}` constructor slot `{}` expects `{}`, got `{slot_state}`",
-                        digest.field, digest.state
-                    )));
-                }
-                let mut slot_fields = parse_state_fields(slot_body).into_iter().collect::<BTreeMap<_, _>>();
-                let payload = state_packed_bytes_expr(&digest.state, self.model, |memory_field, _, _| {
-                    let expr = slot_fields.remove(&memory_field.name).ok_or_else(|| {
-                        ArgentError::new(format!(
-                            "state `{state_name}` constructor slot `{}` is missing field `{}`",
-                            digest.field, memory_field.name
-                        ))
-                    })?;
-                    let lowered = self.lower_expr(&expr, None, indent + 4)?;
-                    packed_field_expr(&memory_field.ty, &lowered)
-                })?;
-                if let Some(extra) = slot_fields.keys().next() {
-                    return Err(ArgentError::new(format!(
-                        "state `{state_name}` constructor slot `{}` has unknown field `{extra}`",
-                        digest.field
-                    )));
-                }
-                out.push_str(&format!("{field_indent}{}: blake3(byte[]({payload})),\n", field.name));
-            } else if field.virtual_slot {
-                let raw_expr = pending.remove(&field.name).unwrap_or_else(|| field.name.clone());
-                let expr = self.lower_expr(&raw_expr, None, indent + 4)?;
-                out.push_str(&format!("{field_indent}{}: {expr},\n", field.name));
-            } else {
-                let raw_expr = pending
-                    .remove(&field.name)
-                    .ok_or_else(|| ArgentError::new(format!("state `{state_name}` constructor is missing field `{}`", field.name)))?;
-                let expr = self.lower_expr(&raw_expr, None, indent + 4)?;
-                out.push_str(&format!("{field_indent}{}: {expr},\n", field.name));
-            }
-        }
-        if let Some(extra) = pending.keys().next() {
-            return Err(ArgentError::new(format!("state `{state_name}` constructor has unknown field `{extra}`")));
-        }
-        out.push_str(&close_indent);
-        out.push('}');
-        Ok(out)
-    }
-
     fn lower_refs(&self, expr: &str) -> Result<String> {
-        if let Some(input_states) = self.input_states {
-            input_states.reject_unavailable_field_refs(expr).map_err(|err| self.error(err.to_string()))?;
-        }
+        self.input_bindings.reject_unavailable_field_refs(expr).map_err(|err| self.error(err.to_string()))?;
         self.ref_replacements.rewrite(expr)
     }
 
@@ -1700,15 +1564,48 @@ fn binds_keywords<'a>(statement: &'a EntryStatement, keywords: &HashSet<&str>) -
     bindings.iter().map(|binding| binding.name.as_str()).find(|name| keywords.contains(name))
 }
 
+fn contains_physical_state_constructor(source: &str) -> bool {
+    let mut detector = PhysicalStateConstructorDetector::default();
+    if let Ok(mut expr) = parse_expression_ast(source) {
+        detector.visit_expr(&mut expr);
+        return detector.found;
+    }
+    let wrapped = format!("function gen__physical_state_constructor_check() {{ {source}; }}");
+    if let Ok(mut function) = parse_function_ast(&wrapped) {
+        visit_function_mut(&mut detector, &mut function);
+    }
+    detector.found
+}
+
+pub(in crate::compiler::codegen) fn reject_function_physical_state_constructors(
+    function_name: &str,
+    body: &str,
+    context: &str,
+) -> Result<()> {
+    let source = format!("function gen__physical_state_constructor_check() {{ {body} }}");
+    let Ok(mut function) = parse_function_ast(&source) else {
+        return Ok(());
+    };
+    let mut detector = PhysicalStateConstructorDetector::default();
+    visit_function_mut(&mut detector, &mut function);
+    if detector.found {
+        return Err(ArgentError::new(format!(
+            "physical `State` is compiler-owned and cannot be constructed in Argent {context} function `{function_name}`"
+        )));
+    }
+    Ok(())
+}
+
 pub(in crate::compiler::codegen) fn lower_entry_expr(
     actor: &ActorDecl,
     entry: &EntryDecl,
     model: &Model<'_>,
+    input_bindings: EntryInputBindingView<'_>,
     expr: &str,
     expected_ty: Option<&str>,
 ) -> Result<String> {
     let state_values = ContractStateValuePlan::new(actor, model)?;
-    BodyLowerer::new(actor, entry, model, None, &state_values)?.lower_expr(expr, expected_ty, 8)
+    BodyLowerer::new(actor, entry, model, input_bindings, &state_values)?.lower_expr(expr, expected_ty, 8)
 }
 
 fn generated_state_name(route: &ConstructedRoute, state_ty: &str) -> String {

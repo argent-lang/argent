@@ -6,7 +6,7 @@ use std::{
 use kaspa_txscript::opcodes::codes::OpPushData1;
 
 use super::*;
-use crate::compiler::model::CompilerRouteTransition;
+use crate::compiler::model::{CompilerRouteTransition, RouteRootLeaf};
 use crate::routing::{CommitmentNode, RouteGraph, SelectorRequirement};
 
 #[test]
@@ -2506,36 +2506,124 @@ fn expanded_output_payload_calls_are_evaluated_once_before_digest_lowering() {
 }
 
 #[test]
-fn physical_state_locals_are_not_authored_route_values() {
-    let path = PathBuf::from("physical-route-source.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
-        path.clone(),
-        r#"
-            state SharedState { int count; }
+fn rejects_authored_physical_state_constructors() {
+    for initializer in ["{ count: count + 1 }", "State { count: count + 1 }"] {
+        let source = format!(
+            r#"
+                state SharedState {{ int count; }}
 
-            actor Current owns SharedState {
-                entry advance() emits next: Current {
-                    State next_state = { count: count + 1 };
-                    unrestricted(next.value);
-                    become next <- Current(next_state);
+                actor Current owns SharedState {{
+                    entry advance() emits next: Current {{
+                        State next_state = {initializer};
+                        unrestricted(next.value);
+                        become next <- Current(next_state);
+                    }}
+                }}
+
+                app Test {{ actor Current; }}
+            "#
+        );
+        let err = emit_inline_error(&source);
+        assert!(
+            err.to_string().contains("physical `State` is compiler-owned and cannot be constructed in Argent source"),
+            "unexpected error for `{initializer}`: {err}"
+        );
+    }
+
+    for (label, helper) in [
+        (
+            "global",
+            r#"
+                fn forge(int count) -> State {
+                    return State { count: count + 1 };
+                }
+            "#,
+        ),
+        (
+            "actor",
+            r#"
+                actor Current owns SharedState {
+                    fn forge(int count) -> State {
+                        return State { count: count + 1 };
+                    }
+
+                    entry hold() emits none {
+                        require(count >= 0);
+                    }
+                }
+            "#,
+        ),
+    ] {
+        let actor = if label == "global" {
+            r#"
+                actor Current owns SharedState {
+                    entry hold() emits none {
+                        require(count >= 0);
+                    }
+                }
+            "#
+        } else {
+            ""
+        };
+        let source = format!(
+            r#"
+                state SharedState {{ int count; }}
+                {helper}
+                {actor}
+                app Test {{ actor Current; }}
+            "#
+        );
+        let err = emit_inline_error(&source);
+        assert!(
+            err.to_string().contains("physical `State` is compiler-owned and cannot be constructed in Argent"),
+            "unexpected {label} function error: {err}"
+        );
+    }
+}
+
+#[test]
+fn authenticated_physical_state_values_can_be_bound_and_destructured() {
+    inline_actor_sil_and_artifact(
+        "physical-state-binding",
+        r#"
+            state CounterState { int count; }
+
+            actor Counter owns CounterState {
+                fn retain(State value) -> State {
+                    return value;
+                }
+
+                entry inspect() emits none {
+                    State physical = readInputState(this.activeInputIndex);
+                    State rebound = retain(physical);
+                    State { count: int current } = rebound;
+                    require(rebound.count == current);
                 }
             }
 
-            actor Peer owns SharedState {
-                entry hold() emits none { require(count >= 0); }
+            app Test { actor Counter; }
+        "#,
+    );
+}
+
+#[test]
+fn physical_state_values_cannot_supply_authored_successors() {
+    let err = emit_inline_error(
+        r#"
+            state CounterState { int count; }
+
+            actor Counter owns CounterState {
+                entry advance() emits next: Counter {
+                    State physical = readInputState(this.activeInputIndex);
+                    unrestricted(next.value);
+                    become next <- Counter(physical);
+                }
             }
 
-            app Test { actor Current; actor Peer; }
-        "#
-        .to_string(),
-    )
-    .expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("physical local source plans");
-    let err = emit_actor(model.actor("Current").expect("Current exists"), &model)
-        .expect_err("physical State must not cross the authored route boundary");
-
-    assert!(err.to_string().contains("is not an authored `SharedState` value"), "unexpected error: {err}");
+            app Test { actor Counter; }
+        "#,
+    );
+    assert!(err.to_string().contains("is not an authored `CounterState` value"), "unexpected error: {err}");
 }
 
 #[test]
@@ -4392,14 +4480,27 @@ fn shared_state_actors_retain_distinct_transitive_cuts() {
     );
     assert!(model.route_leaves_by_actor["B"].is_empty());
 
-    match route_field_kind_for_actor("A", &model) {
-        RouteFieldKind::Direct { actor_templates, family_commitments } => {
-            assert_eq!(actor_templates, ["Middle", "Tail"]);
-            assert!(family_commitments.is_empty());
-        }
-        RouteFieldKind::None | RouteFieldKind::FamilyTables { .. } => panic!("A has two direct actor templates"),
-    }
-    assert!(matches!(route_field_kind_for_actor("B", &model), RouteFieldKind::None));
+    let a_generated = model
+        .state_lowering("A")
+        .expect("A has a state lowering")
+        .active()
+        .physical()
+        .fields()
+        .iter()
+        .filter(|field| matches!(field.id(), PhysicalFieldId::Generated(_)))
+        .map(|field| field.sil_name())
+        .collect::<Vec<_>>();
+    assert_eq!(a_generated, ["gen__middle_template", "gen__tail_template"]);
+    assert!(
+        model
+            .state_lowering("B")
+            .expect("B has a state lowering")
+            .active()
+            .physical()
+            .fields()
+            .iter()
+            .all(|field| matches!(field.id(), PhysicalFieldId::Storage(_)))
+    );
 
     let actor_a = model.actor("A").expect("A exists");
     let actor_b = model.actor("B").expect("B exists");
@@ -4528,34 +4629,51 @@ fn foreign_routes_materialize_the_target_actors_cut() {
 }
 
 #[test]
-fn actor_route_field_kind_distinguishes_local_tables_from_foreign_commitments() {
+fn typed_actor_layouts_distinguish_local_tables_from_foreign_commitments() {
     let path = PathBuf::from("actor-route-field-kinds.ag");
     let module = crate::compiler::syntax::parser::parse_module(path.clone(), toy_chess_source()).expect("toy chess source parses");
     let program = Program { root: path, modules: vec![module] };
 
     let model = Model::from_program(&program).expect("toy chess model validates");
 
-    match route_field_kind_for_actor("Mux", &model) {
-        RouteFieldKind::FamilyTables { actor_templates, family_commitments, families } => {
-            assert!(actor_templates.is_empty());
-            assert!(family_commitments.is_empty());
-            assert_eq!(families.iter().map(|family| family.id.as_str()).collect::<Vec<_>>(), ["route_family/BoardState/mux"]);
-        }
-        RouteFieldKind::None | RouteFieldKind::Direct { .. } => panic!("Mux owns its local route table"),
-    }
+    let mux_fields = model
+        .state_lowering("Mux")
+        .expect("Mux has a state lowering")
+        .active()
+        .physical()
+        .fields()
+        .iter()
+        .filter(|field| matches!(field.id(), PhysicalFieldId::Generated(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(mux_fields.iter().map(|field| field.sil_name()).collect::<Vec<_>>(), ["gen__mux_template", "gen__mux_routes"]);
+    assert!(matches!(
+        mux_fields.as_slice(),
+        [template, table]
+            if matches!(template.id(), PhysicalFieldId::Generated(GeneratedFieldId::Template(actor)) if actor.actor() == "Mux")
+                && matches!(table.id(), PhysicalFieldId::Generated(GeneratedFieldId::RouteFamilyTable { family, .. }) if family == "route_family/BoardState/mux")
+    ));
 
-    match route_field_kind_for_actor("Player", &model) {
-        RouteFieldKind::Direct { actor_templates, family_commitments } => {
-            assert_eq!(actor_templates, ["Mux"]);
-            assert_eq!(
-                family_commitments.iter().map(|family| family.id.as_str()).collect::<Vec<_>>(),
-                ["route_family/BoardState/mux"]
-            );
-        }
-        RouteFieldKind::None | RouteFieldKind::FamilyTables { .. } => {
-            panic!("Player carries a foreign family commitment")
-        }
-    }
+    let player_fields = model
+        .state_lowering("Player")
+        .expect("Player has a state lowering")
+        .active()
+        .physical()
+        .fields()
+        .iter()
+        .filter(|field| matches!(field.id(), PhysicalFieldId::Generated(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        player_fields.iter().map(|field| field.sil_name()).collect::<Vec<_>>(),
+        ["gen__mux_template", "gen__mux_routes_digest"]
+    );
+    assert!(matches!(
+        player_fields.as_slice(),
+        [
+            template,
+            digest,
+        ] if matches!(template.id(), PhysicalFieldId::Generated(GeneratedFieldId::Template(actor)) if actor.actor() == "Mux")
+            && matches!(digest.id(), PhysicalFieldId::Generated(GeneratedFieldId::RouteFamilyDigest { family, .. }) if family == "route_family/BoardState/mux")
+    ));
 
     assert_eq!(
         model.route_transitions[&("Player".to_string(), "Mux".to_string())],
