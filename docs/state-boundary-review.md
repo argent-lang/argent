@@ -161,23 +161,39 @@ known, but the external ABI contradicts the compiler boundary.
 Reject `State` and `State[]` in entry parameters. Keep intentional physical
 `State` locals and global or actor helper parameters/results.
 
-### 6. [ ] Complete authored-expression coverage
+### 6. [x] Complete proven authored-expression coverage
 
-**Status:** Confirmed locally. This is a conformance pass after items 1–2.
+**Resolved:** The state-value plan now carries typed shared constants and
+callable results into route and digest lowering. Lexical bindings take
+precedence over same-named constants. A generated typed digest helper evaluates
+a non-identifier value once before it projects and packs the state fields.
 
-Some typed authored values still require an unnecessary local binding:
+The proven expression surface now includes:
+
+- typed local bindings and shared constants;
+- direct global and actor function results with a planned signature;
+- constructors at a typed route, call, local, or array boundary;
+- typed array literals, `append(...)`, and indexing of planned arrays.
+
+This is not a general expression typechecker. A linked constructor used only
+inside an otherwise untyped expression remains deferred. Supporting that case
+requires feeding AST-derived expression uses back into contract declaration
+planning before state layouts are emitted. The compiler does not use a textual
+type guess for this case.
+
+Before this fix, some typed authored values required an unnecessary local
+binding:
 
 ```rust
-become next <- Counter(INITIAL); // typed CounterState constant: rejected
+become next <- Counter(INITIAL); // typed CounterState constant
 ```
 
-Binding `INITIAL` to a `CounterState` local first makes the route compile.
-Likewise, `digest(snapshot())` is rejected even when `snapshot()` has a proven
-state result.
+The route rejected `INITIAL` until it was first bound to a `CounterState` local.
+Likewise, `digest(snapshot())` rejected a direct call even when `snapshot()` had
+a proven state result.
 
-Use the shared state-value and source-to-storage plans in route, digest, call,
-array, and constructor lowering. Do not create separate syntax-specific type
-tests.
+These paths use the shared state-value and source-to-storage plans. They do not
+add separate syntax-specific type tests.
 
 ## Decisions and documentation
 

@@ -14,8 +14,8 @@ pub(super) use body::{
 };
 pub(super) use functions::{GlobalFunctionLowerer, validate_actor_function_captures};
 pub(super) use state_boundary::{
-    EntryInputReferencePlan, EntryInputReferenceView, plan_actor_output_state, plan_entry_input_references, plan_open_output_state,
-    plan_selector_output_state,
+    EntryInputReferencePlan, EntryInputReferenceView, authored_state_payload_digest_expr, plan_actor_output_state,
+    plan_entry_input_references, plan_open_output_state, plan_selector_output_state,
 };
 pub(super) use state_types::{audit_omitted_equivalent_state_structs, lower_expression_state_types, lower_function_body_state_types};
 pub(super) use state_values::ContractStateValuePlan;

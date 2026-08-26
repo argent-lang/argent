@@ -7,6 +7,7 @@ use silverscript_lang::ast::{
 };
 
 use crate::compiler::model::{Model, ResolvedSuccessor, SilStateType, SourceStateId};
+use crate::compiler::syntax::lexer::RESERVED_GENERATED_PREFIX;
 use crate::compiler::syntax::{ActorDecl, ArrayDim, TypeRef};
 use crate::error::{ArgentError, Result};
 
@@ -43,6 +44,7 @@ pub(in crate::compiler::codegen) struct ContractStateValuePlan {
     authored_sil_types: BTreeMap<SourceStateId, String>,
     /// Source declarations reached by this contract's authored value sites.
     required_source_declarations: BTreeSet<SourceStateId>,
+    constants: BTreeMap<String, PlannedStateValue>,
     signatures: BTreeMap<String, CallableSignaturePlan>,
 }
 
@@ -143,9 +145,12 @@ impl ContractStateValuePlan {
             })
             .collect::<BTreeMap<_, _>>();
         let mut required_source_declarations = model.states.keys().map(SourceStateId::new).collect::<BTreeSet<_>>();
-        for ct in &model.consts {
-            collect_type_ref_source(&ct.ty, &authored_sil_types, &mut required_source_declarations);
-        }
+        let constants = model
+            .consts
+            .iter()
+            .filter_map(|ct| plan_type_ref(&ct.ty, &authored_sil_types).map(|value| (ct.name.clone(), value)))
+            .collect::<BTreeMap<_, _>>();
+        required_source_declarations.extend(constants.values().map(|value| value.source().clone()));
         for signature in signatures.values() {
             required_source_declarations.extend(signature.params.iter().flatten().map(|value| value.source().clone()));
             required_source_declarations.extend(signature.result.iter().map(|value| value.source().clone()));
@@ -185,17 +190,25 @@ impl ContractStateValuePlan {
             }
         }
         collect_required_source_dependencies(model, &authored_sil_types, &mut required_source_declarations)?;
-        Ok(Self { authored_sil_types, required_source_declarations, signatures })
+        Ok(Self { authored_sil_types, required_source_declarations, constants, signatures })
     }
 
     #[cfg(test)]
     pub(super) fn with_authored_sil_types(authored_sil_types: BTreeMap<SourceStateId, String>) -> Self {
         let required_source_declarations = authored_sil_types.keys().cloned().collect();
-        Self { authored_sil_types, required_source_declarations, signatures: BTreeMap::new() }
+        Self { authored_sil_types, required_source_declarations, constants: BTreeMap::new(), signatures: BTreeMap::new() }
     }
 
     pub(in crate::compiler::codegen) fn signature(&self, name: &str) -> Option<&CallableSignaturePlan> {
         self.signatures.get(name)
+    }
+
+    pub(in crate::compiler::codegen) fn constant(&self, name: &str) -> Option<&PlannedStateValue> {
+        self.constants.get(name)
+    }
+
+    pub(in crate::compiler::codegen) fn digest_helper_name(&self, source: &SourceStateId) -> String {
+        format!("{RESERVED_GENERATED_PREFIX}digest_{}", source.as_str())
     }
 
     pub(in crate::compiler::codegen) fn plan_type_ref(&self, ty: &TypeRef) -> Option<PlannedStateValue> {

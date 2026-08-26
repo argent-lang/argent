@@ -1930,6 +1930,110 @@ fn equivalent_state_literals_lower_in_plain_entry_statements() {
 }
 
 #[test]
+fn typed_state_constant_can_supply_a_constructed_successor_directly() {
+    let (actors, _) = inline_actor_sil_and_artifact(
+        "state-constant-successor",
+        r#"
+            state CounterState {
+                int count;
+            }
+
+            const CounterState INITIAL = CounterState {
+                count: 1,
+            };
+
+            actor Counter owns CounterState {
+                entry reset() emits next: Counter {
+                    byte[32] initial_digest = digest(INITIAL);
+                    require(initial_digest == initial_digest);
+                    unrestricted(next.value);
+                    become next <- Counter(INITIAL);
+                }
+            }
+
+            app Test { actor Counter; }
+        "#,
+    );
+
+    assert!(actors["Counter"].contains("State constant INITIAL = State {"), "{}", actors["Counter"]);
+    assert!(
+        actors["Counter"].contains("byte[32] initial_digest = blake3(byte[](((INITIAL.count) as byte[8])));"),
+        "{}",
+        actors["Counter"]
+    );
+    assert!(!actors["Counter"].contains("function gen__digest_"), "{}", actors["Counter"]);
+    assert!(actors["Counter"].contains("validateOutputState(gen__next_output_idx, INITIAL);"), "{}", actors["Counter"]);
+}
+
+#[test]
+fn body_binding_shadows_typed_state_constant_provenance() {
+    let err = emit_inline_error(
+        r#"
+            state CounterState { int count; }
+
+            const CounterState INITIAL = CounterState { count: 1 };
+
+            actor Counter owns CounterState {
+                entry reset() emits next: Counter {
+                    int INITIAL = 7;
+                    unrestricted(next.value);
+                    become next <- Counter(INITIAL);
+                }
+            }
+
+            app Test { actor Counter; }
+        "#,
+    );
+
+    assert!(err.to_string().contains("is not an authored `CounterState` value"), "unexpected error: {err}");
+}
+
+#[test]
+fn digest_accepts_scalar_state_results_from_global_and_actor_functions_once() {
+    let (actors, _) = inline_actor_sil_and_artifact(
+        "state-function-result-digest",
+        r#"
+            state CounterState {
+                int left;
+                int right;
+            }
+
+            fn global_snapshot(int value) -> CounterState {
+                return CounterState {
+                    left: value,
+                    right: value + 1,
+                };
+            }
+
+            actor Counter owns CounterState {
+                fn actor_snapshot() -> CounterState {
+                    return CounterState {
+                        left: left,
+                        right: right,
+                    };
+                }
+
+                entry inspect() emits none {
+                    byte[32] global_digest = digest(global_snapshot(left));
+                    byte[32] actor_digest = digest(actor_snapshot());
+                    require(global_digest == global_digest);
+                    require(actor_digest == actor_digest);
+                }
+            }
+
+            app Test { actor Counter; }
+        "#,
+    );
+
+    let sil = &actors["Counter"];
+    assert_eq!(sil.matches("function gen__digest_CounterState(").count(), 1, "one typed helper is shared by both calls: {sil}");
+    assert!(sil.contains("gen__digest_CounterState(global_snapshot(left))"), "{sil}");
+    assert!(sil.contains("gen__digest_CounterState(actor_snapshot())"), "{sil}");
+    assert_eq!(sil.matches("global_snapshot(").count(), 2, "global result must be evaluated once: {sil}");
+    assert_eq!(sil.matches("actor_snapshot(").count(), 2, "actor result must be evaluated once: {sil}");
+}
+
+#[test]
 fn observed_state_reference_can_supply_a_matching_route_state() {
     let (actor_sil, _) = inline_actor_sil_and_artifact(
         "observed-state-route-source",

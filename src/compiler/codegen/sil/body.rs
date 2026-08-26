@@ -1,5 +1,6 @@
 //! Lowers structured Argent entry bodies into generated Sil source.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
@@ -40,6 +41,7 @@ mod tests;
 
 pub(in crate::compiler::codegen) struct LoweredEntryBody {
     pub(in crate::compiler::codegen) sil: String,
+    pub(in crate::compiler::codegen) digest_helpers: BTreeSet<SourceStateId>,
 }
 
 pub(in crate::compiler::codegen) fn lower_entry_body(
@@ -104,6 +106,9 @@ struct BodyLowerer<'a, 'm, 'p> {
     fixed_ref_replacements: Vec<(String, String)>,
     observed_output_fields: Vec<ObservedOutputFieldWitnessSpec>,
     validated_spawns: BTreeSet<String>,
+    // Expression lowering records contract-level helpers without making the
+    // otherwise read-only lowering API mutable.
+    digest_helpers: RefCell<BTreeSet<SourceStateId>>,
     conditional_depth: usize,
     current_statement: Option<Span>,
 }
@@ -377,7 +382,10 @@ fn planned_state_value_for_expr(
     bindings: &BodyBindings,
 ) -> Option<PlannedStateValue> {
     match &expr.kind {
-        SilExprKind::Identifier(name) => bindings.state_value(name).cloned(),
+        SilExprKind::Identifier(name) => match bindings.get(name) {
+            Some(binding) => binding.value.state_value.clone(),
+            None => state_values.constant(name).cloned(),
+        },
         SilExprKind::Call { name, .. } => state_values.signature(name)?.result().cloned(),
         SilExprKind::Array { type_ref, values } => state_values.plan_ast_type_ref(type_ref, Some(values.len())),
         SilExprKind::Append { source, args, .. } => planned_state_value_for_expr(source, state_values, bindings)?.appended(args.len()),
@@ -631,6 +639,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             fixed_ref_replacements,
             observed_output_fields,
             validated_spawns: BTreeSet::new(),
+            digest_helpers: RefCell::new(BTreeSet::new()),
             conditional_depth: 0,
             current_statement: None,
         })
@@ -651,7 +660,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             }
         }
         self.validate_output_value_refs()?;
-        Ok(LoweredEntryBody { sil: out })
+        Ok(LoweredEntryBody { sil: out, digest_helpers: self.digest_helpers.into_inner() })
     }
 
     fn validate_output_value_refs(&self) -> Result<()> {
@@ -1291,8 +1300,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         if let SilExprKind::Identifier(name) = &parsed.kind {
             if is_matching_input_state
                 || self
-                    .bindings
-                    .state_value(name)
+                    .planned_state_value_for_expr(&parsed)
                     .is_some_and(|value| value.source().as_str() == source_state && value.shape().is_scalar())
             {
                 return Ok(authored.rebound(name.as_str()));
@@ -1419,7 +1427,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             return self.lower_authored_state_array_expr(expr, expected, indent);
         }
         if let Some(value) = parse_digest_call(expr).map_err(|err| self.error(err))? {
-            return self.lower_digest_expr(value);
+            return self.lower_digest_expr(value, indent);
         }
         if let Some(reference) = self.input_reference_from_state_call(expr)? {
             let authored = reference.complete_authored_state(indent).map_err(|err| self.error(err.to_string()))?;
@@ -1626,7 +1634,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         self.lower_authored_state_object(state_name, sil_type, body, indent)
     }
 
-    fn lower_digest_expr(&self, value: &str) -> Result<String> {
+    fn lower_digest_expr(&self, value: &str, indent: usize) -> Result<String> {
         let value = value.trim();
         let lowering = self.model.state_lowering(&self.actor.name)?;
         if let Some(reference) = self.input_reference_from_state_call(value)? {
@@ -1642,11 +1650,29 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                 reference.reference()
             )));
         }
-        let state_name = self.bindings.source_type(value).ok_or_else(|| {
-            ArgentError::new(format!("`{}(...)` requires a named state value, but `{value}` has no known source type", word::DIGEST))
+        let parsed = parse_expression_ast(value)
+            .map_err(|err| self.error(format!("cannot classify authored state digest value `{value}`: {err}")))?;
+        let planned = self.planned_state_value_for_expr(&parsed).ok_or_else(|| {
+            self.error(format!(
+                "`{}(...)` requires a proven authored state value, but `{value}` has no known source type",
+                word::DIGEST
+            ))
         })?;
-        self.model.state(state_name)?;
-        authored_state_payload_digest_expr(&SourceStateId::new(state_name), value, lowering, self.model)
+        if !planned.shape().is_scalar() {
+            return Err(self.error(format!(
+                "`{}(...)` requires one scalar authored state value, but `{value}` has type `{}`",
+                word::DIGEST,
+                self.state_values.sil_type(&planned)
+            )));
+        }
+        self.model.state(planned.source().as_str())?;
+        let expected = self.state_values.sil_type(&planned);
+        let lowered = self.lower_expr(value, Some(&expected), indent)?;
+        if matches!(parsed.kind, SilExprKind::Identifier(_)) {
+            return authored_state_payload_digest_expr(planned.source(), &lowered, lowering, self.model);
+        }
+        self.digest_helpers.borrow_mut().insert(planned.source().clone());
+        Ok(format!("{}({lowered})", self.state_values.digest_helper_name(planned.source())))
     }
 
     fn lower_typed_local_initializer(&self, source_ty: &str, lowered_ty: &str, expr: &str, indent: usize) -> Result<String> {
@@ -1800,7 +1826,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
 
     fn lower_refs(&self, expr: &str, indent: usize) -> Result<String> {
         self.reject_legacy_input_state_members(expr)?;
-        let expr = self.lower_digest_calls(expr)?;
+        let expr = self.lower_digest_calls(expr, indent)?;
         let expr = self.lower_input_state_calls(&expr, indent)?;
         let mut replacements = self.fixed_ref_replacements.clone();
         replacements.extend(self.active_reference.operation_replacements(indent)?);
@@ -1823,7 +1849,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         Ok(())
     }
 
-    fn lower_digest_calls(&self, expr: &str) -> Result<String> {
+    fn lower_digest_calls(&self, expr: &str, indent: usize) -> Result<String> {
         if !contains_call_named(expr, word::DIGEST)? {
             return Ok(expr.to_string());
         }
@@ -1833,7 +1859,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             let value = parse_digest_call(call)
                 .map_err(|err| self.error(err))?
                 .ok_or_else(|| self.error(format!("cannot classify `{}` call `{call}`", word::DIGEST)))?;
-            lowered.replace_range(site, &self.lower_digest_expr(value)?);
+            lowered.replace_range(site, &self.lower_digest_expr(value, indent)?);
         }
         Ok(lowered)
     }

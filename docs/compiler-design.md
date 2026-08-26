@@ -200,9 +200,15 @@ then packs the storage fields in their declared ABI order and hashes the packed
 bytes.
 
 Expansion-backed fields contribute their validated storage digests. Generated
-route fields do not contribute. The current entry-body surface accepts
-`state(ref)` and named authored bindings. Bind another typed authored
-expression to a local before passing it to `digest(...)`.
+route fields do not contribute. The entry-body surface accepts `state(ref)`,
+typed authored bindings and constants, and direct global or actor function
+calls with a planned scalar authored-state result. A generated typed helper
+evaluates a non-identifier value once before it projects and packs its fields.
+
+This is not general expression inference. A constructor is proven at a typed
+route, call, local, or array boundary. A linked constructor used only inside an
+otherwise untyped expression is deferred until expression-derived uses can
+participate in contract declaration planning.
 
 ### Successor materialization
 
