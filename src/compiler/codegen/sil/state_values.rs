@@ -155,6 +155,9 @@ impl ContractStateValuePlan {
             required_source_declarations.extend(signature.params.iter().flatten().map(|value| value.source().clone()));
             required_source_declarations.extend(signature.result.iter().map(|value| value.source().clone()));
         }
+        // TODO: Include state types used only by declarations and constructors
+        // inside global and actor function bodies. Collect them through the Sil
+        // AST so linked source-state declarations are emitted when required.
         for entry in &actor.entries {
             for param in &entry.params {
                 collect_type_ref_source(&param.ty, &authored_sil_types, &mut required_source_declarations);

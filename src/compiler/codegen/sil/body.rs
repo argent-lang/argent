@@ -2114,6 +2114,9 @@ fn contains_call_named(expr: &str, name: &str) -> Result<bool> {
 }
 
 fn parse_state_fields(body: &str) -> Result<Vec<(String, String)>> {
+    // TODO: Replace the character-based field splitters with Sil's structured
+    // struct-literal AST. The current code rejects comments before fields and
+    // silently ignores malformed empty comma components.
     let mut fields = Vec::new();
     for component in split_top_level_commas(body) {
         let component = component.trim();

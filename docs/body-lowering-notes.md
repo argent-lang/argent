@@ -3,6 +3,8 @@
 Small implementation hints to revisit during the current compiler work.
 
 - Give helper `fn` bodies token lowering for `cov_id` locals and `.co_spent()`, using parameter, field, and local types.
+- Include state types used only inside global or actor function bodies when the compiler selects required source-state declarations. This must include linked state types.
+- Parse state constructor fields through the Sil AST. Accept comments in valid constructors and reject empty or repeated comma components; generated comments do not need to be preserved.
 - Define actor-function `self` semantics. Actor functions currently access contract fields by bare Sil names and do not receive entry `self.*` lowering; if that syntax is added, reserve `self` as a function binding at the same time.
 - Accept Sil ternaries, bitwise XOR, and single-quoted strings in the shared lexer.
 - Attach body-local selector metadata to parsed binding identities instead of keeping the analyzed selector catalog entry-wide and keyed by name.

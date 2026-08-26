@@ -4,6 +4,9 @@
 //! For those nodes, `EquivalentStateLowerer` uses the grammar guarantee that
 //! the name starts the node span. Checked edits, reparsing, and the final audit
 //! make this workaround fail closed if that guarantee changes.
+//!
+//! TODO: Remove the positional span assumptions when the Sil AST exposes the
+//! exact type-name span for every classified type site.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
