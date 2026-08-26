@@ -43,7 +43,7 @@ actor KCC20 owns KCC20State {
 actor MinterProxy owns MinterProxyState {
     entry mint(
         MinterProxyState next_proxy,
-        KCC20State recipient
+        KCC20State recipient_state
     ) emits {
         proxy: MinterProxy,
         recipient: KCC20,
@@ -55,7 +55,7 @@ actor MinterProxy owns MinterProxyState {
         unrestricted(recipient.value);
         become {
             proxy <- MinterProxy(next_proxy),
-            recipient <- KCC20(recipient),
+            recipient <- KCC20(recipient_state),
         };
     }
 }

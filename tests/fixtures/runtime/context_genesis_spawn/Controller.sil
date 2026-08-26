@@ -51,15 +51,15 @@ contract Controller(
         byte[32] pair_id = blake2bWithKey(gen__new_pair_genesis_preimage, byte[]("CovenantID"));
         require(OpOutputCovenantId(gen__new_pair_left_output_idx) == pair_id);
 
-        PairState left = PairState {
+        PairState left_state = PairState {
             // :: user declared fields
             amount: left_amount,
         };
-        PairState right = PairState {
+        PairState right_state = PairState {
             // :: user declared fields
             amount: right_amount,
         };
-        State next = State {
+        State next_state = State {
             // :: user declared fields
             pair_type: pair_type,
             launches: launches + 1,
@@ -67,7 +67,7 @@ contract Controller(
         // :: spawned become new_pair.left -> self.pair_type
         validateOutputStateWithTemplate(
             gen__new_pair_left_output_idx,
-            left,
+            left_state,
             gen__actor_type_self_pair_type_prefix,
             gen__actor_type_self_pair_type_suffix,
             pair_type
@@ -75,13 +75,13 @@ contract Controller(
         // :: spawned become new_pair.right -> self.pair_type
         validateOutputStateWithTemplate(
             gen__new_pair_right_output_idx,
-            right,
+            right_state,
             gen__actor_type_self_pair_type_prefix,
             gen__actor_type_self_pair_type_suffix,
             pair_type
         );
         // :: become Controller
-        validateOutputState(gen__next_output_idx, next);
+        validateOutputState(gen__next_output_idx, next_state);
     }
 
 }

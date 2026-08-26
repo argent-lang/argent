@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "6ff99612fa54dea317bd9fc08ff568d0acd0331db7beba77eadbc24ca7f4c334",
+  "id": "238a34ce2d442c5a9ad0d55322eec28bbfc53a3c0c4aa6bd66bc0370ccb6392b",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -477,7 +477,7 @@
               },
               "consumes": [
                 {
-                  "name": "target_cell",
+                  "name": "target_input",
                   "actor": "Cell",
                   "cov_index": 1
                 }
@@ -633,7 +633,7 @@
             ],
             "consumes": [
               {
-                "name": "target_cell",
+                "name": "target_input",
                 "actor": "Cell"
               }
             ],

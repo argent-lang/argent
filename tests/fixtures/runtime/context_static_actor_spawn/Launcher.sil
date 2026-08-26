@@ -73,7 +73,7 @@ contract Launcher(
             // :: user declared fields
             amount: gen__source_state.amount + amount,
         };
-        LauncherState next = LauncherState {
+        LauncherState next_state = LauncherState {
             // :: user declared fields
             launches: launches + 1,
         };
@@ -98,7 +98,7 @@ contract Launcher(
             gen__child_template: gen__child_template,
             gen__launcher_template: gen__launcher_template,
             // :: user declared fields
-            launches: next.launches,
+            launches: next_state.launches,
         };
         // :: become Launcher
         validateOutputState(gen__next_output_idx, gen__state_next_state);

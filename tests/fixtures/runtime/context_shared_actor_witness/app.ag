@@ -33,7 +33,7 @@ actor Controller owns ControllerState {
         PairState spawned = {
             amount: spawned_amount,
         };
-        ControllerState next = {
+        ControllerState next_state = {
             pair_type: pair_type,
             launches: launches + 1,
         };
@@ -46,17 +46,17 @@ actor Controller owns ControllerState {
             pair <- self.pair_type(spawned),
         };
         unrestricted(next.value);
-        become next <- Controller(next);
+        become next <- Controller(next_state);
     }
 }
 
 actor Anchor owns AnchorState {
     entry advance() emits next: Pair {
-        PairState next = {
+        PairState next_state = {
             amount: amount + 1,
         };
         unrestricted(next.value);
-        become next <- Pair(next);
+        become next <- Pair(next_state);
     }
 }
 

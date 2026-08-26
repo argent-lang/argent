@@ -126,9 +126,9 @@ contract Cell(
         byte[32] gen__cov_id = OpInputCovenantId(this.activeInputIndex);
         require(OpCovInputCount(gen__cov_id) == 2);
         require(OpCovInputIdx(gen__cov_id, 0) == this.activeInputIndex);
-        int gen__target_cell_input_idx = OpCovInputIdx(gen__cov_id, 1); // input Cell at cov[1]
+        int gen__target_input_input_idx = OpCovInputIdx(gen__cov_id, 1); // input Cell at cov[1]
         // :: direct input state (single-actor covenant has one template)
-        State gen__target_cell_state = readInputState(gen__target_cell_input_idx);
+        State gen__target_input_state = readInputState(gen__target_input_input_idx);
 
         // :: observed covenants
         byte[32] gen__remote_cov_id = occupant_agent_covid; // observe remote
@@ -160,12 +160,12 @@ contract Cell(
         require(prev_state.y == y);
         require(prev_state.energy > 0);
         require(prev_state.capabilities_digest == occupant_caps_digest);
-        require(gen__target_cell_state.world_id == world_id);
-        require(gen__target_cell_state.x == x + dx);
-        require(gen__target_cell_state.y == y + dy);
-        require(gen__target_cell_state.occupant_agent_covid == empty_agent_covid);
-        require(gen__target_cell_state.occupant_agent_type == empty_agent_type);
-        require(gen__target_cell_state.occupant_caps_digest == empty_caps_digest);
+        require(gen__target_input_state.world_id == world_id);
+        require(gen__target_input_state.x == x + dx);
+        require(gen__target_input_state.y == y + dy);
+        require(gen__target_input_state.occupant_agent_covid == empty_agent_covid);
+        require(gen__target_input_state.occupant_agent_type == empty_agent_type);
+        require(gen__target_input_state.occupant_caps_digest == empty_caps_digest);
         AgentCapsule next_agent = AgentCapsule {
             // :: user declared fields
             world_id: prev_state.world_id,
@@ -174,8 +174,8 @@ contract Cell(
             controller_id: prev_state.controller_id,
             capabilities_digest: prev_state.capabilities_digest,
             strategy: gen__remote_agent_next_strategy,
-            x: gen__target_cell_state.x,
-            y: gen__target_cell_state.y,
+            x: gen__target_input_state.x,
+            y: gen__target_input_state.y,
             energy: prev_state.energy - 1,
             generation: prev_state.generation,
         };
@@ -191,10 +191,10 @@ contract Cell(
         };
         State next_target = State {
             // :: user declared fields
-            world_id: gen__target_cell_state.world_id,
-            x: gen__target_cell_state.x,
-            y: gen__target_cell_state.y,
-            food: gen__target_cell_state.food,
+            world_id: gen__target_input_state.world_id,
+            x: gen__target_input_state.x,
+            y: gen__target_input_state.y,
+            food: gen__target_input_state.food,
             occupant_agent_covid: occupant_agent_covid,
             occupant_agent_type: occupant_agent_type,
             occupant_caps_digest: occupant_caps_digest,

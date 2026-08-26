@@ -92,6 +92,69 @@ entry transfer(pubkey pk, int amount)
 
 Type-first declarations preserve a direct high-level-to-Sil surface.
 
+### Global and actor functions
+
+A top-level `fn` declares a global function. A `fn` inside an `actor` declares
+an actor function owned by that actor. Parameters use type-first declarations;
+`-> Type` is omitted when the function returns no value.
+
+```rust
+const int BIAS = 1;
+
+fn add_bias(int value) -> int {
+    return value + BIAS;
+}
+
+state CounterState {
+    int count;
+}
+
+actor Counter owns CounterState {
+    fn current() -> int {
+        return count;
+    }
+
+    fn adjusted(int delta) -> int {
+        return add_bias(current() + delta);
+    }
+
+    entry inspect() emits none {
+        require(adjusted(1) == count + BIAS + 1);
+    }
+}
+```
+
+Global functions are emitted into every selected actor contract. Their
+parameters and locals occupy an isolated namespace: a bare name in a global
+function cannot capture an actor constructor or state field. Global functions
+may use shared constants, other global functions, their own parameters and
+locals, and explicit Sil runtime context such as `tx` and `this`.
+
+Actor functions are emitted only into their owning actor contract. They may
+read that actor's available state fields by bare name, as `current()` does
+above, and may call global functions or other functions on the same actor.
+They are not methods: there is no cross-actor `actor.function()` call surface.
+
+| Caller | Global function | Same-actor function | Other actor's function |
+| --- | --- | --- | --- |
+| Global function | Allowed | Not visible | Not visible |
+| Actor function | Allowed | Allowed | Not visible |
+| Entry | Allowed | Allowed | Not visible |
+
+`self`, entry input references, output handles, and `state(ref)` reconstruction
+belong to entry lowering and are not available inside either kind of function.
+Functions instead receive authored values explicitly through their parameters.
+State-valued parameters and results keep their authored Argent types in source;
+the compiler lowers their representation separately for each generated actor
+contract.
+
+Global function names and actor function names share each generated contract's
+callable namespace, so an actor function cannot reuse a global function name.
+The same actor-function name may be used by different actors because each is
+emitted only into its owning contract. Compiler operations such as `state`,
+`digest`, and `unrestricted` are reserved and cannot be redeclared as
+functions.
+
 ### Value bindings
 
 A state value expression binds each field name to a value expression. A colon
@@ -155,6 +218,71 @@ A singleton route can omit the braces:
 become next <- Player(next_player);
 ```
 
+### Entry binding namespaces
+
+Entry syntax distinguishes bare value bindings from role leaves that remain
+scoped by an observe or spawn root. This prevents one spelling from appearing
+to mean two different values in a route without needlessly reserving qualified
+names.
+
+| Identifier class | Examples | Rule |
+| --- | --- | --- |
+| Bare entry bindings | `self`, consume `peer`, emit `next`, observe root `asset`, spawn root `children` | Unique within the entry. They cannot collide with parameters, body bindings, or output labels. |
+| Generated bare bindings | Spawn covenant `pair_id`; open-actor alias `observed_agent` | Follow the same rule because the entry body can reference them directly. |
+| Entry parameters | `amount`, `recipient` | Cannot collide with bare entry bindings, output labels, other parameters, or body bindings. |
+| Observed input leaves | `asset.inputs.src` | Remain root-qualified. They may repeat under different observe roots or match a bare binding, output leaf, local, or parameter. Existing uniqueness within one input block still applies. |
+| Observed and spawned output labels | `asset.outputs.dst`, `children.outputs.left` | Scoped to their output group, so they may repeat across groups and may match input leaves. They cannot match a bare value binding, parameter, or body binding because they appear standalone on the left of `<-`. |
+| Body bindings | Locals, loop variables, tuple or result bindings, and destructuring bindings, including nested declarations | Cannot collide with bare entry bindings, parameters, or output labels. Ordinary local-to-local lexical rules are unchanged. |
+| Actor state fields | `count`, `owner` | Retain their existing behavior; this entry-namespace rule does not add a new restriction. |
+| Observe covenant expressions | `observes asset by self.asset_id` | Introduce no binding. Only the observe root `asset` is reserved. |
+
+An emit handle and a successor-state local must have distinct names. Otherwise
+the two occurrences of `next` appear to denote the same thing even though one
+is an output role and the other is an authored value:
+
+```rust
+// Rejected.
+TurnState next = state(self);
+become next <- Pong(next);
+```
+
+Observed input leaves do not have this problem because they remain qualified.
+A local `src` does not shadow `asset.inputs.src`:
+
+```rust
+// Allowed.
+int src = 1;
+require(asset.inputs.src.amount >= src);
+```
+
+Input and output leaves may share a name, and output labels may repeat under
+different roots:
+
+```rust
+observes asset by self.asset_id {
+    inputs  { agent: Agent }
+    outputs { agent: Agent }
+}
+
+require first.outputs become {
+    left <- Pair(first_left),
+};
+require second.outputs become {
+    left <- Pair(second_left),
+};
+```
+
+Output labels are nevertheless reserved against value bindings because the
+label is written standalone inside its route block:
+
+```rust
+// Rejected: the two uses of `dst` have unrelated roles.
+TargetState dst = state(self);
+require asset.outputs become {
+    dst <- Target(dst),
+};
+```
+
 ### Consistency rule
 
 Declarations put the type before the declared name. Value, role, and route
@@ -188,7 +316,8 @@ self.value  // Native KAS value of the UTXO consumed by the active input.
             // Type: int.
 self.cov_id // Covenant ID carried by the active input. Type: cov_id.
             // Lowers to OpInputCovenantId(this.activeInputIndex).
-self.state  // Reserved and invalid. Construct authored state from its fields.
+self.state  // Reserved and invalid. Use state(self) to reconstruct the
+            // user-level state from its fields.
 self.type   // Reserved.
 self.ref    // Reserved.
 ```

@@ -18,13 +18,13 @@ actor Counter owns CounterState {
     emits next: Counter {
         CounterState copied = actor_identity(global_identity(state(other)));
         copied = global_identity(state(other));
-        CounterState next = {
+        CounterState next_state = {
             count: count + copied.count,
         };
 
         require(other.count >= 0);
         unrestricted(next.value);
-        become next <- Counter(next);
+        become next <- Counter(next_state);
     }
 
     entry hold() emits none {

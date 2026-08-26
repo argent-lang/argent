@@ -31,11 +31,11 @@ actor Foreign owns ForeignState {
     }
 
     entry route() emits next: Target {
-        TargetState next = {
+        TargetState next_state = {
             units: route_units(),
         };
         unrestricted(next.value);
-        become next <- Target(next);
+        become next <- Target(next_state);
     }
 }
 
@@ -73,13 +73,13 @@ actor Local owns LocalState {
         }
 
         outputs {
-            next: Foreign,
+            remote_next: Foreign,
         }
     }
     emits next: Local {
         ForeignState next_foreign = foreign_identity(state(remote.inputs.src));
         require remote.outputs become {
-            next <- Foreign(next_foreign),
+            remote_next <- Foreign(next_foreign),
         };
 
         unrestricted(next.value);

@@ -80,8 +80,8 @@ contract Local(
             gen__foreign_suffix_len,
             gen__foreign_template
         );
-        // :: observed output remote.next: Foreign
-        int gen__remote_next_output_idx = OpCovOutputIdx(gen__remote_cov_id, 0);
+        // :: observed output remote.remote_next: Foreign
+        int gen__remote_remote_next_output_idx = OpCovOutputIdx(gen__remote_cov_id, 0);
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
@@ -91,16 +91,16 @@ contract Local(
             // :: user declared fields
             amount: gen__remote_src_state.amount,
         });
-        Gen__ForeignState gen__state_next_gen__foreign_state = Gen__ForeignState {
+        Gen__ForeignState gen__state_remote_next_gen__foreign_state = Gen__ForeignState {
             // :: generated fields
             gen__target_template: gen__target_template,
             // :: user declared fields
             amount: next_foreign.amount,
         };
-        // :: observed become remote.next -> Foreign
+        // :: observed become remote.remote_next -> Foreign
         validateOutputStateWithInputTemplate(
-            gen__remote_next_output_idx,
-            gen__state_next_gen__foreign_state,
+            gen__remote_remote_next_output_idx,
+            gen__state_remote_next_gen__foreign_state,
             gen__remote_src_input_idx,
             gen__foreign_prefix_len,
             gen__foreign_suffix_len,

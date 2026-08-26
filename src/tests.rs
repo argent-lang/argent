@@ -8,11 +8,11 @@ state CounterState {
 actor Counter owns CounterState {
     entry bump(int delta) emits next: Counter {
         unrestricted(next.value);
-        CounterState next = {
+        CounterState next_state = {
             count: count + delta,
         };
 
-        become next <- Counter(next);
+        become next <- Counter(next_state);
     }
 }
 
@@ -34,10 +34,10 @@ actor Issuer owns IssuerState {
         byte[32] uid = invocation_uid(domain);
         require(uid == invocation_uid(domain));
 
-        IssuerState next = {
+        IssuerState next_state = {
             last_uid: uid,
         };
-        become next <- Issuer(next);
+        become next <- Issuer(next_state);
     }
 }
 
@@ -54,10 +54,10 @@ state LeftState {
 actor Left owns LeftState {
     entry bump() emits next: Left {
         unrestricted(next.value);
-        LeftState next = {
+        LeftState next_state = {
             amount: amount + 1,
         };
-        become next <- Left(next);
+        become next <- Left(next_state);
     }
 }
 
@@ -68,20 +68,20 @@ state RightState {
 actor Right owns RightState {
     entry bump() emits next: Right {
         unrestricted(next.value);
-        RightState next = {
+        RightState next_state = {
             amount: amount + 1,
         };
-        become next <- Right(next);
+        become next <- Right(next_state);
     }
 }
 
 actor RightAlt owns RightState {
     entry bump() emits next: RightAlt {
         unrestricted(next.value);
-        RightState next = {
+        RightState next_state = {
             amount: amount + 1,
         };
-        become next <- RightAlt(next);
+        become next <- RightAlt(next_state);
     }
 }
 
@@ -260,10 +260,10 @@ actor Shared owns SharedState {
     }
     emits next: Shared {
         unrestricted(next.value);
-        SharedState next = {
+        SharedState next_state = {
             count: count + other.count,
         };
-        become next <- Shared(next);
+        become next <- Shared(next_state);
     }
 }
 
@@ -401,10 +401,10 @@ state LeafState {
 actor Leaf owns LeafState {
     entry update() emits next: Leaf {
         unrestricted(next.value);
-        LeafState next = {
+        LeafState next_state = {
             n: n + 1,
         };
-        become next <- Leaf(next);
+        become next <- Leaf(next_state);
     }
 }
 
@@ -430,19 +430,19 @@ actor Middle owns MiddleState {
             src: Leaf,
         }
         outputs {
-            next: Leaf,
+            leaf_output: Leaf,
         }
     }
     emits next: Middle {
         unrestricted(next.value);
         LeafState next_leaf = state(leaf.inputs.src);
         require leaf.outputs become {
-            next <- Leaf(next_leaf),
+            leaf_output <- Leaf(next_leaf),
         };
-        MiddleState next = {
+        MiddleState next_state = {
             n: n + 1,
         };
-        become next <- Middle(next);
+        become next <- Middle(next_state);
     }
 }
 
@@ -468,19 +468,19 @@ actor Root owns RootState {
             src: Middle,
         }
         outputs {
-            next: Middle,
+            middle_output: Middle,
         }
     }
     emits next: Root {
         unrestricted(next.value);
         MiddleState next_middle = state(middle.inputs.src);
         require middle.outputs become {
-            next <- Middle(next_middle),
+            middle_output <- Middle(next_middle),
         };
-        RootState next = {
+        RootState next_state = {
             n: n + 1,
         };
-        become next <- Root(next);
+        become next <- Root(next_state);
     }
 }
 
@@ -720,7 +720,7 @@ actor Controller owns ControllerState {
             src: AssetApp::Asset,
         }
         outputs {
-            next: AssetApp::Asset,
+            asset_next: AssetApp::Asset,
         }
     }
     emits next: Controller {
@@ -728,7 +728,7 @@ actor Controller owns ControllerState {
         AssetState current = state(asset.inputs.src);
         require(current.tag == ASSET_TAG);
         require asset.outputs become {
-            next <- AssetApp::Asset(current),
+            asset_next <- AssetApp::Asset(current),
         };
         become next <- self;
     }

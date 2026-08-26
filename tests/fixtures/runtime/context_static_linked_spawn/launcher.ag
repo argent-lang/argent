@@ -25,7 +25,7 @@ actor Launcher owns LauncherState {
         ChildState child_state = {
             amount: source_state.amount + amount,
         };
-        LauncherState next = {
+        LauncherState next_state = {
             launches: launches + 1,
         };
 
@@ -34,7 +34,7 @@ actor Launcher owns LauncherState {
             child <- ChildApp::Child(child_state),
         };
         unrestricted(next.value);
-        become next <- Launcher(next);
+        become next <- Launcher(next_state);
     }
 }
 

@@ -1,6 +1,6 @@
 //! Lowers structured Argent entry bodies into generated Sil source.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use crate::compiler::model::{
@@ -32,6 +32,9 @@ use super::state_boundary::{
 use super::state_types::{lower_expression_state_types, lower_statement_state_types};
 use super::state_values::{ContractStateValuePlan, PlannedStateValue};
 use super::token_refs::{RefReplacements, count_qualified_ref};
+
+#[cfg(test)]
+mod tests;
 
 pub(in crate::compiler::codegen) struct LoweredEntryBody {
     pub(in crate::compiler::codegen) sil: String,
@@ -92,6 +95,7 @@ struct BodyLowerer<'a, 'm, 'p> {
     active_reference: PlannedEntryInputReference,
     state_values: &'p ContractStateValuePlan,
     bindings: BodyBindings,
+    reserved_entry_names: ReservedEntryNames,
     /// Entry-wide candidates; the current binding decides selector visibility.
     selector_catalog: BTreeMap<String, TemplateSelector>,
     output_values: Vec<OutputValueRef>,
@@ -347,6 +351,126 @@ struct OutputValueRef {
     lowered: String,
 }
 
+#[derive(Debug)]
+enum ReservedEntryNameRole {
+    CurrentActor,
+    ConsumeHandle,
+    EmitHandle,
+    ObserveRoot,
+    ObservedOutputLabel { observe: String },
+    SpawnRoot,
+    SpawnedOutputLabel { spawn: String },
+    CovenantBinding { spawn: String },
+    OpenActorBinding { observe: String },
+    EntryParameter,
+}
+
+impl ReservedEntryNameRole {
+    fn description(&self) -> String {
+        match self {
+            Self::CurrentActor => "current actor context".to_string(),
+            Self::ConsumeHandle => "consume handle".to_string(),
+            Self::EmitHandle => "emit handle".to_string(),
+            Self::ObserveRoot => "observe root".to_string(),
+            Self::ObservedOutputLabel { observe } => format!("observe `{observe}` output label"),
+            Self::SpawnRoot => "spawn root".to_string(),
+            Self::SpawnedOutputLabel { spawn } => format!("spawn `{spawn}` output label"),
+            Self::CovenantBinding { spawn } => format!("spawn `{spawn}` covenant binding"),
+            Self::OpenActorBinding { observe } => format!("observe `{observe}` open-actor binding"),
+            Self::EntryParameter => "entry parameter".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct ReservedEntryNames {
+    body_bindings: BTreeMap<String, ReservedEntryNameRole>,
+}
+
+impl ReservedEntryNames {
+    fn role_for_body_binding(&self, name: &str) -> Option<&ReservedEntryNameRole> {
+        self.body_bindings.get(name)
+    }
+
+    fn reserve_unique(&mut self, actor: &ActorDecl, entry: &EntryDecl, name: &str, role: ReservedEntryNameRole) -> Result<()> {
+        if let Some(previous) = self.body_bindings.get(name) {
+            return Err(entry_name_collision(actor, entry, name, &role, previous));
+        }
+        self.body_bindings.insert(name.to_string(), role);
+        Ok(())
+    }
+
+    fn reserve_output_label(&mut self, actor: &ActorDecl, entry: &EntryDecl, name: &str, role: ReservedEntryNameRole) -> Result<()> {
+        let Some(previous) = self.body_bindings.get(name) else {
+            self.body_bindings.insert(name.to_string(), role);
+            return Ok(());
+        };
+        if matches!(previous, ReservedEntryNameRole::ObservedOutputLabel { .. } | ReservedEntryNameRole::SpawnedOutputLabel { .. }) {
+            return Ok(());
+        }
+        Err(entry_name_collision(actor, entry, name, &role, previous))
+    }
+}
+
+fn reserved_entry_names(actor: &ActorDecl, entry: &EntryDecl) -> Result<ReservedEntryNames> {
+    let mut names = ReservedEntryNames::default();
+    names.reserve_unique(actor, entry, word::SELF, ReservedEntryNameRole::CurrentActor)?;
+    for consume in &entry.consumes {
+        names.reserve_unique(actor, entry, &consume.name, ReservedEntryNameRole::ConsumeHandle)?;
+    }
+    if let EmitSpec::Outputs(outputs) = &entry.emits {
+        for output in outputs {
+            names.reserve_unique(actor, entry, &output.name, ReservedEntryNameRole::EmitHandle)?;
+        }
+    }
+    for observe in &entry.observes {
+        names.reserve_unique(actor, entry, &observe.name, ReservedEntryNameRole::ObserveRoot)?;
+        for output in &observe.outputs {
+            names.reserve_output_label(
+                actor,
+                entry,
+                &output.name,
+                ReservedEntryNameRole::ObservedOutputLabel { observe: observe.name.clone() },
+            )?;
+        }
+        for binding in observed_open_bindings(observe).into_keys() {
+            names.reserve_unique(actor, entry, binding, ReservedEntryNameRole::OpenActorBinding { observe: observe.name.clone() })?;
+        }
+    }
+    for spawn in &entry.spawns {
+        names.reserve_unique(actor, entry, &spawn.name, ReservedEntryNameRole::SpawnRoot)?;
+        names.reserve_unique(actor, entry, &spawn.covenant, ReservedEntryNameRole::CovenantBinding { spawn: spawn.name.clone() })?;
+        for output in &spawn.outputs {
+            names.reserve_output_label(
+                actor,
+                entry,
+                &output.name,
+                ReservedEntryNameRole::SpawnedOutputLabel { spawn: spawn.name.clone() },
+            )?;
+        }
+    }
+    for param in &entry.params {
+        names.reserve_unique(actor, entry, &param.name, ReservedEntryNameRole::EntryParameter)?;
+    }
+    Ok(names)
+}
+
+fn entry_name_collision(
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    name: &str,
+    role: &ReservedEntryNameRole,
+    previous: &ReservedEntryNameRole,
+) -> ArgentError {
+    ArgentError::new(format!(
+        "entry `{}::{}` {} `{name}` collides with {} of the same name",
+        actor.name,
+        entry.name,
+        role.description(),
+        previous.description(),
+    ))
+}
+
 /// Builds non-input dotted-reference lowering for one entry body.
 fn entry_ref_replacements(output_values: &[OutputValueRef]) -> Vec<(String, String)> {
     output_values.iter().map(|output| (output.source.clone(), output.lowered.clone())).collect()
@@ -362,6 +486,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     ) -> Result<Self> {
         let selector_catalog = model.template_selectors_for_entry(actor, entry)?;
         let active_reference = input_references.active(actor, model)?;
+        let reserved_entry_names = reserved_entry_names(actor, entry)?;
         let mut bindings = BodyBindings::new();
         let expanded_digest_fields = state_expansion_digest_fields_for_state(&actor.state, model);
         for field in &model.storage_state(&actor.state)?.fields {
@@ -455,6 +580,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             active_reference,
             state_values,
             bindings,
+            reserved_entry_names,
             selector_catalog,
             output_values,
             fixed_ref_replacements,
@@ -503,11 +629,10 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     }
 
     fn lower_statements(&mut self, out: &mut String, indent: usize, statements: &[EntryStatement]) -> Result<()> {
-        let reserved_binding_keywords = HashSet::from([word::SELF]);
         for statement in statements {
             self.current_statement = Some(statement.span());
-            if let Some(keyword) = binds_keywords(statement, &reserved_binding_keywords) {
-                return Err(self.error(format!("entry binding `{keyword}` is reserved for the current actor context")));
+            if let Some((name, role)) = binds_reserved_entry_name(statement, &self.reserved_entry_names) {
+                return Err(self.error(format!("entry binding `{name}` collides with {} of the same name", role.description())));
             }
             match statement {
                 EntryStatement::If { condition, then_branch, else_branch, .. } => {
@@ -1673,7 +1798,10 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     }
 }
 
-fn binds_keywords<'a>(statement: &'a EntryStatement, keywords: &HashSet<&str>) -> Option<&'a str> {
+fn binds_reserved_entry_name<'s, 'r>(
+    statement: &'s EntryStatement,
+    reserved_names: &'r ReservedEntryNames,
+) -> Option<(&'s str, &'r ReservedEntryNameRole)> {
     let bindings = match statement {
         EntryStatement::Local { declaration, .. } => std::slice::from_ref(&declaration.binding),
         EntryStatement::For { binding, .. } => std::slice::from_ref(binding),
@@ -1683,7 +1811,7 @@ fn binds_keywords<'a>(statement: &'a EntryStatement, keywords: &HashSet<&str>) -
         | EntryStatement::Become { .. }
         | EntryStatement::ValidateOutputsBecome { .. } => return None,
     };
-    bindings.iter().map(|binding| binding.name.as_str()).find(|name| keywords.contains(name))
+    bindings.iter().find_map(|binding| reserved_names.role_for_body_binding(&binding.name).map(|role| (binding.name.as_str(), role)))
 }
 
 fn contains_physical_state_constructor(source: &str) -> bool {

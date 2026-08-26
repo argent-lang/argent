@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "a898ecca0e223fe03fa663acf3236676726eda94fbc3fa6d9bc625774855854e",
+  "id": "d3d3550b978f13c49c47930d32540fed21cb4c4804f6d3c482a383ee69643178",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -377,7 +377,7 @@
                   "kind": "constructed",
                   "actor": "Controller",
                   "template_id": "template/controller",
-                  "state_expr": "next"
+                  "state_expr": "next_state"
                 }
               }
             ]

@@ -4,13 +4,13 @@ actor Asset owns AssetState {
     entry transfer(pubkey next_owner, sig owner_sig) emits next: Asset {
         require(checkSig(owner_sig, owner));
 
-        AssetState next = {
+        AssetState next_state = {
             owner: next_owner,
             amount: amount,
         };
 
         unrestricted(next.value);
-        become next <- Asset(next);
+        become next <- Asset(next_state);
     }
 }
 

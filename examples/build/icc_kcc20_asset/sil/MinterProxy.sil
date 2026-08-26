@@ -32,7 +32,7 @@ contract MinterProxy(
     // :: leader entry (1:N)
     entry mint(
         MinterProxyState next_proxy,
-        KCC20State recipient,
+        KCC20State recipient_state,
         byte[] gen__kcc20_prefix,
         byte[] gen__kcc20_suffix
     ) {
@@ -57,7 +57,7 @@ contract MinterProxy(
         // :: become KCC20
         validateOutputStateWithTemplate(
             gen__recipient_output_idx,
-            recipient,
+            recipient_state,
             gen__kcc20_prefix,
             gen__kcc20_suffix,
             gen__kcc20_template

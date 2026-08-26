@@ -604,10 +604,10 @@ actor Event owns EventState {
 actor Ticket owns TicketState {
     entry transfer(pubkey next_owner) emits next: Ticket {
         unrestricted(next.value);
-        TicketState next = {
+        TicketState next_state = {
             owner: next_owner,
         };
-        become next <- Ticket(next);
+        become next <- Ticket(next_state);
     }
 }
 

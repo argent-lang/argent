@@ -59,7 +59,7 @@ contract Child(
         // :: output next: Launcher
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
-        LauncherState next = LauncherState {
+        LauncherState next_state = LauncherState {
             // :: user declared fields
             launches: 0,
         };
@@ -68,7 +68,7 @@ contract Child(
             gen__child_template: gen__child_template,
             gen__launcher_template: gen__launcher_template,
             // :: user declared fields
-            launches: next.launches,
+            launches: next_state.launches,
         };
         // :: become Launcher
         validateOutputStateWithTemplate(

@@ -39,16 +39,17 @@ contract Controller(
 
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
-        int gen__peer_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output peer: Peer
+        // :: output next_peer: Peer
+        int gen__next_peer_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
-        PeerState next_peer = PeerState {
+        PeerState peer_state = PeerState {
             // :: user declared fields
             count: gen__peer_state.count + 1,
         };
         // :: become Peer
         validateOutputStateWithInputTemplate(
-            gen__peer_output_idx,
-            next_peer,
+            gen__next_peer_output_idx,
+            peer_state,
             gen__peer_input_idx,
             gen__peer_prefix_len,
             gen__peer_suffix_len,

@@ -372,7 +372,7 @@ fn selector_binding_does_not_escape_a_for_body() {
 }
 
 #[test]
-fn nested_actor_type_does_not_replace_a_same_named_integer_parameter() {
+fn nested_actor_type_cannot_shadow_a_same_named_integer_parameter() {
     let source = SCOPED_SELECTOR_SOURCE.replace("entry choose(bool choose)", "entry choose(int target, bool choose)").replace(
         "__SELECTOR_SCOPE__",
         r#"
@@ -384,7 +384,7 @@ fn nested_actor_type_does_not_replace_a_same_named_integer_parameter() {
     assert_selector_source_rejected(
         "selector-int-parameter-collision",
         &source,
-        "actor handle `target` is shadowed by a non-selector binding in this scope",
+        "entry binding `target` collides with entry parameter of the same name",
     );
 }
 
@@ -489,7 +489,7 @@ fn lexical_shadowing_is_rejected_by_sil() {
 
 fn assert_selector_shadow_rejected(name: &str, shadow: &str) {
     let source = SELECTOR_SHADOW_SOURCE.replace("__SHADOW__", shadow);
-    assert_selector_source_rejected(name, &source, "actor handle `target` is shadowed by a non-selector binding in this scope");
+    assert_selector_source_rejected(name, &source, "entry binding `target` collides with entry parameter of the same name");
 }
 
 fn assert_selector_scope_rejected(name: &str, selector_scope: &str) {

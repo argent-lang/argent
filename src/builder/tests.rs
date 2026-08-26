@@ -307,12 +307,12 @@ fn context_executes_dynamic_byte_array_sigscript_arguments_at_varying_lengths() 
             actor Blob owns BlobState {
                 entry store(byte[] data) emits next: Blob {
                     unrestricted(next.value);
-                    BlobState next = {
+                    BlobState next_state = {
                         size: data.length,
                         digest: blake2b(byte[](data)),
                     };
 
-                    become next <- Blob(next);
+                    become next <- Blob(next_state);
                 }
             }
 
@@ -806,10 +806,10 @@ fn context_executes_and_pins_invocation_uid() {
                     byte[32] uid = invocation_uid(domain);
                     require(uid == expected);
 
-                    IssuerState next = {
+                    IssuerState next_state = {
                         last_uid: uid,
                     };
-                    become next <- Issuer(next);
+                    become next <- Issuer(next_state);
                 }
             }
 
@@ -899,12 +899,12 @@ fn context_builds_and_verifies_signed_single_output() {
                     unrestricted(next.value);
                     require(checkSig(owner_sig, owner));
 
-                    CounterState next = {
+                    CounterState next_state = {
                         owner: owner,
                         count: count + delta,
                     };
 
-                    become next <- Counter(next);
+                    become next <- Counter(next_state);
                 }
             }
 
@@ -1611,7 +1611,7 @@ state LauncherState {
 
 actor Launcher owns LauncherState {
     entry launch(cov_id child_id)
-    observes child by child_id {
+    observes existing_child by child_id {
         inputs {
             before: ChildApp::Child,
         }
@@ -1626,12 +1626,12 @@ actor Launcher owns LauncherState {
     }
     emits next: Launcher {
         ChildState child_state = {
-            amount: child.inputs.before.amount + 1,
-            updated_at: child.inputs.before.updated_at + temporal(1),
+            amount: existing_child.inputs.before.amount + 1,
+            updated_at: existing_child.inputs.before.updated_at + temporal(1),
             detail: ChildDetail { count: 1 },
         };
 
-        require child.outputs become {
+        require existing_child.outputs become {
             after <- ChildApp::Child(child_state),
         };
         unrestricted(children.outputs.child.value);
@@ -2555,11 +2555,11 @@ fn gate_less_route_family_rejects_selector_for_appended_rep() {
             actor Mux owns BoardState {
                 entry choose(MoveActor target) emits next: MoveActor {
                     unrestricted(next.value);
-                    BoardState next = {
+                    BoardState next_state = {
                         ply: ply + 1,
                     };
 
-                    become next <- target(next);
+                    become next <- target(next_state);
                 }
             }
 

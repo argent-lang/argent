@@ -40,13 +40,13 @@ contract Counter(
 
         State copied = actor_identity(global_identity(gen__other_state));
         copied = global_identity(gen__other_state);
-        State next = State {
+        State next_state = State {
             // :: user declared fields
             count: count + copied.count,
         };
         require(gen__other_state.count >= 0);
         // :: become Counter
-        validateOutputState(gen__next_output_idx, next);
+        validateOutputState(gen__next_output_idx, next_state);
     }
 
     // :: leader entry (1:N)

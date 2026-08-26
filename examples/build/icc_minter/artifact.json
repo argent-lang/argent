@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "ac9b6522c4b8c7dd19be6d8d066c1ceea1d629b16da7219f059031861b1067b3",
+  "id": "b1aa5bae24e0c7c9f37001f8ecef146f89cb7a533808ce25ff080a560472df80",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -9,7 +9,7 @@
   "dependencies": [
     {
       "app": "KCC20Asset",
-      "artifact_id": "ca685b460a2c9cc2c99a064cb85d685cd798b052e8d8db53ef653897904c365e"
+      "artifact_id": "6a4872f41d23eb0e31a6a9ad84a525d74f26de2260037407273296f2621330bb"
     }
   ],
   "root": "examples/icc/minter.ag",

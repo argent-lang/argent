@@ -17,22 +17,22 @@ actor Controller owns ControllerState {
     }
     emits next: Controller {
         AssetState payment = state(flow.inputs.payment);
-        AssetState reserve = {
+        AssetState reserve_state = {
             owner: next_owner,
             amount: payment.amount,
         };
 
         require flow.outputs become {
-            reserve <- self.asset_type(reserve),
+            reserve <- self.asset_type(reserve_state),
         };
 
-        ControllerState next = {
+        ControllerState next_state = {
             asset_type: asset_type,
             swaps: swaps + 1,
         };
 
         unrestricted(next.value);
-        become next <- Controller(next);
+        become next <- Controller(next_state);
     }
 }
 

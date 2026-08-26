@@ -62,14 +62,14 @@ contract Foreign(
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0); // output next: Target
 
-        TargetState next = TargetState {
+        TargetState next_state = TargetState {
             // :: user declared fields
             units: route_units(),
         };
         // :: become Target
         validateOutputStateWithTemplate(
             gen__next_output_idx,
-            next,
+            next_state,
             gen__target_prefix,
             gen__target_suffix,
             gen__target_template
