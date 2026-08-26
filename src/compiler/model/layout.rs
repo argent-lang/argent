@@ -322,6 +322,10 @@ pub(crate) struct SourceRepresentationPlan {
 }
 
 impl SourceRepresentationPlan {
+    pub(crate) fn source_to_storage(&self) -> &SourceStorageRelation {
+        &self.source_to_storage
+    }
+
     pub(crate) fn sil_type(&self) -> &SilStateType {
         &self.sil_type
     }

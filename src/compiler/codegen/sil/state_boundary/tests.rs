@@ -231,8 +231,14 @@ fn augmented_output_materialization_injects_only_planned_generated_fields() {
     let model = Model::from_program(&program).expect("function context fixture plans");
     let (actor, _) = actor_entry(&model, "Routed", "advance");
     let target = plan_actor_output_state(actor, "Routed", &model).expect("self output plans");
-    let physical =
-        materialize_output_state(&target, target.authored_value("next_state"), &model, 8).expect("authored output materializes");
+    let physical = materialize_output_state(
+        &target,
+        target.authored_value("next_state"),
+        model.state_lowering("Routed").expect("Routed lowering exists"),
+        &model,
+        8,
+    )
+    .expect("authored output materializes");
     let mut sil = String::new();
     let argument = physical.into_argument(&mut sil, 8, "gen__next");
 
@@ -249,8 +255,14 @@ fn expanded_output_lowers_authored_values_to_digest_storage_before_physical_stat
     let model = Model::from_program(&program).expect("expanded state fixture plans");
     let (actor, _) = actor_entry(&model, "Forager", "hold");
     let target = plan_actor_output_state(actor, "Forager", &model).expect("expanded self output plans");
-    let physical =
-        materialize_output_state(&target, target.authored_value("next_state"), &model, 8).expect("expanded output materializes");
+    let physical = materialize_output_state(
+        &target,
+        target.authored_value("next_state"),
+        model.state_lowering("Forager").expect("Forager lowering exists"),
+        &model,
+        8,
+    )
+    .expect("expanded output materializes");
     let mut sil = String::new();
     physical.into_argument(&mut sil, 8, "gen__next");
 

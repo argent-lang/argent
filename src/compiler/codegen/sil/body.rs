@@ -5,8 +5,9 @@ use std::ops::Range;
 
 use crate::compiler::model::{
     ActorTarget, CovenantGroup, EntryInteraction, InteractionSource, Model, ResolvedRoute, ResolvedSuccessor, RouteFamily,
-    StaticActorTarget, TemplateSelector, actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding,
-    observed_open_bindings, observed_open_state_for_decl, parse_actor_enum_selector, parse_actor_enum_variant, spawn_target_state,
+    SourceStateId, StaticActorTarget, TemplateSelector, actor_enum_variant_const_expr, clause_actor_type_ref,
+    observed_is_dynamic_binding, observed_open_bindings, observed_open_state_for_decl, parse_actor_enum_selector,
+    parse_actor_enum_variant, spawn_target_state,
 };
 use crate::compiler::naming::to_snake;
 use crate::compiler::syntax::body::{
@@ -26,8 +27,9 @@ use silverscript_lang::ast::{
 use super::super::emitter::*;
 use super::state_boundary::{
     AuthoredStateExpr, EntryInputReferencePlan, EntryInputReferenceView, EntryInputScopeId, OutputStateTarget,
-    OutputValidationContext, PlannedEntryInputReference, materialize_output_state, plan_actor_output_state, plan_open_output_state,
-    plan_output_validation, plan_selector_output_state, plan_static_actor_output_state, preserve_exact_self,
+    OutputValidationContext, PlannedEntryInputReference, authored_state_payload_digest_expr, materialize_output_state,
+    plan_actor_output_state, plan_open_output_state, plan_output_validation, plan_selector_output_state,
+    plan_static_actor_output_state, preserve_exact_self,
 };
 use super::state_types::{lower_expression_state_types, lower_statement_state_types};
 use super::state_values::{ContractStateValuePlan, PlannedStateValue};
@@ -1093,7 +1095,8 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         };
         let state_ty = output_target.physical_type().to_string();
         let authored = self.require_route_authored_state(out, indent, &route, &output_target)?;
-        let physical = materialize_output_state(&output_target, authored, self.model, indent)?;
+        let physical =
+            materialize_output_state(&output_target, authored, self.model.state_lowering(&self.actor.name)?, self.model, indent)?;
 
         let observed_spec = match context {
             CovenantOutputContext::Existing { observe, output } => {
@@ -1270,7 +1273,8 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let output_target = plan_actor_output_state(self.actor, &route.actor, self.model)?;
         let state_ty = output_target.physical_type().to_string();
         let authored = self.require_route_authored_state(out, indent, &route, &output_target)?;
-        let physical = materialize_output_state(&output_target, authored, self.model, indent)?;
+        let physical =
+            materialize_output_state(&output_target, authored, self.model.state_lowering(&self.actor.name)?, self.model, indent)?;
         let validation = plan_output_validation(
             self.actor,
             self.entry,
@@ -1299,7 +1303,8 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let output_target = plan_selector_output_state(self.actor, &selector, self.model)?;
         let state_ty = output_target.physical_type().to_string();
         let authored = self.require_route_authored_state(out, indent, &route, &output_target)?;
-        let physical = materialize_output_state(&output_target, authored, self.model, indent)?;
+        let physical =
+            materialize_output_state(&output_target, authored, self.model.state_lowering(&self.actor.name)?, self.model, indent)?;
 
         let template = hidden_template_selector_template_name(&selector.name);
         let validation = plan_output_validation(
@@ -1550,8 +1555,9 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
 
     fn lower_digest_expr(&self, value: &str) -> Result<String> {
         let value = value.trim();
+        let lowering = self.model.state_lowering(&self.actor.name)?;
         if let Some(reference) = self.input_reference_from_state_call(value)? {
-            return reference.authored_payload_digest(self.model).map_err(|err| self.error(err.to_string()));
+            return reference.authored_payload_digest(lowering, self.model).map_err(|err| self.error(err.to_string()));
         }
         if let Some(reference) = self.input_reference_for_expr(value) {
             return Err(self.error(format!(
@@ -1567,7 +1573,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             ArgentError::new(format!("`{}(...)` requires a named state value, but `{value}` has no known source type", word::DIGEST))
         })?;
         self.model.state(state_name)?;
-        state_payload_digest_expr(state_name, value, self.model)
+        authored_state_payload_digest_expr(&SourceStateId::new(state_name), value, lowering, self.model)
     }
 
     fn lower_typed_local_initializer(&self, source_ty: &str, lowered_ty: &str, expr: &str, indent: usize) -> Result<String> {

@@ -2223,6 +2223,48 @@ fn empty_input_state_digest_uses_explicit_empty_bytes() {
 }
 
 #[test]
+fn expanded_input_and_named_state_digests_use_the_same_storage_payload() {
+    let (actors, _) = inline_actor_sil_and_artifact(
+        "expanded-input-named-state-digest",
+        r#"
+            state Capsule {
+                int nonce;
+                virtual detail;
+            }
+
+            state Details {
+                int count;
+            }
+
+            state Expanded expands Capsule {
+                detail: Details;
+            }
+
+            actor Vault owns Expanded {
+                entry verify() emits none {
+                    Expanded snapshot = state(self);
+                    byte[32] direct = digest(state(self));
+                    byte[32] local = digest(snapshot);
+                    require(direct == local);
+                }
+            }
+
+            app Test { actor Vault; }
+        "#,
+    );
+    let sil = &actors["Vault"];
+    let initializer = |binding: &str| {
+        sil.lines()
+            .find_map(|line| line.trim().strip_prefix(&format!("byte[32] {binding} = ")).and_then(|value| value.strip_suffix(';')))
+            .unwrap_or_else(|| panic!("missing `{binding}` initializer in:\n{sil}"))
+    };
+
+    let direct_from_snapshot =
+        initializer("direct").replace("gen__detail_count", "snapshot.detail.count").replace("nonce", "snapshot.nonce");
+    assert_eq!(direct_from_snapshot, initializer("local"), "{sil}");
+}
+
+#[test]
 fn digest_call_uses_ast_spans_for_spacing_comments_and_arity() {
     for (case, expression) in [("spaced", "digest (state(self))"), ("commented", "digest /* authored state */ (state(self))")] {
         let source = format!(

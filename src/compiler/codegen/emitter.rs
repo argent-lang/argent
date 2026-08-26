@@ -732,29 +732,6 @@ fn emit_observed_inputs(
     Ok(())
 }
 
-pub(super) fn state_payload_digest_expr(state_name: &str, value_expr: &str, model: &Model<'_>) -> Result<String> {
-    Ok(format!("blake3(byte[]({}))", state_payload_bytes_expr(state_name, value_expr, model)?))
-}
-
-fn state_payload_bytes_expr(state_name: &str, value_expr: &str, model: &Model<'_>) -> Result<String> {
-    state_packed_bytes_expr(state_name, model, |field, _, _| packed_field_expr(&field.ty, &format!("{value_expr}.{}", field.name)))
-}
-
-pub(super) fn state_packed_bytes_expr<F>(state_name: &str, model: &Model<'_>, mut field_expr: F) -> Result<String>
-where
-    F: FnMut(&FieldDecl, usize, usize) -> Result<String>,
-{
-    let state = model.state(state_name)?;
-    let mut offset = 0usize;
-    let mut parts = Vec::with_capacity(state.fields.len());
-    for field in &state.fields {
-        let len = packed_field_len(&field.ty)?;
-        parts.push(field_expr(field, offset, len)?);
-        offset += len;
-    }
-    Ok(if parts.is_empty() { "0x".to_string() } else { parts.join(" + ") })
-}
-
 fn state_packed_len(state_name: &str, model: &Model<'_>) -> Result<usize> {
     model.state(state_name)?.fields.iter().try_fold(0usize, |sum, field| packed_field_len(&field.ty).map(|len| sum + len))
 }

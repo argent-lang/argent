@@ -284,20 +284,65 @@ impl PlannedSourceExpr {
         }
     }
 
-    fn payload_digest(&self, state: &SourceStateId, model: &Model<'_>) -> Result<String> {
+    fn payload_digest_in_contract(
+        &self,
+        state: &SourceStateId,
+        lowering: &ContractStateLowering,
+        model: &Model<'_>,
+    ) -> Result<String> {
+        let relation = lowering
+            .source_representation(state)
+            .ok_or_else(|| ArgentError::new(format!("state `{}` has no source-to-storage plan", state.as_str())))?
+            .source_to_storage();
+        source_storage_payload_digest(state, relation, lowering, model, |field| self.project_field(field))
+    }
+
+    fn project_field(&self, field_name: &str) -> Result<Self> {
         match self {
-            Self::Value(expr) => state_payload_digest_expr(state.as_str(), expr, model),
-            Self::Struct { fields, .. } => {
-                let bytes = state_packed_bytes_expr(state.as_str(), model, |field, _, _| {
-                    let value = fields.iter().find_map(|(name, value)| (name == &field.name).then_some(value)).ok_or_else(|| {
-                        ArgentError::new(format!("validated `{}` value is missing field `{}`", state.as_str(), field.name))
-                    })?;
-                    packed_field_expr(&field.ty, value)
-                })?;
-                Ok(format!("blake3(byte[]({bytes}))"))
-            }
+            Self::Value(expr) => Ok(Self::Value(format!("{expr}.{field_name}"))),
+            Self::Struct { fields, .. } => fields
+                .iter()
+                .find_map(|(name, value)| (name == field_name).then(|| Self::Value(value.clone())))
+                .ok_or_else(|| ArgentError::new(format!("validated state value is missing field `{field_name}`"))),
         }
     }
+}
+
+/// Pack one authored value through its typed storage relation, then hash it.
+fn source_storage_payload_digest(
+    state: &SourceStateId,
+    relation: &SourceStorageRelation,
+    lowering: &ContractStateLowering,
+    model: &Model<'_>,
+    mut source_field: impl FnMut(&str) -> Result<PlannedSourceExpr>,
+) -> Result<String> {
+    let storage = model.storage_state(state.as_str())?;
+    let mut parts = Vec::with_capacity(relation.fields().len());
+    for field in relation.fields() {
+        let storage_field = storage
+            .fields
+            .iter()
+            .find(|candidate| candidate.name == field.storage().field())
+            .ok_or_else(|| ArgentError::new("planned source field has no storage field"))?;
+        let authored = source_field(field.source().field())?;
+        let stored = match field.expanded_state() {
+            Some(expanded) => authored.payload_digest_in_contract(expanded, lowering, model)?,
+            None => authored.render(0),
+        };
+        parts.push(packed_field_expr(&storage_field.ty, &stored)?);
+    }
+    let bytes = if parts.is_empty() { "0x".to_string() } else { parts.join(" + ") };
+    Ok(format!("blake3(byte[]({bytes}))"))
+}
+
+/// Hash a named or previously stabilized authored expression.
+pub(in crate::compiler::codegen) fn authored_state_payload_digest_expr(
+    state: &SourceStateId,
+    value_expr: &str,
+    lowering: &ContractStateLowering,
+    model: &Model<'_>,
+) -> Result<String> {
+    PlannedSourceExpr::Value(value_expr.to_string()).payload_digest_in_contract(state, lowering, model)
 }
 
 #[derive(Clone)]
@@ -416,6 +461,7 @@ impl StabilizedOutputValidation {
 pub(in crate::compiler::codegen) fn materialize_output_state(
     target: &OutputStateTarget,
     authored: AuthoredStateExpr,
+    lowering: &ContractStateLowering,
     model: &Model<'_>,
     indent: usize,
 ) -> Result<PhysicalStateExpr> {
@@ -443,7 +489,7 @@ pub(in crate::compiler::codegen) fn materialize_output_state(
             .clone();
         let source_expr = format!("{}.{}", authored.sil, field.source().field());
         let storage_expr = match field.expanded_state() {
-            Some(expanded) => state_payload_digest_expr(expanded.as_str(), &source_expr, model)?,
+            Some(expanded) => authored_state_payload_digest_expr(expanded, &source_expr, lowering, model)?,
             None => source_expr,
         };
         if physical_fields.insert(physical, storage_expr).is_some() {
@@ -817,27 +863,17 @@ impl PlannedEntryInputReference {
         Ok(AuthoredStateExpr { source: self.access.source.clone(), sil_type: self.access.authored_sil_type.clone(), sil: out })
     }
 
-    pub(in crate::compiler::codegen) fn authored_payload_digest(&self, model: &Model<'_>) -> Result<String> {
+    pub(in crate::compiler::codegen) fn authored_payload_digest(
+        &self,
+        lowering: &ContractStateLowering,
+        model: &Model<'_>,
+    ) -> Result<String> {
         // Validate complete reconstruction even though the digest can project
         // stable fields directly from the authenticated input.
         self.complete_authored_state(0)?;
-        let storage = model.storage_state(self.source_identity())?;
-        let mut parts = Vec::with_capacity(self.access.source_to_storage.fields().len());
-        for lowering in self.access.source_to_storage.fields() {
-            let storage_field = storage
-                .fields
-                .iter()
-                .find(|field| field.name == lowering.storage().field())
-                .ok_or_else(|| ArgentError::new("planned source field has no storage field"))?;
-            let authored = self.access.planned_field(lowering.source().field())?;
-            let stored = match lowering.expanded_state() {
-                Some(expanded) => authored.payload_digest(expanded, model)?,
-                None => authored.render(0),
-            };
-            parts.push(packed_field_expr(&storage_field.ty, &stored)?);
-        }
-        let bytes = if parts.is_empty() { "0x".to_string() } else { parts.join(" + ") };
-        Ok(format!("blake3(byte[]({bytes}))"))
+        source_storage_payload_digest(&self.access.source, &self.access.source_to_storage, lowering, model, |field| {
+            self.access.planned_field(field).cloned()
+        })
     }
 
     pub(in crate::compiler::codegen) fn operation_replacements(&self, indent: usize) -> Result<Vec<(String, String)>> {

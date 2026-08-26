@@ -17,9 +17,10 @@ start with a focused regression test when practical.
 
 ## Required before merge
 
-### 1. [ ] Use one source-to-storage digest operation
+### 1. [x] Use one source-to-storage digest operation
 
-**Status:** Confirmed locally. Blocker; silent wrong code.
+**Resolved:** Input references, named authored values, and output expansion
+hashing now use one `SourceStorageRelation`-driven operation.
 
 Input-reference and named-value digests use different implementations. For an
 expanded state:
@@ -39,9 +40,9 @@ byte[32] local = blake3(byte[](0x));
 Expanded source declarations have no ordinary fields, so the legacy field
 packer hashes an empty payload.
 
-There must be one authored-to-storage payload encoder driven by
-`SourceStorageRelation`. Input references, locals, parameters, constants,
-function results, output expansion, and `digest(...)` must use it.
+The shared encoder handles expansion digests, explicit empty payloads, and
+excludes generated route fields. Broader typed expression support remains in
+item 6.
 
 Completion criteria:
 
