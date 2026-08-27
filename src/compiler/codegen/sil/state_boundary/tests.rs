@@ -18,12 +18,17 @@ fn actor_entry<'a>(model: &'a Model<'a>, actor: &str, entry: &str) -> (&'a Actor
     (actor, entry)
 }
 
+fn input_reference_plan(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> EntryInputReferencePlan {
+    let state_values = ContractStateValuePlan::new(actor, model).expect("state values plan");
+    plan_entry_input_references(actor, entry, model, &state_values).expect("input references plan")
+}
+
 #[test]
 fn aligned_active_input_is_direct_authored_state_with_the_covenant_domain_proof() {
     let program = program(include_str!("../../../../../tests/fixtures/emit/single_actor_self_consume/app.ag"));
     let model = Model::from_program(&program).expect("self-consume fixture plans");
     let (actor, entry) = actor_entry(&model, "Counter", "merge");
-    let plan = plan_entry_input_references(actor, entry, &model).expect("input references plan");
+    let plan = input_reference_plan(actor, entry, &model);
     let input = plan.consumed("other").expect("self input exists");
 
     assert!(input.uses_covenant_domain_proof());
@@ -44,7 +49,7 @@ fn named_identity_input_is_already_an_authored_source_value() {
     let program = program(include_str!("../../../../../tests/fixtures/emit/input_template_route_reuse/app.ag"));
     let model = Model::from_program(&program).expect("peer input fixture plans");
     let (actor, entry) = actor_entry(&model, "Controller", "step");
-    let plan = plan_entry_input_references(actor, entry, &model).expect("input references plan");
+    let plan = input_reference_plan(actor, entry, &model);
     let input = plan.consumed("peer").expect("peer input exists");
 
     assert!(!input.uses_covenant_domain_proof());
@@ -80,7 +85,7 @@ fn augmented_input_projects_only_user_fields_from_its_actor_keyed_type() {
     );
     let model = Model::from_program(&program).expect("paired actors plan");
     let (actor, entry) = actor_entry(&model, "Left", "shift");
-    let plan = plan_entry_input_references(actor, entry, &model).expect("input references plan");
+    let plan = input_reference_plan(actor, entry, &model);
     let input = plan.consumed("peer").expect("peer input exists");
     let authored = input.complete_authored_state(8).expect("identity user fields materialize").into_sil();
 
@@ -116,7 +121,7 @@ fn expanded_input_requires_a_validated_preimage_for_authored_access() {
     );
     let model = Model::from_program(&program).expect("expanded input plans");
     let (actor, entry) = actor_entry(&model, "Reader", "inspect");
-    let plan = plan_entry_input_references(actor, entry, &model).expect("input references plan");
+    let plan = input_reference_plan(actor, entry, &model);
     let input = plan.consumed("vault").expect("vault input exists");
 
     assert_eq!(input.physical_type(), "Gen__PhysicalExpanded");
@@ -132,7 +137,7 @@ fn active_expanded_reference_reconstructs_from_validated_openings() {
     let program = program(include_str!("../../../../../tests/fixtures/emit/state_expansion/app.ag"));
     let model = Model::from_program(&program).expect("expanded active state plans");
     let (actor, entry) = actor_entry(&model, "Forager", "hold");
-    let plan = plan_entry_input_references(actor, entry, &model).expect("input references plan");
+    let plan = input_reference_plan(actor, entry, &model);
     let active = plan.active();
 
     let strategy = active.project_field("strategy", 8).expect("validated opening projects");
@@ -177,7 +182,7 @@ fn entry_input_views_distinguish_complete_body_lowering_from_clause_expressions(
     );
     let model = Model::from_program(&program).expect("mixed input entry plans");
     let (actor, entry) = actor_entry(&model, "Observer", "inspect");
-    let plan = plan_entry_input_references(actor, entry, &model).expect("input references plan");
+    let plan = input_reference_plan(actor, entry, &model);
 
     let complete = EntryInputReferenceView::Complete(&plan);
     assert!(complete.consumed("source").expect("complete consumed lookup succeeds").is_some());
@@ -191,7 +196,7 @@ fn observed_input_plan_uses_the_canonical_reference_identity() {
     let program = program(include_str!("../../../../../tests/fixtures/emit/observed_template_witnesses/app.ag"));
     let model = Model::from_program(&program).expect("observed input fixture plans");
     let (actor, entry) = actor_entry(&model, "Local", "step");
-    let plan = plan_entry_input_references(actor, entry, &model).expect("input references plan");
+    let plan = input_reference_plan(actor, entry, &model);
     let input = plan.observed("asset", "src").expect("observed input exists");
 
     assert_eq!(input.reference(), "asset.inputs.src");

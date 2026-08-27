@@ -100,8 +100,11 @@ fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
     validate_actor_function_captures(actor, model)?;
     let state = model.storage_state(&actor.state)?;
     let state_values = ContractStateValuePlan::new(actor, model)?;
-    let input_reference_plans =
-        actor.entries.iter().map(|entry| plan_entry_input_references(actor, entry, model)).collect::<Result<Vec<_>>>()?;
+    let input_reference_plans = actor
+        .entries
+        .iter()
+        .map(|entry| plan_entry_input_references(actor, entry, model, &state_values))
+        .collect::<Result<Vec<_>>>()?;
     let emitted_entries = actor
         .entries
         .iter()
@@ -704,8 +707,11 @@ fn emit_ranged_current_input(
     out.push_str(&format!("        require({count} <= {maximum});\n"));
 
     let input_reference = input_references.consumed(interaction.handle())?;
-    let state_struct = input_reference.authored_sil_type();
-    out.push_str(&format!("        {state_struct}[] {};\n", interaction.handle()));
+    // A ranged consume is a collection of authenticated input references, not
+    // an authored state array. Authenticate every member here even when the
+    // authored body does not project it. Cache only authored projections; the
+    // compiler-owned physical route fields never cross into the source value.
+    input_reference.emit_range_cache_declarations(out, 8, interaction.handle());
     let position = hidden_input_position_name(interaction.handle());
     out.push_str(&format!("        for ({position}, 0, {count}, {maximum}) {{\n"));
     let first_cov_index = slot_offset + start;
@@ -713,10 +719,7 @@ fn emit_ranged_current_input(
     let input_idx = hidden_input_idx_name(interaction.handle());
     out.push_str(&format!("            int {input_idx} = OpCovInputIdx({cov_id}, {cov_index});\n"));
     input_reference.emit_read(out, 12);
-    let item = hidden_input_item_name(interaction.handle());
-    let authored = input_reference.complete_authored_state(12)?;
-    out.push_str(&format!("            {state_struct} {item} = {};\n", authored.sil()));
-    out.push_str(&format!("            {} = {}.append({item});\n", interaction.handle(), interaction.handle()));
+    input_reference.emit_range_cache_append(out, 12, interaction.handle())?;
     out.push_str("        }\n");
     Ok(())
 }
@@ -3622,6 +3625,18 @@ pub(super) fn hidden_consumed_input_state_name(handle: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{handle}_state")
 }
 
+pub(super) fn hidden_consumed_input_authored_cache_name(handle: &str) -> String {
+    format!("{RESERVED_GENERATED_PREFIX}{handle}_authored_states")
+}
+
+pub(super) fn hidden_consumed_input_field_cache_name(handle: &str, field: &str) -> String {
+    format!("{RESERVED_GENERATED_PREFIX}{handle}_{field}_values")
+}
+
+pub(super) fn hidden_consumed_input_generated_cache_name(handle: &str, field: &str) -> String {
+    format!("{RESERVED_GENERATED_PREFIX}{handle}_{field}_physical_values")
+}
+
 fn observed_actor_side_label(side: ObservedActorSideArtifact) -> &'static str {
     match side {
         ObservedActorSideArtifact::Input => "input",
@@ -3643,10 +3658,6 @@ pub(super) fn hidden_input_count_name(input: &str) -> String {
 
 fn hidden_input_position_name(input: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{input}_position")
-}
-
-fn hidden_input_item_name(input: &str) -> String {
-    format!("{RESERVED_GENERATED_PREFIX}{input}_item")
 }
 
 pub(super) fn hidden_output_idx_name(output: &str) -> String {

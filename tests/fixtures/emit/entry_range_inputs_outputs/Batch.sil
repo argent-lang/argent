@@ -38,7 +38,7 @@ contract Batch(
         int gen__accounts_count = OpCovInputCount(gen__cov_id) - 1;
         require(gen__accounts_count >= 0);
         require(gen__accounts_count <= 2);
-        AccountState[] accounts;
+        AccountState[] gen__accounts_authored_states;
         for (gen__accounts_position, 0, gen__accounts_count, 2) {
             int gen__accounts_input_idx = OpCovInputIdx(gen__cov_id, 1 + gen__accounts_position);
             AccountState gen__accounts_state = readInputStateWithTemplate(
@@ -47,8 +47,7 @@ contract Batch(
                 gen__account_suffix.length,
                 gen__account_template
             );
-            AccountState gen__accounts_item = gen__accounts_state;
-            accounts = accounts.append(gen__accounts_item);
+            gen__accounts_authored_states = gen__accounts_authored_states.append(gen__accounts_state);
         }
 
         // :: auth outputs
@@ -62,10 +61,10 @@ contract Batch(
             balance: 0,
         };
         next_states = next_states.append(reserve);
-        for (i, 0, accounts.length, MAX_INPUT_ACCOUNTS) {
+        for (i, 0, gen__accounts_count, MAX_INPUT_ACCOUNTS) {
             AccountState next_state = AccountState {
                 // :: user declared fields
-                balance: accounts[i].balance,
+                balance: gen__accounts_authored_states[gen__checked_range_index(i, gen__accounts_count)].balance,
             };
             next_states = next_states.append(next_state);
             require(tx.outputs[OpAuthOutputIdx(this.activeInputIndex, gen__checked_range_index(i + 1, gen__next_output_count))].value == tx.inputs[OpCovInputIdx(gen__cov_id, 1 + (gen__checked_range_index(i, gen__accounts_count)))].value);

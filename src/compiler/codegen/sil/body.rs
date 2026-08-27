@@ -315,7 +315,7 @@ struct RangeValueLocation {
 }
 
 /// Locates a source input's transaction value from its generated index data.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum InputValueLocation {
     Singleton { input_index: String },
     Range { covenant_id: String, range: RangeValueLocation },
@@ -625,7 +625,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         state_values: &'p ContractStateValuePlan,
     ) -> Result<Self> {
         let selector_catalog = model.template_selectors_for_entry(actor, entry)?;
-        let active_reference = input_references.active(actor, model)?;
+        let active_reference = input_references.active(actor, model, state_values)?;
         let reserved_entry_names = reserved_entry_names(actor, entry)?;
         let mut bindings = BodyBindings::new();
         let expanded_digest_fields = state_expansion_digest_fields_for_state(&actor.state, model);
@@ -698,20 +698,20 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                 };
                 let target = interaction.target().single_static_actor().expect("current entry input has one fixed actor target");
                 let source_type = model.actor(target)?.state.clone();
-                let mut lowered_type = input.physical_type().to_string();
-                let source_type = if interaction.cardinality().is_range() {
-                    lowered_type.push_str("[]");
-                    format!("{source_type}[]")
+                if interaction.cardinality().is_range() {
+                    bindings.declare(interaction.handle(), BodyBinding::input_root(input.scope()).with_input_value(input_value));
                 } else {
-                    source_type
-                };
-                bindings.declare(
-                    interaction.handle(),
-                    BodyBinding::typed(source_type, &lowered_type, state_values)
-                        .with_input_scope(input.scope())
-                        .with_input_value(input_value),
-                );
-                bindings.declare(hidden_consumed_input_state_name(interaction.handle()), BodyBinding::lowered_typed(lowered_type));
+                    bindings.declare(
+                        interaction.handle(),
+                        BodyBinding::typed(source_type, input.physical_type(), state_values)
+                            .with_input_scope(input.scope())
+                            .with_input_value(input_value),
+                    );
+                    bindings.declare(
+                        hidden_consumed_input_state_name(interaction.handle()),
+                        BodyBinding::lowered_typed(input.physical_type()),
+                    );
+                }
             }
         }
         for group in entry_model.existing_groups() {
@@ -1104,13 +1104,27 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
 
     fn validate_unrestricted_output_value(&self, value: &str) -> Result<()> {
         let value = value.trim();
-        if !self.output_values.iter().any(|output| output.matches_exact(value)) {
-            return Err(self.error(format!(
-                "`{}(...)` expects exactly one current emit or spawn output value; `{value}` is not one",
-                word::UNRESTRICTED,
-            )));
+        for output in &self.output_values {
+            if !output.matches_exact(value) {
+                continue;
+            }
+            if let OutputValueRef::Range { handle } = output {
+                let tokens = lex(value)?;
+                let close =
+                    match_indexed_value_ref(&tokens, 0, handle).expect("an exact ranged output value retains its closing bracket");
+                let index = &value[tokens[1].span.end..tokens[close].span.start];
+                let location = self
+                    .bindings
+                    .output_range(handle)
+                    .ok_or_else(|| self.error(format!("missing range metadata for output `{handle}`")))?;
+                self.lower_range_index(handle, index, location, 0)?;
+            }
+            return Ok(());
         }
-        Ok(())
+        Err(self.error(format!(
+            "`{}(...)` expects exactly one current emit or spawn output value; `{value}` is not one",
+            word::UNRESTRICTED,
+        )))
     }
 
     fn lower_actor_type_statement(&mut self, out: &mut String, indent: usize, state: &str, name: &str, expr: &str) -> Result<()> {
@@ -1174,16 +1188,28 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         Ok(template_var)
     }
 
-    fn input_reference_for_expr(&self, expr: &str) -> Option<&PlannedEntryInputReference> {
-        let reference = self.input_references.reference(strip_outer_parentheses(expr))?;
-        self.bindings.input_reference_is_visible(reference).then_some(reference)
+    fn input_reference_for_expr(&self, expr: &str, indent: usize) -> Result<Option<PlannedEntryInputReference>> {
+        let expr = strip_outer_parentheses(expr);
+        if let Some(reference) = self.input_references.reference(expr) {
+            return Ok(self.bindings.input_reference_is_visible(reference).then(|| reference.clone()));
+        }
+        let Some((handle, index)) = exact_indexed_root(expr) else {
+            return Ok(None);
+        };
+        let Some(InputValueLocation::Range { covenant_id, range }) = self.bindings.input_value(handle) else {
+            return Ok(None);
+        };
+        let index = self.lower_range_index(handle, index, range, indent)?;
+        let cov_index = offset_index_expr(range.first_index, index.clone());
+        let input_index = format!("OpCovInputIdx({covenant_id}, {cov_index})");
+        self.input_references.consumed_range_item(handle, expr.to_string(), index, input_index)
     }
 
-    fn input_reference_from_state_call(&self, expr: &str) -> Result<Option<&PlannedEntryInputReference>> {
+    fn input_reference_from_state_call(&self, expr: &str, indent: usize) -> Result<Option<PlannedEntryInputReference>> {
         let Some(reference_expr) = parse_state_reference_call(expr).map_err(|err| self.error(err))? else {
             return Ok(None);
         };
-        self.input_reference_for_expr(reference_expr).map(Some).ok_or_else(|| {
+        self.input_reference_for_expr(reference_expr, indent)?.map(Some).ok_or_else(|| {
             self.error(format!("`{}(...)` requires one visible entry input reference, but `{reference_expr}` is not one", word::STATE))
         })
     }
@@ -1448,7 +1474,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let parsed_source = parse_expression_ast(expr)
             .map_err(|err| self.error(format!("cannot classify route state `{expr}` as an authored value: {err}")))?;
         let is_matching_input_state =
-            self.input_reference_from_state_call(expr)?.is_some_and(|reference| reference.source_identity() == source_state);
+            self.input_reference_from_state_call(expr, indent)?.is_some_and(|reference| reference.source_identity() == source_state);
         let is_planned_authored_value = self
             .planned_state_value_for_expr(&parsed_source)
             .is_some_and(|value| value.source().as_str() == source_state && value.shape().is_scalar());
@@ -1525,7 +1551,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     fn lower_constructed_route(&mut self, out: &mut String, indent: usize, route: ConstructedRoute) -> Result<()> {
         let state = strip_outer_parentheses(route.state.trim());
         let reconstructs_self =
-            self.input_reference_from_state_call(state)?.is_some_and(|reference| reference.reference() == word::SELF);
+            self.input_reference_from_state_call(state, indent)?.is_some_and(|reference| reference.reference() == word::SELF);
         if route.actor == self.actor.name && (state == "self.state" || reconstructs_self) {
             return Err(self.error(format!(
                 "`{}({state})` reconstructs the current actor state; use `{} <- self` for exact continuation",
@@ -1539,7 +1565,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             )));
         }
         let output_idx = hidden_output_idx_name(&route.output);
-        self.lower_constructed_route_at_output(out, indent, route, output_idx)
+        self.lower_constructed_route_at_output(out, indent, route, output_idx, None)
     }
 
     fn lower_ranged_route(
@@ -1601,7 +1627,28 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let auth_index = offset_index_expr(start, position.clone());
         let output_idx = format!("OpAuthOutputIdx(this.activeInputIndex, {auth_index})");
         let item_route = ConstructedRoute { state: format!("{states}[{position}]"), arity: RouteArity::One, ..route };
-        self.lower_constructed_route_at_output(out, indent + 4, item_route, output_idx)?;
+        let generated_input = if target_plan.has_generated_fields() {
+            let entry_model = self.model.entry_model(self.actor, self.entry)?;
+            let mut candidates = entry_model
+                .current()
+                .inputs()
+                .iter()
+                .filter(|input| input.cardinality().is_range() && input.target().single_static_actor() == Some(target));
+            let candidate = candidates.next();
+            if candidates.next().is_some() {
+                return Err(self.error(format!(
+                    "range output `{}` has multiple ranged `{target}` inputs and cannot choose compiler-owned route context",
+                    output.handle()
+                )));
+            }
+            candidate
+                .map(|input| self.input_reference_for_expr(&format!("{}[{position}]", input.handle()), indent + 4))
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
+        self.lower_constructed_route_at_output(out, indent + 4, item_route, output_idx, generated_input.as_ref())?;
         push_indent(out, indent);
         out.push_str("}\n");
         Ok(())
@@ -1613,6 +1660,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         indent: usize,
         route: ConstructedRoute,
         output_idx: String,
+        generated_input: Option<&PlannedEntryInputReference>,
     ) -> Result<()> {
         if self.bindings.selector(&route.actor).is_some() {
             return self.lower_selector_route(out, indent, route, output_idx);
@@ -1623,7 +1671,10 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             return Err(self.error(format!("actor handle `{}` {reason} in this scope", route.actor)));
         }
         self.model.actor_state(&route.actor)?;
-        let output_target = plan_actor_output_state(self.actor, &route.actor, self.model)?;
+        let mut output_target = plan_actor_output_state(self.actor, &route.actor, self.model)?;
+        if let Some(input) = generated_input {
+            output_target.reuse_matching_generated_fields_from(input);
+        }
         let state_ty = output_target.physical_type().to_string();
         let authored = self.require_route_authored_state(out, indent, &route, &output_target)?;
         let physical =
@@ -1709,7 +1760,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         if let Some(value) = parse_digest_call(expr).map_err(|err| self.error(err))? {
             return self.lower_digest_expr(value, indent);
         }
-        if let Some(reference) = self.input_reference_from_state_call(expr)? {
+        if let Some(reference) = self.input_reference_from_state_call(expr, indent)? {
             let authored = reference.complete_authored_state(indent).map_err(|err| self.error(err.to_string()))?;
             if let Some(expected) = expected_state_value.as_ref()
                 && (expected.source().as_str() != authored.source().as_str() || !expected.shape().is_scalar())
@@ -1734,7 +1785,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             }
             return self.lower_state_constructor(state_name, body, indent);
         }
-        if let Some(reference) = self.input_reference_for_expr(expr) {
+        if let Some(reference) = self.input_reference_for_expr(expr, indent)? {
             return Err(self.error(format!(
                 "input reference `{expr}` is not an authored state value; use `{}({})` to reconstruct `{}`",
                 word::STATE,
@@ -1917,10 +1968,10 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     fn lower_digest_expr(&self, value: &str, indent: usize) -> Result<String> {
         let value = value.trim();
         let lowering = self.model.state_lowering(&self.actor.name)?;
-        if let Some(reference) = self.input_reference_from_state_call(value)? {
+        if let Some(reference) = self.input_reference_from_state_call(value, indent)? {
             return reference.authored_payload_digest(lowering, self.model).map_err(|err| self.error(err.to_string()));
         }
-        if let Some(reference) = self.input_reference_for_expr(value) {
+        if let Some(reference) = self.input_reference_for_expr(value, indent)? {
             return Err(self.error(format!(
                 "`{}(...)` requires an authored state value; use `{}({}({}))` for input reference `{}`",
                 word::DIGEST,
@@ -2205,7 +2256,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let mut lowered = expr.to_string();
         for site in self.named_call_sites(expr, word::STATE)?.into_iter().rev() {
             let call = &expr[site.clone()];
-            let reference = self.input_reference_from_state_call(call)?.expect("collector found a state call");
+            let reference = self.input_reference_from_state_call(call, indent)?.expect("collector found a state call");
             let authored = reference.complete_authored_state(indent).map_err(|err| self.error(err.to_string()))?;
             lowered.replace_range(site, authored.sil());
         }
@@ -2238,7 +2289,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         Ok(outermost)
     }
 
-    /// Lower scalar and indexed input values through their generated indices.
+    /// Lower scalar input values and every operation on a ranged input item.
     fn lower_input_value_refs(&self, input: &str, indent: usize) -> Result<String> {
         let tokens = lex(input)?;
         let mut out = String::with_capacity(input.len());
@@ -2255,12 +2306,12 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                 pos += 1;
                 continue;
             }
-            let Some(location) = self.bindings.input_value(handle) else {
+            let Some(location) = self.bindings.input_value(handle).cloned() else {
                 pos += 1;
                 continue;
             };
 
-            let matched = match location {
+            let matched = match &location {
                 InputValueLocation::Singleton { input_index }
                     if is_symbol(&tokens, pos + 1, '.') && is_ident(&tokens, pos + 2, word::VALUE) =>
                 {
@@ -2270,25 +2321,49 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                         format!("tx.inputs[{input_index}].value"),
                     ))
                 }
-                InputValueLocation::Range { covenant_id, range } if is_symbol(&tokens, pos + 1, '[') => {
-                    let Some(close) = matching_symbol(&tokens, pos + 1, '[', ']') else {
-                        pos += 1;
-                        continue;
-                    };
-                    if !is_symbol(&tokens, close + 1, '.') || !is_ident(&tokens, close + 2, word::VALUE) {
-                        pos += 1;
-                        continue;
-                    }
-                    let index = &input[tokens[pos + 1].span.end..tokens[close].span.start];
-                    let index = self.lower_range_index(handle, index, range, indent)?;
-                    let cov_index = offset_index_expr(range.first_index, index);
-                    Some((
-                        close + 3,
-                        Span { start: tokens[pos].span.start, end: tokens[close + 2].span.end },
-                        format!("tx.inputs[OpCovInputIdx({covenant_id}, {cov_index})].value"),
-                    ))
+                InputValueLocation::Range { range, .. }
+                    if is_symbol(&tokens, pos + 1, '.') && is_ident(&tokens, pos + 2, "length") =>
+                {
+                    Some((pos + 3, Span { start: tokens[pos].span.start, end: tokens[pos + 2].span.end }, range.count.clone()))
                 }
-                InputValueLocation::Singleton { .. } | InputValueLocation::Range { .. } => None,
+                InputValueLocation::Range { .. } if is_symbol(&tokens, pos + 1, '[') => {
+                    let Some(close) = matching_symbol(&tokens, pos + 1, '[', ']') else {
+                        return Err(self.error(format!("unterminated range input reference `{handle}[...]`")));
+                    };
+                    let reference_end = tokens[close].span.end;
+                    let reference_expr = &input[tokens[pos].span.start..reference_end];
+                    let reference = self
+                        .input_reference_for_expr(reference_expr, indent)?
+                        .ok_or_else(|| self.error(format!("`{reference_expr}` is not a visible ranged input reference")))?;
+                    if !is_symbol(&tokens, close + 1, '.') {
+                        return Err(self.error(format!(
+                            "input reference `{reference_expr}` is not an authored state value; use `{}({reference_expr})` to reconstruct `{}`",
+                            word::STATE,
+                            reference.source_identity()
+                        )));
+                    }
+                    let TokenKind::Ident(member) = &tokens[close + 2].kind else {
+                        return Err(self.error(format!("input reference `{reference_expr}` must be followed by a field name")));
+                    };
+                    let replacement = match member.as_str() {
+                        word::VALUE => reference.native_value(),
+                        word::COVENANT_ID => reference.covenant_id(),
+                        word::STATE => {
+                            return Err(self.error(format!(
+                                "input reference `{reference_expr}` has no `.state` member; use `{}({reference_expr})` for complete authored state or project a field directly",
+                                word::STATE
+                            )));
+                        }
+                        field => reference.project_field(field, indent).map_err(|err| self.error(err.to_string()))?,
+                    };
+                    Some((close + 3, Span { start: tokens[pos].span.start, end: tokens[close + 2].span.end }, replacement))
+                }
+                InputValueLocation::Range { .. } => {
+                    return Err(self.error(format!(
+                        "range input `{handle}` is a collection of input references; use `{handle}.length` or index one item"
+                    )));
+                }
+                InputValueLocation::Singleton { .. } => None,
             };
             let Some((next_pos, span, replacement)) = matched else {
                 pos += 1;
@@ -2794,6 +2869,11 @@ fn apply_expr_replacements(source: &str, mut replacements: Vec<(Range<usize>, St
 
 /// Return the bound root when the entire expression is one index access.
 fn indexed_root_binding(expr: &str) -> Option<&str> {
+    exact_indexed_root(expr).map(|(root, _)| root)
+}
+
+/// Return the root and index when the entire expression is one index access.
+fn exact_indexed_root(expr: &str) -> Option<(&str, &str)> {
     let tokens = lex(expr).ok()?;
     let TokenKind::Ident(_) = tokens.first()?.kind else {
         return None;
@@ -2805,7 +2885,7 @@ fn indexed_root_binding(expr: &str) -> Option<&str> {
     if !matches!(tokens.get(close + 1).map(|token| &token.kind), Some(TokenKind::Eof)) {
         return None;
     }
-    Some(&expr[tokens[0].span.start..tokens[0].span.end])
+    Some((&expr[tokens[0].span.start..tokens[0].span.end], expr[tokens[1].span.end..tokens[close].span.start].trim()))
 }
 
 /// Return the element type of a one-dimensional Sil array type.

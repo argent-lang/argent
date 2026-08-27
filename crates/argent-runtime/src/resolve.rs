@@ -1238,6 +1238,19 @@ mod tests {
             ArtifactBundle::new(&malformed),
             Err(BuilderError::InvalidArtifactCardinality { section: "consume", minimum: -1, maximum: 3, .. })
         ));
+
+        let mut oversized = artifact("primary", "Counter", "merge");
+        oversized.argent.actors[0].entries[0].consumes.push(ConsumeArtifact {
+            name: "items".to_string(),
+            actor: "Counter".to_string(),
+            cardinality: CardinalityArtifact::Range { minimum: 0, maximum: argent_artifact::MAX_ENTRY_RANGE_CARDINALITY + 1 },
+        });
+        oversized.id = oversized.computed_id_hex().expect("mutated artifact id computes");
+        assert!(matches!(
+            ArtifactBundle::new(&oversized),
+            Err(BuilderError::InvalidArtifactCardinality { section: "consume", minimum: 0, maximum, .. })
+                if maximum == argent_artifact::MAX_ENTRY_RANGE_CARDINALITY + 1
+        ));
     }
 
     #[test]

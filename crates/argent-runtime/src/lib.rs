@@ -26,8 +26,8 @@ pub use silverscript_abi::ArtifactValue;
 use argent_artifact::{
     ActorArtifact, ActorInterfaceArtifact, ArgentStateArtifact, ArtifactIdentityError, ArtifactVersionError, CardinalityArtifact,
     CompiledTemplateArtifact, EmitArtifact, EntryArtifact, EntryKindArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact,
-    HiddenParamSubjectArtifact, ObserveArtifact, ObservedActorArtifact, ObservedActorSideArtifact, ObservedTargetArtifact,
-    RouteTemplateLeafArtifact, RouteTemplateProofArtifact, RuntimeFieldRoleArtifact, RuntimeStatePlanArtifact,
+    HiddenParamSubjectArtifact, MAX_ENTRY_RANGE_CARDINALITY, ObserveArtifact, ObservedActorArtifact, ObservedActorSideArtifact,
+    ObservedTargetArtifact, RouteTemplateLeafArtifact, RouteTemplateProofArtifact, RuntimeFieldRoleArtifact, RuntimeStatePlanArtifact,
     SilAbiVerificationError, SilContractArtifact, SilEntryArtifact, TemplatePlanError, fixed_runtime_context_value,
 };
 use kaspa_consensus_core::{
@@ -1681,7 +1681,7 @@ fn validate_runtime_cardinality_support(app: &str, artifact: &Artifact) -> Build
         for entry in &actor.entries {
             let validate = |section, handle: &str, cardinality| {
                 if let CardinalityArtifact::Range { minimum, maximum } = cardinality
-                    && (minimum < 0 || minimum > maximum)
+                    && (minimum < 0 || minimum > maximum || maximum > MAX_ENTRY_RANGE_CARDINALITY)
                 {
                     return Err(BuilderError::InvalidArtifactCardinality {
                         app: app.into(),

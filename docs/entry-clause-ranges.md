@@ -1,7 +1,8 @@
 # Ranges in entry clauses
 
-> This document is one design sketch. Its proposed vocabulary and syntax are
-open for discussion.
+> This document defines the shared range model and its staged implementation.
+> Leader consumes and current-entry emits are implemented first; observed and
+> spawned ranges remain explicit follow-up stages below.
 
 ## Purpose
 
@@ -10,9 +11,9 @@ handle currently describes one input or one output. Some protocols need a
 bounded number of items of the same actor type. A range lets one handle
 describe that ordered group.
 
-The compiler can lower a range to a Sil array and a bounded `for` loop. The
-transaction sets the actual length. A compile-time upper bound limits the
-generated script.
+The compiler lowers a range to a bounded `for` loop and private authenticated
+caches. The transaction sets the actual length. A compile-time upper bound
+limits the generated script.
 
 This feature is possible with the current Sil backend. It is not only a parser
 change. It affects entry body types, transaction locations, artifact metadata,
@@ -39,7 +40,9 @@ consumes {
 ```
 
 The lower and upper bounds are inclusive. Both bounds must be compile-time
-integers. A range handle is an array in the entry body.
+integers. A consumed range handle is a collection of actor input references,
+not an authored state array. `accounts[i]` is one input reference;
+`state(accounts[i])` explicitly reconstructs its authored state.
 
 The same form applies to all ordered entry sections:
 
@@ -107,20 +110,25 @@ The following rules apply to each range:
 7. The upper bound is part of the actor template. State cannot change it.
 8. A bulk route state array has the same length as its output range.
 
-State-valued ranges reuse the compiler's ordinary authored-array boundary:
+Input-reference ranges and authored output arrays stay on opposite sides of
+the state boundary:
 
-- A range array contains authored state values. Indexing it produces one
-  authored scalar value.
-- Typed array literals and `append(...)` lower each element in the declared
-  authored state context.
-- An authenticated consumed or observed physical element is projected to its
-  authored fields before insertion into an authored array.
-- Each successor element is materialized independently through the state
-  boundary. Generated route fields come from the compiler's target plan, never
-  from the authored array element.
-- A whole-array conversion may pass through when its authored representation
-  already matches. An unknown or unbounded cross-representation conversion is
-  rejected rather than synthesized as an unbounded loop.
+- `accounts[i]` is an authenticated actor input reference. Direct field
+  projection, `.value`, and `.cov_id` are input-reference operations.
+- `state(accounts[i])` is required to obtain one complete authored state.
+  Passing a bare indexed reference where authored state is expected is an
+  error.
+- The compiler caches only authenticated authored projections. It keeps
+  compiler-owned route fields private and caches them separately when an
+  output transition must preserve them.
+- A corresponding route-bearing ranged input and output reuse compiler-owned
+  context by position. A one-for-one continuation should constrain their
+  actual lengths to be equal.
+- Expanded consumed states allow projections whose values exist in the
+  authenticated physical state. A virtual field or complete `state(...)`
+  reconstruction is rejected when no validated preimage is available.
+- Bulk output routes still consume ordinary authored state arrays. Each output
+  element is materialized independently through the target state boundary.
 
 The first version must not use a consume range in a delegate. A delegate's
 covenant group can contain peer delegates that its clause does not name. The
@@ -212,7 +220,7 @@ int account_count = OpCovInputCount(cov_id) - 1;
 require(account_count >= 1);
 require(account_count <= MAX_ACCOUNTS);
 
-AccountState[] accounts;
+AccountState[] gen__accounts_authored;
 for (i, 0, account_count, MAX_ACCOUNTS) {
     int input_idx = OpCovInputIdx(cov_id, 1 + i);
     Gen__AccountState physical = readInputStateWithTemplate(
@@ -221,18 +229,32 @@ for (i, 0, account_count, MAX_ACCOUNTS) {
         account_suffix_len,
         account_template
     );
-    AccountState item = AccountState {
+    AccountState authored = AccountState {
         balance: physical.balance,
     };
-    accounts = accounts.append(item);
+    gen__accounts_authored = gen__accounts_authored.append(authored);
 }
 ```
 
-The physical read keeps compiler-owned route fields for template validation,
-then materializes only authored fields into the body-visible array. The
-compiler elides this conversion when the physical and authored layouts are
-identical. Expanded states remain physical because a consume clause does not
-carry the preimages needed to reconstruct authored expansion values.
+The cache is compiler-private: there is no body-visible `AccountState[]`
+binding named `accounts`. The physical read authenticates every input and the
+cache strips compiler-owned route fields from authored access. Route metadata
+needed by a corresponding ranged output is cached separately and materialized
+only as a generated physical output field.
+
+Body operations lower as follows:
+
+```text
+accounts.length          -> gen__accounts_count
+accounts[i].balance      -> gen__accounts_authored[checked(i)].balance
+accounts[i].value        -> tx.inputs[OpCovInputIdx(... checked(i))].value
+accounts[i].cov_id       -> OpInputCovenantId(OpCovInputIdx(... checked(i)))
+state(accounts[i])       -> gen__accounts_authored[checked(i)]
+```
+
+For an expanded state, the compiler uses private per-field caches for fields
+available from authenticated storage. It does not fabricate missing virtual
+preimages.
 
 The compiler rewrites `accounts[i].value` to the transaction input at
 `OpCovInputIdx(cov_id, 1 + gen__checked_range_index(i, account_count))`. Literal
@@ -423,10 +445,11 @@ part of the compiled template and not its state span.
 - Use the plan for count checks and generated index expressions.
 - Add unit tests for a range before, between, and after singleton items.
 
-### 4. Add body array support
+### 4. Add body range support
 
-- Register range handles and their source state types.
-- Lower `.length`, indexed state access, and indexed `.value` access.
+- Register consumed ranges as homogeneous input-reference collections.
+- Lower `.length`, indexed field, `.value`, `.cov_id`, and `state(...)`
+  operations through one checked-index path.
 - Lower indexed observed field access and authored reconstruction such as
   `remote.inputs.assets[i].amount` and `state(remote.inputs.assets[i])`.
 - Lower state arrays for route targets that contain hidden route fields.
@@ -461,7 +484,8 @@ genesis rules add more cases.
 
 ### 8. Stabilize the interfaces
 
-- Increment the Argent artifact schema version.
+- Keep the pre-release Argent artifact schema version unchanged while the
+  cardinality shape is still unreleased.
 - Document the transaction order rules.
 - Pin representative artifacts and generated Sil.
 - Run `./check.sh --full` and the Argent Playground checks.

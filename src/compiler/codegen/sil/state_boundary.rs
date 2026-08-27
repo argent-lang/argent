@@ -3,7 +3,7 @@
 //! Plans authenticated input projection, successor materialization, and output
 //! template proof without exposing compiler-owned fields to authored values.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::compiler::model::{
     CompilerRouteTransition, ContractStateLowering, GeneratedFieldId, Model, OutputPhysicalTypePlan, PhysicalFieldId,
@@ -14,6 +14,7 @@ use crate::compiler::syntax::{ActorDecl, EntryDecl, ObserveDecl, ObservedActorDe
 use crate::error::{ArgentError, Result};
 
 use super::super::emitter::*;
+use super::state_values::ContractStateValuePlan;
 use super::token_refs::count_qualified_ref;
 
 #[cfg(test)]
@@ -43,6 +44,10 @@ impl OutputStateTarget {
         self.physical.source().as_str()
     }
 
+    pub(in crate::compiler::codegen) fn has_generated_fields(&self) -> bool {
+        !self.generated_fields.is_empty()
+    }
+
     pub(in crate::compiler::codegen) fn authored_sil_type(&self) -> &str {
         &self.authored_sil_type
     }
@@ -56,6 +61,14 @@ impl OutputStateTarget {
             sil_type: self.authored_sil_type.clone(),
             sil: lower(&self.authored_sil_type)?,
         })
+    }
+
+    pub(in crate::compiler::codegen) fn reuse_matching_generated_fields_from(&mut self, input: &PlannedEntryInputReference) {
+        for (id, expr) in &mut self.generated_fields {
+            if let Some(input_expr) = input.generated_field(id) {
+                *expr = input_expr.to_string();
+            }
+        }
     }
 
     #[cfg(test)]
@@ -356,8 +369,17 @@ pub(in crate::compiler::codegen) fn authored_state_payload_digest_expr(
 #[derive(Clone)]
 struct PlannedSourceField {
     name: String,
+    sil_type: String,
     value: Option<PlannedSourceExpr>,
     trusted_storage: Option<String>,
+}
+
+#[derive(Clone)]
+struct PlannedGeneratedInputField {
+    id: GeneratedFieldId,
+    name: String,
+    sil_type: String,
+    value: String,
 }
 
 /// Opaque source-level access derived from validated input provenance.
@@ -685,6 +707,7 @@ impl SourceStateAccess {
         self.source.as_str()
     }
 
+    #[cfg(test)]
     fn authored_sil_type(&self) -> &str {
         &self.authored_sil_type
     }
@@ -785,6 +808,7 @@ pub(in crate::compiler::codegen) struct PlannedEntryInputReference {
     lowered_sil_type: String,
     access: SourceStateAccess,
     physical: Option<AuthenticatedPhysicalInput>,
+    generated_fields: Vec<PlannedGeneratedInputField>,
     additional_replacements: Vec<(String, String)>,
 }
 
@@ -805,6 +829,7 @@ impl PlannedEntryInputReference {
         matches!(self.kind, EntryInputReferenceKind::Active)
     }
 
+    #[cfg(test)]
     pub(in crate::compiler::codegen) fn authored_sil_type(&self) -> &str {
         self.access.authored_sil_type()
     }
@@ -911,6 +936,113 @@ impl PlannedEntryInputReference {
         }
         self.access.reject_unavailable_field_refs(&self.reference, input)
     }
+
+    fn has_complete_range_cache(&self) -> bool {
+        self.access.fields.iter().all(|field| field.value.is_some())
+    }
+
+    pub(in crate::compiler::codegen) fn emit_range_cache_declarations(&self, out: &mut String, indent: usize, handle: &str) {
+        let prefix = " ".repeat(indent);
+        if self.has_complete_range_cache() {
+            out.push_str(&format!(
+                "{prefix}{}[] {};\n",
+                self.access.authored_sil_type,
+                hidden_consumed_input_authored_cache_name(handle)
+            ));
+        } else {
+            for field in self.access.fields.iter().filter(|field| field.value.is_some()) {
+                out.push_str(&format!(
+                    "{prefix}{}[] {};\n",
+                    field.sil_type,
+                    hidden_consumed_input_field_cache_name(handle, &field.name)
+                ));
+            }
+        }
+        for field in &self.generated_fields {
+            out.push_str(&format!(
+                "{prefix}{}[] {};\n",
+                field.sil_type,
+                hidden_consumed_input_generated_cache_name(handle, &field.name)
+            ));
+        }
+    }
+
+    pub(in crate::compiler::codegen) fn emit_range_cache_append(&self, out: &mut String, indent: usize, handle: &str) -> Result<()> {
+        let prefix = " ".repeat(indent);
+        if self.has_complete_range_cache() {
+            let cache = hidden_consumed_input_authored_cache_name(handle);
+            let authored = self.complete_authored_state(indent)?;
+            out.push_str(&format!("{prefix}{cache} = {cache}.append({});\n", authored.sil()));
+        } else {
+            for field in self.access.fields.iter().filter(|field| field.value.is_some()) {
+                let cache = hidden_consumed_input_field_cache_name(handle, &field.name);
+                let value = self.project_field(&field.name, indent)?;
+                out.push_str(&format!("{prefix}{cache} = {cache}.append({value});\n"));
+            }
+        }
+        for field in &self.generated_fields {
+            let cache = hidden_consumed_input_generated_cache_name(handle, &field.name);
+            out.push_str(&format!("{prefix}{cache} = {cache}.append({});\n", field.value));
+        }
+        Ok(())
+    }
+
+    fn ranged_item(&self, reference: String, lexical_root: String, handle: &str, index: &str, input_index: String) -> Result<Self> {
+        let has_complete_cache = self.has_complete_range_cache();
+        let complete = has_complete_cache.then(|| format!("{}[{index}]", hidden_consumed_input_authored_cache_name(handle)));
+        let fields = self
+            .access
+            .fields
+            .iter()
+            .map(|field| {
+                let value = field.value.as_ref().map(|_| {
+                    let expr = if has_complete_cache {
+                        format!("{}[{index}].{}", hidden_consumed_input_authored_cache_name(handle), field.name)
+                    } else {
+                        format!("{}[{index}]", hidden_consumed_input_field_cache_name(handle, &field.name))
+                    };
+                    PlannedSourceExpr::Value(expr)
+                });
+                PlannedSourceField {
+                    name: field.name.clone(),
+                    sil_type: field.sil_type.clone(),
+                    value,
+                    trusted_storage: field.trusted_storage.clone(),
+                }
+            })
+            .collect();
+        let access = SourceStateAccess { complete, fields, ..self.access.clone() };
+        let generated_fields = self
+            .generated_fields
+            .iter()
+            .map(|field| PlannedGeneratedInputField {
+                id: field.id.clone(),
+                name: field.name.clone(),
+                sil_type: field.sil_type.clone(),
+                value: format!("{}[{index}]", hidden_consumed_input_generated_cache_name(handle, &field.name)),
+            })
+            .collect();
+        Ok(Self {
+            id: self.id,
+            scope: self.scope,
+            kind: self.kind,
+            reference,
+            lexical_root,
+            input_index: InputIndexExpr(input_index),
+            lowered_sil_type: self.lowered_sil_type.clone(),
+            access,
+            // The range prelude already authenticated and cached this item.
+            // Keeping an emit-capable physical read plan here would make it
+            // possible to read the same transaction input a second time.
+            physical: None,
+            generated_fields,
+            additional_replacements: Vec::new(),
+        })
+    }
+
+    fn generated_field(&self, id: &GeneratedFieldId) -> Option<&str> {
+        self.generated_fields.iter().find(|field| &field.id == id).map(|field| field.value.as_str())
+    }
 }
 
 /// All compiler-planned input references for one emitted entry.
@@ -918,6 +1050,7 @@ pub(in crate::compiler::codegen) struct EntryInputReferencePlan {
     references: Vec<PlannedEntryInputReference>,
     active: EntryInputReferenceId,
     consumed: BTreeMap<String, EntryInputReferenceId>,
+    consumed_ranges: BTreeSet<String>,
     observed: BTreeMap<(String, String), EntryInputReferenceId>,
 }
 
@@ -929,9 +1062,14 @@ pub(in crate::compiler::codegen) enum EntryInputReferenceView<'a> {
 }
 
 impl<'a> EntryInputReferenceView<'a> {
-    pub(in crate::compiler::codegen) fn active(self, actor: &ActorDecl, model: &Model<'_>) -> Result<PlannedEntryInputReference> {
+    pub(in crate::compiler::codegen) fn active(
+        self,
+        actor: &ActorDecl,
+        model: &Model<'_>,
+        state_values: &ContractStateValuePlan,
+    ) -> Result<PlannedEntryInputReference> {
         match self {
-            Self::None => active_input_reference(actor, model, model.state_lowering(&actor.name)?),
+            Self::None => active_input_reference(actor, model, model.state_lowering(&actor.name)?, state_values),
             Self::Complete(plan) => Ok(plan.active().clone()),
         }
     }
@@ -963,6 +1101,19 @@ impl<'a> EntryInputReferenceView<'a> {
             Self::Complete(plan) => plan.references().iter().find(|reference| reference.reference == expr),
         }
     }
+
+    pub(in crate::compiler::codegen) fn consumed_range_item(
+        self,
+        name: &str,
+        reference: String,
+        index: String,
+        input_index: String,
+    ) -> Result<Option<PlannedEntryInputReference>> {
+        match self {
+            Self::None => Ok(None),
+            Self::Complete(plan) => plan.consumed_range_item(name, reference, index, input_index).map(Some),
+        }
+    }
 }
 
 impl EntryInputReferencePlan {
@@ -979,6 +1130,19 @@ impl EntryInputReferencePlan {
             .get(name)
             .and_then(|id| self.reference(*id))
             .ok_or_else(|| ArgentError::new(format!("missing consumed input reference `{name}`")))
+    }
+
+    pub(in crate::compiler::codegen) fn consumed_range_item(
+        &self,
+        name: &str,
+        reference: String,
+        index: String,
+        input_index: String,
+    ) -> Result<PlannedEntryInputReference> {
+        if !self.consumed_ranges.contains(name) {
+            return Err(ArgentError::new(format!("consumed input `{name}` is not ranged")));
+        }
+        self.consumed(name)?.ranged_item(reference, name.to_string(), name, &index, input_index)
     }
 
     pub(in crate::compiler::codegen) fn observed(&self, observe: &str, handle: &str) -> Result<&PlannedEntryInputReference> {
@@ -1001,11 +1165,34 @@ pub(in crate::compiler::codegen) fn plan_entry_input_references(
     actor: &ActorDecl,
     entry: &EntryDecl,
     model: &Model<'_>,
+    state_values: &ContractStateValuePlan,
 ) -> Result<EntryInputReferencePlan> {
     let lowering = model.state_lowering(&actor.name)?;
-    let active = active_input_reference(actor, model, lowering)?;
+    let entry_model = model.entry_model(actor, entry)?;
+    let ranged_output_targets = entry_model
+        .current()
+        .outputs()
+        .iter()
+        .filter(|output| output.cardinality().is_range())
+        .filter_map(|output| output.target().single_static_actor())
+        .collect::<BTreeSet<_>>();
+    let generated_range_inputs = entry_model
+        .current()
+        .inputs()
+        .iter()
+        .filter(|input| input.cardinality().is_range())
+        .filter(|input| input.target().single_static_actor().is_some_and(|target| ranged_output_targets.contains(target)))
+        .map(|input| input.handle())
+        .collect::<BTreeSet<_>>();
+    let active = active_input_reference(actor, model, lowering, state_values)?;
     let mut references = vec![active];
     let mut consumed = BTreeMap::new();
+    let consumed_ranges = entry
+        .consumes
+        .iter()
+        .filter(|consume| matches!(consume.cardinality, crate::compiler::syntax::Cardinality::Range { .. }))
+        .map(|consume| consume.name.clone())
+        .collect();
     let mut next_scope = 1usize;
     for consume in &entry.consumes {
         let target = lowering.target_for_actor(&consume.actor).ok_or_else(|| {
@@ -1040,6 +1227,9 @@ pub(in crate::compiler::codegen) fn plan_entry_input_references(
             proof,
             target,
             lowering,
+            state_values,
+            model,
+            generated_range_inputs.contains(consume.name.as_str()),
         )?);
         consumed.insert(consume.name.clone(), id);
     }
@@ -1093,17 +1283,21 @@ pub(in crate::compiler::codegen) fn plan_entry_input_references(
                 proof,
                 target,
                 lowering,
+                state_values,
+                model,
+                false,
             )?);
             observed.insert((observe.name.clone(), input.name.clone()), id);
         }
     }
-    Ok(EntryInputReferencePlan { references, active: EntryInputReferenceId(0), consumed, observed })
+    Ok(EntryInputReferencePlan { references, active: EntryInputReferenceId(0), consumed, consumed_ranges, observed })
 }
 
 fn active_input_reference(
     actor: &ActorDecl,
     model: &Model<'_>,
     lowering: &ContractStateLowering,
+    state_values: &ContractStateValuePlan,
 ) -> Result<PlannedEntryInputReference> {
     let target = lowering
         .target_for_actor(&actor.name)
@@ -1118,6 +1312,7 @@ fn active_input_reference(
         .into_iter()
         .map(|field| {
             let name = field.source().field().to_string();
+            let sil_type = source_field_sil_type(target.source(), &name, state_values, model)?;
             let (value, trusted_storage) = if field.is_identity() {
                 (PlannedSourceExpr::Value(name.clone()), None)
             } else {
@@ -1140,7 +1335,7 @@ fn active_input_reference(
                     .collect();
                 (PlannedSourceExpr::Struct { sil_type, fields }, Some(name.clone()))
             };
-            Ok(PlannedSourceField { name, value: Some(value), trusted_storage })
+            Ok(PlannedSourceField { name, sil_type, value: Some(value), trusted_storage })
         })
         .collect::<Result<Vec<_>>>()?;
     let access = SourceStateAccess {
@@ -1170,6 +1365,7 @@ fn active_input_reference(
         lowered_sil_type: "State".to_string(),
         access,
         physical: None,
+        generated_fields: Vec::new(),
         additional_replacements,
     })
 }
@@ -1179,6 +1375,9 @@ fn input_reference(
     proof: InputTemplateProof,
     target: &TargetPhysicalPlan,
     lowering: &ContractStateLowering,
+    state_values: &ContractStateValuePlan,
+    model: &Model<'_>,
+    cache_generated_fields: bool,
 ) -> Result<PlannedEntryInputReference> {
     let InputReferenceSpec { id, scope, kind, reference, lexical_root, physical_expr, input_index } = spec;
     let fields = target.source_fields()?;
@@ -1201,12 +1400,17 @@ fn input_reference(
         && physical_sil_type == authored_sil_type;
     let planned_fields = fields
         .iter()
-        .map(|field| PlannedSourceField {
-            name: field.source().field().to_string(),
-            value: field.is_identity().then(|| PlannedSourceExpr::Value(format!("{physical_expr}.{}", field.sil_name()))),
-            trusted_storage: None,
+        .map(|field| {
+            let name = field.source().field().to_string();
+            let sil_type = source_field_sil_type(target.source(), &name, state_values, model)?;
+            Ok(PlannedSourceField {
+                name,
+                sil_type,
+                value: field.is_identity().then(|| PlannedSourceExpr::Value(format!("{physical_expr}.{}", field.sil_name()))),
+                trusted_storage: None,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     let access = SourceStateAccess {
         source: target.source().clone(),
         source_to_storage: target.source_to_storage().clone(),
@@ -1214,6 +1418,24 @@ fn input_reference(
         complete: direct_authored.then(|| physical_expr.clone()),
         fields: planned_fields,
         target: target.id().clone(),
+    };
+    let generated_fields = if cache_generated_fields {
+        target
+            .physical()
+            .fields()
+            .iter()
+            .filter_map(|field| match field.id() {
+                PhysicalFieldId::Generated(id) => Some(PlannedGeneratedInputField {
+                    id: id.clone(),
+                    name: field.sil_name().to_string(),
+                    sil_type: field.sil_type().to_string(),
+                    value: format!("{physical_expr}.{}", field.sil_name()),
+                }),
+                PhysicalFieldId::Storage(_) => None,
+            })
+            .collect()
+    } else {
+        Vec::new()
     };
     Ok(PlannedEntryInputReference {
         id,
@@ -1225,8 +1447,32 @@ fn input_reference(
         lowered_sil_type: physical_sil_type,
         access,
         physical: Some(physical),
+        generated_fields,
         additional_replacements: Vec::new(),
     })
+}
+
+fn source_field_sil_type(
+    source: &SourceStateId,
+    field_name: &str,
+    state_values: &ContractStateValuePlan,
+    model: &Model<'_>,
+) -> Result<String> {
+    let source_state = model.state(source.as_str())?;
+    let storage_field = model
+        .storage_state(source.as_str())?
+        .fields
+        .iter()
+        .find(|field| field.name == field_name)
+        .ok_or_else(|| ArgentError::new(format!("state `{}` has no source field `{field_name}`", source.as_str())))?;
+    Ok(source_state
+        .expansion
+        .as_ref()
+        .and_then(|expansion| expansion.digests.iter().find(|digest| digest.field == field_name))
+        .and_then(|digest| state_values.authored_sil_type_for_name(&digest.state))
+        .map(str::to_string)
+        .or_else(|| state_values.sil_type_for_type_ref(&storage_field.ty))
+        .unwrap_or_else(|| lower_type_ref(&storage_field.ty, model)))
 }
 
 fn render_sil_state_type(ty: &SilStateType) -> Result<String> {

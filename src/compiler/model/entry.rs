@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::artifact::MAX_ENTRY_RANGE_CARDINALITY;
 use crate::compiler::naming::{is_identifier, to_snake};
 use crate::compiler::syntax::body::{EntryStatement, EntrySuccessor, RouteArity};
 use crate::compiler::syntax::lexer::{Token, TokenKind, lex};
@@ -526,9 +527,6 @@ pub(crate) enum ResolvedCardinality {
     One,
     Range { minimum: i64, maximum: i64 },
 }
-
-/// Limit Sil's compile-time loop expansion to a practical script and compiler budget.
-const MAX_ENTRY_RANGE_CARDINALITY: i64 = 512;
 
 impl ResolvedCardinality {
     pub(crate) fn is_range(self) -> bool {

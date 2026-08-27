@@ -633,6 +633,12 @@ pub struct EmitOutputArtifact {
     pub cardinality: CardinalityArtifact,
 }
 
+/// Maximum range cardinality accepted by Argent compilers and runtimes.
+///
+/// Keeping the limit in the portable artifact layer prevents compiler and
+/// consumer implementations from drifting on generated-loop resource bounds.
+pub const MAX_ENTRY_RANGE_CARDINALITY: i64 = 512;
+
 /// Resolved transaction cardinality of one named interaction handle.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

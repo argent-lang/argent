@@ -5151,7 +5151,7 @@ fn single_actor_self_consume_is_pinned() {
 }
 
 #[test]
-fn ranged_current_inputs_lower_to_a_pinned_state_array() {
+fn ranged_current_inputs_lower_to_a_pinned_input_reference_cache() {
     let (sil, artifact) = emit_fixture("entry_range_inputs", "Batch");
 
     assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/entry_range_inputs/Batch.sil"));
@@ -5159,6 +5159,48 @@ fn ranged_current_inputs_lower_to_a_pinned_state_array() {
     let batch = artifact.argent.actors.iter().find(|actor| actor.name == "Batch").expect("Batch actor exists");
     assert_eq!(batch.entries[0].consumes[1].cardinality, CardinalityArtifact::Range { minimum: 1, maximum: 3 });
     assert_eq!(batch.entries[0].route_plan.consumes.iter().map(|input| input.cov_index).collect::<Vec<_>>(), [Some(1), None, None]);
+}
+
+#[test]
+fn ranged_consume_discards_generated_fields_without_a_matching_ranged_output() {
+    let sil = emit_inline_actor(
+        r#"
+            state BatchState {}
+            state AccountState { int balance; }
+
+            actor enum AccountRoute {
+                Account;
+                Frozen;
+            }
+
+            actor Batch owns BatchState {
+                entry inspect()
+                consumes { accounts: Account[1..=2], }
+                emits none {
+                    require(accounts[0].balance >= 0);
+                }
+            }
+
+            actor Account owns AccountState {
+                entry reroute(AccountRoute target) emits next: AccountRoute {
+                    AccountState next_state = { balance: balance, };
+                    unrestricted(next.value);
+                    become next <- target(next_state);
+                }
+            }
+
+            actor Frozen owns AccountState {
+                entry hold() emits none { require(balance >= 0); }
+            }
+
+            app Test { actor Batch; actor Account; actor Frozen; }
+        "#,
+        "Batch",
+    );
+
+    assert!(sil.contains("Gen__AccountState gen__accounts_state = readInputStateWithTemplate("), "{sil}");
+    assert!(sil.contains("AccountState[] gen__accounts_authored_states;"), "{sil}");
+    assert!(!sil.contains("_physical_values"), "unused generated input fields must not be cached:\n{sil}");
 }
 
 #[test]

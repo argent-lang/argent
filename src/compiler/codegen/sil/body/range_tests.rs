@@ -19,9 +19,9 @@ fn lower_test_body_result(source: &str, actor_name: &str) -> Result<String> {
     let model = Model::from_program(&program).expect("model builds");
     let actor = model.actor(actor_name).expect("actor exists");
     let entry = actor.entries.first().expect("actor has an entry");
-    let input_references =
-        super::super::state_boundary::plan_entry_input_references(actor, entry, &model).expect("input references plan");
     let state_values = ContractStateValuePlan::new(actor, &model).expect("state values plan");
+    let input_references =
+        super::super::state_boundary::plan_entry_input_references(actor, entry, &model, &state_values).expect("input references plan");
     lower_entry_body(actor, entry, &model, &input_references, &state_values).map(|body| body.sil)
 }
 
@@ -35,6 +35,11 @@ fn lowers_singleton_and_ranged_input_values_by_lexical_binding() {
 
             state AccountState {
                 int balance;
+                int value_note;
+            }
+
+            fn balance_of(AccountState account) -> int {
+                return account.balance;
             }
 
             actor Batch owns BatchState {
@@ -51,6 +56,14 @@ fn lowers_singleton_and_ranged_input_values_by_lexical_binding() {
                     require(accounts[/* guaranteed */ 0].value >= 0);
                     require(accounts[1].value >= 0);
                     require(accounts[0].balance >= 0);
+                    require(accounts[positions[0]].balance >= 0);
+                    require(accounts[0].cov_id == self.cov_id);
+                    require(accounts[positions[0]].cov_id == self.cov_id);
+                    AccountState first = state(accounts[0]);
+                    AccountState selected = state(accounts[positions[0]]);
+                    require(first.balance >= 0);
+                    require(selected.balance >= 0);
+                    require(balance_of(state(accounts[0])) >= 0);
                     require(accounts[0].value_note >= 0);
                     require(parent.accounts[0].value >= 0);
                     require("accounts[0].value" == "accounts[0].value");
@@ -70,13 +83,13 @@ fn lowers_singleton_and_ranged_input_values_by_lexical_binding() {
     assert!(sil.contains("tx.inputs[gen__account_input_idx].value"), "singleton input value was not lowered:\n{sil}");
     assert!(
         sil.contains(
-            "tx.inputs[OpCovInputIdx(gen__cov_id, 2 + (gen__checked_range_index(accounts.length, gen__accounts_count)))].value"
+            "tx.inputs[OpCovInputIdx(gen__cov_id, 2 + (gen__checked_range_index(gen__accounts_count, gen__accounts_count)))].value"
         ),
         "a one-past-end input index omitted its runtime check:\n{sil}"
     );
     assert!(
         sil.contains(
-            "tx.inputs[OpCovInputIdx(gen__cov_id, 2 + (gen__checked_range_index(positions[accounts.length - 1], gen__accounts_count)))].value"
+            "tx.inputs[OpCovInputIdx(gen__cov_id, 2 + (gen__checked_range_index(positions[gen__accounts_count - 1], gen__accounts_count)))].value"
         ),
         "nested range index was not lowered:\n{sil}"
     );
@@ -94,8 +107,30 @@ fn lowers_singleton_and_ranged_input_values_by_lexical_binding() {
         sil.contains("tx.inputs[OpCovInputIdx(gen__cov_id, 2 + (gen__checked_range_index(1, gen__accounts_count)))].value"),
         "an optional literal index omitted its runtime check:\n{sil}"
     );
-    assert!(sil.contains("accounts[0].balance"), "ordinary ranged state access changed:\n{sil}");
-    assert!(sil.contains("accounts[0].value_note"), "a longer member name was rewritten:\n{sil}");
+    assert!(
+        sil.contains("gen__accounts_authored_states[0].balance"),
+        "ordinary ranged state projection did not use the private authenticated cache:\n{sil}"
+    );
+    assert!(sil.contains("OpInputCovenantId(OpCovInputIdx(gen__cov_id, 2 + 0))"), "range covenant id was not lowered:\n{sil}");
+    assert!(sil.contains("AccountState first = gen__accounts_authored_states[0]"), "state(range[i]) was not reconstructed:\n{sil}");
+    let checked_position = "gen__checked_range_index(positions[0], gen__accounts_count)";
+    assert!(
+        sil.contains(&format!("gen__accounts_authored_states[{checked_position}].balance")),
+        "a variable field-projection index omitted its runtime check:\n{sil}"
+    );
+    assert!(
+        sil.contains(&format!("OpInputCovenantId(OpCovInputIdx(gen__cov_id, 2 + ({checked_position})))")),
+        "a variable covenant-id index omitted its runtime check:\n{sil}"
+    );
+    assert!(
+        sil.contains(&format!("AccountState selected = gen__accounts_authored_states[{checked_position}]")),
+        "a variable state-reconstruction index omitted its runtime check:\n{sil}"
+    );
+    assert!(
+        sil.contains("balance_of(gen__accounts_authored_states[0])"),
+        "state(range[i]) was not reconstructed inside a function call:\n{sil}"
+    );
+    assert!(sil.contains("gen__accounts_authored_states[0].value_note"), "a longer authored field was not projected:\n{sil}");
     assert!(sil.contains("parent.accounts[0].value"), "a non-rooted input name was rewritten:\n{sil}");
     assert!(sil.contains(r#""accounts[0].value" == "accounts[0].value""#), "string contents were rewritten:\n{sil}");
 }
@@ -179,6 +214,51 @@ fn lowers_ranged_output_values_and_named_state_array_routes() {
 }
 
 #[test]
+fn checks_literal_zero_against_optional_input_and_output_range_lengths() {
+    let source = r#"
+        state BatchState {}
+        state AccountState { int balance; }
+
+        actor Batch owns BatchState {
+            entry inspect(AccountState[] next_states)
+            consumes {
+                accounts: Account[0..=2],
+                tail: Account,
+            }
+            emits {
+                next: Account[0..=2],
+                tail_out: Account,
+            } {
+                require(accounts[0].value >= 0);
+                require(next[0].value >= 0);
+                unrestricted(tail_out.value);
+                become {
+                    next <- Account[](next_states),
+                    tail_out <- Account(AccountState { balance: 0, }),
+                };
+            }
+        }
+
+        actor Account owns AccountState {
+            entry hold() emits none { require(balance >= 0); }
+        }
+        app Test { actor Batch; actor Account; }
+    "#;
+    let sil = lower_test_body(source, "Batch");
+
+    assert!(
+        sil.contains("tx.inputs[OpCovInputIdx(gen__cov_id, 1 + (gen__checked_range_index(0, gen__accounts_count)))].value"),
+        "literal zero could alias the trailing input when the optional input range is empty:\n{sil}"
+    );
+    assert!(
+        sil.contains("tx.outputs[OpAuthOutputIdx(this.activeInputIndex, gen__checked_range_index(0, gen__next_output_count))].value"),
+        "literal zero could alias the trailing output when the optional output range is empty:\n{sil}"
+    );
+    crate::compile_inline("optional-range-index-zero.ag", source)
+        .expect("optional range literal-zero checks compile through the SIL backend");
+}
+
+#[test]
 fn permanently_empty_output_range_has_no_value_policy() {
     let source = r#"
         state BatchState {}
@@ -246,7 +326,7 @@ fn rejects_literal_range_value_indices_that_can_never_exist() {
 }
 
 #[test]
-fn records_ranged_current_input_state_arrays() {
+fn records_ranged_current_inputs_as_reference_collections() {
     let program = test_program(
         r#"
             const int MAX_ACCOUNTS = 3;
@@ -284,12 +364,115 @@ fn records_ranged_current_input_state_arrays() {
     let model = Model::from_program(&program).expect("model builds");
     let actor = model.actor("Batch").expect("actor exists");
     let entry = actor.entries.first().expect("actor has an entry");
-    let input_references =
-        super::super::state_boundary::plan_entry_input_references(actor, entry, &model).expect("input references plan");
     let state_values = ContractStateValuePlan::new(actor, &model).expect("state values plan");
+    let input_references =
+        super::super::state_boundary::plan_entry_input_references(actor, entry, &model, &state_values).expect("input references plan");
     let lowerer = BodyLowerer::new(actor, entry, &model, EntryInputReferenceView::Complete(&input_references), &state_values)
         .expect("body lowerer builds");
 
-    assert_eq!(lowerer.bindings.source_type("accounts"), Some("AccountState[]"));
-    assert_eq!(lowerer.bindings.lowered_type("accounts"), Some("AccountState[]"));
+    assert_eq!(lowerer.bindings.source_type("accounts"), None);
+    assert_eq!(lowerer.bindings.lowered_type("accounts"), None);
+    let item = lowerer.input_reference_for_expr("accounts[0]", 0).expect("range index lowers").expect("item reference exists");
+    assert_eq!(item.reference(), "accounts[0]");
+    assert_eq!(item.source_identity(), "AccountState");
+}
+
+#[test]
+fn rejects_a_bare_ranged_input_item_as_authored_state() {
+    let source = r#"
+        state BatchState {}
+        state AccountState { int balance; }
+
+        fn balance_of(AccountState account) -> int {
+            return account.balance;
+        }
+
+        actor Batch owns BatchState {
+            entry inspect() consumes { accounts: Account[1..=3], } emits none {
+                REJECTED_BODY
+            }
+        }
+        actor Account owns AccountState {
+            entry hold() emits none {
+                require(balance >= 0);
+            }
+        }
+        app Test { actor Batch; actor Account; }
+    "#;
+    for body in ["AccountState account = accounts[0]; require(account.balance >= 0);", "require(balance_of(accounts[0]) >= 0);"] {
+        let invalid = source.replace("REJECTED_BODY", body);
+        let err = lower_test_body_result(&invalid, "Batch").expect_err("a ranged item is an input reference, not authored state");
+        assert!(err.to_string().contains("use `state(accounts[0])`"), "unexpected error: {err}");
+    }
+}
+
+#[test]
+fn expanded_ranged_inputs_allow_available_projections_but_not_reconstruction() {
+    let source = r#"
+        state BatchState {}
+        state Capsule { int nonce; virtual detail; }
+        state Details { int count; }
+        state Expanded expands Capsule { detail: Details; }
+
+        actor Batch owns BatchState {
+            entry inspect() consumes { vaults: Vault[1..=3], } emits none {
+                require(vaults.length >= 1);
+                require(vaults[0].nonce >= 0);
+                require(vaults[0].value >= 0);
+                require(vaults[0].cov_id == self.cov_id);
+            }
+        }
+        actor Vault owns Expanded {
+            entry hold() emits none {
+                require(nonce >= 0);
+            }
+        }
+        app Test { actor Batch; actor Vault; }
+    "#;
+    let sil = lower_test_body(source, "Batch");
+    assert!(sil.contains("gen__vaults_nonce_values[0]"), "available field did not project:\n{sil}");
+    assert!(sil.contains("tx.inputs[OpCovInputIdx(gen__cov_id, 1 + 0)].value"), "native value did not lower:\n{sil}");
+    crate::compile_inline("expanded-ranged-input.ag", source)
+        .expect("available projections from an expanded ranged input compile through the full Sil backend");
+
+    for body in ["require(vaults[0].detail.count >= 0);", "Expanded opened = state(vaults[0]);"] {
+        let invalid =
+            source.replace("require(vaults[0].cov_id == self.cov_id);", &format!("require(vaults[0].cov_id == self.cov_id); {body}"));
+        let err = lower_test_body_result(&invalid, "Batch").expect_err("expanded preimages are unavailable for ranged inputs");
+        assert!(err.to_string().contains("validated preimage"), "unexpected error: {err}");
+    }
+}
+
+#[test]
+fn unrestricted_validates_ranged_output_indices_under_the_handle_policy() {
+    let source = r#"
+        state BatchState {}
+        state AccountState { int balance; }
+        actor Batch owns BatchState {
+            entry inspect(int index, AccountState[] states) emits { next: Account[1..=3], } {
+                UNRESTRICTED
+                become next <- Account[](states);
+            }
+        }
+        actor Account owns AccountState {
+            entry hold() emits none {
+                require(balance >= 0);
+            }
+        }
+        app Test { actor Batch; actor Account; }
+    "#;
+    for index in ["-1", "3"] {
+        let invalid = source.replace("UNRESTRICTED", &format!("unrestricted(next[{index}].value);"));
+        let err = lower_test_body_result(&invalid, "Batch").expect_err("unrestricted must enforce the declared maximum");
+        assert!(
+            err.to_string().contains(&format!("range `next` index `{index}` is outside its declared positions `0..3`")),
+            "unexpected error: {err}"
+        );
+    }
+
+    for (name, index) in [("literal", "2"), ("variable", "index")] {
+        let valid = source.replace("UNRESTRICTED", &format!("unrestricted(next[{index}].value);"));
+        crate::compile_inline(format!("unrestricted-ranged-output-{name}.ag"), &valid)
+            .unwrap_or_else(|err| panic!("{name} unrestricted range index should follow the handle-level policy: {err}"));
+    }
 }
