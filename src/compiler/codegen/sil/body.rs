@@ -20,7 +20,7 @@ use crate::compiler::syntax::*;
 use crate::error::{ArgentError, Result};
 use silverscript_lang::ast::visit::{AstVisitorMut, visit_function_mut, walk_expr_mut};
 use silverscript_lang::ast::{
-    Expr as SilExpr, ExprKind as SilExprKind, Statement as SilStatement, parse_expression_ast, parse_function_ast,
+    Expr as SilExpr, ExprKind as SilExprKind, Statement as SilStatement, parse_expression_ast, parse_function_ast, parse_statement_ast,
 };
 
 // Body lowering uses the surrounding Sil emitter's shared witness plans,
@@ -916,14 +916,12 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     }
 
     fn plain_assignment_expr(&self, statement: &str) -> Option<(Range<usize>, Option<PlannedStateValue>)> {
-        let prefix = "function gen__entry_statement() { ";
-        let source = format!("{prefix}{statement}; }}");
-        let parsed = parse_function_ast(&source).ok()?;
-        let [SilStatement::Assign { name, expr, .. }] = parsed.body.as_slice() else {
+        let source = format!("{statement};");
+        let SilStatement::Assign { name, expr, .. } = parse_statement_ast(&source).ok()? else {
             return None;
         };
-        let range = (expr.span.start() - prefix.len())..(expr.span.end() - prefix.len());
-        let expected_state = self.bindings.state_value(name).cloned();
+        let range = expr.span.start()..expr.span.end();
+        let expected_state = self.bindings.state_value(&name).cloned();
         Some((range, expected_state))
     }
 
@@ -1588,15 +1586,11 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         if let Ok(mut parsed) = parse_expression_ast(expr) {
             collector.visit_expr(&mut parsed);
         } else {
-            let prefix = "function gen__entry_statement() { ";
-            let source = format!("{prefix}{expr}; }}");
-            let mut function = parse_function_ast(&source).map_err(|err| {
+            let source = format!("{expr};");
+            let mut statement = parse_statement_ast(&source).map_err(|err| {
                 self.error(format!("cannot classify state-valued function arguments in expression or statement `{expr}`: {err}"))
             })?;
-            visit_function_mut(&mut collector, &mut function);
-            for site in &mut collector.sites {
-                site.span = (site.span.start - prefix.len())..(site.span.end - prefix.len());
-            }
+            collector.visit_statement(&mut statement);
         }
         self.lower_planned_state_value_sites(expr, collector.sites, indent)
     }
@@ -1892,15 +1886,10 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         if let Ok(mut parsed) = parse_expression_ast(expr) {
             collector.visit_expr(&mut parsed);
         } else {
-            let prefix = "function gen__entry_named_calls() { ";
-            let source = format!("{prefix}{expr}; }}");
-            let mut function =
-                parse_function_ast(&source).map_err(|err| self.error(format!("cannot classify `{name}` calls in `{expr}`: {err}")))?;
-            visit_function_mut(&mut collector, &mut function);
-            for site in &mut collector.sites {
-                site.start -= prefix.len();
-                site.end -= prefix.len();
-            }
+            let source = format!("{expr};");
+            let mut statement = parse_statement_ast(&source)
+                .map_err(|err| self.error(format!("cannot classify `{name}` calls in `{expr}`: {err}")))?;
+            collector.visit_statement(&mut statement);
         }
         collector.sites.sort_by_key(|site| site.start);
         let mut outermost = Vec::<Range<usize>>::new();
@@ -1946,9 +1935,9 @@ fn contains_physical_state_constructor(source: &str) -> bool {
         detector.visit_expr(&mut expr);
         return detector.found;
     }
-    let wrapped = format!("function gen__physical_state_constructor_check() {{ {source}; }}");
-    if let Ok(mut function) = parse_function_ast(&wrapped) {
-        visit_function_mut(&mut detector, &mut function);
+    let statement_source = format!("{source};");
+    if let Ok(mut statement) = parse_statement_ast(&statement_source) {
+        detector.visit_statement(&mut statement);
     }
     detector.found
 }

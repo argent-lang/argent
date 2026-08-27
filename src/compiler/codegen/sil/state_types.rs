@@ -10,6 +10,7 @@ use std::ops::Range;
 use silverscript_lang::ast::visit::{AstVisitorMut, walk_expr_mut, walk_function_mut, walk_param_mut, walk_statement_mut};
 use silverscript_lang::ast::{
     Expr, ExprKind, FunctionAst, ParamAst, Statement, TypeBase, TypeRef, parse_contract_ast, parse_expression_ast, parse_function_ast,
+    parse_statement_ast,
 };
 
 use crate::error::{ArgentError, Result};
@@ -181,6 +182,25 @@ fn lower_function_source(source: &str, state_values: &ContractStateValuePlan) ->
     Ok(lowered)
 }
 
+fn lower_statement_source(source: &str, state_values: &ContractStateValuePlan) -> Result<String> {
+    let mut statement = parse_statement_ast(source)
+        .map_err(|err| ArgentError::new(format!("cannot classify Sil statement for equivalent-State lowering: {err}")))?;
+    let mut lowerer = EquivalentStateLowerer::new(state_values);
+    lowerer.visit_statement(&mut statement);
+    let lowered = apply_checked_edits(source, lowerer.edits)?;
+    let mut reparsed = parse_statement_ast(&lowered)
+        .map_err(|err| ArgentError::new(format!("equivalent-State lowering produced an invalid Sil statement: {err}")))?;
+    let mut audit = EquivalentStateLowerer::new(state_values);
+    audit.visit_statement(&mut reparsed);
+    if let Some(edit) = audit.edits.first() {
+        return Err(ArgentError::new(format!(
+            "equivalent-State lowering left authored type `{}` in a Sil statement at {:?}",
+            edit.expected, edit.span
+        )));
+    }
+    Ok(lowered)
+}
+
 pub(in crate::compiler::codegen) fn lower_function_body_state_types(
     name: &str,
     params: &[String],
@@ -217,15 +237,13 @@ pub(in crate::compiler::codegen) fn lower_statement_state_types(
     statement: &str,
     state_values: &ContractStateValuePlan,
 ) -> Result<String> {
-    let prefix = "function gen__equivalent_state_statement() { ";
-    let suffix = "; }";
-    let source = format!("{prefix}{statement}{suffix}");
-    let lowered = lower_function_source(&source, state_values)?;
+    let suffix = ";";
+    let source = format!("{statement}{suffix}");
+    let lowered = lower_statement_source(&source, state_values)?;
     lowered
-        .strip_prefix(prefix)
-        .and_then(|statement| statement.strip_suffix(suffix))
+        .strip_suffix(suffix)
         .map(str::to_string)
-        .ok_or_else(|| ArgentError::new("equivalent-State statement lowering changed generated wrapper text"))
+        .ok_or_else(|| ArgentError::new("equivalent-State statement lowering changed its terminator"))
 }
 
 pub(in crate::compiler::codegen) fn audit_omitted_equivalent_state_structs(
