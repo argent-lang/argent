@@ -1842,8 +1842,8 @@ fn state_valued_functions_are_characterized_in_aligned_and_augmented_contexts() 
     let templates = &artifact.argent.template_plan.templates;
     let aligned_template = templates.iter().find(|template| template.actor == "Aligned").expect("Aligned template exists");
     let routed_template = templates.iter().find(|template| template.actor == "Routed").expect("Routed template exists");
-    assert_eq!(aligned_template.sil_template_hash, "1e53efdb95d8b504889f7ae86ae51d4ac54c988e6435a010c29141d1936ade7a");
-    assert_eq!(routed_template.sil_template_hash, "f4ae67cf1f069160b3a70383fb977335446c555a05cc16066e47937bdc9b2d19");
+    assert_eq!(aligned_template.sil_template_hash, "93509ef29827d95b79f405cf30f2c651fadbd01c06f0a7c73088678a10dfb4ef");
+    assert_eq!(routed_template.sil_template_hash, "51b73db36d9fa9d0cdd8ef0ee1567c8507a5051b8075fd7a596567d875a6e261");
     assert!(aligned_template.actor_type_handle.context_fields.is_empty());
     assert_eq!(routed_template.actor_type_handle.context_fields, ["gen__foreign_template"]);
 }
@@ -4297,7 +4297,9 @@ fn observe_entry_argument_source_is_recorded_by_index() {
             state ForeignState {
                 int count;
             }
-            state LocalState {}
+            state LocalState {
+                int marker;
+            }
 
             actor Foreign owns ForeignState {
                 entry hold() emits none {
@@ -4927,7 +4929,9 @@ fn selected_app_actor_count_controls_self_consume_template_authentication() {
                 int count;
             }
 
-            state GuardState {}
+            state GuardState {
+                int marker;
+            }
 
             actor Counter owns CounterState {
                 entry merge()
@@ -5004,7 +5008,9 @@ fn unselected_actors_do_not_shape_selected_app_state() {
                 int count;
             }
 
-            state TargetState {}
+            state TargetState {
+                int marker;
+            }
 
             actor Current owns SharedState {
                 entry step() emits next: Current {
@@ -5016,7 +5022,9 @@ fn unselected_actors_do_not_shape_selected_app_state() {
             actor Outside owns SharedState {
                 entry step() emits next: Target {
                     unrestricted(next.value);
-                    TargetState next_state = {};
+                    TargetState next_state = {
+                        marker: 0,
+                    };
                     become next <- Target(next_state);
                 }
             }
@@ -8705,8 +8713,8 @@ fn artifact_codec_matches_silverscript_sigscript_builder() {
     let sil_contract = sil_abi.contract("Foo").expect("Foo Sil ABI exists");
     let bump = sil_contract.entries.iter().find(|entry| entry.name == "bump").expect("bump entry exists");
     let done = sil_contract.entries.iter().find(|entry| entry.name == "done").expect("done entry exists");
-    assert_eq!(bump.dispatch_tag.into_bytes(), compiled.entry_by_name("bump").expect("bump ABI exists").dispatch_tag());
-    assert_eq!(done.dispatch_tag.into_bytes(), compiled.entry_by_name("done").expect("done ABI exists").dispatch_tag());
+    assert_eq!(bump.dispatch_tag.into_bytes(), compiled.entry_by_name("bump").expect("bump ABI exists").dispatch_tag);
+    assert_eq!(done.dispatch_tag.into_bytes(), compiled.entry_by_name("done").expect("done ABI exists").dispatch_tag);
 
     let portable_bump = crate::codec::encode_contract_entry_sig_script(
         &sil_abi,

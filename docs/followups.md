@@ -82,6 +82,15 @@ decodes state fields. It is not the right operation when an actor's complete
 physical state, including compiler-owned fields, is empty. In that case the
 redeem script is fixed, so its P2SH hash identifies the complete actor script.
 
+Silverscript now rejects named structs with no fields. Argent must therefore
+represent an empty authored state without emitting `struct Empty {}`. This is a
+required lowering path, not only an optimization.
+
+If generated route fields make the physical state non-empty, use the normal
+template-authenticated state operations. If the physical state is also empty,
+emit no state reads or writes and authenticate the actor through its script
+public key.
+
 Silverscript can construct the locking script from a runtime hash with
 `new ScriptPubKeyP2SH(hash)`.
 

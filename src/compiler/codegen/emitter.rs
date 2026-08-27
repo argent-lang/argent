@@ -2251,7 +2251,7 @@ fn sil_contract_artifact(actor: &ActorDecl, model: &Model<'_>, actor_sil: &BTree
             let compiled_entry = compiled.entry_by_name(&entry.name).ok_or_else(|| {
                 ArgentError::new(format!("generated Silverscript for actor `{}` has no entry `{}`", actor.name, entry.name))
             })?;
-            Ok(sil_entry_artifact(actor, entry, model, compiled_entry.dispatch_tag()))
+            Ok(sil_entry_artifact(actor, entry, model, compiled_entry.dispatch_tag))
         })
         .collect::<Result<Vec<_>>>()?;
 

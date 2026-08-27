@@ -14,7 +14,7 @@ contract Minter(
 
     // :: linked templates
     byte[32] constant gen__kcc20_asset__kcc20_template_const = byte[32](0x2acc1d722544817061d8833bd251a9a1728ee987305630f4d9da12130aa1ce84);
-    byte[32] constant gen__kcc20_asset__minter_proxy_template_const = byte[32](0x7c7eae3f0d65a401154f7f2466796b92e36efda73e1454159ea5e42a516b3551);
+    byte[32] constant gen__kcc20_asset__minter_proxy_template_const = byte[32](0x2de20206584a0b58d7d4b93aafe77414b1e9a72ff64e1c60fe8237f092312295);
 
     // :: state layouts
     struct KCC20State {

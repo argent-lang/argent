@@ -267,7 +267,9 @@ actor Shared owns SharedState {
     }
 }
 
-state GuardState {}
+state GuardState {
+    int marker;
+}
 
 actor Guard owns GuardState {
     entry hold() emits next: Guard {
@@ -294,7 +296,9 @@ app CohortApp {
 import actor SoloApp::Shared from "./shared.ag";
 import app CohortApp from "./shared.ag";
 
-state CtrlState {}
+state CtrlState {
+    int marker;
+}
 
 actor Ctrl owns CtrlState {
     entry inspect(cov_id solo_id, cov_id cohort_id)
