@@ -7,11 +7,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-use silverscript_lang::ast::visit::{AstVisitorMut, walk_expr_mut, walk_function_mut, walk_param_mut, walk_statement_mut};
-use silverscript_lang::ast::{
-    Expr, ExprKind, FunctionAst, ParamAst, Statement, TypeBase, TypeRef, parse_contract_ast, parse_expression_ast, parse_function_ast,
-    parse_statement_ast,
-};
+use silverscript_lang::ast::visit::AstVisitorMut;
+use silverscript_lang::ast::{TypeBase, TypeRef, parse_contract_ast, parse_expression_ast, parse_function_ast, parse_statement_ast};
+use silverscript_lang::span::Span;
 
 use crate::error::{ArgentError, Result};
 
@@ -61,64 +59,8 @@ impl EquivalentStateLowerer {
 }
 
 impl<'i> AstVisitorMut<'i> for EquivalentStateLowerer {
-    fn visit_function(&mut self, function: &mut FunctionAst<'i>) {
-        for (ty, span) in function.return_types.iter().zip(&function.return_type_spans) {
-            self.push_type(ty, span.start());
-        }
-        walk_function_mut(self, function);
-    }
-
-    fn visit_param(&mut self, param: &mut ParamAst<'i>) {
-        self.push_type(&param.type_ref, param.type_span.start());
-        walk_param_mut(self, param);
-    }
-
-    fn visit_statement(&mut self, statement: &mut Statement<'i>) {
-        match statement {
-            Statement::VariableDefinition { type_ref, type_span, .. } => self.push_type(type_ref, type_span.start()),
-            Statement::TupleAssignment { left_type_ref, left_type_span, right_type_ref, right_type_span, .. } => {
-                self.push_type(left_type_ref, left_type_span.start());
-                self.push_type(right_type_ref, right_type_span.start());
-            }
-            Statement::FunctionCallAssign { bindings, .. } => {
-                for binding in bindings {
-                    self.push_type(&binding.type_ref, binding.type_span.start());
-                }
-            }
-            Statement::StateFunctionCallAssign { target_struct, bindings, target_struct_span, .. } => {
-                self.push_name(target_struct, target_struct_span.start());
-                for binding in bindings {
-                    self.push_type(&binding.type_ref, binding.type_span.start());
-                }
-            }
-            Statement::StructDestructure { struct_name, bindings, struct_name_span, .. } => {
-                self.push_name(struct_name, struct_name_span.start());
-                for binding in bindings {
-                    self.push_type(&binding.type_ref, binding.type_span.start());
-                }
-            }
-            Statement::FunctionCall { .. }
-            | Statement::Assign { .. }
-            | Statement::RequireAgeDaa { .. }
-            | Statement::RequireTxDaa { .. }
-            | Statement::RequireTxTime { .. }
-            | Statement::Require { .. }
-            | Statement::Block { .. }
-            | Statement::If { .. }
-            | Statement::For { .. }
-            | Statement::Return { .. }
-            | Statement::Console { .. } => {}
-        }
-        walk_statement_mut(self, statement);
-    }
-
-    fn visit_expr(&mut self, expr: &mut Expr<'i>) {
-        match &expr.kind {
-            ExprKind::Array { type_ref, type_span, .. } => self.push_type(type_ref, type_span.start()),
-            ExprKind::StructLiteral { name, name_span, .. } => self.push_name(name, name_span.start()),
-            _ => {}
-        }
-        walk_expr_mut(self, expr);
+    fn visit_type(&mut self, type_ref: &TypeRef, span: Span<'i>) {
+        self.push_type(type_ref, span.start());
     }
 }
 
@@ -264,17 +206,6 @@ pub(in crate::compiler::codegen) fn audit_omitted_equivalent_state_structs(
     }
 
     let mut audit = EquivalentStateLowerer::restricted(state_values, omitted);
-    for state in &contract.structs {
-        for field in &state.fields {
-            audit.push_type(&field.type_ref, field.type_span.start());
-        }
-    }
-    for field in &contract.fields {
-        audit.push_type(&field.type_ref, field.type_span.start());
-    }
-    for constant in &contract.constants {
-        audit.push_type(&constant.type_ref, constant.type_span.start());
-    }
     audit.visit_contract(&mut contract);
     if let Some(edit) = audit.edits.first() {
         return Err(ArgentError::new(format!(
