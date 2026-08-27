@@ -57,7 +57,7 @@ fn extracts_inline_named_single_output_route() {
 fn rejects_unnamed_single_output_route() {
     let err = collect_routes("become Done(next);").expect_err("unnamed routes must not parse");
 
-    assert!(err.to_string().contains("must name its output"), "unexpected error: {err}");
+    assert!(err.to_string().contains("must name its output with `output <- successor`"), "unexpected error: {err}");
 }
 
 #[test]

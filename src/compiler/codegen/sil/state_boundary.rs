@@ -685,7 +685,6 @@ impl SourceStateAccess {
         self.source.as_str()
     }
 
-    #[cfg(test)]
     fn authored_sil_type(&self) -> &str {
         &self.authored_sil_type
     }
@@ -806,8 +805,7 @@ impl PlannedEntryInputReference {
         matches!(self.kind, EntryInputReferenceKind::Active)
     }
 
-    #[cfg(test)]
-    fn authored_sil_type(&self) -> &str {
+    pub(in crate::compiler::codegen) fn authored_sil_type(&self) -> &str {
         self.access.authored_sil_type()
     }
 
@@ -1016,11 +1014,15 @@ pub(in crate::compiler::codegen) fn plan_entry_input_references(
         let proof = if model.app_actors.is_singleton_actor_self_target(&actor.name, &consume.actor) {
             InputTemplateProof::CovenantDomain
         } else {
-            InputTemplateProof::Template {
-                prefix_len: hidden_witness_prefix_len_name(&consume.actor),
-                suffix_len: hidden_witness_suffix_len_name(&consume.actor),
-                template: hidden_template_name(&consume.actor),
-            }
+            let (prefix_len, suffix_len) = if entry_template_witness_uses_bytes(actor, entry, &consume.actor, model)? {
+                (
+                    format!("{}.length", hidden_witness_prefix_name(&consume.actor)),
+                    format!("{}.length", hidden_witness_suffix_name(&consume.actor)),
+                )
+            } else {
+                (hidden_witness_prefix_len_name(&consume.actor), hidden_witness_suffix_len_name(&consume.actor))
+            };
+            InputTemplateProof::Template { prefix_len, suffix_len, template: hidden_template_name(&consume.actor) }
         };
         let id = EntryInputReferenceId(references.len());
         let scope = EntryInputScopeId(next_scope);

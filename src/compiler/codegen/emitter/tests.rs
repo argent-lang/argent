@@ -24,11 +24,236 @@ fn accepts_route_inside_named_output_union() {
     program.modules[0].actors[0].entries[0].emits = EmitSpec::Outputs(vec![EmitOutput {
         name: "next".to_string(),
         actors: vec!["Player".to_string(), "Game".to_string()],
+        cardinality: Cardinality::One,
         auth_index: 0,
     }]);
     set_entry_body(&mut program.modules[0].actors[0].entries[0], "become next <- Game(next_game);");
 
     Model::from_program(&program).expect("route should be accepted");
+}
+
+#[test]
+fn output_cardinality_requires_matching_become_arity() {
+    let ranged_scalar = parse_and_validate(
+        r#"
+            state BatchState {}
+            state AccountState {}
+
+            actor Batch owns BatchState {
+                entry distribute(AccountState[] states)
+                emits next: Account[1..=3] {
+                    unrestricted(next[0].value);
+                    become next <- Account(states);
+                }
+            }
+
+            actor Account owns AccountState {}
+            app Test { actor Batch; actor Account; }
+        "#,
+    )
+    .expect_err("a range output must reject scalar become syntax");
+    assert!(ranged_scalar.to_string().contains("must use bulk become syntax"), "unexpected error: {ranged_scalar}");
+
+    let singleton_bulk = parse_and_validate(
+        r#"
+            state BatchState {}
+            state AccountState {}
+
+            actor Batch owns BatchState {
+                entry distribute(AccountState state)
+                emits next: Account {
+                    unrestricted(next.value);
+                    become next <- Account[](state);
+                }
+            }
+
+            actor Account owns AccountState {}
+            app Test { actor Batch; actor Account; }
+        "#,
+    )
+    .expect_err("a singleton output must reject bulk become syntax");
+    assert!(singleton_bulk.to_string().contains("must use scalar become syntax"), "unexpected error: {singleton_bulk}");
+}
+
+#[test]
+fn delegate_consume_ranges_are_rejected_at_the_sil_codegen_boundary() {
+    let err = emit_inline_error(
+        r#"
+            const int MAX_PEERS = 2;
+
+            state CounterState {}
+
+            actor Counter owns CounterState {
+                delegate combine()
+                consumes {
+                    leader: Counter,
+                    peers: Counter[0..=MAX_PEERS],
+                }
+                {}
+            }
+
+            app Test {
+                actor Counter;
+            }
+            "#,
+    );
+
+    assert!(err.to_string().contains("cannot use range `peers` in `consumes` yet"), "unexpected error: {err}");
+}
+
+#[test]
+fn observed_ranges_are_rejected_at_the_sil_codegen_boundary() {
+    let err = emit_inline_error(
+        r#"
+            const int MAX_ACCOUNTS = 2;
+
+            state BatchState {
+                cov_id source_id;
+            }
+            state AccountState {}
+
+            actor Batch owns BatchState {
+                entry inspect()
+                observes source by self.source_id {
+                    inputs {
+                        accounts: Account[0..=MAX_ACCOUNTS],
+                    }
+                    outputs {}
+                }
+                emits none {}
+            }
+
+            actor Account owns AccountState {}
+            app Test { actor Batch; actor Account; }
+        "#,
+    );
+
+    assert!(err.to_string().contains("range code generation is not implemented yet"), "unexpected error: {err}");
+}
+
+#[test]
+fn spawn_ranges_are_rejected_at_the_sil_codegen_boundary() {
+    let err = emit_inline_error(
+        r#"
+            const int MAX_ACCOUNTS = 2;
+
+            state BatchState {}
+            state AccountState {}
+
+            actor Batch owns BatchState {
+                entry launch(AccountState[] states)
+                spawns children by child_id {
+                    outputs {
+                        accounts: Account[1..=MAX_ACCOUNTS],
+                    }
+                }
+                emits none {
+                    require children.outputs become {
+                        accounts <- Account(states),
+                    };
+                }
+            }
+
+            actor Account owns AccountState {}
+            app Test { actor Batch; actor Account; }
+        "#,
+    );
+
+    assert!(err.to_string().contains("range code generation is not implemented yet"), "unexpected error: {err}");
+}
+
+#[test]
+fn artifacts_record_resolved_cardinality_for_every_interaction_kind() {
+    let path = PathBuf::from("artifact-cardinality.ag");
+    let module = crate::compiler::syntax::parser::parse_module(
+        path.clone(),
+        r#"
+            const int MAX_ACCOUNTS = 3;
+
+            state BatchState {
+                cov_id source_id;
+            }
+
+            state AccountState {
+                int balance;
+            }
+
+            actor Batch owns BatchState {
+                entry rebalance()
+                consumes {
+                    accounts: Account[1..=MAX_ACCOUNTS],
+                }
+                observes existing by self.source_id {
+                    inputs {
+                        previous: Account[0..=MAX_ACCOUNTS],
+                    }
+                    outputs {
+                        observed: Account[1..=MAX_ACCOUNTS],
+                    }
+                }
+                spawns created by created_id {
+                    outputs {
+                        children: Account[1..=2],
+                    }
+                }
+                emits next: Account[1..=MAX_ACCOUNTS] {
+                    AccountState next_state = {
+                        balance: 1,
+                    };
+                    AccountState[] next_states;
+                    next_states = next_states.append(next_state);
+
+                    unrestricted(created.outputs.children.value);
+                    require created.outputs become {
+                        children <- Account(next_state),
+                    };
+
+                    require existing.outputs become {
+                        observed <- Account(next_state),
+                    };
+
+                    unrestricted(next[0].value);
+                    become next <- Account[](next_states);
+                }
+            }
+
+            actor Account owns AccountState {}
+
+            app Test {
+                actor Batch;
+                actor Account;
+            }
+        "#
+        .to_string(),
+    )
+    .expect("source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let model = Model::from_program(&program).expect("model builds");
+    let actor = model.actor("Batch").expect("actor exists");
+    let entry = entry_artifact(actor, &actor.entries[0], &model).expect("entry artifact builds");
+
+    assert_eq!(entry.consumes[0].cardinality, CardinalityArtifact::Range { minimum: 1, maximum: 3 });
+    let EmitArtifact::Outputs { outputs } = &entry.emits else {
+        panic!("entry emits outputs");
+    };
+    assert_eq!(outputs[0].cardinality, CardinalityArtifact::Range { minimum: 1, maximum: 3 });
+    assert_eq!(entry.observes[0].inputs[0].cardinality, CardinalityArtifact::Range { minimum: 0, maximum: 3 });
+    assert_eq!(entry.observes[0].outputs[0].cardinality, CardinalityArtifact::Range { minimum: 1, maximum: 3 });
+    assert_eq!(entry.spawns[0].outputs[0].cardinality, CardinalityArtifact::Range { minimum: 1, maximum: 2 });
+}
+
+#[test]
+fn lowers_planned_singleton_locations_to_section_indices() {
+    assert_eq!(lower_singleton_interaction_index(InteractionLocation::FromStart(2), "count", 1).expect("leading location"), "3");
+    assert_eq!(
+        lower_singleton_interaction_index(InteractionLocation::FromEnd(2), "count", 0).expect("trailing location"),
+        "count - 2"
+    );
+    assert_eq!(
+        lower_singleton_interaction_index(InteractionLocation::FromEnd(1), "count", 1).expect("offset trailing location"),
+        "count - 1"
+    );
+    assert!(lower_singleton_interaction_index(InteractionLocation::Range { start: 1, singleton_count: 2 }, "count", 0).is_err());
 }
 
 #[test]
@@ -113,8 +338,8 @@ fn rejects_user_state_named_state() {
 fn rejects_missing_named_output_coverage() {
     let mut program = test_program();
     program.modules[0].actors[0].entries[0].emits = EmitSpec::Outputs(vec![
-        EmitOutput { name: "a".to_string(), actors: vec!["Player".to_string()], auth_index: 0 },
-        EmitOutput { name: "b".to_string(), actors: vec!["Player".to_string()], auth_index: 1 },
+        EmitOutput { name: "a".to_string(), actors: vec!["Player".to_string()], cardinality: Cardinality::One, auth_index: 0 },
+        EmitOutput { name: "b".to_string(), actors: vec!["Player".to_string()], cardinality: Cardinality::One, auth_index: 1 },
     ]);
     set_entry_body(&mut program.modules[0].actors[0].entries[0], "become a <- Player(next_a);");
 
@@ -200,7 +425,11 @@ fn rejects_duplicate_named_output_coverage() {
 fn rejects_delegate_become() {
     let mut program = test_program();
     program.modules[0].actors[0].entries[0].kind = EntryKind::Delegate;
-    program.modules[0].actors[0].entries[0].consumes.push(ConsumeDecl { name: "leader".to_string(), actor: "Player".to_string() });
+    program.modules[0].actors[0].entries[0].consumes.push(ConsumeDecl {
+        name: "leader".to_string(),
+        actor: "Player".to_string(),
+        cardinality: Cardinality::One,
+    });
     program.modules[0].actors[0].entries[0].emits = EmitSpec::None;
     set_entry_body(&mut program.modules[0].actors[0].entries[0], "become next <- Player(next_player);");
 
@@ -963,8 +1192,12 @@ fn rejects_entry_body_bindings_that_collide_with_handles_or_parameters() {
 #[test]
 fn rejects_reserved_output_handle_from_model() {
     let mut program = test_program();
-    program.modules[0].actors[0].entries[0].emits =
-        EmitSpec::Outputs(vec![EmitOutput { name: "gen__next".to_string(), actors: vec!["Player".to_string()], auth_index: 0 }]);
+    program.modules[0].actors[0].entries[0].emits = EmitSpec::Outputs(vec![EmitOutput {
+        name: "gen__next".to_string(),
+        actors: vec!["Player".to_string()],
+        cardinality: Cardinality::One,
+        auth_index: 0,
+    }]);
     set_entry_body(&mut program.modules[0].actors[0].entries[0], "become gen__next <- Player(next_player);");
 
     let err = Model::from_program(&program).expect_err("reserved output handle must be rejected");
@@ -3381,7 +3614,7 @@ fn emits_portable_artifact_schema() {
     assert_eq!(entry.routes[0].output, "next");
     assert!(matches!(entry.routes[0].successor, RouteSuccessorArtifact::ExactSelf));
     assert_eq!(entry.route_plan.active_input.as_ref().map(|input| (input.actor.as_str(), input.cov_index)), Some(("Foo", Some(0))));
-    assert_eq!(entry.route_plan.outputs[0].auth_index, 0);
+    assert_eq!(entry.route_plan.outputs[0].auth_index, Some(0));
     assert_eq!(entry.route_plan.outputs[0].name, "next");
 
     let sil_entry = sil_contract.entry(&entry.abi.entry).expect("outer entry should point at Sil ABI entry");
@@ -4915,6 +5148,142 @@ fn single_actor_self_consume_is_pinned() {
     assert!(merge.hidden_params.is_empty());
     assert!(merge.route_plan.witness_recipe_ids.is_empty());
     assert!(runtime_state_plan(&artifact, "Counter").is_none());
+}
+
+#[test]
+fn ranged_current_inputs_lower_to_a_pinned_state_array() {
+    let (sil, artifact) = emit_fixture("entry_range_inputs", "Batch");
+
+    assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/entry_range_inputs/Batch.sil"));
+    assert_fixture_artifact("entry_range_inputs", &artifact);
+    let batch = artifact.argent.actors.iter().find(|actor| actor.name == "Batch").expect("Batch actor exists");
+    assert_eq!(batch.entries[0].consumes[1].cardinality, CardinalityArtifact::Range { minimum: 1, maximum: 3 });
+    assert_eq!(batch.entries[0].route_plan.consumes.iter().map(|input| input.cov_index).collect::<Vec<_>>(), [Some(1), None, None]);
+}
+
+#[test]
+fn ranged_current_outputs_lower_to_a_pinned_validation_loop() {
+    let (sil, artifact) = emit_fixture("entry_range_outputs", "Batch");
+
+    assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/entry_range_outputs/Batch.sil"));
+    assert_fixture_artifact("entry_range_outputs", &artifact);
+    let batch = artifact.argent.actors.iter().find(|actor| actor.name == "Batch").expect("Batch actor exists");
+    let EmitArtifact::Outputs { outputs } = &batch.entries[0].emits else {
+        panic!("Batch::distribute emits outputs");
+    };
+    assert_eq!(outputs[1].cardinality, CardinalityArtifact::Range { minimum: 1, maximum: 3 });
+    assert_eq!(outputs.iter().map(|output| output.auth_index).collect::<Vec<_>>(), [Some(0), None, None]);
+    assert_eq!(batch.entries[0].route_plan.outputs.iter().map(|output| output.auth_index).collect::<Vec<_>>(), [Some(0), None, None]);
+
+    let manifest = emit_fixture_manifest("entry_range_outputs");
+    let manifest_batch = manifest["actors"]
+        .as_array()
+        .expect("manifest actors are an array")
+        .iter()
+        .find(|actor| actor["name"] == "Batch")
+        .expect("Batch manifest actor exists");
+    let entry = &manifest_batch["entries"][0];
+    let manifest_outputs = entry["emits"]["outputs"].as_array().expect("manifest outputs are an array");
+    assert_eq!(manifest_outputs[0]["auth_index"], serde_json::json!(0));
+    assert!(manifest_outputs[1]["auth_index"].is_null());
+    assert!(manifest_outputs[2]["auth_index"].is_null());
+    assert_eq!(manifest_outputs[1]["cardinality"], serde_json::json!({ "kind": "range", "minimum": 1, "maximum": 3 }));
+    let range_route = entry["routes"]
+        .as_array()
+        .expect("manifest routes are an array")
+        .iter()
+        .find(|route| route["output"] == "next")
+        .expect("range output route exists");
+    assert_eq!(range_route["successor"]["arity"], "many");
+}
+
+#[test]
+fn ranged_inputs_and_outputs_lower_to_pinned_optional_template_paths() {
+    let (sil, artifact) = emit_fixture("entry_range_inputs_outputs", "Batch");
+
+    assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/entry_range_inputs_outputs/Batch.sil"));
+    assert_fixture_artifact("entry_range_inputs_outputs", &artifact);
+    let batch = artifact.argent.actors.iter().find(|actor| actor.name == "Batch").expect("Batch actor exists");
+    let entry = &batch.entries[0];
+    assert_eq!(entry.consumes[0].cardinality, CardinalityArtifact::Range { minimum: 0, maximum: 2 });
+    let EmitArtifact::Outputs { outputs } = &entry.emits else {
+        panic!("Batch::rebalance emits outputs");
+    };
+    assert_eq!(outputs[0].cardinality, CardinalityArtifact::Range { minimum: 1, maximum: 3 });
+}
+
+#[test]
+fn nonempty_input_range_can_authenticate_an_output_template() {
+    let sil = emit_inline_actor(
+        r#"
+            const int MAX_ACCOUNTS = 2;
+            state BatchState {}
+            state AccountState {}
+
+            actor Batch owns BatchState {
+                entry rebalance()
+                consumes {
+                    accounts: Account[1..=MAX_ACCOUNTS],
+                }
+                emits {
+                    next: Account[1..=MAX_ACCOUNTS],
+                } {
+                    AccountState[] next_states;
+                    for (i, 0, accounts.length, MAX_ACCOUNTS) {
+                        next_states = next_states.append(AccountState {});
+                    }
+                    unrestricted(next[0].value);
+                    become next <- Account[](next_states);
+                }
+            }
+
+            actor Account owns AccountState {}
+            app Test { actor Batch; actor Account; }
+        "#,
+        "Batch",
+    );
+
+    assert!(
+        sil.contains("OpCovInputIdx(gen__cov_id, 1),\n                gen__account_prefix_len"),
+        "the guaranteed first range input was not reused:\n{sil}"
+    );
+}
+
+#[test]
+fn singleton_input_can_authenticate_a_template_also_used_by_an_optional_range() {
+    let sil = emit_inline_actor(
+        r#"
+            const int MAX_ACCOUNTS = 2;
+            state BatchState {}
+            state AccountState {}
+
+            actor Batch owns BatchState {
+                entry rebalance()
+                consumes {
+                    accounts: Account[0..=MAX_ACCOUNTS],
+                    anchor: Account,
+                }
+                emits {
+                    next: Account[1..=MAX_ACCOUNTS],
+                } {
+                    AccountState[] next_states;
+                    next_states = next_states.append(state(anchor));
+                    unrestricted(next[0].value);
+                    become next <- Account[](next_states);
+                }
+            }
+
+            actor Account owns AccountState {}
+            app Test { actor Batch; actor Account; }
+        "#,
+        "Batch",
+    );
+
+    assert!(sil.contains("int gen__account_prefix_len"), "full template bytes were requested unnecessarily:\n{sil}");
+    assert!(
+        sil.contains("gen__anchor_input_idx,\n                gen__account_prefix_len"),
+        "the guaranteed singleton input was not reused:\n{sil}"
+    );
 }
 
 #[test]
@@ -8496,16 +8865,34 @@ fn rejects_spawn_covenant_binding_shared_with_source_value() {
 }
 
 fn emit_fixture(case: &str, actor: &str) -> (String, Artifact) {
-    let path = PathBuf::from("tests/fixtures/emit").join(case).join("app.ag");
-    let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(&path)).expect("fixture source exists");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source).expect("fixture source parses");
-    let program = Program { root: path, modules: vec![module] };
+    let program = load_fixture_program(case);
     let model = Model::from_program(&program).expect("fixture model validates");
     let actor = model.actor(actor).expect("fixture actor exists");
     let sil = emit_actor(actor, &model).expect("fixture actor emits");
     let actor_sil = actor_sil_for_model(&model);
     let artifact = emit_artifact(&program, &model, &actor_sil).expect("fixture artifact emits");
     (sil, artifact)
+}
+
+fn load_fixture_program(case: &str) -> Program {
+    let path = PathBuf::from("tests/fixtures/emit").join(case).join("app.ag");
+    let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(&path)).expect("fixture source exists");
+    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source).expect("fixture source parses");
+    Program { root: path, modules: vec![module] }
+}
+
+fn emit_fixture_manifest(case: &str) -> serde_json::Value {
+    let program = load_fixture_program(case);
+    let model = Model::from_program(&program).expect("fixture model validates");
+    serde_json::from_str(&emit_manifest(&program, &model)).expect("fixture manifest is valid JSON")
+}
+
+fn assert_fixture_artifact(case: &str, artifact: &Artifact) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/emit").join(case).join("artifact.json");
+    let expected = fs::read_to_string(path).expect("fixture artifact exists");
+    let mut actual = serde_json::to_string_pretty(artifact).expect("fixture artifact serializes");
+    actual.push('\n');
+    assert_eq!(actual, expected);
 }
 
 fn emit_selected_fixture(path: &str, app: &str, actor: &str) -> (String, Artifact) {
@@ -8532,6 +8919,15 @@ fn emit_inline_error(source: &str) -> ArgentError {
         }
     }
     panic!("expected inline source to fail during emission")
+}
+
+fn emit_inline_actor(source: &str, actor_name: &str) -> String {
+    let path = PathBuf::from("inline-emission.ag");
+    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let model = Model::from_program(&program).expect("model validates");
+    let actor = model.actor(actor_name).expect("actor exists");
+    emit_actor(actor, &model).expect("actor emits")
 }
 
 fn parse_and_validate(source: &str) -> Result<()> {
@@ -8908,6 +9304,7 @@ fn test_program() -> Program {
                         emits: EmitSpec::Outputs(vec![EmitOutput {
                             name: "next".to_string(),
                             actors: vec!["Player".to_string()],
+                            cardinality: Cardinality::One,
                             auth_index: 0,
                         }]),
                         body: EntryBody::default(),

@@ -3,16 +3,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::compiler::naming::{is_identifier, to_snake};
-use crate::compiler::syntax::body::{EntryStatement, EntrySuccessor};
+use crate::compiler::syntax::body::{EntryStatement, EntrySuccessor, RouteArity};
 use crate::compiler::syntax::lexer::{Token, TokenKind, lex};
 use crate::compiler::syntax::word;
 use crate::compiler::syntax::{
-    ActorDecl, ConsumeDecl, EmitOutput, EmitSpec, EntryDecl, ObserveDecl, ObservedActorDecl, RouteId, SpawnDecl, SpawnOutputDecl,
-    TypeRef,
+    ActorDecl, Cardinality, CardinalityBound, ConsumeDecl, EmitOutput, EmitSpec, EntryDecl, ObserveDecl, ObservedActorDecl, RouteId,
+    SpawnDecl, SpawnOutputDecl, TypeRef,
 };
 use crate::error::{ArgentError, Result};
 
-use super::{ActorEnumInfo, AppActors, Model};
+use super::{ActorEnumInfo, AppActors, ConstIntError, ConstResolver, Model};
 
 #[cfg(test)]
 mod tests;
@@ -39,92 +39,159 @@ pub(crate) struct ResolvedRoute {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResolvedSuccessor {
     ExactSelf,
-    Constructed { actor: String, state: String },
+    Constructed { actor: String, state: String, arity: RouteArity },
 }
 
 impl<'a> EntryModel<'a> {
     /// Build an entry model from its source actor and declaration.
-    pub(crate) fn build(actor: &'a ActorDecl, source: &'a EntryDecl, actor_enums: &BTreeMap<String, ActorEnumInfo>) -> Result<Self> {
-        Self::new(actor, source, actor_enums, template_selectors_for_entry(actor, source, actor_enums)?)
+    pub(crate) fn build(
+        actor: &'a ActorDecl,
+        source: &'a EntryDecl,
+        actor_enums: &BTreeMap<String, ActorEnumInfo>,
+        const_resolver: &ConstResolver<'_>,
+    ) -> Result<Self> {
+        Self::new(actor, source, actor_enums, template_selectors_for_entry(actor, source, actor_enums)?, const_resolver)
     }
 
     fn new(
         actor: &'a ActorDecl,
-        source: &'a EntryDecl,
+        entry: &'a EntryDecl,
         actor_enums: &BTreeMap<String, ActorEnumInfo>,
         template_selectors: BTreeMap<String, TemplateSelector>,
+        const_resolver: &ConstResolver<'_>,
     ) -> Result<Self> {
-        reject_external_exact_successors(actor, source, source.body.statements())?;
-        let routes = resolve_current_routes(actor, source, actor_enums)?;
+        reject_external_exact_successors(actor, entry, entry.body.statements())?;
+        let routes = resolve_current_routes(actor, entry, actor_enums)?;
         let route_indexes = routes.iter().enumerate().map(|(index, route)| (route.id, index)).collect();
-        let current_inputs = source
+        let actor_name = actor.name.as_str();
+        let make_interaction = |source: InteractionSource<'a>, handle: &'a str, target, location| {
+            let cardinality = ResolvedCardinality::resolve(source.cardinality(), actor_name, entry, handle, const_resolver)?;
+            Ok(EntryInteraction { source, handle, target, cardinality, location })
+        };
+        let current_input_locations = plan_interaction_locations(
+            entry.consumes.iter().map(|consume| (consume.name.as_str(), &consume.cardinality)),
+            actor_name,
+            &entry.name,
+            word::CONSUMES,
+        )?;
+        let current_inputs = entry
             .consumes
             .iter()
-            .enumerate()
-            .map(|(index, consume)| EntryInteraction {
-                source: InteractionSource::Consume(consume),
-                handle: &consume.name,
-                index,
-                target: ActorTarget::static_actor(&consume.actor),
+            .zip(current_input_locations)
+            .map(|(consume, location)| {
+                make_interaction(
+                    InteractionSource::Consume(consume),
+                    &consume.name,
+                    ActorTarget::static_actor(&consume.actor),
+                    location,
+                )
             })
-            .collect();
-        let current_outputs = match &source.emits {
+            .collect::<Result<Vec<_>>>()?;
+        let current_outputs = match &entry.emits {
             EmitSpec::None => Vec::new(),
-            EmitSpec::Outputs(outputs) => outputs
-                .iter()
-                .map(|output| EntryInteraction {
-                    source: InteractionSource::CurrentOutput(output),
-                    handle: &output.name,
-                    index: output.auth_index,
-                    target: ActorTarget::domain(&output.actors, actor_enums),
-                })
-                .collect(),
+            EmitSpec::Outputs(outputs) => {
+                let locations = plan_interaction_locations(
+                    outputs.iter().map(|output| (output.name.as_str(), &output.cardinality)),
+                    actor_name,
+                    &entry.name,
+                    word::EMITS,
+                )?;
+                outputs
+                    .iter()
+                    .zip(locations)
+                    .map(|(output, location)| {
+                        make_interaction(
+                            InteractionSource::CurrentOutput(output),
+                            &output.name,
+                            ActorTarget::domain(&output.actors, actor_enums),
+                            location,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            }
         };
         let mut groups = vec![CovenantGroup { covenant: CovenantContext::Current, inputs: current_inputs, outputs: current_outputs }];
-        groups.extend(source.observes.iter().map(|observe| {
-            CovenantGroup {
-                covenant: CovenantContext::Existing(observe),
-                inputs: observe
-                    .inputs
-                    .iter()
-                    .enumerate()
-                    .map(|(index, input)| EntryInteraction {
-                        source: InteractionSource::ObserveInput(input),
-                        handle: &input.name,
-                        index,
-                        target: ActorTarget::observed(source, observe, input),
+        groups.extend(
+            entry
+                .observes
+                .iter()
+                .map(|observe| {
+                    let input_locations = plan_interaction_locations(
+                        observe.inputs.iter().map(|input| (input.name.as_str(), &input.cardinality)),
+                        actor_name,
+                        &entry.name,
+                        &format!("{} {}.{}", word::OBSERVES, observe.name, word::INPUTS),
+                    )?;
+                    let output_locations = plan_interaction_locations(
+                        observe.outputs.iter().map(|output| (output.name.as_str(), &output.cardinality)),
+                        actor_name,
+                        &entry.name,
+                        &format!("{} {}.{}", word::OBSERVES, observe.name, word::OUTPUTS),
+                    )?;
+                    Ok(CovenantGroup {
+                        covenant: CovenantContext::Existing(observe),
+                        inputs: observe
+                            .inputs
+                            .iter()
+                            .zip(input_locations)
+                            .map(|(input, location)| {
+                                make_interaction(
+                                    InteractionSource::ObserveInput(input),
+                                    &input.name,
+                                    ActorTarget::observed(entry, observe, input),
+                                    location,
+                                )
+                            })
+                            .collect::<Result<Vec<_>>>()?,
+                        outputs: observe
+                            .outputs
+                            .iter()
+                            .zip(output_locations)
+                            .map(|(output, location)| {
+                                make_interaction(
+                                    InteractionSource::ObserveOutput(output),
+                                    &output.name,
+                                    ActorTarget::observed(entry, observe, output),
+                                    location,
+                                )
+                            })
+                            .collect::<Result<Vec<_>>>()?,
                     })
-                    .collect(),
-                outputs: observe
-                    .outputs
-                    .iter()
-                    .enumerate()
-                    .map(|(index, output)| EntryInteraction {
-                        source: InteractionSource::ObserveOutput(output),
-                        handle: &output.name,
-                        index,
-                        target: ActorTarget::observed(source, observe, output),
+                })
+                .collect::<Result<Vec<_>>>()?,
+        );
+        groups.extend(
+            entry
+                .spawns
+                .iter()
+                .map(|spawn| {
+                    let output_locations = plan_interaction_locations(
+                        spawn.outputs.iter().map(|output| (output.name.as_str(), &output.cardinality)),
+                        actor_name,
+                        &entry.name,
+                        &format!("{} {}.{}", word::SPAWNS, spawn.name, word::OUTPUTS),
+                    )?;
+                    Ok(CovenantGroup {
+                        covenant: CovenantContext::Genesis(spawn),
+                        inputs: Vec::new(),
+                        outputs: spawn
+                            .outputs
+                            .iter()
+                            .zip(output_locations)
+                            .map(|(output, location)| {
+                                make_interaction(
+                                    InteractionSource::SpawnOutput(output),
+                                    &output.name,
+                                    ActorTarget::source_or_static(entry, &output.actor),
+                                    location,
+                                )
+                            })
+                            .collect::<Result<Vec<_>>>()?,
                     })
-                    .collect(),
-            }
-        }));
-        groups.extend(source.spawns.iter().map(|spawn| {
-            CovenantGroup {
-                covenant: CovenantContext::Genesis(spawn),
-                inputs: Vec::new(),
-                outputs: spawn
-                    .outputs
-                    .iter()
-                    .map(|output| EntryInteraction {
-                        source: InteractionSource::SpawnOutput(output),
-                        handle: &output.name,
-                        index: output.group_index,
-                        target: ActorTarget::source_or_static(source, &output.actor),
-                    })
-                    .collect(),
-            }
-        }));
-        Ok(Self { source, groups, template_selectors, routes, route_indexes })
+                })
+                .collect::<Result<Vec<_>>>()?,
+        );
+        Ok(Self { source: entry, groups, template_selectors, routes, route_indexes })
     }
 
     /// Return the source entry declaration.
@@ -227,9 +294,10 @@ fn resolve_current_routes(
             }
             let successor = match route.successor {
                 EntrySuccessor::ExactSelf { .. } => ResolvedSuccessor::ExactSelf,
-                EntrySuccessor::Constructed { actor: target, state } => ResolvedSuccessor::Constructed {
+                EntrySuccessor::Constructed { actor: target, state, arity } => ResolvedSuccessor::Constructed {
                     actor: entry.body.span_text(target).trim().to_string(),
                     state: entry.body.span_text(state).trim().to_string(),
+                    arity,
                 },
             };
             Ok(ResolvedRoute { id: route.id, output: route.output.clone(), successor })
@@ -370,8 +438,9 @@ pub(crate) enum CovenantContext<'a> {
 pub(crate) struct EntryInteraction<'a> {
     source: InteractionSource<'a>,
     handle: &'a str,
-    index: usize,
     target: ActorTarget,
+    cardinality: ResolvedCardinality,
+    location: InteractionLocation,
 }
 
 impl<'a> EntryInteraction<'a> {
@@ -385,14 +454,125 @@ impl<'a> EntryInteraction<'a> {
         self.handle
     }
 
-    /// Return the interaction's index within its covenant side.
-    pub(crate) fn index(&self) -> usize {
-        self.index
-    }
-
     /// Return the compiler-known target candidates.
     pub(crate) fn target(&self) -> &ActorTarget {
         &self.target
+    }
+
+    /// Return the transaction cardinality resolved for this interaction.
+    pub(crate) fn cardinality(&self) -> ResolvedCardinality {
+        self.cardinality
+    }
+
+    /// Return this interaction's symbolic position within its covenant side.
+    pub(crate) fn location(&self) -> InteractionLocation {
+        self.location
+    }
+}
+
+/// A transaction position derived from one ordered clause section.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InteractionLocation {
+    /// A singleton at a fixed zero-based index from the section start.
+    FromStart(usize),
+    /// The ranged span; its actual length is the section count minus `singleton_count`.
+    Range { start: usize, singleton_count: usize },
+    /// A singleton after the range, where one is the last section item.
+    FromEnd(usize),
+}
+
+impl InteractionLocation {
+    pub(crate) fn is_range(self) -> bool {
+        matches!(self, Self::Range { .. })
+    }
+}
+
+fn plan_interaction_locations<'a>(
+    items: impl IntoIterator<Item = (&'a str, &'a Cardinality)>,
+    actor_name: &str,
+    entry_name: &str,
+    section: &str,
+) -> Result<Vec<InteractionLocation>> {
+    let items = items.into_iter().collect::<Vec<_>>();
+    let mut range = None;
+    for (index, (handle, cardinality)) in items.iter().enumerate() {
+        if !matches!(cardinality, Cardinality::Range { .. }) {
+            continue;
+        }
+        if let Some((_, first_handle)) = range {
+            return Err(ArgentError::new(format!(
+                "entry `{actor_name}::{entry_name}` `{section}` supports at most one range, found `{first_handle}` and `{handle}`"
+            )));
+        }
+        range = Some((index, *handle));
+    }
+
+    let Some((range_index, _)) = range else {
+        return Ok((0..items.len()).map(InteractionLocation::FromStart).collect());
+    };
+    let singleton_count = items.len() - 1;
+    Ok((0..items.len())
+        .map(|index| match index.cmp(&range_index) {
+            std::cmp::Ordering::Less => InteractionLocation::FromStart(index),
+            std::cmp::Ordering::Equal => InteractionLocation::Range { start: index, singleton_count },
+            std::cmp::Ordering::Greater => InteractionLocation::FromEnd(items.len() - index),
+        })
+        .collect())
+}
+
+/// Clause cardinality after all source bounds have been resolved.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ResolvedCardinality {
+    One,
+    Range { minimum: i64, maximum: i64 },
+}
+
+/// Limit Sil's compile-time loop expansion to a practical script and compiler budget.
+const MAX_ENTRY_RANGE_CARDINALITY: i64 = 512;
+
+impl ResolvedCardinality {
+    pub(crate) fn is_range(self) -> bool {
+        matches!(self, Self::Range { .. })
+    }
+
+    pub(crate) fn range_bounds(self) -> Option<(i64, i64)> {
+        match self {
+            Self::One => None,
+            Self::Range { minimum, maximum } => Some((minimum, maximum)),
+        }
+    }
+
+    fn resolve(
+        cardinality: &Cardinality,
+        actor_name: &str,
+        entry: &EntryDecl,
+        handle: &str,
+        const_resolver: &ConstResolver<'_>,
+    ) -> Result<Self> {
+        let Cardinality::Range { minimum, maximum } = cardinality else {
+            return Ok(Self::One);
+        };
+        let minimum = resolve_cardinality_bound(minimum, actor_name, entry, handle, const_resolver)?;
+        let maximum = resolve_cardinality_bound(maximum, actor_name, entry, handle, const_resolver)?;
+        if minimum < 0 || maximum < 0 {
+            return Err(ArgentError::new(format!(
+                "entry `{actor_name}::{}` range `{handle}` must have non-negative bounds, found {minimum}..={maximum}",
+                entry.name
+            )));
+        }
+        if minimum > maximum {
+            return Err(ArgentError::new(format!(
+                "entry `{actor_name}::{}` range `{handle}` minimum {minimum} exceeds maximum {maximum}",
+                entry.name
+            )));
+        }
+        if maximum > MAX_ENTRY_RANGE_CARDINALITY {
+            return Err(ArgentError::new(format!(
+                "entry `{actor_name}::{}` range `{handle}` maximum {maximum} exceeds compiler limit {MAX_ENTRY_RANGE_CARDINALITY}",
+                entry.name
+            )));
+        }
+        Ok(Self::Range { minimum, maximum })
     }
 }
 
@@ -409,6 +589,43 @@ pub(crate) enum InteractionSource<'a> {
     ObserveOutput(&'a ObservedActorDecl),
     /// An output from a `spawns` clause.
     SpawnOutput(&'a SpawnOutputDecl),
+}
+
+impl<'a> InteractionSource<'a> {
+    fn cardinality(self) -> &'a Cardinality {
+        match self {
+            Self::Consume(consume) => &consume.cardinality,
+            Self::CurrentOutput(output) => &output.cardinality,
+            Self::ObserveInput(observed) | Self::ObserveOutput(observed) => &observed.cardinality,
+            Self::SpawnOutput(output) => &output.cardinality,
+        }
+    }
+}
+
+fn resolve_cardinality_bound(
+    bound: &CardinalityBound,
+    actor_name: &str,
+    entry: &EntryDecl,
+    handle: &str,
+    const_resolver: &ConstResolver<'_>,
+) -> Result<i64> {
+    let name = match bound {
+        CardinalityBound::Literal(value) => return Ok(*value),
+        CardinalityBound::Const(name) => name,
+    };
+    const_resolver.resolve_int(name).map_err(|err| match err {
+        ConstIntError::Unknown => {
+            ArgentError::new(format!("entry `{actor_name}::{}` range `{handle}` references unknown constant `{name}`", entry.name))
+        }
+        ConstIntError::WrongType(actual) => ArgentError::new(format!(
+            "entry `{actor_name}::{}` range `{handle}` bound `{name}` must have type `int`, found `{actual}`",
+            entry.name
+        )),
+        ConstIntError::InvalidLiteral => ArgentError::new(format!(
+            "entry `{actor_name}::{}` range `{handle}` bound `{name}` must be initialized with a valid `int` literal",
+            entry.name
+        )),
+    })
 }
 
 /// A source-selected target or compiler-known static actor domain.
@@ -770,8 +987,11 @@ fn template_selectors_for_entry(
     // Route planning needs every possible selector domain. Lexical visibility
     // remains the responsibility of body lowering at each route use.
     for declaration in entry.body.local_declarations() {
+        let Some(initializer) = declaration.initializer else {
+            continue;
+        };
         let binding = &declaration.binding;
-        let expr = entry.body.span_text(declaration.initializer).trim();
+        let expr = entry.body.span_text(initializer).trim();
         if let Some(state) = binding.actor_type_state.as_deref() {
             let selector = template_selector_from_initializer(&ctx, &binding.name, Some(state), None, expr)?;
             insert_template_selector(actor, entry, &mut selectors, selector)?;
@@ -973,12 +1193,12 @@ fn expand_routes<'a>(
     let mut out = Vec::new();
     for route in routes {
         match &route.successor {
-            ResolvedSuccessor::Constructed { actor, state } if selectors.contains_key(actor) => {
+            ResolvedSuccessor::Constructed { actor, state, arity } if selectors.contains_key(actor) => {
                 let selector = selectors.get(actor).expect("checked selector exists");
                 out.extend(selector.route_actors().into_iter().map(|actor| ResolvedRoute {
                     id: route.id,
                     output: route.output.clone(),
-                    successor: ResolvedSuccessor::Constructed { actor, state: state.clone() },
+                    successor: ResolvedSuccessor::Constructed { actor, state: state.clone(), arity: *arity },
                 }));
             }
             ResolvedSuccessor::ExactSelf | ResolvedSuccessor::Constructed { .. } => out.push(route.clone()),

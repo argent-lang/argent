@@ -38,7 +38,7 @@ impl EntryBody {
         &self.statements
     }
 
-    /// Return initialized local declarations in source order, including nested scopes.
+    /// Return local declarations in source order, including nested scopes.
     pub(crate) fn local_declarations(&self) -> Vec<&EntryLocalDecl> {
         let mut locals = Vec::new();
         for statement in &self.statements {
@@ -99,7 +99,7 @@ pub(crate) enum EntryStatement {
         routes: Vec<EntryRoute>,
         span: Span,
     },
-    /// A directly declared local variable with an initializer.
+    /// A directly declared local variable.
     Local {
         declaration: EntryLocalDecl,
         span: Span,
@@ -175,13 +175,13 @@ impl EntryStatement {
     }
 }
 
-/// One directly declared local variable whose initializer Argent may lower.
+/// One directly declared local variable whose type and initializer Argent may lower.
 #[derive(Debug, Clone)]
 pub(crate) struct EntryLocalDecl {
     pub(crate) binding: EntryBinding,
     /// The source type and any following declaration qualifiers.
     pub(crate) declared_type: Span,
-    pub(crate) initializer: Span,
+    pub(crate) initializer: Option<Span>,
 }
 
 /// One lexically scoped value introduced by ordinary Sil syntax.
@@ -214,7 +214,14 @@ impl RouteId {
 #[derive(Debug, Clone)]
 pub(crate) enum EntrySuccessor {
     ExactSelf { _span: Span },
-    Constructed { actor: Span, state: Span },
+    Constructed { actor: Span, state: Span, arity: RouteArity },
+}
+
+/// Whether a constructed `become` successor represents one actor or an actor array.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RouteArity {
+    One,
+    Many,
 }
 
 /// One parsed route in a `become` statement.
@@ -467,11 +474,11 @@ impl EntryStatementParser<'_> {
             self.cursor.advance();
             EntrySuccessor::ExactSelf { _span: span }
         } else {
-            let actor = self.take_route_actor_expr()?;
+            let (actor, arity) = self.take_route_actor_expr()?;
             self.expect_symbol('(')?;
             let state =
                 self.cursor.take_balanced_after_open('(', ')').ok_or_else(|| self.error("unterminated route state expression"))?;
-            EntrySuccessor::Constructed { actor, state }
+            EntrySuccessor::Constructed { actor, state, arity }
         };
         let id = RouteId(self.next_route_id);
         self.next_route_id += 1;
@@ -483,7 +490,7 @@ impl EntryStatementParser<'_> {
             && matches!(self.cursor.peek_kind(1), None | Some(TokenKind::Eof) | Some(TokenKind::Symbol(',' | ';' | '}')))
     }
 
-    fn take_route_actor_expr(&mut self) -> Result<Span> {
+    fn take_route_actor_expr(&mut self) -> Result<(Span, RouteArity)> {
         let start = self.cursor.byte_offset();
         let mut depth = 0usize;
         while !self.cursor.is_eof() {
@@ -492,7 +499,20 @@ impl EntryStatementParser<'_> {
                     if self.cursor.byte_offset() == start {
                         return Err(self.error("become target is empty"));
                     }
-                    return Ok(self.cursor.span_to_current(start));
+                    return Ok((self.cursor.span_to_current(start), RouteArity::One));
+                }
+                TokenKind::Symbol('[')
+                    if depth == 0
+                        && matches!(self.cursor.peek_kind(1), Some(TokenKind::Symbol(']')))
+                        && matches!(self.cursor.peek_kind(2), Some(TokenKind::Symbol('('))) =>
+                {
+                    if self.cursor.byte_offset() == start {
+                        return Err(self.error("become target is empty"));
+                    }
+                    let actor = self.cursor.span_to_current(start);
+                    self.cursor.advance();
+                    self.cursor.advance();
+                    return Ok((actor, RouteArity::Many));
                 }
                 TokenKind::Symbol('{') | TokenKind::Symbol('[') | TokenKind::Symbol('<') => {
                     depth += 1;
@@ -710,11 +730,15 @@ impl<'a> PlainBindingParser<'a> {
         }
         if self.consume_symbol('=') {
             return self.remaining_initializer_span().map(|initializer| {
-                ParsedPlain::Local(EntryLocalDecl { binding: first.binding, declared_type: first.declared_type, initializer })
+                ParsedPlain::Local(EntryLocalDecl {
+                    binding: first.binding,
+                    declared_type: first.declared_type,
+                    initializer: Some(initializer),
+                })
             });
         }
         self.check_symbol(';').then_some(())?;
-        Some(ParsedPlain::Bindings { bindings: vec![first.binding], destructuring: None })
+        Some(ParsedPlain::Local(EntryLocalDecl { binding: first.binding, declared_type: first.declared_type, initializer: None }))
     }
 
     fn parse_variable_binding(&mut self) -> Option<ParsedVariableBinding> {

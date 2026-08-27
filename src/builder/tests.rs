@@ -29,7 +29,9 @@ use kaspa_consensus_core::{
         TransactionOutput, UtxoEntry,
     },
 };
-use kaspa_txscript::{opcodes::codes::OpTrue, parse_script, pay_to_script_hash_signature_script_with_flags};
+use kaspa_txscript::{
+    opcodes::codes::OpTrue, parse_script, pay_to_script_hash_signature_script_with_flags, script_builder::ScriptBuilder,
+};
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 
 static ARTIFACT_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -644,6 +646,68 @@ fn context_executes_source_state_arguments_without_exposing_generated_fields() {
         )
         .actor_output("Note", state! { nonce: 9 }, CovenantBinding::new(0, covenant_id), input_value);
     builder.build(&dynamic).expect("dynamic current-state array argument executes");
+}
+
+#[test]
+fn generated_entries_reject_mismatched_dynamic_struct_array_leaf_counts() {
+    let artifact = inline_artifact(
+        "context-dynamic-struct-array-cardinality",
+        r#"
+            state VaultState {
+                int nonce;
+            }
+
+            state Item {
+                int number;
+                byte[2] tag;
+            }
+
+            actor Vault owns VaultState {
+                entry inspect(Item[] items) emits none {
+                    require(items.length == 1);
+                }
+            }
+
+            app VaultApp {
+                actor Vault;
+            }
+            "#,
+    );
+    let builder = TxBuilder::new(&artifact).expect("builder accepts dynamic struct-array artifact");
+    let covenant_id = Hash::from_bytes([0x4a; 32]);
+    let state = state! { nonce: 0 };
+    let input_utxo = builder.covenant_utxo("Vault", state.clone(), 1_000, 0, false, Some(covenant_id)).expect("Vault UTXO builds");
+    let context = TxContext::new().actor_input(
+        "Vault",
+        state,
+        EntryCall::new("inspect").args(args![ArtifactValue::Array(vec![ArtifactValue::Object(state! {
+            number: 7,
+            tag: vec![1, 2],
+        })])]),
+        TransactionOutpoint::new(TransactionId::from_bytes([0x4b; 32]), 0),
+        input_utxo.clone(),
+        0,
+    );
+    let transaction = builder.build(&context).expect("canonical dynamic struct array executes");
+
+    let contract = artifact.sil_abi.contract("Vault").expect("Vault contract exists");
+    let entry = contract.entry("inspect").expect("inspect entry exists");
+    let mut malformed_entry = ScriptBuilder::with_flags(covenant_engine_flags());
+    malformed_entry.add_data(&[7, 0, 0, 0, 0, 0, 0, 0]).expect("number leaf push builds");
+    malformed_entry.add_data(&[1, 2, 3, 4]).expect("two-item tag leaf push builds");
+    malformed_entry.add_data(entry.dispatch_tag.as_bytes()).expect("dispatch tag push builds");
+
+    let mut malformed = transaction;
+    malformed.inputs[0].signature_script = pay_to_script_hash_signature_script_with_flags(
+        p2sh_redeem_script(&malformed.inputs[0].signature_script),
+        malformed_entry.drain(),
+        covenant_engine_flags(),
+    )
+    .expect("malformed P2SH sigscript builds");
+    assert!(
+        execute_input_with_covenants(&malformed, vec![input_utxo], 0).is_err(),
+        "generated Sil must reject struct-array leaves with different element counts"
+    );
 }
 
 #[test]
@@ -2207,7 +2271,7 @@ fn route_plan_builds_stones_start_game_and_rejects_bad_routes() {
     assert_eq!(entry.route_plan.consumes[0].cov_index, Some(1));
     assert_eq!(
         entry.route_plan.outputs.iter().map(|output| (output.name.as_str(), output.auth_index)).collect::<Vec<_>>(),
-        vec![("self_out", 0), ("opponent_out", 1), ("game", 2)]
+        vec![("self_out", Some(0)), ("opponent_out", Some(1)), ("game", Some(2))]
     );
     assert_eq!(
         entry

@@ -10,12 +10,14 @@ use crate::artifact::*;
 use crate::codec::encode_hex;
 use crate::compiler::model::link::LinkedActor;
 use crate::compiler::model::{
-    ClauseActorTypeRef, CovenantGroup, CovenantIdSource, EntryModel, GeneratedFieldId, InteractionSource, Model, PhysicalFieldId,
-    PhysicalStateLayout, ResolvedRoute, ResolvedSuccessor, RouteFamily, SourceStateId, StaticActorTarget,
-    actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding, observed_open_state_for_decl, packed_field_len,
-    resolve_observe_covenant_id_source, source_actor_type_state_for_expr, spawn_target_state,
+    ClauseActorTypeRef, CovenantGroup, CovenantIdSource, EntryInteraction, EntryModel, GeneratedFieldId, InteractionLocation,
+    InteractionSource, Model, PhysicalFieldId, PhysicalStateLayout, ResolvedRoute, ResolvedSuccessor, RouteFamily, SourceStateId,
+    StaticActorTarget, actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding,
+    observed_open_state_for_decl, packed_field_len, resolve_observe_covenant_id_source, source_actor_type_state_for_expr,
+    spawn_target_state,
 };
 use crate::compiler::naming::{is_identifier, to_snake};
+use crate::compiler::syntax::body::RouteArity;
 use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX, TokenKind, lex};
 use crate::compiler::syntax::word;
 use crate::compiler::syntax::*;
@@ -130,6 +132,7 @@ fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
     emit_global_functions(&mut out, model, &state_values)?;
     emit_actor_functions(&mut out, actor, model, &state_values)?;
     emit_authored_state_digest_helpers(&mut out, actor, model, &state_values, &digest_helpers)?;
+    emit_range_functions(&mut out, actor, model)?;
 
     emit_section_header(&mut out, "Route templates");
     emit_route_template_table(&mut out, actor, model)?;
@@ -461,6 +464,31 @@ fn emit_function(out: &mut String, name: &str, params: &[String], return_ty: Opt
     out.push_str("    }\n");
 }
 
+fn emit_range_functions(out: &mut String, actor: &ActorDecl, model: &Model<'_>) -> Result<()> {
+    let mut uses_ranges = false;
+    for entry in &actor.entries {
+        let entry = model.entry_model(actor, entry)?;
+        uses_ranges =
+            entry.current().inputs().iter().chain(entry.current().outputs()).any(|interaction| interaction.cardinality().is_range());
+        if uses_ranges {
+            break;
+        }
+    }
+    if !uses_ranges {
+        return Ok(());
+    }
+
+    emit_section_header(out, "Range helpers");
+    let index = hidden_range_index_arg_name();
+    let count = hidden_range_count_arg_name();
+    out.push_str(&format!("    function {}(int {index}, int {count}) : int {{\n", hidden_checked_range_index_name()));
+    out.push_str(&format!("        require({index} >= 0);\n"));
+    out.push_str(&format!("        require({index} < {count});\n"));
+    out.push_str(&format!("        return {index};\n"));
+    out.push_str("    }\n\n");
+    Ok(())
+}
+
 fn emit_entry(
     out: &mut String,
     actor: &ActorDecl,
@@ -469,6 +497,8 @@ fn emit_entry(
     input_references: &EntryInputReferencePlan,
     state_values: &ContractStateValuePlan,
 ) -> Result<BTreeSet<SourceStateId>> {
+    let entry_model = model.entry_model(actor, entry)?;
+    validate_entry_cardinality_support(actor, entry, entry_model)?;
     let lowered_body = lower_entry_body(actor, entry, model, input_references, state_values)?;
     let witness_specs = entry_witness_specs(actor, entry, model)?;
     let sil_params = lower_entry_params(entry, &witness_specs, model, state_values);
@@ -499,15 +529,20 @@ fn emit_entry(
         out.push_str("        // :: cov inputs\n");
         let cov_id = hidden_cov_id_name();
         out.push_str(&format!("        byte[32] {cov_id} = OpInputCovenantId(this.activeInputIndex);\n"));
+        let has_consume_range = entry_model.current().inputs().iter().any(|interaction| interaction.cardinality().is_range());
         match entry.kind {
             EntryKind::Leader => {
-                let count = entry.consumes.len() + 1;
-                out.push_str(&format!("        require(OpCovInputCount({cov_id}) == {count});\n"));
-                // If count == 1, the assertion below follows from the preceding
-                // OpCovInputCount check: cov_id is the active input's ID, so the
-                // only matching input at cov[0] must be this.activeInputIndex.
-                if count > 1 {
+                if has_consume_range {
                     out.push_str(&format!("        require(OpCovInputIdx({cov_id}, 0) == this.activeInputIndex);\n"));
+                } else {
+                    let count = entry.consumes.len() + 1;
+                    out.push_str(&format!("        require(OpCovInputCount({cov_id}) == {count});\n"));
+                    // If count == 1, the assertion below follows from the preceding
+                    // OpCovInputCount check: cov_id is the active input's ID, so the
+                    // only matching input at cov[0] must be this.activeInputIndex.
+                    if count > 1 {
+                        out.push_str(&format!("        require(OpCovInputIdx({cov_id}, 0) == this.activeInputIndex);\n"));
+                    }
                 }
             }
             EntryKind::Delegate => {
@@ -521,8 +556,16 @@ fn emit_entry(
             EntryKind::Leader => 1,
             EntryKind::Delegate => 0,
         };
-        for (idx, consume) in entry.consumes.iter().enumerate() {
-            let cov_index = slot_offset + idx;
+        for interaction in entry_model.current().inputs() {
+            let InteractionSource::Consume(consume) = interaction.source() else {
+                unreachable!("current entry inputs are consumes");
+            };
+            if interaction.cardinality().is_range() {
+                emit_ranged_current_input(out, interaction, &cov_id, slot_offset, input_references)?;
+                continue;
+            }
+            let cov_index =
+                lower_singleton_interaction_index(interaction.location(), &format!("OpCovInputCount({cov_id})"), slot_offset)?;
             let input_idx = hidden_input_idx_name(&consume.name);
             push_generated_statement_with_comment(
                 out,
@@ -544,23 +587,35 @@ fn emit_entry(
     }
 
     if !entry.observes.is_empty() {
-        emit_observed_inputs(out, actor, entry, model, input_references)?;
+        emit_observed_inputs(out, actor, entry, entry_model, model, input_references)?;
     }
 
     emit_state_expansion_prelude(out, actor, model)?;
 
     out.push_str("        // :: auth outputs\n");
-    let auth_output_count = emitted_auth_output_count(&entry.emits);
-    out.push_str(&format!("        require(OpAuthOutputCount(this.activeInputIndex) == {auth_output_count});\n"));
+    let has_output_range = entry_model.current().outputs().iter().any(|interaction| interaction.cardinality().is_range());
+    if !has_output_range {
+        let auth_output_count = emitted_auth_output_count(&entry.emits);
+        out.push_str(&format!("        require(OpAuthOutputCount(this.activeInputIndex) == {auth_output_count});\n"));
+    }
     match &entry.emits {
         EmitSpec::None => {}
-        EmitSpec::Outputs(outputs) => {
-            for output in outputs {
+        EmitSpec::Outputs(_) => {
+            for interaction in entry_model.current().outputs() {
+                let InteractionSource::CurrentOutput(output) = interaction.source() else {
+                    unreachable!("current entry outputs are emits outputs");
+                };
+                if interaction.cardinality().is_range() {
+                    emit_ranged_current_output_count(out, interaction);
+                    continue;
+                }
+                let auth_index =
+                    lower_singleton_interaction_index(interaction.location(), "OpAuthOutputCount(this.activeInputIndex)", 0)?;
                 let output_idx = hidden_output_idx_name(&output.name);
                 push_generated_statement_with_comment(
                     out,
                     8,
-                    &format!("int {output_idx} = OpAuthOutputIdx(this.activeInputIndex, {})", output.auth_index),
+                    &format!("int {output_idx} = OpAuthOutputIdx(this.activeInputIndex, {auth_index})"),
                     &format!("output {}: {}", output.name, output.actors.join(" | ")),
                 );
             }
@@ -571,6 +626,106 @@ fn emit_entry(
     out.push_str(&lowered_body.sil);
     out.push_str("    }\n");
     Ok(lowered_body.digest_helpers)
+}
+
+fn validate_entry_cardinality_support(actor: &ActorDecl, entry: &EntryDecl, entry_model: &EntryModel<'_>) -> Result<()> {
+    for interaction in entry_model.current().inputs() {
+        if interaction.location().is_range() && entry.kind == EntryKind::Delegate {
+            return Err(ArgentError::new(format!(
+                "delegate `{}::{}` cannot use range `{}` in `consumes` yet",
+                actor.name,
+                entry.name,
+                interaction.handle()
+            )));
+        }
+    }
+    for interaction in entry_model.current().outputs() {
+        if interaction.location().is_range() && interaction.target().single_static_actor().is_none() {
+            return Err(ArgentError::new(format!(
+                "entry `{}::{}` range output `{}` must use one fixed actor target in this compiler version",
+                actor.name,
+                entry.name,
+                interaction.handle()
+            )));
+        }
+    }
+    for interaction in entry_model
+        .existing_groups()
+        .chain(entry_model.genesis_groups())
+        .flat_map(|group| group.inputs().iter().chain(group.outputs()))
+    {
+        if interaction.location().is_range() {
+            debug_assert!(interaction.cardinality().is_range());
+            return Err(ArgentError::new(format!(
+                "entry `{}::{}` declares range `{}`, but range code generation is not implemented yet",
+                actor.name,
+                entry.name,
+                interaction.handle()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn emit_ranged_current_output_count(out: &mut String, interaction: &EntryInteraction<'_>) {
+    let Some((minimum, maximum)) = interaction.cardinality().range_bounds() else {
+        unreachable!("ranged current output has resolved range bounds");
+    };
+    let InteractionLocation::Range { singleton_count, .. } = interaction.location() else {
+        unreachable!("ranged current output has a ranged location");
+    };
+    let auth_count = "OpAuthOutputCount(this.activeInputIndex)";
+    let count_expr = if singleton_count == 0 { auth_count.to_string() } else { format!("{auth_count} - {singleton_count}") };
+    let count = hidden_output_count_name(interaction.handle());
+    out.push_str(&format!("        int {count} = {count_expr};\n"));
+    out.push_str(&format!("        require({count} >= {minimum});\n"));
+    out.push_str(&format!("        require({count} <= {maximum});\n"));
+}
+
+fn emit_ranged_current_input(
+    out: &mut String,
+    interaction: &EntryInteraction<'_>,
+    cov_id: &str,
+    slot_offset: usize,
+    input_references: &EntryInputReferencePlan,
+) -> Result<()> {
+    let Some((minimum, maximum)) = interaction.cardinality().range_bounds() else {
+        unreachable!("ranged current input has resolved range bounds");
+    };
+    let InteractionLocation::Range { start, singleton_count } = interaction.location() else {
+        unreachable!("ranged current input has a ranged location");
+    };
+    let excluded = slot_offset + singleton_count;
+    let group_count = format!("OpCovInputCount({cov_id})");
+    let count_expr = if excluded == 0 { group_count } else { format!("{group_count} - {excluded}") };
+    let count = hidden_input_count_name(interaction.handle());
+    out.push_str(&format!("        int {count} = {count_expr};\n"));
+    out.push_str(&format!("        require({count} >= {minimum});\n"));
+    out.push_str(&format!("        require({count} <= {maximum});\n"));
+
+    let input_reference = input_references.consumed(interaction.handle())?;
+    let state_struct = input_reference.authored_sil_type();
+    out.push_str(&format!("        {state_struct}[] {};\n", interaction.handle()));
+    let position = hidden_input_position_name(interaction.handle());
+    out.push_str(&format!("        for ({position}, 0, {count}, {maximum}) {{\n"));
+    let first_cov_index = slot_offset + start;
+    let cov_index = if first_cov_index == 0 { position.clone() } else { format!("{first_cov_index} + {position}") };
+    let input_idx = hidden_input_idx_name(interaction.handle());
+    out.push_str(&format!("            int {input_idx} = OpCovInputIdx({cov_id}, {cov_index});\n"));
+    input_reference.emit_read(out, 12);
+    let item = hidden_input_item_name(interaction.handle());
+    let authored = input_reference.complete_authored_state(12)?;
+    out.push_str(&format!("            {state_struct} {item} = {};\n", authored.sil()));
+    out.push_str(&format!("            {} = {}.append({item});\n", interaction.handle(), interaction.handle()));
+    out.push_str("        }\n");
+    Ok(())
+}
+fn lower_singleton_interaction_index(location: InteractionLocation, total_count: &str, start_offset: usize) -> Result<String> {
+    match location {
+        InteractionLocation::FromStart(index) => Ok((start_offset + index).to_string()),
+        InteractionLocation::FromEnd(distance) => Ok(format!("{total_count} - {distance}")),
+        InteractionLocation::Range { .. } => Err(ArgentError::new("cannot lower a range as a singleton transaction index")),
+    }
 }
 
 fn emitted_auth_output_count(emits: &EmitSpec) -> usize {
@@ -698,16 +853,18 @@ fn emit_observed_inputs(
     out: &mut String,
     actor: &ActorDecl,
     entry: &EntryDecl,
+    entry_model: &EntryModel<'_>,
     model: &Model<'_>,
     input_references: &EntryInputReferencePlan,
 ) -> Result<()> {
     out.push_str("        // :: observed covenants\n");
-    for observe in &entry.observes {
+    for group in entry_model.existing_groups() {
+        let observe = group.observe().expect("existing covenant group retains its observe clause");
         let cov_id = hidden_observe_cov_id_name(&observe.name);
         let cov_expr = lower_entry_expr(actor, entry, model, EntryInputReferenceView::None, &observe.covenant_expr, Some("byte[32]"))?;
         out.push_str(&format!("        byte[32] {cov_id} = {cov_expr}; // observe {}\n", observe.name));
-        out.push_str(&format!("        require(OpCovInputCount({cov_id}) == {});\n", observe.inputs.len()));
-        out.push_str(&format!("        require(OpCovOutputCount({cov_id}) == {});\n", observe.outputs.len()));
+        out.push_str(&format!("        require(OpCovInputCount({cov_id}) == {});\n", group.inputs().len()));
+        out.push_str(&format!("        require(OpCovOutputCount({cov_id}) == {});\n", group.outputs().len()));
         let mut materialized_open_bindings = BTreeSet::new();
         for output in &observe.outputs {
             if !observed_is_dynamic_binding(observe, output) || !materialized_open_bindings.insert(output.actor.as_str()) {
@@ -718,22 +875,30 @@ fn emit_observed_inputs(
             let spec = observed_input_spec(actor, entry, observe, input, model)?;
             out.push_str(&format!("        byte[32] {} = {};\n", output.actor, hidden_observed_actor_template_name(&spec)));
         }
-        for (idx, input) in observe.inputs.iter().enumerate() {
+        for interaction in group.inputs() {
+            let InteractionSource::ObserveInput(input) = interaction.source() else {
+                unreachable!("existing covenant inputs are observed inputs");
+            };
             let input_idx = hidden_observed_input_idx_name(&observe.name, &input.name);
+            let cov_index = lower_singleton_interaction_index(interaction.location(), &format!("OpCovInputCount({cov_id})"), 0)?;
             push_generated_statement_with_comment(
                 out,
                 8,
-                &format!("int {input_idx} = OpCovInputIdx({cov_id}, {idx})"),
+                &format!("int {input_idx} = OpCovInputIdx({cov_id}, {cov_index})"),
                 &format!("observed input {}.{}: {}", observe.name, input.name, input.actor),
             );
             input_references.observed(&observe.name, &input.name)?.emit_read(out, 8);
         }
-        for (idx, output) in observe.outputs.iter().enumerate() {
+        for interaction in group.outputs() {
+            let InteractionSource::ObserveOutput(output) = interaction.source() else {
+                unreachable!("existing covenant outputs are observed outputs");
+            };
             let output_idx = hidden_observed_output_idx_name(&observe.name, &output.name);
+            let cov_index = lower_singleton_interaction_index(interaction.location(), &format!("OpCovOutputCount({cov_id})"), 0)?;
             push_generated_statement_with_comment(
                 out,
                 8,
-                &format!("int {output_idx} = OpCovOutputIdx({cov_id}, {idx})"),
+                &format!("int {output_idx} = OpCovOutputIdx({cov_id}, {cov_index})"),
                 &format!("observed output {}.{}: {}", observe.name, output.name, output.actor),
             );
         }
@@ -1097,6 +1262,20 @@ fn lower_entry_params(
 
 fn entry_witness_specs(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Result<EntryWitnessSpecs> {
     let uses = model.entry_template_uses(actor, entry)?;
+    let optional_input_actors = model
+        .entry_model(actor, entry)?
+        .current()
+        .inputs()
+        .iter()
+        .filter(|interaction| interaction.cardinality().range_bounds().is_some_and(|(minimum, _)| minimum == 0))
+        .flat_map(|interaction| interaction.target().static_actors().map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    let mut writes_without_input_template = BTreeSet::new();
+    for target in uses.writes.intersection(&optional_input_actors) {
+        if template_input_index_for_actor(actor, entry, target, model)?.is_none() {
+            writes_without_input_template.insert(target.clone());
+        }
+    }
     let selectors = model.template_selectors_for_entry(actor, entry).expect("entry selectors are valid after model validation");
     let selector_specs = selectors
         .values()
@@ -1108,6 +1287,13 @@ fn entry_witness_specs(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) 
         })
         .collect::<Vec<_>>();
     let mut specs = template_witness_specs_for_actor(actor, model, uses.reads, uses.writes);
+    // A read dependency may be optional. Keep full witness bytes unless one
+    // declared input is guaranteed to authenticate the emitted template.
+    for spec in &mut specs.templates {
+        if writes_without_input_template.contains(&spec.actor) {
+            spec.form = TemplateWitnessForm::Bytes;
+        }
+    }
     specs.selectors = selector_specs;
     let observed_actors = observed_actor_witness_specs(actor, entry, model)?;
     specs.spawn_outputs = spawn_output_witness_specs(actor, entry, model)?;
@@ -1116,6 +1302,25 @@ fn entry_witness_specs(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) 
     specs.state_expansions = state_expansion_witness_specs_for_actor(actor, model);
     specs.observed_output_fields = observed_output_field_witness_specs(actor, entry, model);
     Ok(specs)
+}
+
+pub(in crate::compiler::codegen) fn entry_template_witness_uses_bytes(
+    actor: &ActorDecl,
+    entry: &EntryDecl,
+    target: &str,
+    model: &Model<'_>,
+) -> Result<bool> {
+    entry_witness_specs(actor, entry, model)?
+        .templates
+        .iter()
+        .find(|spec| spec.actor == target)
+        .map(|spec| spec.form == TemplateWitnessForm::Bytes)
+        .ok_or_else(|| {
+            ArgentError::new(format!(
+                "entry `{}::{}` has no template witness plan for consumed actor `{target}`",
+                actor.name, entry.name
+            ))
+        })
 }
 
 fn observed_actor_witness_specs(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Result<Vec<ObservedActorWitnessSpec>> {
@@ -1483,9 +1688,27 @@ pub(super) fn template_input_index_for_target(
     target: StaticActorTarget<'_>,
     model: &Model<'_>,
 ) -> Result<Option<String>> {
-    for consume in &entry.consumes {
+    for interaction in model.entry_model(actor, entry)?.current().inputs() {
+        let InteractionSource::Consume(consume) = interaction.source() else {
+            unreachable!("current entry inputs are consumes");
+        };
         if model.static_actor_target(&consume.actor).is_some_and(|candidate| candidate.same_actor(&target)) {
-            return Ok(Some(hidden_input_idx_name(&consume.name)));
+            let input_index = match interaction.location() {
+                InteractionLocation::Range { start, .. }
+                    if interaction.cardinality().range_bounds().is_some_and(|(minimum, _)| minimum > 0) =>
+                {
+                    let slot_offset = match entry.kind {
+                        EntryKind::Leader => 1,
+                        EntryKind::Delegate => 0,
+                    };
+                    Some(format!("OpCovInputIdx({}, {})", hidden_cov_id_name(), slot_offset + start))
+                }
+                InteractionLocation::Range { .. } => None,
+                InteractionLocation::FromStart(_) | InteractionLocation::FromEnd(_) => Some(hidden_input_idx_name(&consume.name)),
+            };
+            if input_index.is_some() {
+                return Ok(input_index);
+            }
         }
     }
     // Genesis groups have no inputs, so only existing groups can authenticate
@@ -1650,23 +1873,28 @@ fn emit_manifest(program: &Program, model: &Model<'_>) -> String {
                     EntryKind::Delegate => word::DELEGATE,
                 }
             ));
+            let entry_model = model.entry_model(actor, entry).expect("manifest entry has a compiler model");
             out.push_str("          \"emits\": ");
-            emit_emit_spec_json(&mut out, &entry.emits);
+            emit_emit_spec_json(&mut out, entry_model);
             out.push_str(",\n");
             out.push_str("          \"consumes\": [");
-            for (consume_idx, consume) in entry.consumes.iter().enumerate() {
+            for (consume_idx, interaction) in entry_model.current().inputs().iter().enumerate() {
                 if consume_idx > 0 {
                     out.push_str(", ");
                 }
+                let InteractionSource::Consume(consume) = interaction.source() else {
+                    unreachable!("current entry inputs are consumes");
+                };
                 out.push_str(&format!(
-                    "{{ \"name\": \"{}\", \"actor\": \"{}\" }}",
+                    "{{ \"name\": \"{}\", \"actor\": \"{}\"",
                     json_escape(&consume.name),
                     json_escape(&consume.actor)
                 ));
+                emit_manifest_cardinality(&mut out, interaction);
+                out.push_str(" }");
             }
             out.push_str("],\n");
             out.push_str("          \"routes\": [");
-            let entry_model = model.entry_model(actor, entry).expect("manifest entry has a compiler model");
             for (route_idx, route) in entry_model.routes().iter().enumerate() {
                 if route_idx > 0 {
                     out.push_str(", ");
@@ -1676,12 +1904,15 @@ fn emit_manifest(program: &Program, model: &Model<'_>) -> String {
                         "{{ \"output\": \"{}\", \"successor\": {{ \"kind\": \"exact_self\" }} }}",
                         json_escape(&route.output)
                     )),
-                    ResolvedSuccessor::Constructed { actor, state } => out.push_str(&format!(
-                        "{{ \"output\": \"{}\", \"successor\": {{ \"kind\": \"constructed\", \"actor\": \"{}\", \"state\": \"{}\" }} }}",
-                        json_escape(&route.output),
-                        json_escape(actor),
-                        json_escape(&compact_expr(state))
-                    )),
+                    ResolvedSuccessor::Constructed { actor, state, arity } => {
+                        let arity = if *arity == RouteArity::Many { ", \"arity\": \"many\"" } else { "" };
+                        out.push_str(&format!(
+                            "{{ \"output\": \"{}\", \"successor\": {{ \"kind\": \"constructed\"{arity}, \"actor\": \"{}\", \"state\": \"{}\" }} }}",
+                            json_escape(&route.output),
+                            json_escape(actor),
+                            json_escape(&compact_expr(state))
+                        ));
+                    }
                 }
             }
             out.push_str("]\n");
@@ -2669,10 +2900,20 @@ fn entry_artifact(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Re
             .collect::<Result<Vec<_>>>()?,
         spawns: entry_model.genesis_groups().map(|group| spawn_artifact(actor, entry, model, group)).collect::<Result<Vec<_>>>()?,
         witnesses,
-        consumes: entry
-            .consumes
+        consumes: entry_model
+            .current()
+            .inputs()
             .iter()
-            .map(|consume| ConsumeArtifact { name: consume.name.clone(), actor: consume.actor.clone() })
+            .map(|interaction| {
+                let InteractionSource::Consume(consume) = interaction.source() else {
+                    unreachable!("current covenant inputs are consumes");
+                };
+                ConsumeArtifact {
+                    name: interaction.handle().to_string(),
+                    actor: consume.actor.clone(),
+                    cardinality: cardinality_artifact(interaction),
+                }
+            })
             .collect(),
         emits: emit_spec_artifact(entry_model),
         routes: expanded_routes.iter().map(route_artifact).collect(),
@@ -2708,6 +2949,7 @@ fn spawn_artifact(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>, group
                     actor: compact_expr(&output.actor),
                     state,
                     group_index: output.group_index,
+                    cardinality: cardinality_artifact(interaction),
                     target,
                 })
             })
@@ -2728,7 +2970,7 @@ fn observe_artifact(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>, gro
                 let InteractionSource::ObserveInput(observed) = interaction.source() else {
                     unreachable!("existing covenant inputs are observed inputs");
                 };
-                observed_actor_artifact(actor, entry, model, observe, observed)
+                observed_actor_artifact(actor, entry, model, observe, observed, interaction)
             })
             .collect::<Result<Vec<_>>>()?,
         outputs: group
@@ -2738,7 +2980,7 @@ fn observe_artifact(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>, gro
                 let InteractionSource::ObserveOutput(observed) = interaction.source() else {
                     unreachable!("existing covenant outputs are observed outputs");
                 };
-                observed_actor_artifact(actor, entry, model, observe, observed)
+                observed_actor_artifact(actor, entry, model, observe, observed, interaction)
             })
             .collect::<Result<Vec<_>>>()?,
     })
@@ -2762,6 +3004,7 @@ fn observed_actor_artifact(
     model: &Model<'_>,
     observe: &ObserveDecl,
     observed: &ObservedActorDecl,
+    interaction: &EntryInteraction<'_>,
 ) -> Result<ObservedActorArtifact> {
     let target = if let Some(state) = observed_open_state_for_decl(actor, entry, observe, observed, model)? {
         ObservedTargetArtifact::DynamicActor { state }
@@ -2770,7 +3013,7 @@ fn observed_actor_artifact(
     } else {
         ObservedTargetArtifact::StaticActor { app: model.app_name.clone(), actor: observed.actor.clone() }
     };
-    Ok(ObservedActorArtifact { name: observed.name.clone(), target })
+    Ok(ObservedActorArtifact { name: observed.name.clone(), target, cardinality: cardinality_artifact(interaction) })
 }
 
 fn entry_route_plan_artifact(
@@ -2795,7 +3038,7 @@ fn entry_route_plan_artifact(
             RouteInputArtifact {
                 name: consume.name.clone(),
                 actor: consume.actor.clone(),
-                cov_index: Some(consume_cov_index(entry.kind, interaction.index())),
+                cov_index: fixed_interaction_index(interaction.location(), usize::from(entry.kind == EntryKind::Leader)),
             }
         })
         .collect::<Vec<_>>();
@@ -2813,10 +3056,10 @@ fn entry_route_plan_artifact(
     })
 }
 
-fn consume_cov_index(kind: EntryKind, idx: usize) -> usize {
-    match kind {
-        EntryKind::Leader => idx + 1,
-        EntryKind::Delegate => idx,
+fn fixed_interaction_index(location: InteractionLocation, section_offset: usize) -> Option<usize> {
+    match location {
+        InteractionLocation::FromStart(index) => Some(section_offset + index),
+        InteractionLocation::Range { .. } | InteractionLocation::FromEnd(_) => None,
     }
 }
 
@@ -2827,7 +3070,7 @@ fn route_output_handles(entry: &EntryModel<'_>) -> Vec<RouteOutputHandleArtifact
         .iter()
         .map(|output| RouteOutputHandleArtifact {
             name: output.handle().to_string(),
-            auth_index: output.index(),
+            auth_index: fixed_interaction_index(output.location(), 0),
             actors: output.target().actors().map(str::to_string).collect(),
         })
         .collect()
@@ -2861,8 +3104,9 @@ fn emit_spec_artifact(entry: &EntryModel<'_>) -> EmitArtifact {
                     debug_assert_eq!(interaction.handle(), output.name);
                     EmitOutputArtifact {
                         name: interaction.handle().to_string(),
-                        auth_index: interaction.index(),
+                        auth_index: fixed_interaction_index(interaction.location(), 0),
                         actors: interaction.target().actors().map(str::to_string).collect(),
+                        cardinality: cardinality_artifact(interaction),
                     }
                 })
                 .collect(),
@@ -2870,10 +3114,17 @@ fn emit_spec_artifact(entry: &EntryModel<'_>) -> EmitArtifact {
     }
 }
 
+fn cardinality_artifact(interaction: &EntryInteraction<'_>) -> CardinalityArtifact {
+    interaction
+        .cardinality()
+        .range_bounds()
+        .map_or(CardinalityArtifact::One, |(minimum, maximum)| CardinalityArtifact::Range { minimum, maximum })
+}
+
 fn route_artifact(route: &ResolvedRoute) -> RouteArtifact {
     let successor = match &route.successor {
         ResolvedSuccessor::ExactSelf => RouteSuccessorArtifact::ExactSelf,
-        ResolvedSuccessor::Constructed { actor, state } => RouteSuccessorArtifact::Constructed {
+        ResolvedSuccessor::Constructed { actor, state, .. } => RouteSuccessorArtifact::Constructed {
             actor: actor.clone(),
             template_id: template_receipt_id(actor),
             state_expr: compact_expr(state),
@@ -2961,19 +3212,24 @@ pub(super) fn lower_actor_enum_literals(expr: &str, model: &Model<'_>) -> Result
     Ok(out)
 }
 
-fn emit_emit_spec_json(out: &mut String, emits: &EmitSpec) {
-    match emits {
+fn emit_emit_spec_json(out: &mut String, entry: &EntryModel<'_>) {
+    match &entry.source().emits {
         EmitSpec::None => out.push_str("{ \"kind\": \"none\" }"),
-        EmitSpec::Outputs(outputs) => {
+        EmitSpec::Outputs(_) => {
             out.push_str("{ \"kind\": \"outputs\", \"outputs\": [");
-            for (output_idx, output) in outputs.iter().enumerate() {
+            for (output_idx, interaction) in entry.current().outputs().iter().enumerate() {
                 if output_idx > 0 {
                     out.push_str(", ");
                 }
+                let InteractionSource::CurrentOutput(output) = interaction.source() else {
+                    unreachable!("current entry outputs are emits outputs");
+                };
+                let auth_index =
+                    fixed_interaction_index(interaction.location(), 0).map_or_else(|| "null".to_string(), |index| index.to_string());
                 out.push_str(&format!(
                     "{{ \"name\": \"{}\", \"auth_index\": {}, \"actors\": [",
                     json_escape(&output.name),
-                    output.auth_index
+                    auth_index
                 ));
                 for (actor_idx, actor) in output.actors.iter().enumerate() {
                     if actor_idx > 0 {
@@ -2981,10 +3237,18 @@ fn emit_emit_spec_json(out: &mut String, emits: &EmitSpec) {
                     }
                     out.push_str(&format!("\"{}\"", json_escape(actor)));
                 }
-                out.push_str("] }");
+                out.push(']');
+                emit_manifest_cardinality(out, interaction);
+                out.push_str(" }");
             }
             out.push_str("] }");
         }
+    }
+}
+
+fn emit_manifest_cardinality(out: &mut String, interaction: &EntryInteraction<'_>) {
+    if let Some((minimum, maximum)) = interaction.cardinality().range_bounds() {
+        out.push_str(&format!(", \"cardinality\": {{ \"kind\": \"range\", \"minimum\": {minimum}, \"maximum\": {maximum} }}"));
     }
 }
 
@@ -3365,7 +3629,7 @@ fn observed_actor_side_label(side: ObservedActorSideArtifact) -> &'static str {
     }
 }
 
-fn hidden_cov_id_name() -> String {
+pub(super) fn hidden_cov_id_name() -> String {
     format!("{RESERVED_GENERATED_PREFIX}cov_id")
 }
 
@@ -3373,8 +3637,40 @@ pub(super) fn hidden_input_idx_name(input: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{input}_input_idx")
 }
 
+pub(super) fn hidden_input_count_name(input: &str) -> String {
+    format!("{RESERVED_GENERATED_PREFIX}{input}_count")
+}
+
+fn hidden_input_position_name(input: &str) -> String {
+    format!("{RESERVED_GENERATED_PREFIX}{input}_position")
+}
+
+fn hidden_input_item_name(input: &str) -> String {
+    format!("{RESERVED_GENERATED_PREFIX}{input}_item")
+}
+
 pub(super) fn hidden_output_idx_name(output: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{output}_output_idx")
+}
+
+pub(super) fn hidden_output_count_name(output: &str) -> String {
+    format!("{RESERVED_GENERATED_PREFIX}{output}_output_count")
+}
+
+pub(super) fn hidden_output_position_name(output: &str) -> String {
+    format!("{RESERVED_GENERATED_PREFIX}{output}_output_position")
+}
+
+pub(super) fn hidden_checked_range_index_name() -> String {
+    format!("{RESERVED_GENERATED_PREFIX}checked_range_index")
+}
+
+fn hidden_range_index_arg_name() -> String {
+    format!("{RESERVED_GENERATED_PREFIX}range_index")
+}
+
+fn hidden_range_count_arg_name() -> String {
+    format!("{RESERVED_GENERATED_PREFIX}range_count")
 }
 
 fn compact_expr(input: &str) -> String {

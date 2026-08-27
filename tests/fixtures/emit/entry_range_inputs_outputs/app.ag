@@ -1,0 +1,46 @@
+const int MAX_INPUT_ACCOUNTS = 2;
+const int MAX_OUTPUT_ACCOUNTS = 3;
+
+state BatchState {}
+
+state AccountState {
+    int balance;
+}
+
+actor Batch owns BatchState {
+    entry rebalance()
+    consumes {
+        accounts: Account[0..=MAX_INPUT_ACCOUNTS],
+    }
+    emits {
+        next: Account[1..=MAX_OUTPUT_ACCOUNTS],
+    } {
+        AccountState[] next_states;
+        AccountState reserve = {
+            balance: 0,
+        };
+        next_states = next_states.append(reserve);
+
+        for (i, 0, accounts.length, MAX_INPUT_ACCOUNTS) {
+            AccountState next_state = {
+                balance: accounts[i].balance,
+            };
+            next_states = next_states.append(next_state);
+            require(next[i + 1].value == accounts[i].value);
+        }
+        unrestricted(next[0].value);
+
+        become next <- Account[](next_states);
+    }
+}
+
+actor Account owns AccountState {
+    entry hold() emits none {
+        require(balance >= 0);
+    }
+}
+
+app EntryRangeInputsOutputs {
+    actor Batch;
+    actor Account;
+}

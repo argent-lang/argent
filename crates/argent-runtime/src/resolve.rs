@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use argent_artifact::{
-    ActorArtifact, ActorTargetArtifact, CovenantIdSourceArtifact, EntryArtifact, EntryKindArtifact, ObserveArtifact,
-    ObservedActorArtifact, SilContractArtifact, SilEntryArtifact, SpawnArtifact,
+    ActorArtifact, ActorTargetArtifact, CardinalityArtifact, CovenantIdSourceArtifact, EntryArtifact, EntryKindArtifact,
+    ObserveArtifact, ObservedActorArtifact, SilContractArtifact, SilEntryArtifact, SpawnArtifact,
 };
 use kaspa_consensus_core::{
     Hash,
@@ -587,11 +587,11 @@ impl<'artifact> TxBuilder<'artifact> {
         Ok(())
     }
 
-    /// Enforce the batching restriction carried by leader-actor metadata.
+    /// Enforce the current-covenant input shape carried by leader-actor metadata.
     ///
-    /// A leader entry of a leader actor may share its covenant ID only
-    /// with the inputs it explicitly declares in `consumes`. The generated
-    /// script enforces the same count; this pass reports the source-level
+    /// A leader entry of a leader actor may share its covenant ID only with
+    /// the sum of its declared singleton and ranged consumes. The generated
+    /// script enforces the same interval; this pass reports the source-level
     /// reason before callbacks and script execution obscure it.
     fn validate_leader_actor_input_counts(&self, context: &ResolveContext<'artifact, '_, '_>) -> BuilderResult<()> {
         for (input_index, input) in context.inputs.iter().enumerate() {
@@ -608,7 +608,19 @@ impl<'artifact> TxBuilder<'artifact> {
                 continue;
             };
 
-            let expected = input.artifact_entry.consumes.len() + 1;
+            let (minimum, maximum) = input
+                .artifact_entry
+                .consumes
+                .iter()
+                .try_fold((1usize, 1usize), |(minimum, maximum), consume| {
+                    let (consume_minimum, consume_maximum) = cardinality_bounds(consume.cardinality)?;
+                    Some((minimum.checked_add(consume_minimum)?, maximum.checked_add(consume_maximum)?))
+                })
+                .ok_or_else(|| BuilderError::InvalidTransition {
+                    actor: input.source.actor.to_string(),
+                    entry: input.source.entry.name.clone(),
+                    message: "artifact contains invalid or overflowing consume cardinality".to_string(),
+                })?;
             let found = context
                 .inputs
                 .iter()
@@ -617,13 +629,24 @@ impl<'artifact> TxBuilder<'artifact> {
                     ResolveInput::Ordinary(candidate) => candidate.utxo.covenant_id == Some(covenant_id),
                 })
                 .count();
-            if found != expected {
+            if found < minimum || found > maximum {
                 let leader_for = input.actor.leader_for.iter().map(|reason| format!("{}::{}", reason.actor, reason.entry)).collect();
-                return Err(BuilderError::LeaderActorInputCountMismatch {
+                if minimum == maximum {
+                    return Err(BuilderError::LeaderActorInputCountMismatch {
+                        input_index,
+                        actor: input.source.actor.to_string(),
+                        entry: input.source.entry.name.clone(),
+                        expected: minimum,
+                        found,
+                        leader_for,
+                    });
+                }
+                return Err(BuilderError::LeaderActorInputCardinalityMismatch {
                     input_index,
                     actor: input.source.actor.to_string(),
                     entry: input.source.entry.name.clone(),
-                    expected,
+                    minimum,
+                    maximum,
                     found,
                     leader_for,
                 });
@@ -683,6 +706,16 @@ impl<'artifact> TxBuilder<'artifact> {
             unsigned.entries.into_iter().map(|entry| entry.expect("context transaction inputs always carry UTXO entries")).collect();
         execute_transaction_with_covenants(&mut transaction, entries)?;
         Ok(transaction)
+    }
+}
+
+fn cardinality_bounds(cardinality: CardinalityArtifact) -> Option<(usize, usize)> {
+    match cardinality {
+        CardinalityArtifact::One => Some((1, 1)),
+        CardinalityArtifact::Range { minimum, maximum } if 0 <= minimum && minimum <= maximum => {
+            Some((usize::try_from(minimum).ok()?, usize::try_from(maximum).ok()?))
+        }
+        CardinalityArtifact::Range { .. } => None,
     }
 }
 
@@ -889,10 +922,12 @@ mod tests {
     use std::{cell::Cell, collections::BTreeMap};
 
     use argent_artifact::{
-        ARTIFACT_SCHEMA_VERSION, ActorAbiRefArtifact, ActorArtifact, ArgentArtifact, CompiledContractArtifact, DispatchTag,
-        EmitArtifact, EntryAbiRefArtifact, EntryArtifact, EntryKindArtifact, EntryRoutePlanArtifact, GeneratorArtifact,
-        InterfaceSetArtifact, RuntimeFieldArtifact, RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, SilContractArtifact,
-        SilEntryArtifact, StateSpanArtifact, TemplatePlanArtifact, TemplateSelectorArtifact, TypeArtifact,
+        ARTIFACT_SCHEMA_VERSION, ActorAbiRefArtifact, ActorArtifact, ActorTargetArtifact, ArgentArtifact, CardinalityArtifact,
+        CompiledContractArtifact, ConsumeArtifact, CovenantIdSourceArtifact, DispatchTag, EmitArtifact, EntryAbiRefArtifact,
+        EntryArtifact, EntryKindArtifact, EntryRefArtifact, EntryRoutePlanArtifact, GeneratorArtifact, InterfaceSetArtifact,
+        ObserveArtifact, ObservedActorArtifact, RuntimeFieldArtifact, RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact,
+        SilContractArtifact, SilEntryArtifact, SpawnArtifact, SpawnOutputArtifact, StateSpanArtifact, TemplatePlanArtifact,
+        TemplateSelectorArtifact, TypeArtifact,
     };
     use kaspa_consensus_core::{
         Hash,
@@ -1083,6 +1118,126 @@ mod tests {
         assert_eq!(unsigned.tx.outputs[2].covenant, Some(CovenantBinding::new(2, reserve_id)));
         assert!(!args_called.get());
         assert!(!script_called.get());
+    }
+
+    #[test]
+    fn leader_input_validation_accepts_resolved_consume_ranges() {
+        let mut artifact = artifact("primary", "Counter", "merge");
+        let actor = &mut artifact.argent.actors[0];
+        actor.leader_for.push(EntryRefArtifact { actor: "Peer".to_string(), entry: "join".to_string() });
+        actor.entries[0].consumes.push(ConsumeArtifact {
+            name: "peers".to_string(),
+            actor: "Counter".to_string(),
+            cardinality: CardinalityArtifact::Range { minimum: 1, maximum: 3 },
+        });
+        artifact.id = artifact.computed_id_hex().expect("mutated artifact id computes");
+
+        let builder = TxBuilder::new(&artifact).expect("range artifact builds");
+        let covenant_id = Hash::from_bytes([0x41; 32]);
+        let active = builder.covenant_utxo("Counter", state(0), 1_000, 0, false, Some(covenant_id)).expect("active actor UTXO builds");
+        let peer = UtxoEntry::new(100, ScriptPublicKey::default(), 0, false, Some(covenant_id));
+
+        let valid = TxContext::new()
+            .actor_input("Counter", state(0), "merge", outpoint(1), active.clone(), 0)
+            .input(outpoint(2), peer.clone(), Vec::new(), 0)
+            .input(outpoint(3), peer.clone(), Vec::new(), 0);
+        let resolved = builder.bind_context(&valid).expect("valid range context binds");
+        builder.validate_leader_actor_input_counts(&resolved).expect("two range items are accepted");
+
+        let too_few = TxContext::new().actor_input("Counter", state(0), "merge", outpoint(1), active.clone(), 0);
+        let resolved = builder.bind_context(&too_few).expect("short context binds");
+        assert!(matches!(
+            builder.validate_leader_actor_input_counts(&resolved),
+            Err(BuilderError::LeaderActorInputCardinalityMismatch { minimum: 2, maximum: 4, found: 1, .. })
+        ));
+
+        let too_many = TxContext::new()
+            .actor_input("Counter", state(0), "merge", outpoint(1), active, 0)
+            .input(outpoint(2), peer.clone(), Vec::new(), 0)
+            .input(outpoint(3), peer.clone(), Vec::new(), 0)
+            .input(outpoint(4), peer.clone(), Vec::new(), 0)
+            .input(outpoint(5), peer, Vec::new(), 0);
+        let resolved = builder.bind_context(&too_many).expect("long context binds");
+        assert!(matches!(
+            builder.validate_leader_actor_input_counts(&resolved),
+            Err(BuilderError::LeaderActorInputCardinalityMismatch { minimum: 2, maximum: 4, found: 5, .. })
+        ));
+    }
+
+    #[test]
+    fn artifact_attachment_rejects_invalid_or_runtime_unsupported_cardinality() {
+        let mut observed = artifact("primary", "Counter", "merge");
+        observed.argent.actors[0].entries[0].observes.push(ObserveArtifact {
+            name: "peers".to_string(),
+            covenant_expr: "peer_id".to_string(),
+            covenant_id_source: CovenantIdSourceArtifact::StateField { field: "peer_id".to_string() },
+            inputs: vec![ObservedActorArtifact {
+                name: "items".to_string(),
+                target: ActorTargetArtifact::StaticActor { app: "primary".to_string(), actor: "Counter".to_string() },
+                cardinality: CardinalityArtifact::Range { minimum: 1, maximum: 3 },
+            }],
+            outputs: Vec::new(),
+        });
+        observed.id = observed.computed_id_hex().expect("mutated artifact id computes");
+        assert!(matches!(
+            ArtifactBundle::new(&observed),
+            Err(BuilderError::UnsupportedArtifactCardinality {
+                section: "observed input",
+                ref handle,
+                ..
+            }) if handle == "peers.items"
+        ));
+
+        let mut spawned = artifact("primary", "Counter", "merge");
+        spawned.argent.actors[0].entries[0].spawns.push(SpawnArtifact {
+            name: "children".to_string(),
+            covenant: "child_id".to_string(),
+            outputs: vec![SpawnOutputArtifact {
+                name: "items".to_string(),
+                actor: "Counter".to_string(),
+                state: "CounterState".to_string(),
+                group_index: 0,
+                cardinality: CardinalityArtifact::Range { minimum: 1, maximum: 3 },
+                target: Some(ActorTargetArtifact::StaticActor { app: "primary".to_string(), actor: "Counter".to_string() }),
+            }],
+        });
+        assert!(matches!(
+            crate::validate_runtime_cardinality_support("primary", &spawned),
+            Err(BuilderError::UnsupportedArtifactCardinality {
+                section: "spawn output",
+                ref handle,
+                ..
+            }) if handle == "children.items"
+        ));
+
+        let mut delegate = artifact("primary", "Counter", "merge");
+        let entry = &mut delegate.argent.actors[0].entries[0];
+        entry.kind = EntryKindArtifact::Delegate;
+        entry.consumes.push(ConsumeArtifact {
+            name: "items".to_string(),
+            actor: "Counter".to_string(),
+            cardinality: CardinalityArtifact::Range { minimum: 1, maximum: 3 },
+        });
+        assert!(matches!(
+            crate::validate_runtime_cardinality_support("primary", &delegate),
+            Err(BuilderError::UnsupportedArtifactCardinality {
+                section: "delegate consume",
+                ref handle,
+                ..
+            }) if handle == "items"
+        ));
+
+        let mut malformed = artifact("primary", "Counter", "merge");
+        malformed.argent.actors[0].entries[0].consumes.push(ConsumeArtifact {
+            name: "items".to_string(),
+            actor: "Counter".to_string(),
+            cardinality: CardinalityArtifact::Range { minimum: -1, maximum: 3 },
+        });
+        malformed.id = malformed.computed_id_hex().expect("mutated artifact id computes");
+        assert!(matches!(
+            ArtifactBundle::new(&malformed),
+            Err(BuilderError::InvalidArtifactCardinality { section: "consume", minimum: -1, maximum: 3, .. })
+        ));
     }
 
     #[test]

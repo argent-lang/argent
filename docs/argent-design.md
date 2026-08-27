@@ -523,6 +523,10 @@ The initial check is syntactic and entry-scoped. It requires each output value
 reference to appear somewhere in the entry body; it does not prove that a
 restriction is meaningful or present on every control-flow path.
 
+For a ranged output, this check is currently handle-level: one indexed
+`next[i].value` reference satisfies the policy for the complete range. Argent
+does not yet verify value disposition for every emitted item.
+
 ## Body lowering
 
 The compiler lowers entry bodies into plain Silverscript. Targeted lowering

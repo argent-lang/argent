@@ -30,7 +30,7 @@ pub fn collect_routes(source: &str) -> Result<Vec<CollectedRoute>> {
             .map(|route| {
                 let (actor, state, exact_self) = match route.successor {
                     EntrySuccessor::ExactSelf { .. } => (None, None, true),
-                    EntrySuccessor::Constructed { actor, state } => {
+                    EntrySuccessor::Constructed { actor, state, .. } => {
                         (Some(body.span_text(actor).trim().to_string()), Some(body.span_text(state).trim().to_string()), false)
                     }
                 };

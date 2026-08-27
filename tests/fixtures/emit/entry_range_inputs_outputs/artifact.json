@@ -1,0 +1,428 @@
+{
+  "schema_version": 1,
+  "id": "16066c845ab9863c3236fd2b1f56558750d4b2b6cfd3d6ff0c04c514db735345",
+  "generator": {
+    "name": "argentc",
+    "version": "0.1.0"
+  },
+  "app": "EntryRangeInputsOutputs",
+  "dependencies": [],
+  "root": "tests/fixtures/emit/entry_range_inputs_outputs/app.ag",
+  "modules": [
+    "tests/fixtures/emit/entry_range_inputs_outputs/app.ag"
+  ],
+  "argent": {
+    "templates": [
+      {
+        "id": "template/batch",
+        "actor": "Batch",
+        "symbol": "gen__batch_template"
+      },
+      {
+        "id": "template/account",
+        "actor": "Account",
+        "symbol": "gen__account_template"
+      }
+    ],
+    "template_plan": {
+      "templates": [
+        {
+          "id": "template/batch",
+          "actor": "Batch",
+          "contract": "Batch",
+          "symbol": "gen__batch_template",
+          "sil_template_hash": "d73ac1e7c2e35c182346f30085102ead71de0effdd5913b59ec295eb7d92e8fb",
+          "actor_type_handle": {
+            "state": "BatchState",
+            "context_fields": [
+              "gen__account_template"
+            ],
+            "template": {
+              "prefix_hex": "6b207cbdc27a4fffbaad655bcd7565a7d85682469203db07d26b953f665640f4271f",
+              "suffix_hex": "6c7604b6d125278763755279825197009d7578825197009d75b9cf7600d1b99c6976d051947600a2697652a16900005279787853799452a1697652799f6376567951527993d176bf785279c95d79827c75519659935d79827c75519693945379c95e79827c75519659935e79827c75519693945e79827c75519659935e79827c7551969393bcaa02000001aa7e01207e7c7e01877e8858795b79827c75519658cd52795379c95e79827c75519659935e79827c75519693945479c95f79827c75519659935f79827c75519693945f79827c75519693bc7e5b79827c75519658cd53795479c95f79827c75519659935f79827c75519693945f79827c7551969359935579c96079827c75519659936079827c75519693946079827c7551969359935f79827c75519693bc7e7ed9887678c95c79827c75519659935c79827c75519693945c79827c7551965193935279c95d79827c75519659935d79827c75519693945d79827c7551965193935893bc7657797858cd7e587a7554795193567a757b757b757b757b75727b687652799f6376567951527993d176bf785279c95d79827c75519659935d79827c75519693945379c95e79827c75519659935e79827c75519693945e79827c75519659935e79827c7551969393bcaa02000001aa7e01207e7c7e01877e8858795b79827c75519658cd52795379c95e79827c75519659935e79827c75519693945479c95f79827c75519659935f79827c75519693945f79827c75519693bc7e5b79827c75519658cd53795479c95f79827c75519659935f79827c75519693945f79827c7551969359935579c96079827c75519659936079827c75519693946079827c7551969359935f79827c75519693bc7e7ed9887678c95c79827c75519659935c79827c75519693945c79827c7551965193935279c95d79827c75519659935d79827c75519693945d79827c7551965193935893bc7657797858cd7e587a7554795193567a757b757b757b757b75727b68b9cb7651a2697653a1690000787858cd7e7b75005779827c755896787853799452a1697652799f63765a797858957658937f55797858cd7e567a755279519358797800a26978789f6978557960797800a26978789f6978b95479ccc201147951537993d1be9c69587951935a7a757777777777777b757b75727b687652799f63765a797858957658937f55797858cd7e567a755279519358797800a26978789f6978557960797800a26978789f6978b95479ccc201147951537993d1be9c69587951935a7a757777777777777b757b75727b685379827c75589656799c69005679787853799453a1697652799f637657797858957658937f011179011479827c75519658cd0115797e011479827c75519658cd0115797e7ed98801087858cd7e0114797c7e0113797eaa02000001aa7e01207e7c7e01877eb95379ccc388785193537a757777687652799f637657797858957658937f011179011479827c75519658cd0115797e011479827c75519658cd0115797e7ed98801087858cd7e0114797c7e0113797eaa02000001aa7e01207e7c7e01877eb95379ccc388785193537a757777687652799f637657797858957658937f011179011479827c75519658cd0115797e011479827c75519658cd0115797e7ed98801087858cd7e0114797c7e0113797eaa02000001aa7e01207e7c7e01877eb95379ccc388785193537a7577776875757575757575757575757575757575757551676a68",
+              "hash_hex": "8ea3e1f7258abe472bc7d7d3f55aa3a85cd5a0b35c7ea34d5be4260af9e39091"
+            }
+          }
+        },
+        {
+          "id": "template/account",
+          "actor": "Account",
+          "contract": "Account",
+          "symbol": "gen__account_template",
+          "sil_template_hash": "7cbdc27a4fffbaad655bcd7565a7d85682469203db07d26b953f665640f4271f",
+          "actor_type_handle": {
+            "state": "AccountState",
+            "context_fields": [],
+            "template": {
+              "prefix_hex": "6b",
+              "suffix_hex": "6c7604c5350aa3876375b9cb009c697600a2697551676a68",
+              "hash_hex": "7cbdc27a4fffbaad655bcd7565a7d85682469203db07d26b953f665640f4271f"
+            }
+          }
+        }
+      ],
+      "runtime_states": [
+        {
+          "contract": "Batch",
+          "source": "BatchState",
+          "field_roles": [
+            {
+              "name": "gen__account_template",
+              "role": {
+                "kind": "template",
+                "contract": "Account"
+              }
+            }
+          ]
+        }
+      ],
+      "route_tables": [],
+      "route_proofs": [],
+      "route_families": [],
+      "witness_recipes": [
+        {
+          "id": "witness/account/template_prefix_bytes",
+          "template_id": "template/account",
+          "subject": {
+            "kind": "actor",
+            "actor": "Account"
+          },
+          "param": "gen__account_prefix",
+          "purpose": {
+            "kind": "template_prefix_bytes"
+          }
+        },
+        {
+          "id": "witness/account/template_suffix_bytes",
+          "template_id": "template/account",
+          "subject": {
+            "kind": "actor",
+            "actor": "Account"
+          },
+          "param": "gen__account_suffix",
+          "purpose": {
+            "kind": "template_suffix_bytes"
+          }
+        }
+      ]
+    },
+    "interfaces": {
+      "exports": [
+        {
+          "id": "interface/actor/Batch",
+          "app": "EntryRangeInputsOutputs",
+          "actor": "Batch",
+          "state": "BatchState",
+          "fingerprint_hex": "def58772031c6d4174bc059c604e491b76f16b41d8e763e50f8855e7a4c13353"
+        },
+        {
+          "id": "interface/actor/Account",
+          "app": "EntryRangeInputsOutputs",
+          "actor": "Account",
+          "state": "AccountState",
+          "fingerprint_hex": "03a4f0d14865981f35a0c15442e950d5601589af6af1260314e12bcdabfaa282"
+        }
+      ],
+      "imports": []
+    },
+    "states": [
+      {
+        "name": "AccountState",
+        "fields": [
+          {
+            "name": "balance",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      },
+      {
+        "name": "BatchState",
+        "fields": []
+      }
+    ],
+    "actor_enums": [],
+    "actors": [
+      {
+        "name": "Batch",
+        "state": "BatchState",
+        "abi": {
+          "actor": "Batch"
+        },
+        "entries": [
+          {
+            "name": "rebalance",
+            "kind": "leader",
+            "abi": {
+              "actor": "Batch",
+              "entry": "rebalance"
+            },
+            "route_plan": {
+              "active_input": {
+                "name": "self",
+                "actor": "Batch",
+                "cov_index": 0
+              },
+              "leader_input": {
+                "name": "self",
+                "actor": "Batch",
+                "cov_index": 0
+              },
+              "consumes": [
+                {
+                  "name": "accounts",
+                  "actor": "Account",
+                  "cov_index": null
+                }
+              ],
+              "outputs": [
+                {
+                  "name": "next",
+                  "auth_index": null,
+                  "actors": [
+                    "Account"
+                  ]
+                }
+              ],
+              "witness_recipe_ids": [
+                "witness/account/template_prefix_bytes",
+                "witness/account/template_suffix_bytes"
+              ]
+            },
+            "hidden_params": [
+              {
+                "recipe_id": "witness/account/template_prefix_bytes",
+                "name": "gen__account_prefix",
+                "type": {
+                  "kind": "bytes"
+                },
+                "subject": {
+                  "kind": "actor",
+                  "actor": "Account"
+                },
+                "purpose": {
+                  "kind": "template_prefix_bytes"
+                }
+              },
+              {
+                "recipe_id": "witness/account/template_suffix_bytes",
+                "name": "gen__account_suffix",
+                "type": {
+                  "kind": "bytes"
+                },
+                "subject": {
+                  "kind": "actor",
+                  "actor": "Account"
+                },
+                "purpose": {
+                  "kind": "template_suffix_bytes"
+                }
+              }
+            ],
+            "template_selectors": [],
+            "witnesses": [
+              {
+                "recipe_id": "witness/account/template_prefix_bytes",
+                "param": "gen__account_prefix",
+                "subject": {
+                  "kind": "actor",
+                  "actor": "Account"
+                },
+                "purpose": {
+                  "kind": "template_prefix_bytes"
+                }
+              },
+              {
+                "recipe_id": "witness/account/template_suffix_bytes",
+                "param": "gen__account_suffix",
+                "subject": {
+                  "kind": "actor",
+                  "actor": "Account"
+                },
+                "purpose": {
+                  "kind": "template_suffix_bytes"
+                }
+              }
+            ],
+            "consumes": [
+              {
+                "name": "accounts",
+                "actor": "Account",
+                "cardinality": {
+                  "kind": "range",
+                  "minimum": 0,
+                  "maximum": 2
+                }
+              }
+            ],
+            "emits": {
+              "kind": "outputs",
+              "outputs": [
+                {
+                  "name": "next",
+                  "auth_index": null,
+                  "actors": [
+                    "Account"
+                  ],
+                  "cardinality": {
+                    "kind": "range",
+                    "minimum": 1,
+                    "maximum": 3
+                  }
+                }
+              ]
+            },
+            "routes": [
+              {
+                "output": "next",
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Account",
+                  "template_id": "template/account",
+                  "state_expr": "next_states"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Account",
+        "state": "AccountState",
+        "abi": {
+          "actor": "Account"
+        },
+        "entries": [
+          {
+            "name": "hold",
+            "kind": "leader",
+            "abi": {
+              "actor": "Account",
+              "entry": "hold"
+            },
+            "route_plan": {
+              "active_input": {
+                "name": "self",
+                "actor": "Account",
+                "cov_index": 0
+              },
+              "leader_input": {
+                "name": "self",
+                "actor": "Account",
+                "cov_index": 0
+              },
+              "consumes": [],
+              "outputs": [],
+              "witness_recipe_ids": []
+            },
+            "hidden_params": [],
+            "template_selectors": [],
+            "witnesses": [],
+            "consumes": [],
+            "emits": {
+              "kind": "none"
+            },
+            "routes": []
+          }
+        ]
+      }
+    ]
+  },
+  "sil_abi": {
+    "schema_version": 1,
+    "states": [
+      {
+        "name": "AccountState",
+        "fields": [
+          {
+            "name": "balance",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      },
+      {
+        "name": "BatchState",
+        "fields": []
+      }
+    ],
+    "contracts": [
+      {
+        "name": "Batch",
+        "source_path": "sil/Batch.sil",
+        "runtime_state": {
+          "source": "BatchState",
+          "fields": [
+            {
+              "name": "gen__account_template",
+              "type": {
+                "kind": "fixed_bytes",
+                "len": 32
+              }
+            }
+          ]
+        },
+        "entries": [
+          {
+            "name": "rebalance",
+            "dispatch_tag": "b6d12527",
+            "params": [
+              {
+                "name": "gen__account_prefix",
+                "type": {
+                  "kind": "bytes"
+                }
+              },
+              {
+                "name": "gen__account_suffix",
+                "type": {
+                  "kind": "bytes"
+                }
+              }
+            ]
+          }
+        ],
+        "compiled": {
+          "script_hex": "6b2000000000000000000000000000000000000000000000000000000000000000006c7604b6d125278763755279825197009d7578825197009d75b9cf7600d1b99c6976d051947600a2697652a16900005279787853799452a1697652799f6376567951527993d176bf785279c95d79827c75519659935d79827c75519693945379c95e79827c75519659935e79827c75519693945e79827c75519659935e79827c7551969393bcaa02000001aa7e01207e7c7e01877e8858795b79827c75519658cd52795379c95e79827c75519659935e79827c75519693945479c95f79827c75519659935f79827c75519693945f79827c75519693bc7e5b79827c75519658cd53795479c95f79827c75519659935f79827c75519693945f79827c7551969359935579c96079827c75519659936079827c75519693946079827c7551969359935f79827c75519693bc7e7ed9887678c95c79827c75519659935c79827c75519693945c79827c7551965193935279c95d79827c75519659935d79827c75519693945d79827c7551965193935893bc7657797858cd7e587a7554795193567a757b757b757b757b75727b687652799f6376567951527993d176bf785279c95d79827c75519659935d79827c75519693945379c95e79827c75519659935e79827c75519693945e79827c75519659935e79827c7551969393bcaa02000001aa7e01207e7c7e01877e8858795b79827c75519658cd52795379c95e79827c75519659935e79827c75519693945479c95f79827c75519659935f79827c75519693945f79827c75519693bc7e5b79827c75519658cd53795479c95f79827c75519659935f79827c75519693945f79827c7551969359935579c96079827c75519659936079827c75519693946079827c7551969359935f79827c75519693bc7e7ed9887678c95c79827c75519659935c79827c75519693945c79827c7551965193935279c95d79827c75519659935d79827c75519693945d79827c7551965193935893bc7657797858cd7e587a7554795193567a757b757b757b757b75727b68b9cb7651a2697653a1690000787858cd7e7b75005779827c755896787853799452a1697652799f63765a797858957658937f55797858cd7e567a755279519358797800a26978789f6978557960797800a26978789f6978b95479ccc201147951537993d1be9c69587951935a7a757777777777777b757b75727b687652799f63765a797858957658937f55797858cd7e567a755279519358797800a26978789f6978557960797800a26978789f6978b95479ccc201147951537993d1be9c69587951935a7a757777777777777b757b75727b685379827c75589656799c69005679787853799453a1697652799f637657797858957658937f011179011479827c75519658cd0115797e011479827c75519658cd0115797e7ed98801087858cd7e0114797c7e0113797eaa02000001aa7e01207e7c7e01877eb95379ccc388785193537a757777687652799f637657797858957658937f011179011479827c75519658cd0115797e011479827c75519658cd0115797e7ed98801087858cd7e0114797c7e0113797eaa02000001aa7e01207e7c7e01877eb95379ccc388785193537a757777687652799f637657797858957658937f011179011479827c75519658cd0115797e011479827c75519658cd0115797e7ed98801087858cd7e0114797c7e0113797eaa02000001aa7e01207e7c7e01877eb95379ccc388785193537a7577776875757575757575757575757575757575757551676a68",
+          "template_hash_hex": "d73ac1e7c2e35c182346f30085102ead71de0effdd5913b59ec295eb7d92e8fb",
+          "state_span": {
+            "offset": 1,
+            "len": 33
+          }
+        }
+      },
+      {
+        "name": "Account",
+        "source_path": "sil/Account.sil",
+        "runtime_state": {
+          "source": "AccountState",
+          "fields": [
+            {
+              "name": "balance",
+              "type": {
+                "kind": "int"
+              }
+            }
+          ]
+        },
+        "entries": [
+          {
+            "name": "hold",
+            "dispatch_tag": "c5350aa3",
+            "params": []
+          }
+        ],
+        "compiled": {
+          "script_hex": "6b0800000000000000006c7604c5350aa3876375b9cb009c697600a2697551676a68",
+          "template_hash_hex": "7cbdc27a4fffbaad655bcd7565a7d85682469203db07d26b953f665640f4271f",
+          "state_span": {
+            "offset": 1,
+            "len": 9
+          }
+        }
+      }
+    ]
+  }
+}

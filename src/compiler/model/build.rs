@@ -11,8 +11,8 @@ use crate::error::{ArgentError, Result};
 
 use super::link::{LinkedContext, link_imported_actors};
 use super::{
-    ActorEnumInfo, ActorModel, AppActors, CompilerRoutePlan, CompilerRoutePlanner, Model, build_contract_state_lowerings,
-    default_route_planner, infer_direct_routes,
+    ActorEnumInfo, ActorModel, AppActors, CompilerRoutePlan, CompilerRoutePlanner, ConstResolver, Model,
+    build_contract_state_lowerings, default_route_planner, infer_direct_routes,
 };
 
 fn compute_leader_for(actors: &[&ActorDecl]) -> BTreeMap<String, Vec<EntryRefArtifact>> {
@@ -73,6 +73,7 @@ impl<'a> Model<'a> {
     ) -> Result<Self> {
         validate_unique_apps(program)?;
         let consts = collect_consts(program)?;
+        let const_resolver = ConstResolver::new(&consts);
         let functions = collect_functions(program)?;
         let states = collect_states(program)?;
         let all_actors = collect_actors(program)?;
@@ -113,7 +114,7 @@ impl<'a> Model<'a> {
                 return Err(ArgentError::new(format!("imported actor enum `{name}` conflicts with a local actor enum")));
             }
         }
-        let actor_models = build_actor_models(&actors, &actor_enums)?;
+        let actor_models = build_actor_models(&actors, &actor_enums, &const_resolver)?;
         let CompilerRoutePlan { families: route_families, leaves_by_actor: route_leaves_by_actor, transitions: route_transitions } =
             infer_direct_routes(&actor_models, &app_actors, route_planner)?;
         let leader_for = compute_leader_for(&actors);
@@ -265,8 +266,9 @@ fn build_actor_enums(
 fn build_actor_models<'a>(
     actors: &[&'a ActorDecl],
     actor_enums: &BTreeMap<String, ActorEnumInfo>,
+    const_resolver: &ConstResolver<'_>,
 ) -> Result<BTreeMap<&'a str, ActorModel<'a>>> {
-    actors.iter().map(|actor| Ok((actor.name.as_str(), ActorModel::build(actor, actor_enums)?))).collect()
+    actors.iter().map(|actor| Ok((actor.name.as_str(), ActorModel::build(actor, actor_enums, const_resolver)?))).collect()
 }
 
 fn validate_unique_apps(program: &Program) -> Result<()> {

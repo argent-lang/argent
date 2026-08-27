@@ -52,12 +52,13 @@ emits {
     next: Account[1..=MAX_ACCOUNTS],
 } {
     require(accounts.length == next_states.length);
-    become next <- Account(next_states);
+    become next <- Account[](next_states);
 }
 ```
 
-An emitted range uses one bulk `become` route. The route state expression is
-an array. The compiler validates one output for each array item.
+An emitted range uses one bulk `become` route. The `Actor[]` suffix marks the
+route as bulk, and its state expression is an array. The compiler validates one
+output for each array item.
 
 Observed and spawned ranges use the same rule:
 
@@ -124,8 +125,9 @@ State-valued ranges reuse the compiler's ordinary authored-array boundary:
 The first version must not use a consume range in a delegate. A delegate's
 covenant group can contain peer delegates that its clause does not name. The
 complete group count therefore does not give the consume range length. A later
-version needs an explicit partition length for this case. The first `consumes`
-item must always remain a singleton because it names the leader actor.
+version needs an explicit partition length for this case. A delegate's first
+`consumes` item names its leader; a leader entry's active input is not part of
+its `consumes` section.
 
 A spawn clause must have a minimum total cardinality of at least one. An empty
 genesis group has no output from which the script can prove its covenant ID. A
@@ -169,15 +171,17 @@ for the complete range. Per-item selectors are a separate feature.
 
 ## Compile-time bounds
 
-The first version should accept integer literals and existing top-level
-`const int` values as bounds. Argent must evaluate them and require:
+The first version accepts integer literals and top-level `const int` values
+initialized with integer literals. General constant expressions remain a
+follow-up. Argent requires:
 
 ```text
-0 <= minimum <= maximum
+0 <= minimum <= maximum <= 512
 ```
 
-Sil already treats a contract constant as a compile-time loop bound. This is
-enough for the first version.
+The compiler limit bounds Sil's compile-time loop expansion and protects
+compiler and script-size budgets. Sil already treats a contract constant as a
+compile-time loop bound. This is enough for the first version.
 
 Sil also treats constructor arguments as compile-time constants. Argent can
 later add configurable template constants and emit them as non-state Sil
@@ -208,23 +212,33 @@ int account_count = OpCovInputCount(cov_id) - 1;
 require(account_count >= 1);
 require(account_count <= MAX_ACCOUNTS);
 
-Gen__AccountState[] accounts;
-int[] account_input_indices;
+AccountState[] accounts;
 for (i, 0, account_count, MAX_ACCOUNTS) {
     int input_idx = OpCovInputIdx(cov_id, 1 + i);
-    account_input_indices = account_input_indices.append(input_idx);
-    accounts = accounts.append(readInputStateWithTemplate(
+    Gen__AccountState physical = readInputStateWithTemplate(
         input_idx,
         account_prefix_len,
         account_suffix_len,
         account_template
-    ));
+    );
+    AccountState item = AccountState {
+        balance: physical.balance,
+    };
+    accounts = accounts.append(item);
 }
 ```
 
+The physical read keeps compiler-owned route fields for template validation,
+then materializes only authored fields into the body-visible array. The
+compiler elides this conversion when the physical and authored layouts are
+identical. Expanded states remain physical because a consume clause does not
+carry the preimages needed to reconstruct authored expansion values.
+
 The compiler rewrites `accounts[i].value` to the transaction input at
-`account_input_indices[i]`. The existing single-actor direct-read optimization
-can apply to each loop item when its current security rule applies.
+`OpCovInputIdx(cov_id, 1 + gen__checked_range_index(i, account_count))`. Literal
+indices that are guaranteed by the minimum cardinality can omit the runtime
+check. The existing single-actor direct-read optimization can apply to each
+loop item when its current security rule applies.
 
 ### Emits
 
@@ -232,10 +246,10 @@ For a ranged output, the generated code checks the output count and the state
 array length. It then validates each output:
 
 ```sil
-int next_count = next_states.length;
+int next_count = OpAuthOutputCount(this.activeInputIndex);
 require(next_count >= 1);
 require(next_count <= MAX_ACCOUNTS);
-require(OpAuthOutputCount(this.activeInputIndex) == next_count);
+require(next_states.length == next_count);
 
 for (i, 0, next_count, MAX_ACCOUNTS) {
     int output_idx = OpAuthOutputIdx(this.activeInputIndex, i);
@@ -254,6 +268,10 @@ template route can use `validateOutputState`. A route that can reuse an input
 template can use `validateOutputStateWithInputTemplate`. This reuse is valid
 only when the matching input range cannot be empty. Otherwise, use a shared
 output template witness.
+
+In the entry body, `next.length` is the actual output count. Indexed
+`next[i].value` access uses the same generated bounds check as ranged input
+values.
 
 ### Observes
 
@@ -285,6 +303,24 @@ The generated script must:
 
 This preserves the current complete-group proof. It also supports unrelated
 transaction outputs between spawn group members.
+
+Before enabling ranged spawns, require the resolved minimum cardinality of the
+complete genesis group to be positive. A group with no output cannot carry the
+covenant-ID proof.
+
+## Current implementation boundary
+
+The first compiler slice supports leader `consumes` ranges and current
+`emits` ranges with one fixed actor target. It supports singleton items before
+and after either range. Delegate consumes, observed ranges, spawned ranges,
+and their runtime transaction construction remain follow-up work. The runtime
+rejects artifacts that claim observed or spawned ranges until those paths are
+implemented; it does not silently interpret them as singleton declarations.
+
+Ranged output-value policy is currently handle-level. One indexed
+`next[i].value` reference, including `unrestricted(next[i].value)`, satisfies
+the policy for the complete range. Argent does not yet verify value disposition
+for every emitted item.
 
 ## Compiler architecture
 
@@ -334,9 +370,10 @@ The Argent artifact must record cardinality for every consume, emit output,
 observed item, and spawn output. It must record declaration position instead
 of assuming that every item has one fixed transaction index.
 
-This is an Argent artifact schema change. Increment the schema version. The Sil
-ABI schema only needs a change if a required array type is not represented by
-its current `DynamicArray` and `Struct` forms.
+The Argent artifact schema now records this cardinality directly. No
+compatibility version bump is needed before the first release. The Sil ABI
+schema only needs a change if a required array type is not represented by its
+current `DynamicArray` and `Struct` forms.
 
 Add range subjects and purposes for hidden parameters only where they are
 needed. A ranged spawn needs an output-index array. A homogeneous range must

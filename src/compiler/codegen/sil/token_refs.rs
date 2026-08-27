@@ -95,7 +95,7 @@ impl RefReplacements {
         }
         for candidates in by_root.values_mut() {
             // The first matching candidate must be the most specific path.
-            candidates.sort_by(|left, right| right.reference.tokens.len().cmp(&left.reference.tokens.len()));
+            candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.reference.tokens.len()));
         }
         Ok(Self { by_root })
     }

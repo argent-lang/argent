@@ -3,6 +3,19 @@
 This file contains small follow-up items. Each item gives its area, context,
 and required work.
 
+## Normalize entry interaction artifacts
+
+**Area:** Portable artifacts and runtime transaction resolution.
+
+**Context:** Entry interactions are represented both in the source-facing
+`consumes`/`emits` fields and in `route_plan`. Ranges also make exact covenant
+and authorized-output indices optional when a preceding range has a runtime
+length.
+
+**Follow-up:** Keep cardinality and structural locations on one canonical
+interaction record. Remove duplicate consume and output records from
+`route_plan`, retaining only route-specific relationships and witness data.
+
 ## Isolate state-boundary code generation
 
 **Area:** State-boundary code generation.
