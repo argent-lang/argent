@@ -163,7 +163,7 @@ impl<'i> AstVisitorMut<'i> for StateValueSiteCollector<'_> {
                     }
                 }
             }
-            SilExprKind::Array { type_ref, values } => {
+            SilExprKind::Array { type_ref, values, .. } => {
                 if let Some(element) =
                     self.state_values.plan_ast_type_ref(type_ref, Some(values.len())).and_then(|value| value.element())
                 {
@@ -387,7 +387,7 @@ fn planned_state_value_for_expr(
             None => state_values.constant(name).cloned(),
         },
         SilExprKind::Call { name, .. } => state_values.signature(name)?.result().cloned(),
-        SilExprKind::Array { type_ref, values } => state_values.plan_ast_type_ref(type_ref, Some(values.len())),
+        SilExprKind::Array { type_ref, values, .. } => state_values.plan_ast_type_ref(type_ref, Some(values.len())),
         SilExprKind::Append { source, args, .. } => planned_state_value_for_expr(source, state_values, bindings)?.appended(args.len()),
         SilExprKind::ArrayIndex { source, .. } => planned_state_value_for_expr(source, state_values, bindings)?.element(),
         _ => None,

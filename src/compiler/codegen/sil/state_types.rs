@@ -1,12 +1,8 @@
 //! Checked AST-directed lowering of contract-local authored state types.
 //!
-//! Some Sil AST nodes classify a type name without exposing its exact span.
-//! For those nodes, `EquivalentStateLowerer` uses the grammar guarantee that
-//! the name starts the node span. Checked edits, reparsing, and the final audit
-//! make this workaround fail closed if that guarantee changes.
-//!
-//! TODO: Remove the positional span assumptions when the Sil AST exposes the
-//! exact type-name span for every classified type site.
+//! `EquivalentStateLowerer` uses exact type and constructor spans from the Sil
+//! AST. Checked edits, reparsing, and the final audit keep the transformation
+//! limited to classified type sites.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
@@ -88,18 +84,14 @@ impl<'i> AstVisitorMut<'i> for EquivalentStateLowerer {
                     self.push_type(&binding.type_ref, binding.type_span.start());
                 }
             }
-            Statement::StateFunctionCallAssign { target_struct, bindings, span, .. } => {
-                // Sil classifies the target struct and its grammar places that
-                // name at the beginning of this statement.
-                self.push_name(target_struct, span.start());
+            Statement::StateFunctionCallAssign { target_struct, bindings, target_struct_span, .. } => {
+                self.push_name(target_struct, target_struct_span.start());
                 for binding in bindings {
                     self.push_type(&binding.type_ref, binding.type_span.start());
                 }
             }
-            Statement::StructDestructure { struct_name, bindings, span, .. } => {
-                // Sil classifies the struct owner and its grammar places that
-                // name at the beginning of this statement.
-                self.push_name(struct_name, span.start());
+            Statement::StructDestructure { struct_name, bindings, struct_name_span, .. } => {
+                self.push_name(struct_name, struct_name_span.start());
                 for binding in bindings {
                     self.push_type(&binding.type_ref, binding.type_span.start());
                 }
@@ -121,11 +113,7 @@ impl<'i> AstVisitorMut<'i> for EquivalentStateLowerer {
 
     fn visit_expr(&mut self, expr: &mut Expr<'i>) {
         match &expr.kind {
-            ExprKind::Array { type_ref, .. } => {
-                // Sil classifies the array type and its grammar places that
-                // type at the beginning of the expression.
-                self.push_type(type_ref, expr.span.start());
-            }
+            ExprKind::Array { type_ref, type_span, .. } => self.push_type(type_ref, type_span.start()),
             ExprKind::StructLiteral { name, name_span, .. } => self.push_name(name, name_span.start()),
             _ => {}
         }
