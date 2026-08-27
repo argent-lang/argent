@@ -1,8 +1,8 @@
 //! Checked AST-directed lowering of contract-local authored state types.
 //!
-//! `EquivalentStateLowerer` uses exact type and constructor spans from the Sil
-//! AST. Checked edits, reparsing, and the final audit keep the transformation
-//! limited to classified type sites.
+//! `EquivalentStateLowerer` uses classified types and their base-name starts
+//! from the Sil AST. Checked edits, reparsing, and the final audit keep the
+//! transformation limited to classified type sites.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;

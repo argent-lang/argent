@@ -24,7 +24,7 @@ secp256k1 = { version = "0.29.0", features = ["global-context"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 silverscript-abi = { path = "crates/silverscript-abi" }
-silverscript-lang = { git = "https://github.com/michaelsutton/silverscript", rev = "382c2852b13d802a9b76339a226a42df336b984e", package = "silverscript-lang" }
+silverscript-lang = { git = "https://github.com/michaelsutton/silverscript", rev = "ef998af7e6bd8b905a327f5597332686393cd02b", package = "silverscript-lang" }
 thiserror = "2"
 
 [lib]

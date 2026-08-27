@@ -614,6 +614,46 @@ fn global_amount(ChildState value) -> int {
             ["function global_amount(ChildState", "function actor_amount(ChildState"].as_slice(),
         ),
         (
+            "global-function-body",
+            r#"
+fn global_amount(int amount) -> int {
+    ChildState value = ChildState {
+        amount: amount,
+        detail: ChildDetail { count: amount },
+    };
+    return value.amount;
+}
+"#,
+            "",
+            r#"
+    entry hold() emits none {
+        require(global_amount(1) == 1);
+    }
+"#,
+            ["ChildState", "ChildDetail"].as_slice(),
+            ["function global_amount(int", "ChildState gen__glob_value = ChildState"].as_slice(),
+        ),
+        (
+            "actor-function-body",
+            "",
+            r#"
+    fn actor_amount(int amount) -> int {
+        ChildState value = ChildState {
+            amount: amount,
+            detail: ChildDetail { count: amount },
+        };
+        return value.amount;
+    }
+"#,
+            r#"
+    entry hold() emits none {
+        require(actor_amount(2) == 2);
+    }
+"#,
+            ["ChildState", "ChildDetail"].as_slice(),
+            ["function actor_amount(int", "ChildState value = ChildState"].as_slice(),
+        ),
+        (
             "constant",
             r#"
 const ChildState INITIAL_CHILD = ChildState {
