@@ -919,12 +919,10 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let prefix = "function gen__entry_statement() { ";
         let source = format!("{prefix}{statement}; }}");
         let parsed = parse_function_ast(&source).ok()?;
-        let [SilStatement::Assign { name, name_span, expr, .. }] = parsed.body.as_slice() else {
+        let [SilStatement::Assign { name, expr, .. }] = parsed.body.as_slice() else {
             return None;
         };
-        let parsed_range = (expr.span.start() - prefix.len())..(expr.span.end() - prefix.len());
-        let binding_end = name_span.end().checked_sub(prefix.len())?;
-        let range = complete_assignment_rhs_range(statement, binding_end, parsed_range.clone()).unwrap_or(parsed_range);
+        let range = (expr.span.start() - prefix.len())..(expr.span.end() - prefix.len());
         let expected_state = self.bindings.state_value(name).cloned();
         Some((range, expected_state))
     }
@@ -1924,32 +1922,6 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             self.current_statement.map(|span| format!(" at body bytes {span}")).unwrap_or_default(),
         ))
     }
-}
-
-/// Temporary compatibility patch for incomplete Sil AST expression spans.
-///
-/// Sil currently gives a parenthesized root expression its inner semantic span,
-/// which can omit grouping delimiters.
-///
-/// TODO: Remove this range recovery when the Sil AST exposes the complete root
-/// expression span, including grouping delimiters.
-fn complete_assignment_rhs_range(statement: &str, binding_end: usize, parsed_range: Range<usize>) -> Option<Range<usize>> {
-    let before = statement.get(binding_end..parsed_range.start)?;
-    let before_tokens = lex(before).ok()?;
-    let equals = before_tokens.iter().position(|token| matches!(token.kind, TokenKind::Symbol('=')))?;
-    let start = before_tokens[equals + 1..]
-        .iter()
-        .find(|token| !matches!(token.kind, TokenKind::Eof))
-        .map_or(parsed_range.start, |token| binding_end + token.span.start);
-
-    let after = statement.get(parsed_range.end..)?;
-    let end = lex(after)
-        .ok()?
-        .iter()
-        .rfind(|token| !matches!(token.kind, TokenKind::Eof))
-        .map_or(parsed_range.end, |token| parsed_range.end + token.span.end);
-    let range = start..end;
-    parse_expression_ast(statement.get(range.clone())?).ok().map(|_| range)
 }
 
 fn binds_reserved_entry_name<'s, 'r>(

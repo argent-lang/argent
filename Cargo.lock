@@ -3344,7 +3344,7 @@ dependencies = [
 [[package]]
 name = "silverscript-lang"
 version = "0.1.0"
-source = "git+https://github.com/kaspanet/silverscript?rev=d00778682679e037a2d48500157d0f44c1da9442#d00778682679e037a2d48500157d0f44c1da9442"
+source = "git+https://github.com/michaelsutton/silverscript?rev=f3ebd35bdadf5cd8566076a81521d9505f6bc7ff#f3ebd35bdadf5cd8566076a81521d9505f6bc7ff"
 dependencies = [
  "blake2b_simd",
  "blake3",
