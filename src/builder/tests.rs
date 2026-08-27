@@ -30,8 +30,7 @@ use kaspa_consensus_core::{
     },
 };
 use kaspa_txscript::{
-    opcodes::codes::OpTrue, parse_script, pay_to_script_hash_script, pay_to_script_hash_signature_script_with_flags,
-    script_builder::ScriptBuilder,
+    opcodes::codes::OpTrue, parse_script, pay_to_script_hash_signature_script_with_flags, script_builder::ScriptBuilder,
 };
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 
@@ -1082,65 +1081,6 @@ fn context_executes_ranged_consume_and_emit_over_route_bearing_states() {
     let wrong_middle_item =
         builder.build(&wrong_middle_item).expect_err("the bounded route loop must validate non-first ranged items");
     assert!(matches!(wrong_middle_item, BuilderError::InputScript { input_index: 0, .. }));
-
-    let account_state = state! { balance: 10 };
-    let account_utxo = builder
-        .covenant_utxo("Account", account_state.clone(), 1_000, 0, false, Some(covenant_id))
-        .expect("route-bearing Account UTXO builds");
-    let route_context = TxContext::new()
-        .actor_input("Batch", batch_state.clone(), "rebalance", batch_outpoint, batch_utxo.clone(), 0)
-        .actor_input(
-            "Account",
-            account_state,
-            "hold",
-            TransactionOutpoint::new(TransactionId::from_bytes([0x79; 32]), 0),
-            account_utxo.clone(),
-            0,
-        )
-        .actor_output("Account", state! { balance: 11 }, CovenantBinding::new(0, covenant_id), 1_000);
-    let mut wrong_route_context = builder.build(&route_context).expect("baseline route-bearing transition executes");
-    let original_sigscript = wrong_route_context.inputs[1].signature_script.clone();
-    let mut account_redeem_script = p2sh_redeem_script(&original_sigscript);
-    let account_span = &account_contract.compiled.state_span;
-    let state_range = account_span.offset..account_span.offset + account_span.len;
-    let mut physical_state =
-        crate::codec::decode_runtime_state_script(&account_contract.runtime_state, &account_redeem_script[state_range.clone()])
-            .expect("Account physical state decodes");
-    let generated_field = account_contract
-        .runtime_state
-        .fields
-        .iter()
-        .find(|field| field.name.starts_with("gen__"))
-        .expect("Account has generated route state");
-    let ArtifactValue::Bytes(route_bytes) =
-        physical_state.get_mut(&generated_field.name).expect("generated route state has a runtime value")
-    else {
-        panic!("generated Account route state must be byte-backed");
-    };
-    route_bytes[0] ^= 1;
-    let mutated_state = crate::codec::encode_runtime_state_script(&account_contract.runtime_state, &physical_state)
-        .expect("mutated Account physical state re-encodes");
-    assert_eq!(mutated_state.len(), state_range.len(), "fixed route state must preserve the compiled state span");
-    account_redeem_script[state_range].copy_from_slice(&mutated_state);
-
-    let redeem_push = ScriptBuilder::with_flags(covenant_engine_flags())
-        .add_data(&p2sh_redeem_script(&original_sigscript))
-        .expect("original redeem-script push builds")
-        .drain();
-    let entry_sigscript_len =
-        original_sigscript.len().checked_sub(redeem_push.len()).expect("P2SH signature script contains its redeem-script push");
-    wrong_route_context.inputs[1].signature_script = pay_to_script_hash_signature_script_with_flags(
-        account_redeem_script.clone(),
-        original_sigscript[..entry_sigscript_len].to_vec(),
-        covenant_engine_flags(),
-    )
-    .expect("mutated Account P2SH signature script builds");
-    let mut mutated_account_utxo = account_utxo;
-    mutated_account_utxo.script_public_key = pay_to_script_hash_script(&account_redeem_script);
-    assert!(
-        execute_input_with_covenants(&wrong_route_context, vec![batch_utxo.clone(), mutated_account_utxo], 0).is_err(),
-        "the ranged transition must preserve authenticated compiler-owned route state"
-    );
 
     let too_few = builder.build(&context_for(0, false, 1)).expect_err("minimum minus one must be rejected");
     assert!(matches!(

@@ -5162,7 +5162,7 @@ fn ranged_current_inputs_lower_to_a_pinned_input_reference_cache() {
 }
 
 #[test]
-fn ranged_consume_discards_generated_fields_without_a_matching_ranged_output() {
+fn ranged_output_uses_planned_context_instead_of_same_actor_input_fields() {
     let sil = emit_inline_actor(
         r#"
             state BatchState {}
@@ -5174,10 +5174,14 @@ fn ranged_consume_discards_generated_fields_without_a_matching_ranged_output() {
             }
 
             actor Batch owns BatchState {
-                entry inspect()
+                entry rebalance()
                 consumes { accounts: Account[1..=2], }
-                emits none {
-                    require(accounts[0].balance >= 0);
+                emits { next: Account[1..=2], } {
+                    AccountState[] next_states;
+                    AccountState next_state = { balance: accounts[0].balance + accounts.length, };
+                    next_states = next_states.append(next_state);
+                    unrestricted(next[0].value);
+                    become next <- Account[](next_states);
                 }
             }
 
@@ -5200,7 +5204,12 @@ fn ranged_consume_discards_generated_fields_without_a_matching_ranged_output() {
 
     assert!(sil.contains("Gen__AccountState gen__accounts_state = readInputStateWithTemplate("), "{sil}");
     assert!(sil.contains("AccountState[] gen__accounts_authored_states;"), "{sil}");
-    assert!(!sil.contains("_physical_values"), "unused generated input fields must not be cached:\n{sil}");
+    assert!(!sil.contains("gen__accounts_count == gen__next_output_count"), "independent ranges must not be equated:\n{sil}");
+    assert!(!sil.contains("_physical_values"), "ranged outputs must not inherit same-actor input context:\n{sil}");
+    assert!(
+        sil.contains("gen__account_routes: byte[64](gen__account_template + gen__frozen_template),"),
+        "ranged outputs must materialize the compiler-planned target context:\n{sil}"
+    );
 }
 
 #[test]

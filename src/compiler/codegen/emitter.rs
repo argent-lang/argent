@@ -3633,10 +3633,6 @@ pub(super) fn hidden_consumed_input_field_cache_name(handle: &str, field: &str) 
     format!("{RESERVED_GENERATED_PREFIX}{handle}_{field}_values")
 }
 
-pub(super) fn hidden_consumed_input_generated_cache_name(handle: &str, field: &str) -> String {
-    format!("{RESERVED_GENERATED_PREFIX}{handle}_{field}_physical_values")
-}
-
 fn observed_actor_side_label(side: ObservedActorSideArtifact) -> &'static str {
     match side {
         ObservedActorSideArtifact::Input => "input",

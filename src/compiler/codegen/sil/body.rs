@@ -1565,7 +1565,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             )));
         }
         let output_idx = hidden_output_idx_name(&route.output);
-        self.lower_constructed_route_at_output(out, indent, route, output_idx, None)
+        self.lower_constructed_route_at_output(out, indent, route, output_idx)
     }
 
     fn lower_ranged_route(
@@ -1627,28 +1627,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let auth_index = offset_index_expr(start, position.clone());
         let output_idx = format!("OpAuthOutputIdx(this.activeInputIndex, {auth_index})");
         let item_route = ConstructedRoute { state: format!("{states}[{position}]"), arity: RouteArity::One, ..route };
-        let generated_input = if target_plan.has_generated_fields() {
-            let entry_model = self.model.entry_model(self.actor, self.entry)?;
-            let mut candidates = entry_model
-                .current()
-                .inputs()
-                .iter()
-                .filter(|input| input.cardinality().is_range() && input.target().single_static_actor() == Some(target));
-            let candidate = candidates.next();
-            if candidates.next().is_some() {
-                return Err(self.error(format!(
-                    "range output `{}` has multiple ranged `{target}` inputs and cannot choose compiler-owned route context",
-                    output.handle()
-                )));
-            }
-            candidate
-                .map(|input| self.input_reference_for_expr(&format!("{}[{position}]", input.handle()), indent + 4))
-                .transpose()?
-                .flatten()
-        } else {
-            None
-        };
-        self.lower_constructed_route_at_output(out, indent + 4, item_route, output_idx, generated_input.as_ref())?;
+        self.lower_constructed_route_at_output(out, indent + 4, item_route, output_idx)?;
         push_indent(out, indent);
         out.push_str("}\n");
         Ok(())
@@ -1660,7 +1639,6 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         indent: usize,
         route: ConstructedRoute,
         output_idx: String,
-        generated_input: Option<&PlannedEntryInputReference>,
     ) -> Result<()> {
         if self.bindings.selector(&route.actor).is_some() {
             return self.lower_selector_route(out, indent, route, output_idx);
@@ -1671,10 +1649,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             return Err(self.error(format!("actor handle `{}` {reason} in this scope", route.actor)));
         }
         self.model.actor_state(&route.actor)?;
-        let mut output_target = plan_actor_output_state(self.actor, &route.actor, self.model)?;
-        if let Some(input) = generated_input {
-            output_target.reuse_matching_generated_fields_from(input);
-        }
+        let output_target = plan_actor_output_state(self.actor, &route.actor, self.model)?;
         let state_ty = output_target.physical_type().to_string();
         let authored = self.require_route_authored_state(out, indent, &route, &output_target)?;
         let physical =

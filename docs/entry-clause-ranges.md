@@ -118,12 +118,12 @@ the state boundary:
 - `state(accounts[i])` is required to obtain one complete authored state.
   Passing a bare indexed reference where authored state is expected is an
   error.
-- The compiler caches only authenticated authored projections. It keeps
-  compiler-owned route fields private and caches them separately when an
-  output transition must preserve them.
-- A corresponding route-bearing ranged input and output reuse compiler-owned
-  context by position. A one-for-one continuation should constrain their
-  actual lengths to be equal.
+- The compiler caches only authenticated authored projections. Compiler-owned
+  route fields remain private; a same-actor ranged output does not inherit
+  them from the input range.
+- Input and output ranges are independent. A one-for-one application
+  transition must explicitly require equal lengths; actor identity alone does
+  not establish positional correspondence.
 - Expanded consumed states allow projections whose values exist in the
   authenticated physical state. A virtual field or complete `state(...)`
   reconstruction is rejected when no validated preimage is available.
@@ -238,9 +238,9 @@ for (i, 0, account_count, MAX_ACCOUNTS) {
 
 The cache is compiler-private: there is no body-visible `AccountState[]`
 binding named `accounts`. The physical read authenticates every input and the
-cache strips compiler-owned route fields from authored access. Route metadata
-needed by a corresponding ranged output is cached separately and materialized
-only as a generated physical output field.
+cache strips compiler-owned route fields from authored access. Ranged outputs
+materialize their compiler-owned fields independently from the compiler's
+planned target context, following the same rule as scalar outputs.
 
 Body operations lower as follows:
 
