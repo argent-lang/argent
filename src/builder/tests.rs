@@ -29,7 +29,9 @@ use kaspa_consensus_core::{
         TransactionOutput, UtxoEntry,
     },
 };
-use kaspa_txscript::{opcodes::codes::OpTrue, parse_script, pay_to_script_hash_signature_script_with_flags};
+use kaspa_txscript::{
+    opcodes::codes::OpTrue, parse_script, pay_to_script_hash_signature_script_with_flags, script_builder::ScriptBuilder,
+};
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 
 static ARTIFACT_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -721,6 +723,68 @@ fn context_executes_source_state_arguments_without_exposing_generated_fields() {
 }
 
 #[test]
+fn generated_entries_reject_mismatched_dynamic_struct_array_leaf_counts() {
+    let artifact = inline_artifact(
+        "context-dynamic-struct-array-cardinality",
+        r#"
+            state VaultState {
+                int nonce;
+            }
+
+            state Item {
+                int number;
+                byte[2] tag;
+            }
+
+            actor Vault owns VaultState {
+                entry inspect(Item[] items) emits none {
+                    require(items.length == 1);
+                }
+            }
+
+            app VaultApp {
+                actor Vault;
+            }
+            "#,
+    );
+    let builder = TxBuilder::new(&artifact).expect("builder accepts dynamic struct-array artifact");
+    let covenant_id = Hash::from_bytes([0x4a; 32]);
+    let state = state! { nonce: 0 };
+    let input_utxo = builder.covenant_utxo("Vault", state.clone(), 1_000, 0, false, Some(covenant_id)).expect("Vault UTXO builds");
+    let context = TxContext::new().actor_input(
+        "Vault",
+        state,
+        EntryCall::new("inspect").args(args![ArtifactValue::Array(vec![ArtifactValue::Object(state! {
+            number: 7,
+            tag: vec![1, 2],
+        })])]),
+        TransactionOutpoint::new(TransactionId::from_bytes([0x4b; 32]), 0),
+        input_utxo.clone(),
+        0,
+    );
+    let transaction = builder.build(&context).expect("canonical dynamic struct array executes");
+
+    let contract = artifact.sil_abi.contract("Vault").expect("Vault contract exists");
+    let entry = contract.entry("inspect").expect("inspect entry exists");
+    let mut malformed_entry = ScriptBuilder::with_flags(covenant_engine_flags());
+    malformed_entry.add_data(&[7, 0, 0, 0, 0, 0, 0, 0]).expect("number leaf push builds");
+    malformed_entry.add_data(&[1, 2, 3, 4]).expect("two-item tag leaf push builds");
+    malformed_entry.add_data(entry.dispatch_tag.as_bytes()).expect("dispatch tag push builds");
+
+    let mut malformed = transaction;
+    malformed.inputs[0].signature_script = pay_to_script_hash_signature_script_with_flags(
+        p2sh_redeem_script(&malformed.inputs[0].signature_script),
+        malformed_entry.drain(),
+        covenant_engine_flags(),
+    )
+    .expect("malformed P2SH sigscript builds");
+    assert!(
+        execute_input_with_covenants(&malformed, vec![input_utxo], 0).is_err(),
+        "generated Sil must reject struct-array leaves with different element counts"
+    );
+}
+
+#[test]
 fn context_executes_expanded_state_arguments_from_authored_values() {
     let artifact = inline_artifact(
         "context-expanded-state-arguments",
@@ -956,6 +1020,160 @@ fn context_executes_single_actor_self_consume_without_template_witnesses() {
         .actor_output("Counter", count_state(11), CovenantBinding::new(0, covenant_id), source_value + other_value);
     let err = builder.build(&wrong_state).expect_err("merge must read and add the consumed Counter state");
     assert!(matches!(err, BuilderError::InputScript { input_index: 0, .. }));
+}
+
+#[test]
+fn context_executes_ranged_consume_and_emit_over_route_bearing_states() {
+    let artifact = inline_artifact(
+        "context-ranged-transition",
+        r#"
+            state BatchState { int marker; }
+            state AccountState { int balance; }
+
+            actor enum AccountRoute {
+                Account;
+                Frozen;
+            }
+
+            actor Batch owns BatchState {
+                entry rebalance()
+                consumes { accounts: Account[0..=3], }
+                emits { next: Account[1..=4], } {
+                    AccountState[] next_states;
+                    AccountState reserve = { balance: 100, };
+                    next_states = next_states.append(reserve);
+                    require(next[0].value >= 0);
+                    for (i, 0, accounts.length, 3) {
+                        require(accounts[i].cov_id == self.cov_id);
+                        AccountState source = state(accounts[i]);
+                        AccountState next_state = { balance: source.balance + 1, };
+                        next_states = next_states.append(next_state);
+                        require(next[i + 1].value == accounts[i].value);
+                    }
+                    require(next.length == accounts.length + 1);
+                    unrestricted(next[0].value);
+                    become next <- Account[](next_states);
+                }
+            }
+
+            actor Account owns AccountState {
+                entry hold() emits none { require(balance >= 0); }
+                entry reroute(AccountRoute target) emits next: AccountRoute {
+                    unrestricted(next.value);
+                    AccountState next_state = { balance: balance, };
+                    become next <- target(next_state);
+                }
+            }
+
+            actor Frozen owns AccountState {
+                entry hold() emits none { require(balance >= 0); }
+            }
+
+            app RangedTransition {
+                actor Batch;
+                actor Account;
+                actor Frozen;
+            }
+        "#,
+    );
+    let account_contract = artifact.sil_abi.contract("Account").expect("Account contract exists");
+    assert!(
+        account_contract.runtime_state.fields.iter().any(|field| field.name.starts_with("gen__")),
+        "the consumed Account state must carry compiler-owned route data"
+    );
+
+    let builder = TxBuilder::new(&artifact).expect("builder accepts ranged transition artifact");
+    let covenant_id = Hash::from_bytes([0x7a; 32]);
+    let batch_state = state! { marker: 0 };
+    let batch_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0x70; 32]), 0);
+    let batch_utxo =
+        builder.covenant_utxo("Batch", batch_state.clone(), 10_000, 0, false, Some(covenant_id)).expect("Batch UTXO builds");
+
+    let context_for = |input_count: usize,
+                       output_count: usize,
+                       wrong_input_actor: Option<usize>,
+                       wrong_output_actor: Option<usize>,
+                       wrong_output_state: Option<usize>| {
+        let mut context =
+            TxContext::new().actor_input("Batch", batch_state.clone(), "rebalance", batch_outpoint, batch_utxo.clone(), 0);
+        for index in 0..input_count {
+            let balance = 10 + index as i64;
+            let value = 1_000 + index as u64;
+            let state = state! { balance: balance };
+            let actor = if wrong_input_actor == Some(index) { "Frozen" } else { "Account" };
+            let utxo = builder
+                .covenant_utxo(actor, state.clone(), value, 0, false, Some(covenant_id))
+                .unwrap_or_else(|err| panic!("{actor} input UTXO builds: {err}"));
+            context = context.actor_input(
+                actor,
+                state,
+                "hold",
+                TransactionOutpoint::new(TransactionId::from_bytes([0x71 + index as u8; 32]), 0),
+                utxo,
+                0,
+            );
+        }
+        for position in 0..output_count {
+            let (expected_balance, value) = if position == 0 {
+                (100, 500)
+            } else {
+                let input_index = position - 1;
+                (11 + input_index as i64, 1_000 + input_index as u64)
+            };
+            let balance = expected_balance + if wrong_output_state == Some(position) { 1 } else { 0 };
+            let actor = if wrong_output_actor == Some(position) { "Frozen" } else { "Account" };
+            context = context.actor_output(actor, state! { balance: balance }, CovenantBinding::new(0, covenant_id), value);
+        }
+        context
+    };
+
+    for input_count in 0..=3 {
+        let output_count = input_count + 1;
+        let transaction = builder.build(&context_for(input_count, output_count, None, None, None)).unwrap_or_else(|err| {
+            panic!("valid independent ranges with {input_count} consumed inputs and {output_count} outputs must execute: {err}")
+        });
+        assert_eq!(transaction.inputs.len(), input_count + 1);
+        assert_eq!(transaction.outputs.len(), output_count);
+        assert!(transaction.inputs.iter().all(|input| input.compute_commit.compute_budget().is_some()));
+    }
+
+    for position in 0..=3 {
+        let err = builder
+            .build(&context_for(3, 4, None, None, Some(position)))
+            .expect_err("wrong output state in the ranged loop must fail");
+        assert!(matches!(err, BuilderError::InputScript { input_index: 0, .. }), "position {position}: {err}");
+    }
+
+    for position in 0..3 {
+        let err =
+            builder.build(&context_for(3, 4, Some(position), None, None)).expect_err("wrong input actor in the ranged loop must fail");
+        assert!(matches!(err, BuilderError::InputScript { input_index: 0, .. }), "position {position}: {err}");
+    }
+
+    for position in [0, 2, 3] {
+        let err = builder
+            .build(&context_for(3, 4, None, Some(position), None))
+            .expect_err("wrong output actor in the ranged loop must fail");
+        assert!(matches!(err, BuilderError::InputScript { input_index: 0, .. }), "position {position}: {err}");
+    }
+
+    let too_many_inputs = builder
+        .build(&context_for(4, 4, None, None, None))
+        .expect_err("input maximum plus one must be rejected while the output count remains valid");
+    assert!(matches!(
+        too_many_inputs,
+        BuilderError::InputScript { input_index: 0, .. } | BuilderError::LeaderActorInputCardinalityMismatch { input_index: 0, .. }
+    ));
+
+    let too_few_outputs = builder
+        .build(&context_for(0, 0, None, None, None))
+        .expect_err("output minimum minus one must be rejected while the input count remains valid");
+    assert!(matches!(too_few_outputs, BuilderError::InputScript { input_index: 0, .. }));
+
+    let too_many_outputs = builder
+        .build(&context_for(3, 5, None, None, None))
+        .expect_err("output maximum plus one must be rejected while the input count remains valid");
+    assert!(matches!(too_many_outputs, BuilderError::InputScript { input_index: 0, .. }));
 }
 
 #[test]
@@ -2281,7 +2499,7 @@ fn route_plan_builds_stones_start_game_and_rejects_bad_routes() {
     assert_eq!(entry.route_plan.consumes[0].cov_index, Some(1));
     assert_eq!(
         entry.route_plan.outputs.iter().map(|output| (output.name.as_str(), output.auth_index)).collect::<Vec<_>>(),
-        vec![("self_out", 0), ("opponent_out", 1), ("game", 2)]
+        vec![("self_out", Some(0)), ("opponent_out", Some(1)), ("game", Some(2))]
     );
     assert_eq!(
         entry

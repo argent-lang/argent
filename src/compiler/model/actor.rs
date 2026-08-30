@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use crate::compiler::syntax::{ActorDecl, FunctionDecl};
 use crate::error::{ArgentError, Result};
 
-use super::{ActorEnumInfo, EntryModel};
+use super::{ActorEnumInfo, ConstResolver, EntryModel};
 
 #[cfg(test)]
 mod tests;
@@ -20,7 +20,11 @@ pub(crate) struct ActorModel<'a> {
 
 impl<'a> ActorModel<'a> {
     /// Build the function index and entry models for one source actor.
-    pub(crate) fn build(source: &'a ActorDecl, actor_enums: &BTreeMap<String, ActorEnumInfo>) -> Result<Self> {
+    pub(crate) fn build(
+        source: &'a ActorDecl,
+        actor_enums: &BTreeMap<String, ActorEnumInfo>,
+        const_resolver: &ConstResolver<'_>,
+    ) -> Result<Self> {
         let mut functions_by_name = BTreeMap::new();
         for function in &source.functions {
             if functions_by_name.insert(function.name.as_str(), function).is_some() {
@@ -37,7 +41,7 @@ impl<'a> ActorModel<'a> {
                     source.name, entry.name
                 )));
             }
-            let model = EntryModel::build(source, entry, actor_enums)?;
+            let model = EntryModel::build(source, entry, actor_enums, const_resolver)?;
             if entries_by_name.insert(entry.name.as_str(), model).is_some() {
                 let name = &entry.name;
                 return Err(ArgentError::new(format!("actor `{}` declares entry `{name}` more than once", source.name)));

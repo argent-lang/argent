@@ -279,7 +279,8 @@ impl Parser {
             let name = self.expect_any_ident()?;
             self.expect_symbol(':')?;
             let actor = self.expect_any_ident()?;
-            consumes.push(ConsumeDecl { name, actor });
+            let cardinality = self.parse_cardinality()?;
+            consumes.push(ConsumeDecl { name, actor, cardinality });
             self.expect_list_separator_or_end('}')?;
         }
         self.expect_symbol('}')?;
@@ -321,8 +322,8 @@ impl Parser {
         while !self.check_symbol('}') {
             let name = self.expect_any_ident()?;
             self.expect_symbol(':')?;
-            let actor = self.take_observed_actor_target()?;
-            outputs.push(SpawnOutputDecl { name, actor, group_index: outputs.len() });
+            let (actor, cardinality) = self.take_clause_actor_target()?;
+            outputs.push(SpawnOutputDecl { name, actor, cardinality, group_index: outputs.len() });
             self.expect_list_separator_or_end('}')?;
         }
         self.expect_symbol('}')?;
@@ -373,7 +374,7 @@ impl Parser {
         while !self.check_symbol('}') {
             let name = self.expect_any_ident()?;
             self.expect_symbol(':')?;
-            let (actor, open_state) = if self.consume_ident(word::ACTOR_TYPE) {
+            let (actor, open_state, cardinality) = if self.consume_ident(word::ACTOR_TYPE) {
                 if section != word::INPUTS {
                     return Err(self.error("open observed actor bindings are only declared in `inputs`"));
                 }
@@ -381,18 +382,22 @@ impl Parser {
                 let state = self.expect_any_ident()?;
                 self.expect_symbol('>')?;
                 self.expect_ident(word::AS)?;
-                (self.expect_any_ident()?, Some(state))
+                let actor = self.expect_any_ident()?;
+                let cardinality = self.parse_cardinality()?;
+                (actor, Some(state), cardinality)
             } else {
-                (self.take_observed_actor_target()?, None)
+                let (actor, cardinality) = self.take_clause_actor_target()?;
+                (actor, None, cardinality)
             };
-            actors.push(ObservedActorDecl { name, actor, open_state });
+            actors.push(ObservedActorDecl { name, actor, open_state, cardinality });
             self.expect_list_separator_or_end('}')?;
         }
         self.expect_symbol('}')?;
         Ok(actors)
     }
 
-    fn take_observed_actor_target(&mut self) -> Result<String> {
+    fn take_clause_actor_target(&mut self) -> Result<(String, Cardinality)> {
+        let token_start = self.pos;
         let start = self.current().span.start;
         let mut depth = 0usize;
         while !self.is_eof() {
@@ -403,11 +408,22 @@ impl Parser {
                     self.advance();
                 }
                 TokenKind::Symbol(',' | '}' | ';') if depth == 0 => {
-                    let text = self.source[start..token.span.start].trim().to_string();
-                    if text.is_empty() {
-                        return Err(self.error("observed actor target is empty"));
+                    let token_end = self.pos;
+                    let cardinality_start = self.cardinality_suffix_start(token_start, token_end);
+                    let actor_end = cardinality_start.map(|pos| self.tokens[pos].span.start).unwrap_or(token.span.start);
+                    let actor = self.source[start..actor_end].trim().to_string();
+                    if actor.is_empty() {
+                        return Err(self.error("actor target is empty"));
                     }
-                    return Ok(text);
+                    let cardinality = if let Some(cardinality_start) = cardinality_start {
+                        self.pos = cardinality_start;
+                        let cardinality = self.parse_cardinality()?;
+                        debug_assert_eq!(self.pos, token_end);
+                        cardinality
+                    } else {
+                        Cardinality::One
+                    };
+                    return Ok((actor, cardinality));
                 }
                 TokenKind::Symbol('}') | TokenKind::Symbol(')') | TokenKind::Symbol(']') | TokenKind::Symbol('>') => {
                     depth = depth.saturating_sub(1);
@@ -416,7 +432,40 @@ impl Parser {
                 _ => self.advance(),
             }
         }
-        Err(self.error("unterminated observed actor target"))
+        Err(self.error("unterminated actor target"))
+    }
+
+    /// Identify a trailing `[minimum..=maximum]` without confusing brackets
+    /// that are part of the actor target expression.
+    fn cardinality_suffix_start(&self, token_start: usize, token_end: usize) -> Option<usize> {
+        let close = token_end.checked_sub(1)?;
+        if !matches!(self.tokens.get(close)?.kind, TokenKind::Symbol(']')) {
+            return None;
+        }
+
+        let mut depth = 0usize;
+        let mut open = None;
+        for pos in (token_start..=close).rev() {
+            match self.tokens[pos].kind {
+                TokenKind::Symbol(']') => depth += 1,
+                TokenKind::Symbol('[') => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        open = Some(pos);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let open = open?;
+        self.has_range_marker(open + 1, close).then_some(open)
+    }
+
+    fn has_range_marker(&self, start: usize, end: usize) -> bool {
+        (start..end.saturating_sub(1)).any(|pos| {
+            matches!(self.tokens[pos].kind, TokenKind::Symbol('.')) && matches!(self.tokens[pos + 1].kind, TokenKind::Symbol('.'))
+        })
     }
 
     fn parse_type(&mut self) -> Result<TypeRef> {
@@ -451,8 +500,9 @@ impl Parser {
                 let name = self.expect_any_ident()?;
                 self.expect_symbol(':')?;
                 let actors = self.parse_actor_union()?;
+                let cardinality = self.parse_cardinality()?;
                 let auth_index = outputs.len();
-                outputs.push(EmitOutput { name, actors, auth_index });
+                outputs.push(EmitOutput { name, actors, cardinality, auth_index });
                 self.expect_list_separator_or_end('}')?;
             }
             self.expect_symbol('}')?;
@@ -464,7 +514,8 @@ impl Parser {
             }
             self.expect_symbol(':')?;
             let actors = self.parse_actor_union_until_body()?;
-            Ok(EmitSpec::Outputs(vec![EmitOutput { name, actors, auth_index: 0 }]))
+            let cardinality = self.parse_cardinality()?;
+            Ok(EmitSpec::Outputs(vec![EmitOutput { name, actors, cardinality, auth_index: 0 }]))
         }
     }
 
@@ -479,6 +530,37 @@ impl Parser {
             actors.push(self.expect_any_ident()?);
         }
         Ok(actors)
+    }
+
+    fn parse_cardinality(&mut self) -> Result<Cardinality> {
+        if !self.consume_symbol('[') {
+            return Ok(Cardinality::One);
+        }
+        let minimum = self.parse_cardinality_bound()?;
+        self.expect_symbol('.')?;
+        self.expect_symbol('.')?;
+        self.expect_symbol('=')?;
+        let maximum = self.parse_cardinality_bound()?;
+        self.expect_symbol(']')?;
+        Ok(Cardinality::Range { minimum, maximum })
+    }
+
+    fn parse_cardinality_bound(&mut self) -> Result<CardinalityBound> {
+        let negative = self.consume_symbol('-');
+        match self.current().kind.clone() {
+            TokenKind::Number(value) => {
+                self.advance();
+                let value = value.parse::<i64>().map_err(|_| self.error("range bound integer is too large"))?;
+                let value =
+                    if negative { value.checked_neg().ok_or_else(|| self.error("range bound integer is too small"))? } else { value };
+                Ok(CardinalityBound::Literal(value))
+            }
+            TokenKind::Ident(name) if !negative => {
+                self.advance();
+                Ok(CardinalityBound::Const(name))
+            }
+            _ => Err(self.error("range bound must be an integer literal or const identifier")),
+        }
     }
 
     fn consume_block_text(&mut self) -> Result<String> {

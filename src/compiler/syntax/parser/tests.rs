@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use super::parse_module;
-use super::{EmitSpec, Import, TypeRef};
+use super::{Cardinality, CardinalityBound, EmitSpec, Import, TypeRef};
 
 #[test]
 fn parses_source_backed_app_imports() {
@@ -213,6 +213,98 @@ fn parses_comma_separated_role_and_route_bindings() {
     assert_eq!(entry.consumes.len(), 2);
     assert!(matches!(&entry.emits, EmitSpec::Outputs(outputs) if outputs.len() == 2));
     assert_eq!(entry.routes.len(), 2);
+}
+
+#[test]
+fn parses_cardinality_for_every_clause_item() {
+    let module = parse_module(
+        PathBuf::from("ranges.ag"),
+        r#"
+            const int MIN = 0;
+            const int MAX = 3;
+
+            state State {}
+
+            actor Actor owns State {
+                entry update()
+                observes remote by remote_id {
+                    inputs {
+                        prior: actor_type<State> as observed_actor[MIN..=MAX],
+                    }
+                    outputs {
+                        next: observed_actor[1..=3],
+                    }
+                }
+                spawns batch by batch_id {
+                    outputs {
+                        children: ChildApp::Child[0..=MAX],
+                        selected: ActorKind[index],
+                    }
+                }
+                consumes {
+                    accounts: Actor[0..=2],
+                }
+                emits next: Actor[1..=MAX] {}
+            }
+            "#
+        .to_string(),
+    )
+    .expect("clause ranges parse");
+
+    let entry = &module.actors[0].entries[0];
+    assert_eq!(
+        entry.observes[0].inputs[0].cardinality,
+        Cardinality::Range {
+            minimum: CardinalityBound::Const("MIN".to_string()),
+            maximum: CardinalityBound::Const("MAX".to_string()),
+        }
+    );
+    assert_eq!(
+        entry.observes[0].outputs[0].cardinality,
+        Cardinality::Range { minimum: CardinalityBound::Literal(1), maximum: CardinalityBound::Literal(3) }
+    );
+    assert_eq!(
+        entry.spawns[0].outputs[0].cardinality,
+        Cardinality::Range { minimum: CardinalityBound::Literal(0), maximum: CardinalityBound::Const("MAX".to_string()) }
+    );
+    assert_eq!(entry.spawns[0].outputs[0].actor, "ChildApp::Child");
+    assert_eq!(entry.spawns[0].outputs[1].actor, "ActorKind[index]");
+    assert_eq!(entry.spawns[0].outputs[1].cardinality, Cardinality::One);
+    assert_eq!(
+        entry.consumes[0].cardinality,
+        Cardinality::Range { minimum: CardinalityBound::Literal(0), maximum: CardinalityBound::Literal(2) }
+    );
+    let EmitSpec::Outputs(outputs) = &entry.emits else {
+        panic!("range output remains a named emit output");
+    };
+    assert_eq!(
+        outputs[0].cardinality,
+        Cardinality::Range { minimum: CardinalityBound::Literal(1), maximum: CardinalityBound::Const("MAX".to_string()) }
+    );
+}
+
+#[test]
+fn rejects_malformed_cardinality_after_actor_target_expressions() {
+    let err = parse_module(
+        PathBuf::from("ranges.ag"),
+        r#"
+            state State {}
+
+            actor Actor owns State {
+                entry update()
+                spawns batch by batch_id {
+                    outputs {
+                        children: ChildApp::Child[1..3],
+                    }
+                }
+                emits none {}
+            }
+            "#
+        .to_string(),
+    )
+    .expect_err("range bounds require an inclusive upper-bound marker");
+
+    assert!(err.to_string().contains("expected `=`"), "unexpected error: {err}");
 }
 
 #[test]

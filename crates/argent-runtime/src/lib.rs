@@ -24,11 +24,11 @@ pub use context::{
 pub use silverscript_abi::ArtifactValue;
 
 use argent_artifact::{
-    ActorArtifact, ActorInterfaceArtifact, ArgentStateArtifact, ArtifactIdentityError, ArtifactVersionError, CompiledTemplateArtifact,
-    EntryArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, ObserveArtifact,
-    ObservedActorArtifact, ObservedActorSideArtifact, ObservedTargetArtifact, RouteTemplateLeafArtifact, RouteTemplateProofArtifact,
-    RuntimeFieldRoleArtifact, RuntimeStatePlanArtifact, SilAbiVerificationError, SilContractArtifact, SilEntryArtifact,
-    TemplatePlanError, fixed_runtime_context_value,
+    ActorArtifact, ActorInterfaceArtifact, ArgentStateArtifact, ArtifactIdentityError, ArtifactVersionError, CardinalityArtifact,
+    CompiledTemplateArtifact, EmitArtifact, EntryArtifact, EntryKindArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact,
+    HiddenParamSubjectArtifact, MAX_ENTRY_RANGE_CARDINALITY, ObserveArtifact, ObservedActorArtifact, ObservedActorSideArtifact,
+    ObservedTargetArtifact, RouteTemplateLeafArtifact, RouteTemplateProofArtifact, RuntimeFieldRoleArtifact, RuntimeStatePlanArtifact,
+    SilAbiVerificationError, SilContractArtifact, SilEntryArtifact, TemplatePlanError, fixed_runtime_context_value,
 };
 use kaspa_consensus_core::{
     Hash,
@@ -280,6 +280,20 @@ pub enum BuilderError {
     #[error("artifact bundle app `{app}` has invalid artifact id: {source}")]
     ArtifactIdentity { app: String, source: ArtifactIdentityError },
     #[error(
+        "artifact bundle app `{app}` entry `{actor}::{entry}` has invalid cardinality {minimum}..={maximum} for {section} `{handle}`"
+    )]
+    InvalidArtifactCardinality {
+        app: Box<str>,
+        actor: String,
+        entry: String,
+        section: &'static str,
+        handle: Box<str>,
+        minimum: i64,
+        maximum: i64,
+    },
+    #[error("artifact bundle app `{app}` entry `{actor}::{entry}` uses unsupported ranged {section} interaction `{handle}`")]
+    UnsupportedArtifactCardinality { app: String, actor: String, entry: String, section: &'static str, handle: String },
+    #[error(
         "artifact bundle app `{app}` requires dependency `{dependency}` artifact `{expected_artifact_id}`, but it is not attached"
     )]
     MissingDependencyArtifact { app: String, dependency: String, expected_artifact_id: String },
@@ -397,6 +411,18 @@ pub enum BuilderError {
         actor: String,
         entry: String,
         expected: usize,
+        found: usize,
+        leader_for: Vec<String>,
+    },
+    #[error(
+        "actor input {input_index} `{actor}::{entry}` requires between {minimum} and {maximum} same-covenant inputs, found {found}; actor is a leader actor trusted by delegates {leader_for:?}"
+    )]
+    LeaderActorInputCardinalityMismatch {
+        input_index: usize,
+        actor: String,
+        entry: String,
+        minimum: usize,
+        maximum: usize,
         found: usize,
         leader_for: Vec<String>,
     },
@@ -1645,7 +1671,85 @@ fn validate_artifact(app: &str, artifact: &Artifact) -> BuilderResult<()> {
     artifact.check_schema_version()?;
     artifact.verify_sil_abi()?;
     artifact.verify_template_plan()?;
+    validate_runtime_cardinality_support(app, artifact)?;
     artifact.verify_id().map_err(|source| BuilderError::ArtifactIdentity { app: app.to_string(), source })?;
+    Ok(())
+}
+
+fn validate_runtime_cardinality_support(app: &str, artifact: &Artifact) -> BuilderResult<()> {
+    for actor in &artifact.argent.actors {
+        for entry in &actor.entries {
+            let validate = |section, handle: &str, cardinality| {
+                if let CardinalityArtifact::Range { minimum, maximum } = cardinality
+                    && (minimum < 0 || minimum > maximum || maximum > MAX_ENTRY_RANGE_CARDINALITY)
+                {
+                    return Err(BuilderError::InvalidArtifactCardinality {
+                        app: app.into(),
+                        actor: actor.name.clone(),
+                        entry: entry.name.clone(),
+                        section,
+                        handle: handle.into(),
+                        minimum,
+                        maximum,
+                    });
+                }
+                Ok(())
+            };
+            let reject_unsupported_range = |section, handle: &str, cardinality| {
+                validate(section, handle, cardinality)?;
+                if matches!(cardinality, CardinalityArtifact::Range { .. }) {
+                    return Err(BuilderError::UnsupportedArtifactCardinality {
+                        app: app.to_string(),
+                        actor: actor.name.clone(),
+                        entry: entry.name.clone(),
+                        section,
+                        handle: handle.to_string(),
+                    });
+                }
+                Ok(())
+            };
+
+            let mut has_consume_range = false;
+            for consume in &entry.consumes {
+                if entry.kind == EntryKindArtifact::Delegate {
+                    reject_unsupported_range("delegate consume", &consume.name, consume.cardinality)?;
+                } else {
+                    validate("consume", &consume.name, consume.cardinality)?;
+                    if matches!(consume.cardinality, CardinalityArtifact::Range { .. }) {
+                        if has_consume_range {
+                            reject_unsupported_range("consume", &consume.name, consume.cardinality)?;
+                        }
+                        has_consume_range = true;
+                    }
+                }
+            }
+            if let EmitArtifact::Outputs { outputs } = &entry.emits {
+                let mut has_emit_range = false;
+                for output in outputs {
+                    validate("emit", &output.name, output.cardinality)?;
+                    if matches!(output.cardinality, CardinalityArtifact::Range { .. }) {
+                        if has_emit_range || output.actors.len() != 1 {
+                            reject_unsupported_range("emit", &output.name, output.cardinality)?;
+                        }
+                        has_emit_range = true;
+                    }
+                }
+            }
+            for observe in &entry.observes {
+                for input in &observe.inputs {
+                    reject_unsupported_range("observed input", &format!("{}.{}", observe.name, input.name), input.cardinality)?;
+                }
+                for output in &observe.outputs {
+                    reject_unsupported_range("observed output", &format!("{}.{}", observe.name, output.name), output.cardinality)?;
+                }
+            }
+            for spawn in &entry.spawns {
+                for output in &spawn.outputs {
+                    reject_unsupported_range("spawn output", &format!("{}.{}", spawn.name, output.name), output.cardinality)?;
+                }
+            }
+        }
+    }
     Ok(())
 }
 

@@ -12,6 +12,7 @@ use self::link::LinkedActor;
 
 mod actor;
 mod build;
+mod consts;
 mod entry;
 mod layout;
 pub(crate) mod link;
@@ -21,11 +22,13 @@ mod validate;
 mod tests;
 
 pub(crate) use actor::ActorModel;
+pub(crate) use consts::{ConstIntError, ConstResolver};
 pub(crate) use entry::{
     ActorTarget, ActorTemplateUses, ClauseActorTypeRef, CovenantGroup, CovenantIdSource, EntryInteraction, EntryModel,
-    InteractionSource, ResolvedRoute, ResolvedSuccessor, TemplateSelector, actor_enum_variant_const_expr, clause_actor_type_ref,
-    observed_is_dynamic_binding, observed_open_bindings, observed_open_state_for_decl, parse_actor_enum_selector,
-    parse_actor_enum_variant, resolve_observe_covenant_id_source, source_actor_type_state_for_expr, spawn_target_state,
+    InteractionLocation, InteractionSource, ResolvedRoute, ResolvedSuccessor, TemplateSelector, actor_enum_variant_const_expr,
+    clause_actor_type_ref, observed_is_dynamic_binding, observed_open_bindings, observed_open_state_for_decl,
+    parse_actor_enum_selector, parse_actor_enum_variant, resolve_observe_covenant_id_source, source_actor_type_state_for_expr,
+    spawn_target_state,
 };
 pub(crate) use layout::{
     ContractStateLowering, GeneratedFieldId, OutputPhysicalTypePlan, PhysicalFieldId, PhysicalStateLayout, PhysicalTargetId,

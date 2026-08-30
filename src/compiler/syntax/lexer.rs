@@ -48,6 +48,21 @@ pub fn lex_argent_source(source: &str) -> Result<Vec<Token>> {
     lex_with_policy(source, IdentifierPolicy::ArgentSource)
 }
 
+pub(crate) fn parse_int_literal(source: &str) -> Option<i64> {
+    let tokens = lex(source).ok()?;
+    let (negative, digits) = match tokens.as_slice() {
+        [Token { kind: TokenKind::Number(digits), .. }, Token { kind: TokenKind::Eof, .. }] => (false, digits),
+        [
+            Token { kind: TokenKind::Symbol('-'), .. },
+            Token { kind: TokenKind::Number(digits), .. },
+            Token { kind: TokenKind::Eof, .. },
+        ] => (true, digits),
+        _ => return None,
+    };
+    let magnitude = digits.parse::<i64>().ok()?;
+    if negative { magnitude.checked_neg() } else { Some(magnitude) }
+}
+
 fn lex_with_policy(source: &str, identifier_policy: IdentifierPolicy) -> Result<Vec<Token>> {
     let mut lexer = Lexer { source, bytes: source.as_bytes(), pos: 0, tokens: Vec::new(), identifier_policy };
     lexer.run()?;

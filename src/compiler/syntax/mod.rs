@@ -120,6 +120,7 @@ pub struct SpawnDecl {
 pub struct SpawnOutputDecl {
     pub name: String,
     pub actor: String,
+    pub cardinality: Cardinality,
     pub group_index: usize,
 }
 
@@ -139,6 +140,7 @@ pub struct ParamDecl {
 pub struct ConsumeDecl {
     pub name: String,
     pub actor: String,
+    pub cardinality: Cardinality,
 }
 
 #[derive(Debug, Clone)]
@@ -154,6 +156,7 @@ pub struct ObservedActorDecl {
     pub name: String,
     pub actor: String,
     pub open_state: Option<String>,
+    pub cardinality: Cardinality,
 }
 
 #[derive(Debug, Clone)]
@@ -166,7 +169,26 @@ pub enum EmitSpec {
 pub struct EmitOutput {
     pub name: String,
     pub actors: Vec<String>,
+    pub cardinality: Cardinality,
     pub auth_index: usize,
+}
+
+/// The number of transaction items represented by one clause handle.
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
+pub enum Cardinality {
+    #[default]
+    One,
+    Range {
+        minimum: CardinalityBound,
+        maximum: CardinalityBound,
+    },
+}
+
+/// One source-level bound of a clause range.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum CardinalityBound {
+    Literal(i64),
+    Const(String),
 }
 
 #[derive(Debug, Clone)]

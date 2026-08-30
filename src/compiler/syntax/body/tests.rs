@@ -1,4 +1,4 @@
-use super::{EntryBody, EntryStatement, EntrySuccessor, lex};
+use super::{EntryBody, EntryStatement, EntrySuccessor, RouteArity, lex};
 
 #[test]
 fn cursor_takes_nested_balanced_source() {
@@ -111,7 +111,7 @@ fn statements_record_sil_bindings() {
         panic!("expected the constant declaration to be structured");
     };
     assert_eq!(body.span_text(declaration.declared_type), "byte[32] constant");
-    assert_eq!(body.span_text(declaration.initializer), "digest");
+    assert_eq!(body.span_text(declaration.initializer.expect("initializer exists")), "digest");
 }
 
 #[test]
@@ -132,15 +132,20 @@ fn local_declarations_keep_structured_selector_syntax() {
     .expect("body parses");
 
     let locals = body.local_declarations();
-    assert_eq!(locals.iter().map(|local| local.binding.name.as_str()).collect::<Vec<_>>(), vec!["target", "selected", "candidates"]);
+    assert_eq!(
+        locals.iter().map(|local| local.binding.name.as_str()).collect::<Vec<_>>(),
+        vec!["target", "selected", "candidates", "unset"]
+    );
     assert_eq!(locals[0].binding.source_type, "MoveActor");
     assert_eq!(locals[0].binding.actor_type_state, None);
-    assert_eq!(body.span_text(locals[0].initializer), "MoveActor[index + offset]");
+    assert_eq!(body.span_text(locals[0].initializer.expect("initializer exists")), "MoveActor[index + offset]");
     assert_eq!(locals[1].binding.source_type, "actor_type<BoardState>");
     assert_eq!(locals[1].binding.actor_type_state.as_deref(), Some("BoardState"));
-    assert_eq!(body.span_text(locals[1].initializer), "MoveActor::Knight");
+    assert_eq!(body.span_text(locals[1].initializer.expect("initializer exists")), "MoveActor::Knight");
     assert_eq!(locals[2].binding.source_type, "actor_type<BoardState>[]");
     assert_eq!(locals[2].binding.actor_type_state, None);
+    assert_eq!(locals[3].binding.source_type, "int");
+    assert_eq!(locals[3].initializer, None);
 }
 
 #[test]
@@ -205,16 +210,46 @@ fn statements_keep_output_validation_and_dynamic_route_targets() {
         panic!("expected output validation followed by become");
     };
     assert_eq!(group, "children");
-    let EntrySuccessor::Constructed { actor, state } = validation_routes[0].successor else {
+    let EntrySuccessor::Constructed { actor, state, .. } = validation_routes[0].successor else {
         panic!("expected constructed validation successor")
     };
     assert_eq!(body.span_text(actor).trim(), "self.child_type");
     assert_eq!(body.span_text(state).trim(), "next_child");
-    let EntrySuccessor::Constructed { actor, state } = become_routes[0].successor else {
+    let EntrySuccessor::Constructed { actor, state, .. } = become_routes[0].successor else {
         panic!("expected constructed current successor")
     };
     assert_eq!(body.span_text(actor).trim(), "target");
     assert_eq!(body.span_text(state).trim(), "next_state");
+}
+
+#[test]
+fn routes_distinguish_scalar_and_bulk_actor_construction() {
+    let body = EntryBody::new(
+        r#"
+            become {
+                one <- Account(state),
+                many <- Account[](states),
+                selected <- MoveActor[index][](selected_states),
+            };
+            "#,
+    )
+    .expect("body parses");
+
+    let [EntryStatement::Become { routes, .. }] = body.statements() else {
+        panic!("expected one become statement");
+    };
+    assert_eq!(routes.len(), 3);
+    let EntrySuccessor::Constructed { actor, arity, .. } = routes[0].successor else { panic!("expected scalar constructed route") };
+    assert_eq!(body.span_text(actor), "Account");
+    assert_eq!(arity, RouteArity::One);
+    let EntrySuccessor::Constructed { actor, arity, .. } = routes[1].successor else { panic!("expected bulk constructed route") };
+    assert_eq!(body.span_text(actor), "Account");
+    assert_eq!(arity, RouteArity::Many);
+    let EntrySuccessor::Constructed { actor, arity, .. } = routes[2].successor else {
+        panic!("expected selected bulk constructed route")
+    };
+    assert_eq!(body.span_text(actor), "MoveActor[index]");
+    assert_eq!(arity, RouteArity::Many);
 }
 
 #[test]

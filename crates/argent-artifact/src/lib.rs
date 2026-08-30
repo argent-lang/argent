@@ -479,6 +479,8 @@ pub struct SpawnOutputArtifact {
     pub actor: String,
     pub state: String,
     pub group_index: usize,
+    #[serde(default, skip_serializing_if = "CardinalityArtifact::is_one")]
+    pub cardinality: CardinalityArtifact,
     /// Canonical dependency target for a statically linked actor.
     ///
     /// Selected-app actors and dynamic actor-type values retain their existing
@@ -520,6 +522,8 @@ pub enum CovenantIdSourceArtifact {
 pub struct ObservedActorArtifact {
     pub name: String,
     pub target: ObservedTargetArtifact,
+    #[serde(default, skip_serializing_if = "CardinalityArtifact::is_one")]
+    pub cardinality: CardinalityArtifact,
 }
 
 pub type ObservedTargetArtifact = ActorTargetArtifact;
@@ -608,6 +612,8 @@ pub enum EntryKindArtifact {
 pub struct ConsumeArtifact {
     pub name: String,
     pub actor: String,
+    #[serde(default, skip_serializing_if = "CardinalityArtifact::is_one")]
+    pub cardinality: CardinalityArtifact,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -620,8 +626,35 @@ pub enum EmitArtifact {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmitOutputArtifact {
     pub name: String,
-    pub auth_index: usize,
+    /// Exact authorized-output index when it does not depend on a preceding range length.
+    pub auth_index: Option<usize>,
     pub actors: Vec<String>,
+    #[serde(default, skip_serializing_if = "CardinalityArtifact::is_one")]
+    pub cardinality: CardinalityArtifact,
+}
+
+/// Maximum range cardinality accepted by Argent compilers and runtimes.
+///
+/// Keeping the limit in the portable artifact layer prevents compiler and
+/// consumer implementations from drifting on generated-loop resource bounds.
+pub const MAX_ENTRY_RANGE_CARDINALITY: i64 = 512;
+
+/// Resolved transaction cardinality of one named interaction handle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CardinalityArtifact {
+    #[default]
+    One,
+    Range {
+        minimum: i64,
+        maximum: i64,
+    },
+}
+
+impl CardinalityArtifact {
+    pub fn is_one(&self) -> bool {
+        matches!(self, Self::One)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -637,13 +670,15 @@ pub struct EntryRoutePlanArtifact {
 pub struct RouteInputArtifact {
     pub name: String,
     pub actor: String,
+    /// Exact covenant-input index when it does not depend on a preceding range length.
     pub cov_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RouteOutputHandleArtifact {
     pub name: String,
-    pub auth_index: usize,
+    /// Exact authorized-output index when it does not depend on a preceding range length.
+    pub auth_index: Option<usize>,
     pub actors: Vec<String>,
 }
 
@@ -1793,6 +1828,37 @@ mod tests {
         let right = [0x22; 32];
         let expected = blake3::Hasher::new().update(&left).update(&right).finalize();
         assert_eq!(route_template_merkle_parent(&left, &right), *expected.as_bytes());
+    }
+
+    #[test]
+    fn interaction_cardinality_defaults_to_one_and_serializes_ranges() {
+        let singleton =
+            ConsumeArtifact { name: "owner".to_string(), actor: "Account".to_string(), cardinality: CardinalityArtifact::One };
+        let singleton_json = serde_json::to_value(&singleton).expect("singleton serializes");
+        assert!(singleton_json.get("cardinality").is_none());
+
+        let legacy: ConsumeArtifact = serde_json::from_value(serde_json::json!({
+            "name": "owner",
+            "actor": "Account"
+        }))
+        .expect("artifact without cardinality deserializes");
+        assert_eq!(legacy.cardinality, CardinalityArtifact::One);
+
+        let range = ConsumeArtifact {
+            name: "accounts".to_string(),
+            actor: "Account".to_string(),
+            cardinality: CardinalityArtifact::Range { minimum: 1, maximum: 3 },
+        };
+        let range_json = serde_json::to_value(&range).expect("range serializes");
+        assert_eq!(
+            range_json["cardinality"],
+            serde_json::json!({
+                "kind": "range",
+                "minimum": 1,
+                "maximum": 3
+            })
+        );
+        assert_eq!(serde_json::from_value::<ConsumeArtifact>(range_json).expect("range round trips"), range);
     }
 
     #[test]

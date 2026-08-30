@@ -14,8 +14,8 @@ use kaspa_txscript::parse_script;
 use kaspa_txscript::script_builder::ScriptBuilder;
 
 use crate::artifact::{
-    Artifact, EntryArtifact, EntryKindArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact,
-    ParamArtifact, RouteSuccessorArtifact, SilContractArtifact, SilEntryArtifact, TypeArtifact,
+    Artifact, CardinalityArtifact, EmitArtifact, EntryArtifact, EntryKindArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact,
+    HiddenParamSubjectArtifact, ParamArtifact, RouteSuccessorArtifact, SilContractArtifact, SilEntryArtifact, TypeArtifact,
 };
 use crate::codec::decode_hex;
 use crate::{ArgentError, Result};
@@ -224,9 +224,17 @@ fn inspect_entry(
     if let Some(active) = &entry.route_plan.active_input {
         inputs.push(format!("{}: {}", active.name, active.actor));
     }
-    inputs.extend(entry.route_plan.consumes.iter().map(|input| format!("{}: {}", input.name, input.actor)));
+    inputs.extend(
+        entry.consumes.iter().map(|input| format!("{}: {}{}", input.name, input.actor, cardinality_suffix(input.cardinality))),
+    );
 
-    let outputs = entry.route_plan.outputs.iter().map(|output| format!("{} -> {}", output.name, output.actors.join(" | "))).collect();
+    let outputs = match &entry.emits {
+        EmitArtifact::None => Vec::new(),
+        EmitArtifact::Outputs { outputs } => outputs
+            .iter()
+            .map(|output| format!("{} -> {}{}", output.name, output.actors.join(" | "), cardinality_suffix(output.cardinality)))
+            .collect(),
+    };
     let routes = entry
         .routes
         .iter()
@@ -258,6 +266,13 @@ fn inspect_entry(
         routes,
         signature_script_bytes,
     })
+}
+
+fn cardinality_suffix(cardinality: CardinalityArtifact) -> String {
+    match cardinality {
+        CardinalityArtifact::One => String::new(),
+        CardinalityArtifact::Range { minimum, maximum } => format!("[{minimum}..={maximum}]"),
+    }
 }
 
 fn hidden_param_size(artifact: &Artifact, entry: &EntryArtifact, hidden: &HiddenParamArtifact) -> Result<Option<SizeEstimate>> {
@@ -635,6 +650,61 @@ app Show {
         assert!(matches!(buy.signature_script_bytes.max, Some(max) if max == buy.signature_script_bytes.min));
 
         let _ = std::fs::remove_dir_all(out_dir);
+    }
+
+    #[test]
+    fn reports_resolved_input_and_output_cardinality() {
+        let artifact = crate::compile_inline(
+            "inspect-ranges.ag",
+            r#"
+                state BatchState {
+                    int marker;
+                }
+
+                state AccountState {
+                    int balance;
+                }
+
+                actor Batch owns BatchState {
+                    entry inspect(AccountState[] next_states)
+                    consumes {
+                        accounts: Account[0..=2],
+                        tail: Account,
+                    }
+                    emits {
+                        next: Account[1..=3],
+                        tail_out: Account,
+                    } {
+                        unrestricted(next[0].value);
+                        unrestricted(tail_out.value);
+                        become {
+                            next <- Account[](next_states),
+                            tail_out <- Account(AccountState {
+                                balance: 0,
+                            }),
+                        };
+                    }
+                }
+
+                actor Account owns AccountState {
+                    entry hold() emits none {
+                        require(balance >= 0);
+                    }
+                }
+
+                app Show {
+                    actor Batch;
+                    actor Account;
+                }
+            "#,
+        )
+        .expect("range fixture compiles");
+        let report = inspect_artifact(&artifact).expect("range artifact inspects");
+        let batch = report.actors.iter().find(|actor| actor.name == "Batch").expect("Batch report");
+        let inspect = batch.entries.iter().find(|entry| entry.name == "inspect").expect("inspect entry");
+
+        assert_eq!(inspect.inputs, ["self: Batch", "accounts: Account[0..=2]", "tail: Account"]);
+        assert_eq!(inspect.outputs, ["next -> Account[1..=3]", "tail_out -> Account"]);
     }
 
     #[test]

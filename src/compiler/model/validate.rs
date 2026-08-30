@@ -3,9 +3,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::compiler::naming::to_snake;
+use crate::compiler::syntax::body::RouteArity;
 use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX};
 use crate::compiler::syntax::word;
-use crate::compiler::syntax::{ActorDecl, ArrayDim, EmitOutput, EmitSpec, EntryDecl, EntryKind, ObserveDecl, ObservedActorDecl};
+use crate::compiler::syntax::{
+    ActorDecl, ArrayDim, Cardinality, EmitOutput, EmitSpec, EntryDecl, EntryKind, ObserveDecl, ObservedActorDecl,
+};
 use crate::error::{ArgentError, Result};
 
 use super::{
@@ -350,7 +353,7 @@ impl Model<'_> {
 
         let entry_model = self.entry_model(actor, entry)?;
         for route in entry_model.routes() {
-            if let ResolvedSuccessor::Constructed { actor: target_expr, state } = &route.successor {
+            if let ResolvedSuccessor::Constructed { actor: target_expr, state, .. } = &route.successor {
                 if state.trim().is_empty() {
                     return Err(ArgentError::new(format!(
                         "entry `{}::{}` has an empty `become` state for actor `{target_expr}`",
@@ -572,6 +575,25 @@ impl Model<'_> {
                         actor.name, entry.name, route.output
                     ))
                 })?;
+                let arity = match &route.successor {
+                    ResolvedSuccessor::ExactSelf => RouteArity::One,
+                    ResolvedSuccessor::Constructed { arity, .. } => *arity,
+                };
+                match (matches!(output.cardinality, Cardinality::Range { .. }), arity) {
+                    (true, RouteArity::One) => {
+                        return Err(ArgentError::new(format!(
+                            "entry `{}::{}` range output `{}` must use bulk become syntax `{} <- Actor[](states)`",
+                            actor.name, entry.name, output.name, output.name
+                        )));
+                    }
+                    (false, RouteArity::Many) => {
+                        return Err(ArgentError::new(format!(
+                            "entry `{}::{}` singleton output `{}` must use scalar become syntax `{} <- Actor(state)`",
+                            actor.name, entry.name, output.name, output.name
+                        )));
+                    }
+                    _ => {}
+                }
                 let allowed = self.expand_actor_refs(&output.actors);
                 let targets = self.route_targets(actor, entry, route)?;
                 if targets.iter().all(|target| allowed.iter().any(|allowed| allowed == target)) {

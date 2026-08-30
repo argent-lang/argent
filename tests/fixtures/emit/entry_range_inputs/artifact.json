@@ -1,0 +1,434 @@
+{
+  "schema_version": 1,
+  "id": "b7fe4c7c41984250a8d9ec3027d053bc1aa6706e4658ce286cf63eb7a3cce25f",
+  "generator": {
+    "name": "argentc",
+    "version": "0.1.0"
+  },
+  "app": "EntryRangeInputs",
+  "dependencies": [],
+  "root": "tests/fixtures/emit/entry_range_inputs/app.ag",
+  "modules": [
+    "tests/fixtures/emit/entry_range_inputs/app.ag"
+  ],
+  "argent": {
+    "templates": [
+      {
+        "id": "template/batch",
+        "actor": "Batch",
+        "symbol": "gen__batch_template"
+      },
+      {
+        "id": "template/account",
+        "actor": "Account",
+        "symbol": "gen__account_template"
+      }
+    ],
+    "template_plan": {
+      "templates": [
+        {
+          "id": "template/batch",
+          "actor": "Batch",
+          "contract": "Batch",
+          "symbol": "gen__batch_template",
+          "sil_template_hash": "3d1798112faee9b1ef3ff0739cc991991d7b0c1751f39f5f999c61c9f43ee159",
+          "actor_type_handle": {
+            "state": "BatchState",
+            "context_fields": [
+              "gen__account_template"
+            ],
+            "template": {
+              "prefix_hex": "6b207cbdc27a4fffbaad655bcd7565a7d85682469203db07d26b953f665640f4271f",
+              "suffix_hex": "6c76046a8e31bf876375537982599f6975527982599f6975b9cf7600d1b99c697651d176bf785279c958795993587993945379c959795993597993945979599359799393bcaa02000001aa7e01207e7c7e01877e885379567958cd52795379c959795993597993945479c95a7959935a7993945a7993bc7e567958cd53795479c95a7959935a7993945a799359935579c95b7959935b7993945b799359935a7993bc7e7ed9887678c9577959935779939457795193935279c9587959935879939458795193935893bc5279d053947651a2697653a16900005279787853799453a1697652799f6376587952527993d176bf785279c960795993607993945379c90111795993011179939401117959930111799393bcaa02000001aa7e01207e7c7e01877e885b795e7958cd52795379c9011179599301117993945479c90112795993011279939401127993bc7e5e7958cd53795479c9011279599301127993940112799359935579c90113795993011379939401137993599301127993bc7e7ed9887678c95f7959935f7993945f795193935279c9607959936079939460795193935893bc56797858cd7e577a7553795193557a757b757b757b75727b687652799f6376587952527993d176bf785279c960795993607993945379c90111795993011179939401117959930111799393bcaa02000001aa7e01207e7c7e01877e885b795e7958cd52795379c9011179599301117993945479c90112795993011279939401127993bc7e5e7958cd53795479c9011279599301127993940112799359935579c90113795993011379939401137993599301127993bc7e7ed9887678c95f7959935f7993945f795193935279c9607959936079939460795193935893bc56797858cd7e577a7553795193557a757b757b757b75727b687652799f6376587952527993d176bf785279c960795993607993945379c90111795993011179939401117959930111799393bcaa02000001aa7e01207e7c7e01877e885b795e7958cd52795379c9011179599301117993945479c90112795993011279939401127993bc7e5e7958cd53795479c9011279599301127993940112799359935579c90113795993011379939401137993599301127993bc7e7ed9887678c95f7959935f7993945f795193935279c9607959936079939460795193935893bc56797858cd7e577a7553795193557a757b757b757b75727b6857795879d05194d176bf785279c95f7959935f7993945379c960795993607993946079599360799393bcaa02000001aa7e01207e7c7e01877e885a795d7958cd52795379c960795993607993945479c90111795993011179939401117993bc7e5d7958cd53795479c9011179599301117993940111799359935579c90112795993011279939401127993599301117993bc7e7ed9887678c95e7959935e7993945e795193935279c95f7959935f7993945f795193935893bcb9cb009c69577900a2697600a269567951a269005779787853799453a1697652799f6376765b797800a26978789f69785c797858957658937f00a26953795e797800a26978789f697801137952527993d1be00a06956795193587a7577777777777777687652799f6376765b797800a26978789f69785c797858957658937f00a26953795e797800a26978789f697801137952527993d1be00a06956795193587a7577777777777777687652799f6376765b797800a26978789f69785c797858957658937f00a26953795e797800a26978789f697801137952527993d1be00a06956795193587a757777777777777768757575757575757575757575757575757551676a68",
+              "hash_hex": "e3fe19f83d02c4ed25f58defefd144a7278fc6e6f678bca554153242018fd364"
+            }
+          }
+        },
+        {
+          "id": "template/account",
+          "actor": "Account",
+          "contract": "Account",
+          "symbol": "gen__account_template",
+          "sil_template_hash": "7cbdc27a4fffbaad655bcd7565a7d85682469203db07d26b953f665640f4271f",
+          "actor_type_handle": {
+            "state": "AccountState",
+            "context_fields": [],
+            "template": {
+              "prefix_hex": "6b",
+              "suffix_hex": "6c7604c5350aa3876375b9cb009c697600a2697551676a68",
+              "hash_hex": "7cbdc27a4fffbaad655bcd7565a7d85682469203db07d26b953f665640f4271f"
+            }
+          }
+        }
+      ],
+      "runtime_states": [
+        {
+          "contract": "Batch",
+          "source": "BatchState",
+          "field_roles": [
+            {
+              "name": "gen__account_template",
+              "role": {
+                "kind": "template",
+                "contract": "Account"
+              }
+            }
+          ]
+        }
+      ],
+      "route_tables": [],
+      "route_proofs": [],
+      "route_families": [],
+      "witness_recipes": [
+        {
+          "id": "witness/account/template_prefix_len",
+          "template_id": "template/account",
+          "subject": {
+            "kind": "actor",
+            "actor": "Account"
+          },
+          "param": "gen__account_prefix_len",
+          "purpose": {
+            "kind": "template_prefix_len"
+          }
+        },
+        {
+          "id": "witness/account/template_suffix_len",
+          "template_id": "template/account",
+          "subject": {
+            "kind": "actor",
+            "actor": "Account"
+          },
+          "param": "gen__account_suffix_len",
+          "purpose": {
+            "kind": "template_suffix_len"
+          }
+        }
+      ]
+    },
+    "interfaces": {
+      "exports": [
+        {
+          "id": "interface/actor/Batch",
+          "app": "EntryRangeInputs",
+          "actor": "Batch",
+          "state": "BatchState",
+          "fingerprint_hex": "765aabd4746f1cbaabe0653d347a2583592eda98794ed8485d70be4aceb1c055"
+        },
+        {
+          "id": "interface/actor/Account",
+          "app": "EntryRangeInputs",
+          "actor": "Account",
+          "state": "AccountState",
+          "fingerprint_hex": "03a4f0d14865981f35a0c15442e950d5601589af6af1260314e12bcdabfaa282"
+        }
+      ],
+      "imports": []
+    },
+    "states": [
+      {
+        "name": "AccountState",
+        "fields": [
+          {
+            "name": "balance",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      },
+      {
+        "name": "BatchState",
+        "fields": [
+          {
+            "name": "marker",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      }
+    ],
+    "actor_enums": [],
+    "actors": [
+      {
+        "name": "Batch",
+        "state": "BatchState",
+        "abi": {
+          "actor": "Batch"
+        },
+        "entries": [
+          {
+            "name": "inspect",
+            "kind": "leader",
+            "abi": {
+              "actor": "Batch",
+              "entry": "inspect"
+            },
+            "route_plan": {
+              "active_input": {
+                "name": "self",
+                "actor": "Batch",
+                "cov_index": 0
+              },
+              "leader_input": {
+                "name": "self",
+                "actor": "Batch",
+                "cov_index": 0
+              },
+              "consumes": [
+                {
+                  "name": "first",
+                  "actor": "Account",
+                  "cov_index": 1
+                },
+                {
+                  "name": "accounts",
+                  "actor": "Account",
+                  "cov_index": null
+                },
+                {
+                  "name": "last",
+                  "actor": "Account",
+                  "cov_index": null
+                }
+              ],
+              "outputs": [],
+              "witness_recipe_ids": [
+                "witness/account/template_prefix_len",
+                "witness/account/template_suffix_len"
+              ]
+            },
+            "hidden_params": [
+              {
+                "recipe_id": "witness/account/template_prefix_len",
+                "name": "gen__account_prefix_len",
+                "type": {
+                  "kind": "int"
+                },
+                "subject": {
+                  "kind": "actor",
+                  "actor": "Account"
+                },
+                "purpose": {
+                  "kind": "template_prefix_len"
+                }
+              },
+              {
+                "recipe_id": "witness/account/template_suffix_len",
+                "name": "gen__account_suffix_len",
+                "type": {
+                  "kind": "int"
+                },
+                "subject": {
+                  "kind": "actor",
+                  "actor": "Account"
+                },
+                "purpose": {
+                  "kind": "template_suffix_len"
+                }
+              }
+            ],
+            "template_selectors": [],
+            "witnesses": [
+              {
+                "recipe_id": "witness/account/template_prefix_len",
+                "param": "gen__account_prefix_len",
+                "subject": {
+                  "kind": "actor",
+                  "actor": "Account"
+                },
+                "purpose": {
+                  "kind": "template_prefix_len"
+                }
+              },
+              {
+                "recipe_id": "witness/account/template_suffix_len",
+                "param": "gen__account_suffix_len",
+                "subject": {
+                  "kind": "actor",
+                  "actor": "Account"
+                },
+                "purpose": {
+                  "kind": "template_suffix_len"
+                }
+              }
+            ],
+            "consumes": [
+              {
+                "name": "first",
+                "actor": "Account"
+              },
+              {
+                "name": "accounts",
+                "actor": "Account",
+                "cardinality": {
+                  "kind": "range",
+                  "minimum": 1,
+                  "maximum": 3
+                }
+              },
+              {
+                "name": "last",
+                "actor": "Account"
+              }
+            ],
+            "emits": {
+              "kind": "none"
+            },
+            "routes": []
+          }
+        ]
+      },
+      {
+        "name": "Account",
+        "state": "AccountState",
+        "abi": {
+          "actor": "Account"
+        },
+        "entries": [
+          {
+            "name": "hold",
+            "kind": "leader",
+            "abi": {
+              "actor": "Account",
+              "entry": "hold"
+            },
+            "route_plan": {
+              "active_input": {
+                "name": "self",
+                "actor": "Account",
+                "cov_index": 0
+              },
+              "leader_input": {
+                "name": "self",
+                "actor": "Account",
+                "cov_index": 0
+              },
+              "consumes": [],
+              "outputs": [],
+              "witness_recipe_ids": []
+            },
+            "hidden_params": [],
+            "template_selectors": [],
+            "witnesses": [],
+            "consumes": [],
+            "emits": {
+              "kind": "none"
+            },
+            "routes": []
+          }
+        ]
+      }
+    ]
+  },
+  "sil_abi": {
+    "schema_version": 1,
+    "states": [
+      {
+        "name": "AccountState",
+        "fields": [
+          {
+            "name": "balance",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      },
+      {
+        "name": "BatchState",
+        "fields": [
+          {
+            "name": "marker",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      }
+    ],
+    "contracts": [
+      {
+        "name": "Batch",
+        "source_path": "sil/Batch.sil",
+        "runtime_state": {
+          "source": "BatchState",
+          "fields": [
+            {
+              "name": "gen__account_template",
+              "type": {
+                "kind": "fixed_bytes",
+                "len": 32
+              }
+            },
+            {
+              "name": "marker",
+              "type": {
+                "kind": "int"
+              }
+            }
+          ]
+        },
+        "entries": [
+          {
+            "name": "inspect",
+            "dispatch_tag": "6a8e31bf",
+            "params": [
+              {
+                "name": "gen__account_prefix_len",
+                "type": {
+                  "kind": "int"
+                }
+              },
+              {
+                "name": "gen__account_suffix_len",
+                "type": {
+                  "kind": "int"
+                }
+              }
+            ]
+          }
+        ],
+        "compiled": {
+          "script_hex": "6b2000000000000000000000000000000000000000000000000000000000000000000800000000000000006c76046a8e31bf876375537982599f6975527982599f6975b9cf7600d1b99c697651d176bf785279c958795993587993945379c959795993597993945979599359799393bcaa02000001aa7e01207e7c7e01877e885379567958cd52795379c959795993597993945479c95a7959935a7993945a7993bc7e567958cd53795479c95a7959935a7993945a799359935579c95b7959935b7993945b799359935a7993bc7e7ed9887678c9577959935779939457795193935279c9587959935879939458795193935893bc5279d053947651a2697653a16900005279787853799453a1697652799f6376587952527993d176bf785279c960795993607993945379c90111795993011179939401117959930111799393bcaa02000001aa7e01207e7c7e01877e885b795e7958cd52795379c9011179599301117993945479c90112795993011279939401127993bc7e5e7958cd53795479c9011279599301127993940112799359935579c90113795993011379939401137993599301127993bc7e7ed9887678c95f7959935f7993945f795193935279c9607959936079939460795193935893bc56797858cd7e577a7553795193557a757b757b757b75727b687652799f6376587952527993d176bf785279c960795993607993945379c90111795993011179939401117959930111799393bcaa02000001aa7e01207e7c7e01877e885b795e7958cd52795379c9011179599301117993945479c90112795993011279939401127993bc7e5e7958cd53795479c9011279599301127993940112799359935579c90113795993011379939401137993599301127993bc7e7ed9887678c95f7959935f7993945f795193935279c9607959936079939460795193935893bc56797858cd7e577a7553795193557a757b757b757b75727b687652799f6376587952527993d176bf785279c960795993607993945379c90111795993011179939401117959930111799393bcaa02000001aa7e01207e7c7e01877e885b795e7958cd52795379c9011179599301117993945479c90112795993011279939401127993bc7e5e7958cd53795479c9011279599301127993940112799359935579c90113795993011379939401137993599301127993bc7e7ed9887678c95f7959935f7993945f795193935279c9607959936079939460795193935893bc56797858cd7e577a7553795193557a757b757b757b75727b6857795879d05194d176bf785279c95f7959935f7993945379c960795993607993946079599360799393bcaa02000001aa7e01207e7c7e01877e885a795d7958cd52795379c960795993607993945479c90111795993011179939401117993bc7e5d7958cd53795479c9011179599301117993940111799359935579c90112795993011279939401127993599301117993bc7e7ed9887678c95e7959935e7993945e795193935279c95f7959935f7993945f795193935893bcb9cb009c69577900a2697600a269567951a269005779787853799453a1697652799f6376765b797800a26978789f69785c797858957658937f00a26953795e797800a26978789f697801137952527993d1be00a06956795193587a7577777777777777687652799f6376765b797800a26978789f69785c797858957658937f00a26953795e797800a26978789f697801137952527993d1be00a06956795193587a7577777777777777687652799f6376765b797800a26978789f69785c797858957658937f00a26953795e797800a26978789f697801137952527993d1be00a06956795193587a757777777777777768757575757575757575757575757575757551676a68",
+          "template_hash_hex": "3d1798112faee9b1ef3ff0739cc991991d7b0c1751f39f5f999c61c9f43ee159",
+          "state_span": {
+            "offset": 1,
+            "len": 42
+          }
+        }
+      },
+      {
+        "name": "Account",
+        "source_path": "sil/Account.sil",
+        "runtime_state": {
+          "source": "AccountState",
+          "fields": [
+            {
+              "name": "balance",
+              "type": {
+                "kind": "int"
+              }
+            }
+          ]
+        },
+        "entries": [
+          {
+            "name": "hold",
+            "dispatch_tag": "c5350aa3",
+            "params": []
+          }
+        ],
+        "compiled": {
+          "script_hex": "6b0800000000000000006c7604c5350aa3876375b9cb009c697600a2697551676a68",
+          "template_hash_hex": "7cbdc27a4fffbaad655bcd7565a7d85682469203db07d26b953f665640f4271f",
+          "state_span": {
+            "offset": 1,
+            "len": 9
+          }
+        }
+      }
+    ]
+  }
+}

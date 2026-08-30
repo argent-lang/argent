@@ -28,7 +28,7 @@ fn indexes_entries_without_changing_source_order() {
         functions: Vec::new(),
         entries: vec![entry("z"), entry("a")],
     };
-    let model = ActorModel::build(&actor, &BTreeMap::new()).expect("actor model");
+    let model = ActorModel::build(&actor, &BTreeMap::new(), &ConstResolver::new(&[])).expect("actor model");
 
     assert_eq!(model.entries().map(|entry| entry.source().name.as_str()).collect::<Vec<_>>(), ["z", "a"]);
     assert_eq!(model.entry("a").expect("indexed entry").source().name, "a");
@@ -43,7 +43,7 @@ fn rejects_duplicate_entry_names() {
         entries: vec![entry("step"), entry("step")],
     };
 
-    let err = ActorModel::build(&actor, &BTreeMap::new()).expect_err("duplicate entries must be rejected");
+    let err = ActorModel::build(&actor, &BTreeMap::new(), &ConstResolver::new(&[])).expect_err("duplicate entries must be rejected");
 
     assert_eq!(err.message, "actor `Worker` declares entry `step` more than once");
 }
@@ -56,7 +56,7 @@ fn indexes_functions_without_changing_source_order() {
         functions: vec![function("z"), function("a")],
         entries: Vec::new(),
     };
-    let model = ActorModel::build(&actor, &BTreeMap::new()).expect("actor model");
+    let model = ActorModel::build(&actor, &BTreeMap::new(), &ConstResolver::new(&[])).expect("actor model");
 
     assert_eq!(model.functions().map(|function| function.name.as_str()).collect::<Vec<_>>(), ["z", "a"]);
 }
@@ -70,7 +70,7 @@ fn rejects_duplicate_function_names() {
         entries: Vec::new(),
     };
 
-    let err = ActorModel::build(&actor, &BTreeMap::new()).expect_err("duplicate functions must be rejected");
+    let err = ActorModel::build(&actor, &BTreeMap::new(), &ConstResolver::new(&[])).expect_err("duplicate functions must be rejected");
 
     assert_eq!(err.message, "actor `Worker` declares function `step` more than once");
 }
@@ -84,7 +84,8 @@ fn rejects_function_and_entry_with_the_same_name() {
         entries: vec![entry("step")],
     };
 
-    let err = ActorModel::build(&actor, &BTreeMap::new()).expect_err("function and entry names must not collide");
+    let err =
+        ActorModel::build(&actor, &BTreeMap::new(), &ConstResolver::new(&[])).expect_err("function and entry names must not collide");
 
     assert_eq!(err.message, "actor `Worker` declares both a function and an entry named `step`");
 }
