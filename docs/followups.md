@@ -73,18 +73,23 @@ explicit indices or an unambiguous matching rule. Record openness and the
 binding rule in the artifact so the runtime and transaction builder resolve
 the same handles.
 
-## Authenticate actors with no runtime state
+## Support empty authored and physical states
 
-**Area:** Actor-type handles and compiler code generation.
+**Area:** State values, actor-type handles, and compiler code generation.
+
+**Current limit:** Silverscript rejects named structs with no fields. Argent
+does not yet lower an empty authored state to another representation. An empty
+state therefore cannot be used where generated Sil needs a named authored
+value. This includes helper and entry parameters, return values, locals,
+arrays, observed state, and constructed successors.
 
 **Context:** `readInputStateWithTemplate` authenticates a template while it
 decodes state fields. It is not the right operation when an actor's complete
 physical state, including compiler-owned fields, is empty. In that case the
 redeem script is fixed, so its P2SH hash identifies the complete actor script.
 
-Silverscript now rejects named structs with no fields. Argent must therefore
-represent an empty authored state without emitting `struct Empty {}`. This is a
-required lowering path, not only an optimization.
+Argent must represent an empty authored state without emitting
+`struct Empty {}`. This is a required lowering path, not only an optimization.
 
 If generated route fields make the physical state non-empty, use the normal
 template-authenticated state operations. If the physical state is also empty,

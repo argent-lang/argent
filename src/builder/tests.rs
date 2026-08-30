@@ -411,6 +411,80 @@ fn context_executes_expanded_bool_transition_to_false() {
 }
 
 #[test]
+fn context_executes_expanded_scalar_byte_transition() {
+    let artifact = inline_artifact(
+        "context-expanded-scalar-byte-transition",
+        r#"
+            state Policy {
+                int version;
+                byte network;
+                int limit;
+            }
+
+            state TokenCapsule {
+                virtual policy;
+            }
+
+            state TokenState expands TokenCapsule {
+                policy: Policy;
+            }
+
+            actor Token owns TokenState {
+                entry set(byte expected_network, byte next_network) emits next: Token {
+                    require(policy.network == expected_network);
+
+                    TokenState next_state = {
+                        policy: Policy {
+                            version: policy.version + 1,
+                            network: next_network,
+                            limit: policy.limit,
+                        },
+                    };
+
+                    unrestricted(next.value);
+                    become next <- Token(next_state);
+                }
+            }
+
+            app TokenApp {
+                actor Token;
+            }
+            "#,
+    );
+    let builder = TxBuilder::new(&artifact).expect("builder accepts expanded scalar-byte artifact");
+    let covenant_id = Hash::from_bytes([0x52; 32]);
+    let input_value = 1_000;
+    let initial = state! {
+        policy: state! {
+            version: 11,
+            network: 7u8,
+            limit: 99,
+        },
+    };
+    let next = state! {
+        policy: state! {
+            version: 12,
+            network: 8u8,
+            limit: 99,
+        },
+    };
+    let input_utxo =
+        builder.covenant_utxo("Token", initial.clone(), input_value, 0, false, Some(covenant_id)).expect("Token UTXO builds");
+    let context = TxContext::new()
+        .actor_input(
+            "Token",
+            initial,
+            EntryCall::new("set").args(args![7u8, 8u8]),
+            TransactionOutpoint::new(TransactionId::from_bytes([0x53; 32]), 0),
+            input_utxo,
+            0,
+        )
+        .actor_output("Token", next, CovenantBinding::new(0, covenant_id), input_value);
+
+    builder.build(&context).expect("expanded scalar-byte transition executes");
+}
+
+#[test]
 fn context_executes_temporal_state_and_expansion_transition() {
     let artifact = inline_artifact(
         "context-temporal-transition",

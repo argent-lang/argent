@@ -3496,6 +3496,44 @@ fn state_expansion_uses_base_storage_layout() {
 }
 
 #[test]
+fn scalar_byte_expansion_fields_use_indexed_extraction() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "scalar-byte-state-expansion",
+        r#"
+            state Policy {
+                int version;
+                byte network;
+                int limit;
+            }
+
+            state TokenCapsule {
+                virtual policy;
+            }
+
+            state TokenState expands TokenCapsule {
+                policy: Policy;
+            }
+
+            actor Token owns TokenState {
+                entry inspect(byte expected_network) emits none {
+                    require(policy.network == expected_network);
+                }
+            }
+
+            app Test {
+                actor Token;
+            }
+        "#,
+    );
+    let sil = &actor_sil["Token"];
+
+    assert!(sil.contains("int gen__policy_version = OpBin2Num(gen__policy_policy_preimage.slice(0, 8));"), "{sil}");
+    assert!(sil.contains("byte gen__policy_network = gen__policy_policy_preimage[8];"), "{sil}");
+    assert!(sil.contains("int gen__policy_limit = OpBin2Num(gen__policy_policy_preimage.slice(9, 17));"), "{sil}");
+    assert!(!sil.contains("byte(gen__policy_policy_preimage.slice"), "{sil}");
+}
+
+#[test]
 fn static_output_to_a_foreign_expanded_state_declares_the_planned_physical_type() {
     let path = PathBuf::from("static-expanded-output.ag");
     let module = crate::compiler::syntax::parser::parse_module(
