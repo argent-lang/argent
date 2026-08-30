@@ -124,7 +124,7 @@ dependencies = [
  "kaspa-txscript-errors",
  "secp256k1",
  "serde_json",
- "silverscript-abi",
+ "silverscript-abi 0.1.0",
  "silverscript-lang",
  "thiserror 2.0.18",
 ]
@@ -138,7 +138,7 @@ dependencies = [
  "faster-hex 0.10.0",
  "serde",
  "serde_json",
- "silverscript-abi",
+ "silverscript-abi 0.1.0",
  "thiserror 2.0.18",
 ]
 
@@ -152,7 +152,7 @@ dependencies = [
  "kaspa-consensus-core",
  "kaspa-txscript",
  "kaspa-txscript-errors",
- "silverscript-abi",
+ "silverscript-abi 0.1.0",
  "thiserror 2.0.18",
 ]
 
@@ -3232,6 +3232,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3342,9 +3352,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "silverscript-abi"
+version = "0.1.0"
+source = "git+https://github.com/kaspanet/silverscript?rev=73e33e26ac33f6ff13f1eea51c01c0983c3ae4e3#73e33e26ac33f6ff13f1eea51c01c0983c3ae4e3"
+dependencies = [
+ "blake3",
+ "faster-hex 0.10.0",
+ "kaspa-txscript",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "silverscript-lang"
 version = "0.1.0"
-source = "git+https://github.com/michaelsutton/silverscript?rev=ef998af7e6bd8b905a327f5597332686393cd02b#ef998af7e6bd8b905a327f5597332686393cd02b"
+source = "git+https://github.com/kaspanet/silverscript?rev=73e33e26ac33f6ff13f1eea51c01c0983c3ae4e3#73e33e26ac33f6ff13f1eea51c01c0983c3ae4e3"
 dependencies = [
  "blake2b_simd",
  "blake3",
@@ -3363,6 +3387,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "silverscript-abi 0.1.0 (git+https://github.com/kaspanet/silverscript?rev=73e33e26ac33f6ff13f1eea51c01c0983c3ae4e3)",
  "thiserror 1.0.69",
 ]
 

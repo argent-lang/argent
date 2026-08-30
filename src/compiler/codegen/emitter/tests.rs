@@ -8671,7 +8671,7 @@ fn toy_chess_source() -> String {
 }
 
 #[test]
-fn artifact_codec_matches_silverscript_sigscript_builder() {
+fn artifact_codec_uses_compiled_sil_dispatch_tags() {
     let module = crate::compiler::syntax::parser::parse_module(
         PathBuf::from("test.ag"),
         r#"
@@ -8713,8 +8713,8 @@ fn artifact_codec_matches_silverscript_sigscript_builder() {
     let sil_contract = sil_abi.contract("Foo").expect("Foo Sil ABI exists");
     let bump = sil_contract.entries.iter().find(|entry| entry.name == "bump").expect("bump entry exists");
     let done = sil_contract.entries.iter().find(|entry| entry.name == "done").expect("done entry exists");
-    assert_eq!(bump.dispatch_tag.into_bytes(), compiled.entry_by_name("bump").expect("bump ABI exists").dispatch_tag);
-    assert_eq!(done.dispatch_tag.into_bytes(), compiled.entry_by_name("done").expect("done ABI exists").dispatch_tag);
+    assert_eq!(bump.dispatch_tag.into_bytes(), compiled.dispatch_tags["bump"]);
+    assert_eq!(done.dispatch_tag.into_bytes(), compiled.dispatch_tags["done"]);
 
     let portable_bump = crate::codec::encode_contract_entry_sig_script(
         &sil_abi,
@@ -8728,16 +8728,11 @@ fn artifact_codec_matches_silverscript_sigscript_builder() {
         ],
     )
     .expect("portable bump sigscript builds");
-    let sil_bump = compiled
-        .build_sig_script("bump", vec![SilExpr::int(17), SilExpr::bytes(vec![1, 2, 3, 4]), SilExpr::bool(true), SilExpr::byte(1)])
-        .expect("Sil bump sigscript builds");
-    assert_eq!(portable_bump, sil_bump);
     assert_eq!(encode_hex(&portable_bump), "011104010203045151045bdffea8");
 
     let portable_done =
         crate::codec::encode_contract_entry_sig_script(&sil_abi, "Foo", "done", &[]).expect("portable done sigscript builds");
-    let sil_done = compiled.build_sig_script("done", vec![]).expect("Sil done sigscript builds");
-    assert_eq!(portable_done, sil_done);
+    assert_eq!(portable_done, [vec![4], done.dispatch_tag.as_bytes().to_vec()].concat());
 }
 
 #[test]

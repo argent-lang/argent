@@ -2246,12 +2246,12 @@ fn sil_contract_artifact(actor: &ActorDecl, model: &Model<'_>, actor_sil: &BTree
         .entries
         .iter()
         .map(|entry| {
-            // Sil owns canonical function signatures and their dispatch tags;
-            // the portable ABI carries the exact tag used by compiled code.
-            let compiled_entry = compiled.entry_by_name(&entry.name).ok_or_else(|| {
+            // Sil owns canonical function signatures and exposes the exact
+            // dispatch tag used by the compiled code.
+            let dispatch_tag = compiled.dispatch_tags.get(&entry.name).copied().ok_or_else(|| {
                 ArgentError::new(format!("generated Silverscript for actor `{}` has no entry `{}`", actor.name, entry.name))
             })?;
-            Ok(sil_entry_artifact(actor, entry, model, compiled_entry.dispatch_tag))
+            Ok(sil_entry_artifact(actor, entry, model, dispatch_tag))
         })
         .collect::<Result<Vec<_>>>()?;
 
