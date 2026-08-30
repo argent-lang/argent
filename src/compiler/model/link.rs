@@ -17,7 +17,7 @@ pub(crate) struct LinkedActor {
     pub actor: String,
     pub state: String,
     pub interface: ActorInterfaceArtifact,
-    pub template: CompiledTemplateArtifact,
+    pub template: ActorTemplateArtifact,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

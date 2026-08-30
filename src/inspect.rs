@@ -17,7 +17,6 @@ use crate::artifact::{
     Artifact, CardinalityArtifact, EmitArtifact, EntryArtifact, EntryKindArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact,
     HiddenParamSubjectArtifact, ParamArtifact, RouteSuccessorArtifact, SilContractArtifact, SilEntryArtifact, TypeArtifact,
 };
-use crate::codec::decode_hex;
 use crate::{ArgentError, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,22 +96,21 @@ pub fn inspect_artifact(artifact: &Artifact) -> Result<InspectionReport> {
 
     let mut actors = Vec::with_capacity(artifact.argent.actors.len());
     for actor in &artifact.argent.actors {
-        let contract = artifact.sil_abi.contract(&actor.abi.actor).ok_or_else(|| {
-            ArgentError::new(format!("actor `{}` references missing ABI contract `{}`", actor.name, actor.abi.actor))
+        let contract = artifact.sil_abi.contract(&actor.abi.contract).ok_or_else(|| {
+            ArgentError::new(format!("actor `{}` references missing ABI contract `{}`", actor.name, actor.abi.contract))
         })?;
-        let script = decode_hex(&contract.compiled.script_hex)
-            .map_err(|err| ArgentError::new(format!("actor `{}` has invalid compiled script hex: {err}", actor.name)))?;
-        let opcode_count = opcode_count(&actor.name, &script)?;
+        let script = &contract.compiled.bytecode;
+        let opcode_count = opcode_count(&actor.name, script)?;
 
         let mut entries = Vec::with_capacity(actor.entries.len());
         for entry in &actor.entries {
             let sil_entry = contract.entry(&entry.abi.entry).ok_or_else(|| {
                 ArgentError::new(format!(
                     "entry `{}::{}` references missing ABI entry `{}::{}`",
-                    actor.name, entry.name, entry.abi.actor, entry.abi.entry
+                    actor.name, entry.name, entry.abi.contract, entry.abi.entry
                 ))
             })?;
-            entries.push(inspect_entry(artifact, &actor.name, contract, entry, sil_entry, &script)?);
+            entries.push(inspect_entry(artifact, &actor.name, contract, entry, sil_entry, script)?);
         }
 
         actors.push(ActorInspection {
@@ -337,7 +335,7 @@ fn hidden_param_size(artifact: &Artifact, entry: &EntryArtifact, hidden: &Hidden
             let HiddenParamSubjectArtifact::StateExpansion { memory_state, .. } = &hidden.subject else {
                 return Ok(None);
             };
-            let Some(state) = artifact.sil_abi.states.iter().find(|state| state.name == *memory_state) else {
+            let Some(state) = artifact.sil_abi.structs.get(memory_state) else {
                 return Ok(None);
             };
             let Some(payload_len) = state
@@ -396,12 +394,10 @@ fn estimate_template_lengths(
 }
 
 fn template_part(contract: &SilContractArtifact, part: TemplatePart) -> Result<Vec<u8>> {
-    let script = decode_hex(&contract.compiled.script_hex)
-        .map_err(|err| ArgentError::new(format!("contract `{}` has invalid compiled script hex: {err}", contract.name)))?;
     let (prefix, _, suffix) = contract
         .compiled
-        .script_parts(&script)
-        .ok_or_else(|| ArgentError::new(format!("contract `{}` has an invalid state span", contract.name)))?;
+        .script_parts(&contract.compiled.bytecode)
+        .ok_or_else(|| ArgentError::new(format!("contract `{}` has an invalid state span", contract.source_path)))?;
     Ok(match part {
         TemplatePart::Prefix => prefix.to_vec(),
         TemplatePart::Suffix => suffix.to_vec(),
@@ -474,9 +470,8 @@ fn type_size(artifact: &Artifact, contract: &SilContractArtifact, ty: &TypeArtif
             } else {
                 artifact
                     .sil_abi
-                    .states
-                    .iter()
-                    .find(|state| state.name == *name)
+                    .structs
+                    .get(name)
                     .map(|state| state.fields.iter().map(|field| &field.ty).collect())
                     .unwrap_or_default()
             };

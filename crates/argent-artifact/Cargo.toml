@@ -9,6 +9,7 @@ blake2b_simd = { workspace = true }
 blake3 = { workspace = true }
 faster-hex = { workspace = true }
 serde = { workspace = true }
+serde_bytes = { workspace = true }
 serde_json = { workspace = true }
 silverscript-abi = { workspace = true }
 thiserror = { workspace = true }

@@ -1,5 +1,9 @@
 use super::*;
 
+fn byte_occurrences(haystack: &[u8], needle: &[u8]) -> usize {
+    if needle.is_empty() { 0 } else { haystack.windows(needle.len()).filter(|window| *window == needle).count() }
+}
+
 const COUNTER_APP: &str = r#"
 state CounterState {
     int count;
@@ -352,13 +356,13 @@ app CtrlApp {
         "one source actor must compile in each selected app context"
     );
     assert_ne!(
-        solo_actor.actor_type_handle.template.hash_hex, cohort_actor.actor_type_handle.template.hash_hex,
+        solo_actor.actor_type_handle.template.hash, cohort_actor.actor_type_handle.template.hash,
         "each app-qualified actor must export its own handle"
     );
 
-    let ctrl_script = &compiled.primary().sil_abi.contract("Ctrl").expect("controller contract exists").compiled.script_hex;
-    assert_eq!(ctrl_script.matches(&solo_actor.actor_type_handle.template.hash_hex).count(), 1);
-    assert_eq!(ctrl_script.matches(&cohort_actor.actor_type_handle.template.hash_hex).count(), 1);
+    let ctrl_script = &compiled.primary().sil_abi.contract("Ctrl").expect("controller contract exists").compiled.bytecode;
+    assert_eq!(byte_occurrences(ctrl_script, &solo_actor.actor_type_handle.template.hash), 1);
+    assert_eq!(byte_occurrences(ctrl_script, &cohort_actor.actor_type_handle.template.hash), 1);
 
     let solo_sil = std::fs::read_to_string(temp.join("build/apps/SoloApp/sil/Shared.sil")).expect("solo Shared Sil exists");
     let cohort_sil = std::fs::read_to_string(temp.join("build/apps/CohortApp/sil/Shared.sil")).expect("cohort Shared Sil exists");
@@ -519,9 +523,9 @@ app RootApp {
         .find(|template| template.actor == "Middle")
         .map(|template| &template.actor_type_handle)
         .expect("Middle exports a source-state handle that contains its Leaf dependency");
-    let root_script = &compiled.primary().sil_abi.contract("Root").expect("Root contract exists").compiled.script_hex;
+    let root_script = &compiled.primary().sil_abi.contract("Root").expect("Root contract exists").compiled.bytecode;
     assert_eq!(
-        root_script.matches(&middle_handle.template.hash_hex).count(),
+        byte_occurrences(root_script, &middle_handle.template.hash),
         1,
         "Root embeds the exported Middle source-state template once"
     );
@@ -901,7 +905,7 @@ app RootApp {
         .templates
         .iter()
         .find(|template| template.actor == "Shared")
-        .map(|template| template.actor_type_handle.template.hash_hex.as_str())
+        .map(|template| template.actor_type_handle.template.hash)
         .expect("shared actor handle exists");
     for (app, actor) in [("LeftApp", "Left"), ("RightApp", "Right")] {
         let branch_script = &compiled
@@ -911,8 +915,8 @@ app RootApp {
             .contract(actor)
             .expect("diamond branch contract exists")
             .compiled
-            .script_hex;
-        assert_eq!(branch_script.matches(shared_handle).count(), 1);
+            .bytecode;
+        assert_eq!(byte_occurrences(branch_script, &shared_handle), 1);
     }
     compiled.runtime_bundle().expect("all four diamond artifacts form one runtime bundle");
 

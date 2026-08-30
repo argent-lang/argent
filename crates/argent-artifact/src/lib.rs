@@ -15,9 +15,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use silverscript_abi::{
-    ArtifactVersionError, CompiledContractArtifact, CompiledTemplateArtifact, DispatchTag, DispatchTagParseError, FieldArtifact,
-    ParamArtifact, RuntimeFieldArtifact, RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, SilAbiVerificationError,
-    SilContractArtifact, SilEntryArtifact, StateArtifact, StateSpanArtifact, TypeArtifact,
+    ArtifactVersionError, CompiledContractArtifact, DispatchTag, DispatchTagParseError, FieldArtifact, ParamArtifact,
+    RuntimeFieldArtifact, RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, SilAbiVerificationError, SilContractArtifact,
+    SilEntryArtifact, StateSpanArtifact, StructArtifact, TypeArtifact,
 };
 
 pub const ARTIFACT_SCHEMA_VERSION: u32 = 1;
@@ -209,7 +209,8 @@ pub struct TemplatePlanTemplateArtifact {
     pub contract: String,
     pub symbol: String,
     /// Hash of the full physical Sil state cut used inside the defining app.
-    pub sil_template_hash: String,
+    #[serde(with = "serde_bytes")]
+    pub sil_template_hash: [u8; 32],
     /// Required source-state view used by static linking and `actor_type<State>`.
     pub actor_type_handle: ActorTypeHandleArtifact,
 }
@@ -222,7 +223,18 @@ pub struct ActorTypeHandleArtifact {
     /// expanded view of these same bytes. Both views use this one template.
     pub state: String,
     pub context_fields: Vec<String>,
-    pub template: CompiledTemplateArtifact,
+    pub template: ActorTemplateArtifact,
+}
+
+/// Compiled template material retained by Argent actor-type handles.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorTemplateArtifact {
+    #[serde(with = "serde_bytes")]
+    pub prefix: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    pub suffix: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    pub hash: [u8; 32],
 }
 
 /// Read-only template hash data used while a template plan is built and
@@ -231,7 +243,7 @@ pub struct ActorTypeHandleArtifact {
 pub struct TemplateHashRef<'a> {
     pub id: &'a str,
     pub actor: &'a str,
-    pub hash_hex: &'a str,
+    pub hash: &'a [u8; 32],
 }
 
 /// Supplies Sil template hashes without requiring a completed artifact.
@@ -252,7 +264,7 @@ impl TemplateHashLookup for [TemplatePlanTemplateArtifact] {
         self.iter().find(|template| template.id == id).map(|template| TemplateHashRef {
             id: &template.id,
             actor: &template.actor,
-            hash_hex: &template.sil_template_hash,
+            hash: &template.sil_template_hash,
         })
     }
 
@@ -260,25 +272,21 @@ impl TemplateHashLookup for [TemplatePlanTemplateArtifact] {
         self.iter().find(|template| template.actor == actor).map(|template| TemplateHashRef {
             id: &template.id,
             actor: &template.actor,
-            hash_hex: &template.sil_template_hash,
+            hash: &template.sil_template_hash,
         })
     }
 }
 
 impl TemplateHashLookup for std::collections::BTreeMap<&str, &TemplatePlanTemplateArtifact> {
     fn template_hash_by_id(&self, id: &str) -> Option<TemplateHashRef<'_>> {
-        self.get(id).map(|template| TemplateHashRef {
-            id: &template.id,
-            actor: &template.actor,
-            hash_hex: &template.sil_template_hash,
-        })
+        self.get(id).map(|template| TemplateHashRef { id: &template.id, actor: &template.actor, hash: &template.sil_template_hash })
     }
 
     fn template_hash_by_actor(&self, actor: &str) -> Option<TemplateHashRef<'_>> {
         self.values().find(|template| template.actor == actor).map(|template| TemplateHashRef {
             id: &template.id,
             actor: &template.actor,
-            hash_hex: &template.sil_template_hash,
+            hash: &template.sil_template_hash,
         })
     }
 }
@@ -441,7 +449,7 @@ pub struct EntryRefArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActorAbiRefArtifact {
-    pub actor: String,
+    pub contract: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -538,7 +546,7 @@ pub enum ActorTargetArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntryAbiRefArtifact {
-    pub actor: String,
+    pub contract: String,
     pub entry: String,
 }
 
@@ -844,27 +852,21 @@ impl TemplatePlanArtifact {
                 .sil_abi
                 .contract(&template.contract)
                 .ok_or_else(|| TemplatePlanError::UnknownContract(template.contract.clone()))?;
-            if template.actor != contract.name || template.contract != contract.name {
+            if template.actor != template.contract {
                 return Err(TemplatePlanError::TemplateContractMismatch {
                     id: template.id.clone(),
                     actor: template.actor.clone(),
                     contract: template.contract.clone(),
                 });
             }
-            // Validate the encoded Sil ABI material before the template plan
-            // references it. The template hash is produced by Silverscript;
-            // this layer does not recompute it from the contract script.
-            decode_hex_for_template(&template.id, &contract.compiled.script_hex)?;
-            decode_hash_hex(&template.id, &contract.compiled.template_hash_hex)?;
-
             // The plan carries a denormalized copy for route-proof leaves. Keep
             // that receipt consistent with the authoritative Sil ABI value.
-            let expected_hash = &contract.compiled.template_hash_hex;
-            if template.sil_template_hash.as_str() != expected_hash.as_str() {
+            let expected_hash = contract.compiled.template_hash;
+            if template.sil_template_hash != expected_hash {
                 return Err(TemplatePlanError::TemplateHashMismatch {
                     id: template.id.clone(),
-                    expected: expected_hash.clone(),
-                    found: template.sil_template_hash.clone(),
+                    expected: encode_hex(&expected_hash),
+                    found: encode_hex(&template.sil_template_hash),
                 });
             }
             templates_by_id.insert(template.id.as_str(), template);
@@ -938,24 +940,25 @@ impl TemplatePlanArtifact {
             route_families_by_id.insert(family.id.as_str(), family);
         }
 
-        let sil_contracts_by_name =
-            artifact.sil_abi.contracts.iter().map(|contract| (contract.name.as_str(), contract)).collect::<BTreeMap<_, _>>();
+        let sil_contracts_by_name = &artifact.sil_abi.contracts;
         // TODO: Extract runtime-state field-role verification into dedicated helpers.
         let mut runtime_states_by_contract = BTreeMap::new();
         for runtime_state in &self.runtime_states {
             if runtime_states_by_contract.insert(runtime_state.contract.as_str(), runtime_state).is_some() {
                 return Err(TemplatePlanError::DuplicateRuntimeStatePlan(runtime_state.contract.clone()));
             }
-            let Some(contract) = sil_contracts_by_name.get(runtime_state.contract.as_str()) else {
+            let Some(contract) = sil_contracts_by_name.get(&runtime_state.contract) else {
                 return Err(TemplatePlanError::UnknownContract(runtime_state.contract.clone()));
             };
-            if runtime_state.source != contract.runtime_state.source {
+            let actor_state =
+                actor_states.get(runtime_state.contract.as_str()).ok_or_else(|| TemplatePlanError::RuntimeStatePlanMismatch {
+                    contract: runtime_state.contract.clone(),
+                    message: "contract has no matching Argent actor".to_string(),
+                })?;
+            if runtime_state.source != *actor_state {
                 return Err(TemplatePlanError::RuntimeStatePlanMismatch {
                     contract: runtime_state.contract.clone(),
-                    message: format!(
-                        "source `{}` does not match Sil ABI source `{}`",
-                        runtime_state.source, contract.runtime_state.source
-                    ),
+                    message: format!("source `{}` does not match actor state `{}`", runtime_state.source, actor_state),
                 });
             }
             let sil_fields_by_name =
@@ -1195,7 +1198,7 @@ impl TemplatePlanArtifact {
             let contract = sil_contracts_by_name
                 .get(template.contract.as_str())
                 .expect("template contract existence was checked when indexing template receipts");
-            verify_actor_type_handle(self, artifact, template, contract)?;
+            verify_actor_type_handle(self, artifact, template, &template.contract, contract)?;
         }
 
         // TODO: Extract witness recipe registry verification into dedicated helpers.
@@ -1367,6 +1370,7 @@ fn verify_actor_type_handle(
     plan: &TemplatePlanArtifact,
     artifact: &Artifact,
     template: &TemplatePlanTemplateArtifact,
+    contract_name: &str,
     contract: &SilContractArtifact,
 ) -> std::result::Result<(), TemplatePlanError> {
     let mismatch = |message| TemplatePlanError::ActorTypeHandleMismatch { id: template.id.clone(), message };
@@ -1392,7 +1396,7 @@ fn verify_actor_type_handle(
         )));
     }
 
-    let runtime_plan = plan.runtime_states.iter().find(|runtime_state| runtime_state.contract == contract.name);
+    let runtime_plan = plan.runtime_states.iter().find(|runtime_state| runtime_state.contract == contract_name);
     let expected_context_fields = runtime_plan
         .map(|runtime_state| runtime_state.field_roles.iter().map(|field| field.name.clone()).collect::<Vec<_>>())
         .unwrap_or_default();
@@ -1409,11 +1413,11 @@ fn verify_actor_type_handle(
         return Err(mismatch("context fields are not the leading physical runtime fields".to_string()));
     }
     let handle_state = artifact
-        .sil_abi
+        .argent
         .states
         .iter()
         .find(|state| state.name == handle.state)
-        .ok_or_else(|| mismatch(format!("missing Sil state layout `{}`", handle.state)))?;
+        .ok_or_else(|| mismatch(format!("missing Argent state layout `{}`", handle.state)))?;
     let open_runtime_fields = &contract.runtime_state.fields[handle.context_fields.len()..];
     if open_runtime_fields.len() != handle_state.fields.len()
         || open_runtime_fields
@@ -1421,38 +1425,37 @@ fn verify_actor_type_handle(
             .zip(&handle_state.fields)
             .any(|(runtime, source)| runtime.name != source.name || runtime.ty != source.ty)
     {
-        return Err(mismatch(format!("runtime fields after the fixed context do not match Sil state layout `{}`", handle.state)));
+        return Err(mismatch(format!("runtime fields after the fixed context do not match Argent state layout `{}`", handle.state)));
     }
 
-    let sil_script = decode_hex_for_template(&template.id, &contract.compiled.script_hex)?;
     let (sil_prefix, _, sil_suffix) = contract
         .compiled
-        .script_parts(&sil_script)
+        .script_parts(&contract.compiled.bytecode)
         .ok_or_else(|| mismatch("Sil state span is outside the compiled contract script".to_string()))?;
-    let handle_prefix = decode_hex_for_template(&template.id, &handle.template.prefix_hex)?;
-    let handle_suffix = decode_hex_for_template(&template.id, &handle.template.suffix_hex)?;
-    let handle_hash = decode_hash_hex(&template.id, &handle.template.hash_hex)?;
+    let handle_prefix = &handle.template.prefix;
+    let handle_suffix = &handle.template.suffix;
+    let handle_hash = handle.template.hash;
     if !handle_prefix.starts_with(sil_prefix) {
         return Err(mismatch("prefix does not extend the Sil template prefix".to_string()));
     }
     if handle_suffix != sil_suffix {
         return Err(mismatch("suffix differs from the Sil template suffix".to_string()));
     }
-    let expected_handle_hash = silverscript_abi::template_hash(&handle_prefix, &handle_suffix);
+    let expected_handle_hash = silverscript_abi::template_hash(handle_prefix, handle_suffix);
     if handle_hash != expected_handle_hash {
         return Err(mismatch(format!(
             "template hash does not match its prefix and suffix: expected `{}`, found `{}`",
             encode_hex(&expected_handle_hash),
-            handle.template.hash_hex
+            encode_hex(&handle.template.hash)
         )));
     }
 
     let context_state =
         RuntimeStateArtifact { source: handle.state.clone(), fields: leading_runtime_fields.into_iter().cloned().collect() };
     let context_script = &handle_prefix[sil_prefix.len()..];
-    let decoded_context = silverscript_abi::decode_runtime_state_script(&context_state, context_script)
+    let decoded_context = silverscript_abi::decode_runtime_state_script(&artifact.sil_abi, &context_state, context_script)
         .map_err(|err| mismatch(format!("prefix context does not decode according to its runtime fields: {err}")))?;
-    let canonical_context = silverscript_abi::encode_runtime_state_script(&context_state, &decoded_context)
+    let canonical_context = silverscript_abi::encode_runtime_state_script(&artifact.sil_abi, &context_state, &decoded_context)
         .map_err(|err| mismatch(format!("prefix context cannot be canonically encoded: {err}")))?;
     if canonical_context != context_script {
         return Err(mismatch("prefix context is not canonically encoded".to_string()));
@@ -1538,7 +1541,7 @@ fn fixed_route_table_bytes(
 
 fn sil_template_hash_bytes(plan: &(impl TemplateHashLookup + ?Sized), actor: &str) -> std::result::Result<Vec<u8>, TemplatePlanError> {
     let template = plan.template_hash_by_actor(actor).ok_or_else(|| TemplatePlanError::UnknownContract(actor.to_string()))?;
-    Ok(decode_hash_hex(template.id, template.hash_hex)?.to_vec())
+    Ok(template.hash.to_vec())
 }
 
 pub fn actor_interface_id(actor: &str) -> String {
@@ -1605,7 +1608,7 @@ fn route_template_leaf_hash(
                     template_actor: template.actor.to_string(),
                 });
             }
-            decode_hash_hex(template.id, template.hash_hex)
+            Ok(*template.hash)
         }
         RouteTemplateLeafArtifact::RouteFamily { family_id, proof_id } => {
             let Some(root_hex) = digest_roots.get(proof_id) else {
@@ -1872,6 +1875,20 @@ mod tests {
     }
 
     #[test]
+    fn formats_argent_template_bytes_compactly() {
+        let template = ActorTemplateArtifact { prefix: vec![1, 2, 3], suffix: Vec::new(), hash: [4; 32] };
+        let json = silverscript_abi::to_pretty_json(&template).expect("template serializes");
+
+        assert!(json.contains(r#""prefix": [1, 2, 3]"#));
+        assert!(json.contains(r#""suffix": []"#));
+        assert!(
+            json.contains(
+                r#""hash": [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4]"#
+            )
+        );
+    }
+
+    #[test]
     fn route_successor_artifacts_keep_constructed_only_fields_nested() {
         let exact = RouteArtifact { output: "next".to_string(), successor: RouteSuccessorArtifact::ExactSelf };
         let exact_json = serde_json::to_value(exact).expect("exact route serializes");
@@ -1932,25 +1949,24 @@ mod tests {
               {
                 "name": "Foo",
                 "state": "FooState",
-                "abi": { "actor": "Foo" },
+                "abi": { "contract": "Foo" },
                 "entries": []
               }
             ]
           },
           "sil_abi": {
             "schema_version": 1,
-            "states": [
-              {
-                "name": "FooState",
+            "compiler_version": "test",
+            "structs": {
+              "FooState": {
                 "fields": [{ "name": "owner", "type": { "kind": "fixed_bytes", "len": 32 } }]
               }
-            ],
-            "contracts": [
-              {
-                "name": "Foo",
+            },
+            "contracts": {
+              "Foo": {
                 "source_path": "sil/Foo.sil",
                 "runtime_state": {
-                  "source": "FooState",
+                  "source": "State",
                   "fields": [
                     {
                       "name": "gen__foo_template",
@@ -1962,23 +1978,30 @@ mod tests {
                     }
                   ]
                 },
-                "entries": [],
+                "entries": {},
+                "cov_decl_to_abi": {},
+                "delegate_entry_abi": null,
                 "compiled": {
-                  "script_hex": "",
-                  "template_hash_hex": "",
+                  "bytecode": [],
+                  "template_hash": [
+                    0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0
+                  ],
                   "state_span": { "offset": 0, "len": 0 }
                 }
               }
-            ]
+            }
           }
         }
         "#;
 
         let artifact: Artifact = serde_json::from_str(json).expect("artifact should deserialize");
         artifact.check_schema_version().expect("schema version should be supported");
-        assert_eq!(artifact.argent.actors[0].abi.actor, "Foo");
+        assert_eq!(artifact.argent.actors[0].abi.contract, "Foo");
         assert_eq!(artifact.argent.template_plan.runtime_states[0].field_roles[0].name, "gen__foo_template");
-        assert_eq!(artifact.sil_abi.contracts[0].compiled.script_hex, "");
+        assert!(artifact.sil_abi.contract("Foo").expect("Foo contract exists").compiled.bytecode.is_empty());
     }
 
     #[test]
@@ -2024,7 +2047,12 @@ mod tests {
                 actor_enums: Vec::new(),
                 actors: Vec::new(),
             },
-            sil_abi: SilAbiArtifact { schema_version: SIL_ABI_SCHEMA_VERSION, states: Vec::new(), contracts: Vec::new() },
+            sil_abi: SilAbiArtifact {
+                schema_version: SIL_ABI_SCHEMA_VERSION,
+                compiler_version: "test".to_string(),
+                structs: std::collections::BTreeMap::new(),
+                contracts: std::collections::BTreeMap::new(),
+            },
         };
 
         let err = artifact.check_schema_version().expect_err("future schema must be rejected");
@@ -2051,7 +2079,12 @@ mod tests {
                 actor_enums: Vec::new(),
                 actors: Vec::new(),
             },
-            sil_abi: SilAbiArtifact { schema_version: SIL_ABI_SCHEMA_VERSION + 1, states: Vec::new(), contracts: Vec::new() },
+            sil_abi: SilAbiArtifact {
+                schema_version: SIL_ABI_SCHEMA_VERSION + 1,
+                compiler_version: "test".to_string(),
+                structs: std::collections::BTreeMap::new(),
+                contracts: std::collections::BTreeMap::new(),
+            },
         };
 
         let err = artifact.check_schema_version().expect_err("future Sil ABI schema must be rejected");
@@ -2080,18 +2113,23 @@ mod tests {
             },
             sil_abi: SilAbiArtifact {
                 schema_version: SIL_ABI_SCHEMA_VERSION,
-                states: Vec::new(),
-                contracts: vec![SilContractArtifact {
-                    name: "Foo".to_string(),
-                    source_path: "sil/Foo.sil".to_string(),
-                    runtime_state: RuntimeStateArtifact { source: "FooState".to_string(), fields: Vec::new() },
-                    entries: Vec::new(),
-                    compiled: CompiledContractArtifact {
-                        script_hex: String::new(),
-                        template_hash_hex: String::new(),
-                        state_span: StateSpanArtifact { offset: 0, len: 0 },
+                compiler_version: "test".to_string(),
+                structs: std::collections::BTreeMap::new(),
+                contracts: std::collections::BTreeMap::from([(
+                    "Foo".to_string(),
+                    SilContractArtifact {
+                        source_path: "sil/Foo.sil".to_string(),
+                        runtime_state: RuntimeStateArtifact { source: "State".to_string(), fields: Vec::new() },
+                        entries: std::collections::BTreeMap::new(),
+                        cov_decl_to_abi: std::collections::BTreeMap::new(),
+                        delegate_entry_abi: None,
+                        compiled: CompiledContractArtifact {
+                            bytecode: Vec::new(),
+                            template_hash: [0; 32],
+                            state_span: StateSpanArtifact { offset: 0, len: 0 },
+                        },
                     },
-                }],
+                )]),
             },
         };
 
@@ -2162,7 +2200,7 @@ mod tests {
 
     #[test]
     fn rejects_nested_route_family_table_leaf() {
-        let template_hash = "00".repeat(32);
+        let template_hash_hex = "00".repeat(32);
         let templates = ["Mux", "Pawn", "Knight", "Bishop"]
             .into_iter()
             .map(|actor| TemplatePlanTemplateArtifact {
@@ -2170,15 +2208,11 @@ mod tests {
                 actor: actor.to_string(),
                 contract: actor.to_string(),
                 symbol: format!("gen__{}_template", actor.to_ascii_lowercase()),
-                sil_template_hash: template_hash.clone(),
+                sil_template_hash: [0; 32],
                 actor_type_handle: ActorTypeHandleArtifact {
                     state: "BoardState".to_string(),
                     context_fields: Vec::new(),
-                    template: CompiledTemplateArtifact {
-                        prefix_hex: String::new(),
-                        suffix_hex: String::new(),
-                        hash_hex: template_hash.clone(),
-                    },
+                    template: ActorTemplateArtifact { prefix: Vec::new(), suffix: Vec::new(), hash: [0; 32] },
                 },
             })
             .collect::<Vec<_>>();
@@ -2302,7 +2336,7 @@ mod tests {
                     .map(|actor| ActorArtifact {
                         name: actor.to_string(),
                         state: "BoardState".to_string(),
-                        abi: ActorAbiRefArtifact { actor: actor.to_string() },
+                        abi: ActorAbiRefArtifact { contract: actor.to_string() },
                         leader_for: Vec::new(),
                         entries: Vec::new(),
                     })
@@ -2310,26 +2344,36 @@ mod tests {
             },
             sil_abi: SilAbiArtifact {
                 schema_version: SIL_ABI_SCHEMA_VERSION,
-                states: Vec::new(),
-                contracts: vec![
-                    test_contract(
-                        "Mux",
-                        "BoardState",
-                        vec![RuntimeFieldArtifact { name: "gen__mux_routes".to_string(), ty: TypeArtifact::FixedBytes { len: 32 } }],
-                        &template_hash,
+                compiler_version: "test".to_string(),
+                structs: std::collections::BTreeMap::new(),
+                contracts: std::collections::BTreeMap::from([
+                    (
+                        "Mux".to_string(),
+                        test_contract(
+                            "Mux",
+                            "BoardState",
+                            vec![RuntimeFieldArtifact {
+                                name: "gen__mux_routes".to_string(),
+                                ty: TypeArtifact::FixedBytes { len: 32 },
+                            }],
+                            &template_hash_hex,
+                        ),
                     ),
-                    test_contract("Pawn", "BoardState", Vec::new(), &template_hash),
-                    test_contract(
-                        "Knight",
-                        "BoardState",
-                        vec![RuntimeFieldArtifact {
-                            name: "gen__knight_routes".to_string(),
-                            ty: TypeArtifact::FixedBytes { len: 32 },
-                        }],
-                        &template_hash,
+                    ("Pawn".to_string(), test_contract("Pawn", "BoardState", Vec::new(), &template_hash_hex)),
+                    (
+                        "Knight".to_string(),
+                        test_contract(
+                            "Knight",
+                            "BoardState",
+                            vec![RuntimeFieldArtifact {
+                                name: "gen__knight_routes".to_string(),
+                                ty: TypeArtifact::FixedBytes { len: 32 },
+                            }],
+                            &template_hash_hex,
+                        ),
                     ),
-                    test_contract("Bishop", "BoardState", Vec::new(), &template_hash),
-                ],
+                    ("Bishop".to_string(), test_contract("Bishop", "BoardState", Vec::new(), &template_hash_hex)),
+                ]),
             },
         };
 
@@ -2364,32 +2408,38 @@ mod tests {
                     ActorArtifact {
                         name: "Mux".to_string(),
                         state: "BoardState".to_string(),
-                        abi: ActorAbiRefArtifact { actor: "Mux".to_string() },
+                        abi: ActorAbiRefArtifact { contract: "Mux".to_string() },
                         leader_for: Vec::new(),
                         entries: Vec::new(),
                     },
                     ActorArtifact {
                         name: "Player".to_string(),
                         state: "PlayerState".to_string(),
-                        abi: ActorAbiRefArtifact { actor: "Player".to_string() },
+                        abi: ActorAbiRefArtifact { contract: "Player".to_string() },
                         leader_for: Vec::new(),
                         entries: Vec::new(),
                     },
                 ],
             },
-            sil_abi: SilAbiArtifact { schema_version: SIL_ABI_SCHEMA_VERSION, states: Vec::new(), contracts: Vec::new() },
+            sil_abi: SilAbiArtifact {
+                schema_version: SIL_ABI_SCHEMA_VERSION,
+                compiler_version: "test".to_string(),
+                structs: std::collections::BTreeMap::new(),
+                contracts: std::collections::BTreeMap::new(),
+            },
         }
     }
 
     fn test_contract(name: &str, state: &str, fields: Vec<RuntimeFieldArtifact>, template_hash: &str) -> SilContractArtifact {
         SilContractArtifact {
-            name: name.to_string(),
             source_path: format!("sil/{name}.sil"),
             runtime_state: RuntimeStateArtifact { source: state.to_string(), fields },
-            entries: Vec::new(),
+            entries: std::collections::BTreeMap::new(),
+            cov_decl_to_abi: std::collections::BTreeMap::new(),
+            delegate_entry_abi: None,
             compiled: CompiledContractArtifact {
-                script_hex: String::new(),
-                template_hash_hex: template_hash.to_string(),
+                bytecode: Vec::new(),
+                template_hash: decode_hash_hex(name, template_hash).expect("test template hash is valid"),
                 state_span: StateSpanArtifact { offset: 0, len: 0 },
             },
         }

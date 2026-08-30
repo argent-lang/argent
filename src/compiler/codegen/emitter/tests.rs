@@ -2154,8 +2154,8 @@ fn state_valued_functions_are_characterized_in_aligned_and_augmented_contexts() 
     let templates = &artifact.argent.template_plan.templates;
     let aligned_template = templates.iter().find(|template| template.actor == "Aligned").expect("Aligned template exists");
     let routed_template = templates.iter().find(|template| template.actor == "Routed").expect("Routed template exists");
-    assert_eq!(aligned_template.sil_template_hash, "93509ef29827d95b79f405cf30f2c651fadbd01c06f0a7c73088678a10dfb4ef");
-    assert_eq!(routed_template.sil_template_hash, "51b73db36d9fa9d0cdd8ef0ee1567c8507a5051b8075fd7a596567d875a6e261");
+    assert_eq!(encode_hex(&aligned_template.sil_template_hash), "93509ef29827d95b79f405cf30f2c651fadbd01c06f0a7c73088678a10dfb4ef");
+    assert_eq!(encode_hex(&routed_template.sil_template_hash), "51b73db36d9fa9d0cdd8ef0ee1567c8507a5051b8075fd7a596567d875a6e261");
     assert!(aligned_template.actor_type_handle.context_fields.is_empty());
     assert_eq!(routed_template.actor_type_handle.context_fields, ["gen__foreign_template"]);
 }
@@ -3008,7 +3008,7 @@ fn current_state_array_entry_param_uses_selected_state_type() {
     let inspect = artifact.sil_abi.contract("Note").expect("Note Sil ABI exists").entry("inspect").expect("inspect entry exists");
     assert_eq!(
         inspect.params[0].ty,
-        TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Struct { name: "NoteState".to_string() }), len: 2 }
+        TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Struct { name: "State".to_string() }), len: 2 }
     );
 }
 
@@ -3227,7 +3227,7 @@ fn expanded_entry_params_keep_the_authored_nested_layout() {
         inspect.params[1].ty,
         TypeArtifact::DynamicArray { item: Box::new(TypeArtifact::Struct { name: "Expanded".to_string() }) }
     );
-    let expanded = artifact.sil_abi.states.iter().find(|state| state.name == "Expanded").expect("Expanded ABI state exists");
+    let expanded = artifact.sil_abi.structs.get("Expanded").expect("Expanded ABI state exists");
     assert_eq!(
         expanded.fields[1].ty,
         TypeArtifact::Struct { name: "Details".to_string() },
@@ -3242,7 +3242,7 @@ fn expanded_entry_params_keep_the_authored_nested_layout() {
 
 #[test]
 fn active_expanded_field_projects_as_an_authored_value() {
-    let (actors, _) = inline_actor_sil_and_artifact(
+    let (actors, artifact) = inline_actor_sil_and_artifact(
         "active-expanded-field-value",
         r#"
             state Capsule { virtual detail; }
@@ -3284,6 +3284,95 @@ fn active_expanded_field_projects_as_an_authored_value() {
     assert!(sil.contains("read_detail(Details {"), "{sil}");
     assert!(sil.contains("Details gen__source_next_details = Details {"), "{sil}");
     assert_eq!(sil.matches("count: gen__detail_count,").count(), 4, "{sil}");
+
+    let expanded = artifact.sil_abi.structs.get("Expanded").expect("Expanded ABI struct exists");
+    assert_eq!(expanded.fields[0].ty, TypeArtifact::Struct { name: "Details".to_string() });
+    assert_eq!(artifact.sil_abi.structs["Details"].fields[0].ty, TypeArtifact::Int);
+}
+
+#[test]
+fn aggregate_sil_abi_canonicalizes_contract_local_state_struct_references() {
+    let (actors, artifact) = inline_actor_sil_and_artifact(
+        "aggregate-abi-state-struct-reference",
+        r#"
+            state Capsule { virtual detail; }
+            state Details { int count; }
+            state Expanded expands Capsule { detail: Details; }
+
+            actor Vault owns Expanded {
+                entry hold() emits none {
+                    require(1 == 1);
+                }
+            }
+
+            actor Archive owns Details {
+                entry inspect(Expanded value) emits none {
+                    require(value.detail.count >= 0);
+                }
+            }
+
+            app Test { actor Vault; actor Archive; }
+        "#,
+    );
+
+    let archive_sil = &actors["Archive"];
+    assert!(archive_sil.contains("struct Expanded {\n        // :: user declared fields\n        State detail;"), "{archive_sil}");
+
+    let expanded = &artifact.sil_abi.structs["Expanded"];
+    assert_eq!(expanded.fields[0].ty, TypeArtifact::Struct { name: "Details".to_string() });
+    assert_eq!(artifact.sil_abi.structs["Details"].fields[0].ty, TypeArtifact::Int);
+
+    let args = vec![SilExpr::int(0)];
+    let compiled = compile_contract(archive_sil, &args, CompileOptions::default()).expect("Archive Sil compiles");
+    let direct_abi = sil_abi_artifact_from_compiled(&compiled, &args).expect("direct Archive ABI builds");
+    assert_eq!(
+        direct_abi.structs["Expanded"].fields[0].ty,
+        TypeArtifact::Struct { name: "State".to_string() },
+        "the direct Sil ABI retains its contract-local State reference"
+    );
+
+    let value = crate::codec::ArtifactValue::Object(BTreeMap::from([(
+        "detail".to_string(),
+        crate::codec::ArtifactValue::Object(BTreeMap::from([("count".to_string(), crate::codec::ArtifactValue::Int(7))])),
+    )]));
+    let direct_sig = crate::codec::encode_contract_entry_sig_script(&direct_abi, "Archive", "inspect", std::slice::from_ref(&value))
+        .expect("direct Sil ABI encodes the struct argument");
+    let aggregate_sig = crate::codec::encode_contract_entry_sig_script(&artifact.sil_abi, "Archive", "inspect", &[value])
+        .expect("aggregate Sil ABI encodes the canonical struct argument");
+    assert_eq!(aggregate_sig, direct_sig);
+}
+
+#[test]
+fn sil_abi_merge_rejects_conflicting_structs_and_duplicate_contracts() {
+    let compile = |contract: &str, field_type: &str| {
+        let source = format!(
+            r#"pragma silverscript ^0.1.0;
+contract {contract}() {{
+    struct Shared {{
+        {field_type} value;
+    }}
+
+    entry hold() {{
+        require(true);
+    }}
+}}
+"#
+        );
+        let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("test Sil compiles");
+        sil_abi_artifact_from_compiled(&compiled, &[]).expect("test Sil ABI builds")
+    };
+
+    let left = compile("Left", "int");
+    let merged = merge_sil_abi_artifacts(left.clone(), compile("Right", "int")).expect("identical shared structs merge");
+    assert_eq!(merged.contracts.len(), 2);
+    assert_eq!(merged.structs.len(), 1);
+
+    let right = compile("Right", "bool");
+    let err = merge_sil_abi_artifacts(left.clone(), right).expect_err("different definitions of Shared must not merge");
+    assert!(err.to_string().contains("conflicting Sil struct `Shared`"), "unexpected error: {err}");
+
+    let err = merge_sil_abi_artifacts(left.clone(), left).expect_err("the same contract must not merge twice");
+    assert!(err.to_string().contains("duplicate Sil contract `Left`"), "unexpected error: {err}");
 }
 
 #[test]
@@ -3506,13 +3595,10 @@ fn entry_state_params_use_selected_types_for_actor_function_calls() {
     assert!(sil.contains("entry inspect_many(State[] notes)"), "{sil}");
 
     let note = artifact.sil_abi.contract("Note").expect("Note Sil ABI exists");
-    assert_eq!(
-        note.entry("inspect").expect("inspect entry exists").params[0].ty,
-        TypeArtifact::Struct { name: "NoteState".to_string() }
-    );
+    assert_eq!(note.entry("inspect").expect("inspect entry exists").params[0].ty, TypeArtifact::Struct { name: "State".to_string() });
     assert_eq!(
         note.entry("inspect_many").expect("inspect_many entry exists").params[0].ty,
-        TypeArtifact::DynamicArray { item: Box::new(TypeArtifact::Struct { name: "NoteState".to_string() }) }
+        TypeArtifact::DynamicArray { item: Box::new(TypeArtifact::Struct { name: "State".to_string() }) }
     );
     assert_eq!(artifact.argent.actors.iter().find(|actor| actor.name == "Note").expect("Note actor exists").state, "NoteState");
     assert!(artifact.argent.states.iter().any(|state| state.name == "NoteState"));
@@ -3586,7 +3672,7 @@ fn terminal_state_does_not_carry_its_own_template() {
     let source_handle = &source_template.actor_type_handle;
     assert_eq!(source_handle.state, "SourceState");
     assert_eq!(source_handle.context_fields, ["gen__terminal_template"]);
-    assert_ne!(source_handle.template.hash_hex, source_template.sil_template_hash);
+    assert_ne!(source_handle.template.hash, source_template.sil_template_hash);
 }
 
 #[test]
@@ -3631,7 +3717,7 @@ fn emits_portable_artifact_schema() {
     assert_eq!(artifact.argent.template_plan.templates[0].id, "template/foo");
     assert_eq!(
         artifact.argent.template_plan.templates[0].sil_template_hash,
-        artifact.sil_abi.contract("Foo").unwrap().compiled.template_hash_hex
+        artifact.sil_abi.contract("Foo").unwrap().compiled.template_hash
     );
     let template = &artifact.argent.template_plan.templates[0];
     assert_eq!(template.actor_type_handle.state, "FooState");
@@ -3642,25 +3728,7 @@ fn emits_portable_artifact_schema() {
         "a plain actor still exports its Sil template as its source-state handle"
     );
     artifact.verify_template_plan().expect("template plan receipt verifies");
-    assert_eq!(
-        artifact
-            .argent
-            .states
-            .iter()
-            .map(|state| {
-                (state.name.as_str(), state.fields.iter().map(|field| (field.name.as_str(), &field.ty)).collect::<Vec<_>>())
-            })
-            .collect::<Vec<_>>(),
-        artifact
-            .sil_abi
-            .states
-            .iter()
-            .map(|state| {
-                (state.name.as_str(), state.fields.iter().map(|field| (field.name.as_str(), &field.ty)).collect::<Vec<_>>())
-            })
-            .collect::<Vec<_>>(),
-        "Argent state fields retain the lowered Sil ABI layout"
-    );
+    assert!(artifact.sil_abi.structs.is_empty(), "the equivalent authored struct is absent from the exact Sil ABI");
 
     let state = artifact.argent.states.iter().find(|state| state.name == "FooState").expect("source state is present");
     assert_eq!(
@@ -3672,10 +3740,10 @@ fn emits_portable_artifact_schema() {
     assert_eq!(state.fields[1].ty, TypeArtifact::Int);
 
     let actor = artifact.argent.actors.iter().find(|actor| actor.name == "Foo").expect("actor is present");
-    assert_eq!(actor.abi.actor, "Foo");
-    let sil_contract = artifact.sil_abi.contract(&actor.abi.actor).expect("outer actor should point at Sil ABI contract");
+    assert_eq!(actor.abi.contract, "Foo");
+    let sil_contract = artifact.sil_abi.contract(&actor.abi.contract).expect("outer actor should point at Sil ABI contract");
     assert_eq!(sil_contract.source_path, "sil/Foo.sil");
-    assert_compiled_projection(sil_contract.name.as_str(), &sil_contract.compiled);
+    assert_compiled_projection("Foo", &sil_contract.compiled);
     assert_eq!(
         sil_contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
         ["owner", "count"],
@@ -3685,7 +3753,7 @@ fn emits_portable_artifact_schema() {
 
     let entry = actor.entries.iter().find(|entry| entry.name == "step").expect("entry is present");
     assert_eq!(entry.kind, EntryKindArtifact::Leader);
-    assert_eq!(entry.abi.actor, "Foo");
+    assert_eq!(entry.abi.contract, "Foo");
     assert_eq!(entry.abi.entry, "step");
     assert!(entry.hidden_params.is_empty(), "exact same-state continuation should not expose template witnesses");
     assert!(entry.witnesses.is_empty(), "exact same-state continuation should not expose route witnesses");
@@ -3782,9 +3850,9 @@ fn state_expansion_uses_base_storage_layout() {
     assert!(!forager_state.fields[1].virtual_slot);
 
     let contract = artifact.sil_abi.contract("Forager").expect("Forager Sil ABI exists");
-    assert_eq!(contract.runtime_state.source, "ForagerState");
+    assert_eq!(contract.runtime_state.source, "State");
     assert_eq!(contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["strategy", "energy"]);
-    assert_eq!(contract.compiled.template_hash_hex, "6fe9ea6382a598cf1c2c6df366fc8bc4c419ae259d56eee5a7c45d6eb680df02");
+    assert_eq!(encode_hex(&contract.compiled.template_hash), "6fe9ea6382a598cf1c2c6df366fc8bc4c419ae259d56eee5a7c45d6eb680df02");
     assert!(runtime_state_plan(&artifact, "Forager").is_none());
     let template = artifact
         .argent
@@ -3794,7 +3862,7 @@ fn state_expansion_uses_base_storage_layout() {
         .find(|template| template.actor == "Forager")
         .expect("Forager template receipt exists");
     assert!(template.actor_type_handle.context_fields.is_empty());
-    assert_eq!(template.sil_template_hash, contract.compiled.template_hash_hex);
+    assert_eq!(template.sil_template_hash, contract.compiled.template_hash);
     let hold = contract.entry("hold").expect("hold ABI exists");
     assert_eq!(hold.params.iter().map(|param| param.name.as_str()).collect::<Vec<_>>(), ["gen__strategy_forager_strategy_preimage"]);
     assert_eq!(hold.params[0].ty, TypeArtifact::FixedBytes { len: 8 });
@@ -4295,13 +4363,16 @@ fn expanded_actor_records_sil_and_capsule_template_cuts() {
         contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
         ["gen__reserve_asset_template", "gen__wallet_asset_template", "owner_kind", "owner_id", "policy", "balance"]
     );
-    assert_eq!(contract.compiled.template_hash_hex, "627db2b04fa0d951683831303996ca6cd1c4ababec8bdf59546a57afe3f02206");
+    assert_eq!(encode_hex(&contract.compiled.template_hash), "627db2b04fa0d951683831303996ca6cd1c4ababec8bdf59546a57afe3f02206");
     let wallet_contract = artifact.sil_abi.contract("WalletAsset").expect("WalletAsset Sil ABI exists");
     assert_eq!(
         wallet_contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
         ["gen__reserve_asset_template", "gen__wallet_asset_template", "owner_kind", "owner_id", "policy", "balance"]
     );
-    assert_eq!(wallet_contract.compiled.template_hash_hex, "7fcc79baaa34f0dce572b2d915ddd4697b487baab7f53d1e930d6aac0d82fedc");
+    assert_eq!(
+        encode_hex(&wallet_contract.compiled.template_hash),
+        "7fcc79baaa34f0dce572b2d915ddd4697b487baab7f53d1e930d6aac0d82fedc"
+    );
 
     let source_state =
         artifact.argent.states.iter().find(|state| state.name == "ReserveAssetState").expect("ReserveAssetState exists");
@@ -4342,18 +4413,18 @@ fn expanded_actor_records_sil_and_capsule_template_cuts() {
         .iter()
         .find(|template| template.actor == "ReserveAsset")
         .expect("ReserveAsset template receipt exists");
-    assert_eq!(receipt.sil_template_hash, contract.compiled.template_hash_hex);
+    assert_eq!(receipt.sil_template_hash, contract.compiled.template_hash);
     let handle = &receipt.actor_type_handle;
     assert_eq!(handle.state, "AssetCapsule");
     assert_eq!(handle.context_fields, runtime_plan.field_roles.iter().map(|field| field.name.clone()).collect::<Vec<_>>());
-    assert_ne!(handle.template.hash_hex, receipt.sil_template_hash);
+    assert_ne!(handle.template.hash, receipt.sil_template_hash);
 
     let sil_template = extract_sil_template(&contract.compiled).expect("Sil template extracts");
-    let sil_prefix = crate::codec::decode_hex(&sil_template.prefix_hex).expect("Sil prefix decodes");
-    let capsule_prefix = crate::codec::decode_hex(&handle.template.prefix_hex).expect("capsule prefix decodes");
-    assert!(capsule_prefix.starts_with(&sil_prefix));
+    let sil_prefix = &sil_template.prefix;
+    let capsule_prefix = &handle.template.prefix;
+    assert!(capsule_prefix.starts_with(sil_prefix));
     assert!(capsule_prefix.len() > sil_prefix.len());
-    assert_eq!(handle.template.suffix_hex, sil_template.suffix_hex);
+    assert_eq!(handle.template.suffix, sil_template.suffix);
     artifact.verify_template_plan().expect("capsule template receipt verifies");
 
     let mut corrupted = artifact.clone();
@@ -4365,11 +4436,11 @@ fn expanded_actor_records_sil_and_capsule_template_cuts() {
         .find(|template| template.actor == "ReserveAsset")
         .expect("ReserveAsset template receipt exists");
     let handle = &mut receipt.actor_type_handle;
-    let mut prefix = crate::codec::decode_hex(&handle.template.prefix_hex).expect("capsule prefix decodes");
+    let mut prefix = handle.template.prefix.clone();
     *prefix.last_mut().expect("capsule prefix contains context") ^= 1;
-    handle.template.prefix_hex = encode_hex(&prefix);
-    let suffix = crate::codec::decode_hex(&handle.template.suffix_hex).expect("capsule suffix decodes");
-    handle.template.hash_hex = encode_hex(&silverscript_lang::template::template_hash(&prefix, &suffix));
+    handle.template.prefix = prefix.clone();
+    let suffix = handle.template.suffix.clone();
+    handle.template.hash = silverscript_lang::template::template_hash(&prefix, &suffix);
     let err = corrupted.verify_template_plan().expect_err("corrupted capsule context is rejected");
     assert!(matches!(err, TemplatePlanError::ActorTypeHandleMismatch { .. }), "unexpected error: {err}");
 
@@ -4382,7 +4453,7 @@ fn expanded_actor_records_sil_and_capsule_template_cuts() {
         .find(|template| template.actor == "ReserveAsset")
         .map(|template| &mut template.actor_type_handle)
         .expect("ReserveAsset capsule handle exists");
-    let prefix = crate::codec::decode_hex(&handle.template.prefix_hex).expect("capsule prefix decodes");
+    let prefix = handle.template.prefix.clone();
     let context = &prefix[sil_prefix.len()..];
     let first_push_end = 1 + context[0] as usize;
     assert!(first_push_end <= context.len(), "test context starts with one direct data push");
@@ -4390,15 +4461,15 @@ fn expanded_actor_records_sil_and_capsule_template_cuts() {
     noncanonical_prefix.extend_from_slice(&[OpPushData1, context[0]]);
     noncanonical_prefix.extend_from_slice(&context[1..first_push_end]);
     noncanonical_prefix.extend_from_slice(&context[first_push_end..]);
-    let suffix = crate::codec::decode_hex(&handle.template.suffix_hex).expect("capsule suffix decodes");
-    handle.template.prefix_hex = encode_hex(&noncanonical_prefix);
-    handle.template.hash_hex = encode_hex(&silverscript_lang::template::template_hash(&noncanonical_prefix, &suffix));
+    let suffix = handle.template.suffix.clone();
+    handle.template.prefix = noncanonical_prefix.clone();
+    handle.template.hash = silverscript_lang::template::template_hash(&noncanonical_prefix, &suffix);
     let err = corrupted.verify_template_plan().expect_err("non-canonical capsule context is rejected");
     assert!(matches!(err, TemplatePlanError::ActorTypeHandleMismatch { .. }), "unexpected error: {err}");
 
     let mut corrupted = artifact.clone();
     let capsule =
-        corrupted.sil_abi.states.iter_mut().find(|state| state.name == "AssetCapsule").expect("AssetCapsule Sil layout exists");
+        corrupted.argent.states.iter_mut().find(|state| state.name == "AssetCapsule").expect("AssetCapsule Argent layout exists");
     capsule.fields.last_mut().expect("AssetCapsule has fields").ty = TypeArtifact::Bool;
     let err = corrupted.verify_template_plan().expect_err("capsule state layout mismatch is rejected");
     assert!(matches!(err, TemplatePlanError::ActorTypeHandleMismatch { .. }), "unexpected error: {err}");
@@ -4412,7 +4483,7 @@ fn expanded_actor_records_sil_and_capsule_template_cuts() {
         .find(|template| template.actor == "ReserveAsset")
         .map(|template| &mut template.actor_type_handle)
         .expect("ReserveAsset capsule handle exists");
-    handle.template.hash_hex = "00".repeat(32);
+    handle.template.hash = [0; 32];
     let err = corrupted.verify_template_plan().expect_err("corrupted capsule hash is rejected");
     assert!(matches!(err, TemplatePlanError::ActorTypeHandleMismatch { .. }), "unexpected error: {err}");
 }
@@ -5108,13 +5179,16 @@ fn in_app_observed_templates_use_shared_actor_witnesses() {
 
     let foreign_contract = artifact.sil_abi.contract("Foreign").expect("Foreign contract exists");
     assert_eq!(foreign_contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["count"]);
-    assert_eq!(foreign_contract.compiled.template_hash_hex, "464dd0aa5c6a60a35f5a1f3e54be4822991b4578cfe58e5a266cb8650e524c94");
+    assert_eq!(
+        encode_hex(&foreign_contract.compiled.template_hash),
+        "464dd0aa5c6a60a35f5a1f3e54be4822991b4578cfe58e5a266cb8650e524c94"
+    );
     let local_contract = artifact.sil_abi.contract("Local").expect("Local contract exists");
     assert_eq!(
         local_contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
         ["gen__foreign_template", "target_id"]
     );
-    assert_eq!(local_contract.compiled.template_hash_hex, "ed3b4d44f4911b5dc91a4ad26acb9bb1d61526f3082e976b1de506969dccf81d");
+    assert_eq!(encode_hex(&local_contract.compiled.template_hash), "ed3b4d44f4911b5dc91a4ad26acb9bb1d61526f3082e976b1de506969dccf81d");
 
     assert_eq!(
         runtime_state_plan(&artifact, "Local")
@@ -5204,10 +5278,13 @@ fn consumed_route_reuses_input_template() {
         controller_contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
         ["gen__peer_template", "tick"]
     );
-    assert_eq!(controller_contract.compiled.template_hash_hex, "3091c3cb1b9eac52e3f7be3661e80720b5d2be1c0b9569e76f440a493ce53413");
+    assert_eq!(
+        encode_hex(&controller_contract.compiled.template_hash),
+        "3091c3cb1b9eac52e3f7be3661e80720b5d2be1c0b9569e76f440a493ce53413"
+    );
     let peer_contract = artifact.sil_abi.contract("Peer").expect("Peer contract exists");
     assert_eq!(peer_contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["count"]);
-    assert_eq!(peer_contract.compiled.template_hash_hex, "7cbdc27a4fffbaad655bcd7565a7d85682469203db07d26b953f665640f4271f");
+    assert_eq!(encode_hex(&peer_contract.compiled.template_hash), "7cbdc27a4fffbaad655bcd7565a7d85682469203db07d26b953f665640f4271f");
 
     assert_eq!(
         runtime_state_plan(&artifact, "Controller")
@@ -5251,7 +5328,7 @@ fn single_actor_self_consume_is_pinned() {
     assert_eq!(source_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["count"]);
     let contract = artifact.sil_abi.contract("Counter").expect("Counter contract exists");
     assert_eq!(contract.runtime_state.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["count"]);
-    assert_eq!(contract.compiled.template_hash_hex, "7e3775a25b2ed4594671eb43b72ca5389252ec0a11f3f0b8b255f91d7851e44a");
+    assert_eq!(encode_hex(&contract.compiled.template_hash), "7e3775a25b2ed4594671eb43b72ca5389252ec0a11f3f0b8b255f91d7851e44a");
     let template = artifact
         .argent
         .template_plan
@@ -5260,7 +5337,7 @@ fn single_actor_self_consume_is_pinned() {
         .find(|template| template.actor == "Counter")
         .expect("Counter template receipt exists");
     assert!(template.actor_type_handle.context_fields.is_empty());
-    assert_eq!(template.sil_template_hash, contract.compiled.template_hash_hex);
+    assert_eq!(template.sil_template_hash, contract.compiled.template_hash);
 
     let counter = artifact.argent.actors.iter().find(|actor| actor.name == "Counter").expect("Counter actor exists");
     let merge = counter.entries.iter().find(|entry| entry.name == "merge").expect("merge entry exists");
@@ -5593,7 +5670,7 @@ fn unselected_actors_do_not_shape_selected_app_state() {
 
     assert!(runtime_state_plan(&artifact, "Current").is_none());
     assert!(template.actor_type_handle.context_fields.is_empty());
-    assert_eq!(template.actor_type_handle.template.hash_hex, template.sil_template_hash);
+    assert_eq!(template.actor_type_handle.template.hash, template.sil_template_hash);
 }
 
 #[test]
@@ -9275,8 +9352,8 @@ fn artifact_codec_uses_compiled_sil_dispatch_tags() {
     let compiled = compile_contract(sil, &constructor_args, CompileOptions::default()).expect("generated Sil compiles");
 
     let sil_contract = sil_abi.contract("Foo").expect("Foo Sil ABI exists");
-    let bump = sil_contract.entries.iter().find(|entry| entry.name == "bump").expect("bump entry exists");
-    let done = sil_contract.entries.iter().find(|entry| entry.name == "done").expect("done entry exists");
+    let bump = sil_contract.entry("bump").expect("bump entry exists");
+    let done = sil_contract.entry("done").expect("done entry exists");
     assert_eq!(bump.dispatch_tag.into_bytes(), compiled.dispatch_tags["bump"]);
     assert_eq!(done.dispatch_tag.into_bytes(), compiled.dispatch_tags["done"]);
 
@@ -9401,35 +9478,44 @@ fn assert_example_build_artifact(input: &str, name: &str, expected_hashes: &[(&s
     for actor in &artifact.argent.actors {
         let sil_contract = artifact
             .sil_abi
-            .contract(&actor.abi.actor)
+            .contract(&actor.abi.contract)
             .unwrap_or_else(|| panic!("actor `{}` should reference a Sil ABI contract", actor.name));
-        assert_compiled_projection(sil_contract.name.as_str(), &sil_contract.compiled);
-        assert_runtime_state_round_trip(sil_contract, &sil_contract.compiled);
-        if let Some(expected_hash) = expected_hashes.get(sil_contract.name.as_str()) {
-            assert_eq!(&sil_contract.compiled.template_hash_hex, expected_hash, "actor `{}` template hash changed", actor.name);
+        assert_compiled_projection(&actor.abi.contract, &sil_contract.compiled);
+        assert_runtime_state_round_trip(&artifact.sil_abi, &actor.abi.contract, sil_contract, &sil_contract.compiled);
+        if let Some(expected_hash) = expected_hashes.get(actor.abi.contract.as_str()) {
+            assert_eq!(
+                &encode_hex(&sil_contract.compiled.template_hash),
+                expected_hash,
+                "actor `{}` template hash changed",
+                actor.name
+            );
         }
     }
 
     let _ = fs::remove_dir_all(out_dir);
 }
 
-fn assert_runtime_state_round_trip(actor: &SilContractArtifact, compiled: &CompiledContractArtifact) {
-    let script = crate::codec::decode_hex(&compiled.script_hex).expect("script hex decodes");
-    let (_, state_script, _) = compiled.script_parts(&script).expect("state span fits the compiled script");
-    let state_values = crate::codec::decode_runtime_state_script(&actor.runtime_state, state_script).expect("runtime state decodes");
-    let reencoded = crate::codec::encode_runtime_state_script(&actor.runtime_state, &state_values).expect("runtime state re-encodes");
-    assert_eq!(reencoded, state_script, "actor `{}` runtime state must re-encode byte-for-byte", actor.name);
+fn assert_runtime_state_round_trip(
+    abi: &SilAbiArtifact,
+    actor: &str,
+    contract: &SilContractArtifact,
+    compiled: &CompiledContractArtifact,
+) {
+    let (_, state_script, _) = compiled.script_parts(&compiled.bytecode).expect("state span fits the compiled script");
+    let state_values =
+        crate::codec::decode_runtime_state_script(abi, &contract.runtime_state, state_script).expect("runtime state decodes");
+    let reencoded =
+        crate::codec::encode_runtime_state_script(abi, &contract.runtime_state, &state_values).expect("runtime state re-encodes");
+    assert_eq!(reencoded, state_script, "actor `{actor}` runtime state must re-encode byte-for-byte");
 }
 
 fn assert_compiled_projection(actor: &str, compiled: &CompiledContractArtifact) {
-    assert!(!compiled.script_hex.is_empty(), "actor `{actor}` should have script bytes");
+    assert!(!compiled.bytecode.is_empty(), "actor `{actor}` should have script bytes");
     assert!(compiled.state_span.len > 0, "actor `{actor}` should have a non-empty state span");
-    assert_eq!(compiled.template_hash_hex.len(), 64, "actor `{actor}` should have a 32-byte template hash");
 
-    let script = crate::codec::decode_hex(&compiled.script_hex).expect("script hex decodes");
-    let (prefix, _, suffix) = compiled.script_parts(&script).expect("state span fits the compiled script");
+    let (prefix, _, suffix) = compiled.script_parts(&compiled.bytecode).expect("state span fits the compiled script");
     let template_hash = silverscript_lang::template::template_hash(prefix, suffix);
-    assert_eq!(encode_hex(&template_hash), compiled.template_hash_hex, "actor `{actor}` template hash must use the Sil template hash");
+    assert_eq!(template_hash, compiled.template_hash, "actor `{actor}` template hash must use the Sil template hash");
 }
 
 fn runtime_state_plan<'a>(artifact: &'a Artifact, contract: &str) -> Option<&'a RuntimeStatePlanArtifact> {
