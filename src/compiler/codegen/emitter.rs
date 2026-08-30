@@ -836,8 +836,7 @@ fn emit_state_expansion_prelude(out: &mut String, actor: &ActorDecl, model: &Mod
         for field in &model.state(&spec.memory_state)?.fields {
             let len = packed_field_len(&field.ty)?;
             let end = offset + len;
-            let slice = format!("{hidden}.slice({offset}, {end})");
-            let expr = unpack_packed_field_expr(&field.ty, &slice)?;
+            let expr = unpack_packed_field_expr(&field.ty, &hidden, offset, end)?;
             push_indent(out, 8);
             out.push_str(&format!(
                 "{} {} = {};\n",
@@ -935,7 +934,13 @@ pub(super) fn packed_field_expr(ty: &TypeRef, expr: &str) -> Result<String> {
     }
 }
 
-fn unpack_packed_field_expr(ty: &TypeRef, slice_expr: &str) -> Result<String> {
+fn unpack_packed_field_expr(ty: &TypeRef, packed_expr: &str, offset: usize, end: usize) -> Result<String> {
+    // Indexing a byte sequence already produces scalar byte. Other fixed-width
+    // values are decoded from their packed slice.
+    if matches!((ty.name.as_str(), ty.array), ("byte", None)) {
+        return Ok(format!("{packed_expr}[{offset}]"));
+    }
+    let slice_expr = format!("{packed_expr}.slice({offset}, {end})");
     if ty.is_actor_type() {
         return Ok(format!("byte[32]({slice_expr})"));
     }
@@ -943,7 +948,6 @@ fn unpack_packed_field_expr(ty: &TypeRef, slice_expr: &str) -> Result<String> {
         ("int", None) => Ok(format!("OpBin2Num({slice_expr})")),
         ("temporal", None) => Ok(format!("temporal(OpBin2Num({slice_expr}))")),
         ("bool", None) => Ok(format!("OpBin2Num({slice_expr}) != 0")),
-        ("byte", None) => Ok(format!("byte({slice_expr})")),
         ("byte", Some(ArrayDim::Fixed(len))) => Ok(format!("byte[{len}]({slice_expr})")),
         ("pubkey", None) | (word::COVENANT_ID, None) => Ok(format!("byte[32]({slice_expr})")),
         ("sig", None) => Ok(format!("byte[65]({slice_expr})")),
@@ -2480,12 +2484,12 @@ fn sil_contract_artifact(actor: &ActorDecl, model: &Model<'_>, actor_sil: &BTree
         .entries
         .iter()
         .map(|entry| {
-            // Sil owns canonical function signatures and their dispatch tags;
-            // the portable ABI carries the exact tag used by compiled code.
-            let compiled_entry = compiled.entry_by_name(&entry.name).ok_or_else(|| {
+            // Sil owns canonical function signatures and exposes the exact
+            // dispatch tag used by the compiled code.
+            let dispatch_tag = compiled.dispatch_tags.get(&entry.name).copied().ok_or_else(|| {
                 ArgentError::new(format!("generated Silverscript for actor `{}` has no entry `{}`", actor.name, entry.name))
             })?;
-            Ok(sil_entry_artifact(actor, entry, model, compiled_entry.dispatch_tag()))
+            Ok(sil_entry_artifact(actor, entry, model, dispatch_tag))
         })
         .collect::<Result<Vec<_>>>()?;
 

@@ -70,7 +70,7 @@ fn lower_global_function<'a>(
     Ok(LoweredFunction { name: &function.name, params, return_ty: function.return_ty.as_ref(), body })
 }
 
-fn standalone_sil_function(function: &FunctionDecl) -> (String, Range<usize>) {
+pub(super) fn standalone_sil_function(function: &FunctionDecl) -> (String, Range<usize>) {
     let params = function.params.iter().map(|param| format!("{} {}", param.ty.to_sil(), param.name)).collect::<Vec<_>>().join(", ");
     let return_type = function.return_ty.as_ref().map(|ty| format!(" : {}", ty.to_sil())).unwrap_or_default();
     let mut source = format!("function {}({params}){return_type} {{", function.name);

@@ -2,14 +2,18 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use silverscript_lang::ast::visit::AstVisitorMut;
 use silverscript_lang::ast::{
-    ArrayDim as SilArrayDim, TypeBase as SilTypeBase, TypeRef as SilTypeRef, parse_type_ref as parse_sil_type_ref,
+    ArrayDim as SilArrayDim, TypeBase as SilTypeBase, TypeRef as SilTypeRef, parse_function_ast, parse_type_ref as parse_sil_type_ref,
 };
+use silverscript_lang::span::Span as SilSpan;
 
 use crate::compiler::model::{Model, ResolvedSuccessor, SilStateType, SourceStateId};
 use crate::compiler::syntax::lexer::RESERVED_GENERATED_PREFIX;
-use crate::compiler::syntax::{ActorDecl, ArrayDim, TypeRef};
+use crate::compiler::syntax::{ActorDecl, ArrayDim, FunctionDecl, TypeRef};
 use crate::error::{ArgentError, Result};
+
+use super::functions::standalone_sil_function;
 
 /// One authored state identity and its scalar or array shape.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -46,6 +50,23 @@ pub(in crate::compiler::codegen) struct ContractStateValuePlan {
     required_source_declarations: BTreeSet<SourceStateId>,
     constants: BTreeMap<String, PlannedStateValue>,
     signatures: BTreeMap<String, CallableSignaturePlan>,
+}
+
+struct RequiredSourceTypeCollector<'a> {
+    authored_sil_types: &'a BTreeMap<SourceStateId, String>,
+    required_sources: &'a mut BTreeSet<SourceStateId>,
+}
+
+impl AstVisitorMut<'_> for RequiredSourceTypeCollector<'_> {
+    fn visit_type(&mut self, type_ref: &SilTypeRef, _span: SilSpan<'_>) {
+        let SilTypeBase::Custom(name) = &type_ref.base else {
+            return;
+        };
+        let source = SourceStateId::new(name);
+        if self.authored_sil_types.contains_key(&source) {
+            self.required_sources.insert(source);
+        }
+    }
 }
 
 impl PlannedStateValue {
@@ -155,9 +176,9 @@ impl ContractStateValuePlan {
             required_source_declarations.extend(signature.params.iter().flatten().map(|value| value.source().clone()));
             required_source_declarations.extend(signature.result.iter().map(|value| value.source().clone()));
         }
-        // TODO: Include state types used only by declarations and constructors
-        // inside global and actor function bodies. Collect them through the Sil
-        // AST so linked source-state declarations are emitted when required.
+        for function in model.functions.iter().copied().chain(actor.functions.iter()) {
+            collect_function_body_sources(function, &authored_sil_types, &mut required_source_declarations)?;
+        }
         for entry in &actor.entries {
             for param in &entry.params {
                 collect_type_ref_source(&param.ty, &authored_sil_types, &mut required_source_declarations);
@@ -306,6 +327,19 @@ impl ContractStateValuePlan {
             .cloned()
             .or(Some(declared))
     }
+}
+
+fn collect_function_body_sources(
+    function: &FunctionDecl,
+    authored_sil_types: &BTreeMap<SourceStateId, String>,
+    required_sources: &mut BTreeSet<SourceStateId>,
+) -> Result<()> {
+    let (source, _) = standalone_sil_function(function);
+    let mut function_ast = parse_function_ast(&source)
+        .map_err(|err| ArgentError::new(format!("cannot classify state types in helper function `{}` body: {err}", function.name)))?;
+    let mut collector = RequiredSourceTypeCollector { authored_sil_types, required_sources };
+    collector.visit_function(&mut function_ast);
+    Ok(())
 }
 
 fn collect_type_ref_source(
