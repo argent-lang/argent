@@ -9159,7 +9159,7 @@ fn emit_fixture_manifest(case: &str) -> serde_json::Value {
 fn assert_fixture_artifact(case: &str, artifact: &Artifact) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/emit").join(case).join("artifact.json");
     let expected = fs::read_to_string(path).expect("fixture artifact exists");
-    let mut actual = serde_json::to_string_pretty(artifact).expect("fixture artifact serializes");
+    let mut actual = silverscript_abi::to_pretty_json(artifact).expect("fixture artifact serializes");
     actual.push('\n');
     assert_eq!(actual, expected);
 }

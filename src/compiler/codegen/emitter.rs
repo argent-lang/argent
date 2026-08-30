@@ -11,8 +11,8 @@ use crate::codec::encode_hex;
 use crate::compiler::model::link::LinkedActor;
 use crate::compiler::model::{
     ClauseActorTypeRef, CovenantGroup, CovenantIdSource, EntryInteraction, EntryModel, GeneratedFieldId, InteractionLocation,
-    InteractionSource, Model, PhysicalFieldId, PhysicalStateLayout, ResolvedRoute, ResolvedSuccessor, RouteFamily, SourceStateId,
-    SilStateType, StaticActorTarget, actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding,
+    InteractionSource, Model, PhysicalFieldId, PhysicalStateLayout, ResolvedRoute, ResolvedSuccessor, RouteFamily, SilStateType,
+    SourceStateId, StaticActorTarget, actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding,
     observed_open_state_for_decl, packed_field_len, resolve_observe_covenant_id_source, source_actor_type_state_for_expr,
     spawn_target_state,
 };

@@ -24,8 +24,8 @@ pub use context::{
 pub use silverscript_abi::ArtifactValue;
 
 use argent_artifact::{
-    ActorArtifact, ActorInterfaceArtifact, ArgentStateArtifact, ArtifactIdentityError, ArtifactVersionError, CardinalityArtifact,
-    ActorTemplateArtifact, EmitArtifact, EntryArtifact, EntryKindArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact,
+    ActorArtifact, ActorInterfaceArtifact, ActorTemplateArtifact, ArgentStateArtifact, ArtifactIdentityError, ArtifactVersionError,
+    CardinalityArtifact, EmitArtifact, EntryArtifact, EntryKindArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact,
     HiddenParamSubjectArtifact, MAX_ENTRY_RANGE_CARDINALITY, ObserveArtifact, ObservedActorArtifact, ObservedActorSideArtifact,
     ObservedTargetArtifact, RouteTemplateLeafArtifact, RouteTemplateProofArtifact, RuntimeFieldRoleArtifact, RuntimeStatePlanArtifact,
     SilAbiVerificationError, SilContractArtifact, SilEntryArtifact, TemplatePlanError, fixed_runtime_context_value,
