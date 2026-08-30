@@ -3354,7 +3354,7 @@ dependencies = [
 [[package]]
 name = "silverscript-abi"
 version = "0.1.0"
-source = "git+https://github.com/kaspanet/silverscript?rev=73e33e26ac33f6ff13f1eea51c01c0983c3ae4e3#73e33e26ac33f6ff13f1eea51c01c0983c3ae4e3"
+source = "git+https://github.com/kaspanet/silverscript?rev=c7d17a15ac88610d013ec9ffffa9520aeb69929b#c7d17a15ac88610d013ec9ffffa9520aeb69929b"
 dependencies = [
  "blake3",
  "faster-hex 0.10.0",
@@ -3368,7 +3368,7 @@ dependencies = [
 [[package]]
 name = "silverscript-lang"
 version = "0.1.0"
-source = "git+https://github.com/kaspanet/silverscript?rev=73e33e26ac33f6ff13f1eea51c01c0983c3ae4e3#73e33e26ac33f6ff13f1eea51c01c0983c3ae4e3"
+source = "git+https://github.com/kaspanet/silverscript?rev=c7d17a15ac88610d013ec9ffffa9520aeb69929b#c7d17a15ac88610d013ec9ffffa9520aeb69929b"
 dependencies = [
  "blake2b_simd",
  "blake3",
@@ -3387,7 +3387,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "silverscript-abi 0.1.0 (git+https://github.com/kaspanet/silverscript?rev=73e33e26ac33f6ff13f1eea51c01c0983c3ae4e3)",
+ "silverscript-abi 0.1.0 (git+https://github.com/kaspanet/silverscript?rev=c7d17a15ac88610d013ec9ffffa9520aeb69929b)",
  "thiserror 1.0.69",
 ]
 

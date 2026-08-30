@@ -259,6 +259,23 @@ mod tests {
     }
 
     #[test]
+    fn rewrites_as_cast_target_types() {
+        // Sil restricts which `as` conversions compile, but every parsed cast
+        // target must still participate in source transformation and auditing.
+        let source = r#"function retain(CounterState[] values) : CounterState[] {
+    return values as CounterState[];
+}"#;
+        let lowered = lower_function_source(source, &state_values()).expect("as-cast target lowers through the Sil type visitor");
+
+        assert_eq!(
+            lowered,
+            r#"function retain(State[] values) : State[] {
+    return values as State[];
+}"#
+        );
+    }
+
+    #[test]
     fn checked_edits_fail_closed_on_an_unexpected_slice() {
         let err = apply_checked_edits(
             "OtherState value",
@@ -278,6 +295,20 @@ mod tests {
         let omitted = ["CounterState".to_string()].into_iter().collect();
         let err = audit_omitted_equivalent_state_structs(source, &omitted, &state_values())
             .expect_err("an omitted authored name cannot remain in a struct field type");
+        assert!(err.to_string().contains("omitted authored state `CounterState` remains"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn omitted_name_audit_includes_as_cast_target_types() {
+        let source = r#"contract Inspect() {
+    function retain(State[] values) : State[] {
+        return values as CounterState[];
+    }
+}"#;
+        let omitted = ["CounterState".to_string()].into_iter().collect();
+        let err = audit_omitted_equivalent_state_structs(source, &omitted, &state_values())
+            .expect_err("an omitted authored name cannot remain in an as-cast target");
+
         assert!(err.to_string().contains("omitted authored state `CounterState` remains"), "unexpected error: {err}");
     }
 }
