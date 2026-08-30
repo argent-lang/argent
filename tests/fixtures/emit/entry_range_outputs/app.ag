@@ -1,6 +1,8 @@
 const int MAX_ACCOUNTS = 3;
 
-state BatchState {}
+state BatchState {
+    int marker;
+}
 
 state AccountState {
     int balance;

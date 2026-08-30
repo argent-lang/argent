@@ -216,7 +216,7 @@ fn lowers_ranged_output_values_and_named_state_array_routes() {
 #[test]
 fn checks_literal_zero_against_optional_input_and_output_range_lengths() {
     let source = r#"
-        state BatchState {}
+        state BatchState { int marker; }
         state AccountState { int balance; }
 
         actor Batch owns BatchState {
@@ -261,7 +261,7 @@ fn checks_literal_zero_against_optional_input_and_output_range_lengths() {
 #[test]
 fn permanently_empty_output_range_has_no_value_policy() {
     let source = r#"
-        state BatchState {}
+        state BatchState { int marker; }
         state AccountState {
             int balance;
         }
@@ -409,7 +409,7 @@ fn rejects_a_bare_ranged_input_item_as_authored_state() {
 #[test]
 fn expanded_ranged_inputs_allow_available_projections_but_not_reconstruction() {
     let source = r#"
-        state BatchState {}
+        state BatchState { int marker; }
         state Capsule { int nonce; virtual detail; }
         state Details { int count; }
         state Expanded expands Capsule { detail: Details; }
@@ -446,7 +446,7 @@ fn expanded_ranged_inputs_allow_available_projections_but_not_reconstruction() {
 #[test]
 fn unrestricted_validates_ranged_output_indices_under_the_handle_policy() {
     let source = r#"
-        state BatchState {}
+        state BatchState { int marker; }
         state AccountState { int balance; }
         actor Batch owns BatchState {
             entry inspect(int index, AccountState[] states) emits { next: Account[1..=3], } {

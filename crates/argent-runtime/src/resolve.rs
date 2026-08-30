@@ -923,11 +923,11 @@ mod tests {
 
     use argent_artifact::{
         ARTIFACT_SCHEMA_VERSION, ActorAbiRefArtifact, ActorArtifact, ActorTargetArtifact, ArgentArtifact, CardinalityArtifact,
-        CompiledContractArtifact, ConsumeArtifact, CovenantIdSourceArtifact, DispatchTag, EmitArtifact, EntryAbiRefArtifact,
-        EntryArtifact, EntryKindArtifact, EntryRefArtifact, EntryRoutePlanArtifact, GeneratorArtifact, InterfaceSetArtifact,
-        ObserveArtifact, ObservedActorArtifact, RuntimeFieldArtifact, RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact,
-        SilContractArtifact, SilEntryArtifact, SpawnArtifact, SpawnOutputArtifact, StateSpanArtifact, TemplatePlanArtifact,
-        TemplateSelectorArtifact, TypeArtifact,
+        CompiledContractArtifact, ConsumeArtifact, CovenantIdSourceArtifact, DispatchTag, EmitArtifact, EmitOutputArtifact,
+        EntryAbiRefArtifact, EntryArtifact, EntryKindArtifact, EntryRefArtifact, EntryRoutePlanArtifact, GeneratorArtifact,
+        InterfaceSetArtifact, ObserveArtifact, ObservedActorArtifact, RuntimeFieldArtifact, RuntimeStateArtifact,
+        SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, SilContractArtifact, SilEntryArtifact, SpawnArtifact, SpawnOutputArtifact,
+        StateSpanArtifact, TemplatePlanArtifact, TemplateSelectorArtifact, TypeArtifact,
     };
     use kaspa_consensus_core::{
         Hash,
@@ -1250,6 +1250,57 @@ mod tests {
             ArtifactBundle::new(&oversized),
             Err(BuilderError::InvalidArtifactCardinality { section: "consume", minimum: 0, maximum, .. })
                 if maximum == argent_artifact::MAX_ENTRY_RANGE_CARDINALITY + 1
+        ));
+
+        let mut multiple_consumes = artifact("primary", "Counter", "merge");
+        multiple_consumes.argent.actors[0].entries[0].consumes = ["first", "second"]
+            .into_iter()
+            .map(|name| ConsumeArtifact {
+                name: name.to_string(),
+                actor: "Counter".to_string(),
+                cardinality: CardinalityArtifact::Range { minimum: 0, maximum: 2 },
+            })
+            .collect();
+        multiple_consumes.id = multiple_consumes.computed_id_hex().expect("mutated artifact id computes");
+        assert!(matches!(
+            ArtifactBundle::new(&multiple_consumes),
+            Err(BuilderError::UnsupportedArtifactCardinality {
+                section: "consume",
+                ref handle,
+                ..
+            }) if handle == "second"
+        ));
+
+        let ranged_output = |name: &str, actors: &[&str]| EmitOutputArtifact {
+            name: name.to_string(),
+            auth_index: None,
+            actors: actors.iter().map(|actor| (*actor).to_string()).collect(),
+            cardinality: CardinalityArtifact::Range { minimum: 0, maximum: 2 },
+        };
+        let mut multiple_outputs = artifact("primary", "Counter", "merge");
+        multiple_outputs.argent.actors[0].entries[0].emits =
+            EmitArtifact::Outputs { outputs: vec![ranged_output("first", &["Counter"]), ranged_output("second", &["Counter"])] };
+        multiple_outputs.id = multiple_outputs.computed_id_hex().expect("mutated artifact id computes");
+        assert!(matches!(
+            ArtifactBundle::new(&multiple_outputs),
+            Err(BuilderError::UnsupportedArtifactCardinality {
+                section: "emit",
+                ref handle,
+                ..
+            }) if handle == "second"
+        ));
+
+        let mut dynamic_output = artifact("primary", "Counter", "merge");
+        dynamic_output.argent.actors[0].entries[0].emits =
+            EmitArtifact::Outputs { outputs: vec![ranged_output("items", &["Counter", "Archive"])] };
+        dynamic_output.id = dynamic_output.computed_id_hex().expect("mutated artifact id computes");
+        assert!(matches!(
+            ArtifactBundle::new(&dynamic_output),
+            Err(BuilderError::UnsupportedArtifactCardinality {
+                section: "emit",
+                ref handle,
+                ..
+            }) if handle == "items"
         ));
     }
 

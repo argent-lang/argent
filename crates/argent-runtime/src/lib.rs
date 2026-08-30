@@ -1709,16 +1709,30 @@ fn validate_runtime_cardinality_support(app: &str, artifact: &Artifact) -> Build
                 Ok(())
             };
 
+            let mut has_consume_range = false;
             for consume in &entry.consumes {
                 if entry.kind == EntryKindArtifact::Delegate {
                     reject_unsupported_range("delegate consume", &consume.name, consume.cardinality)?;
                 } else {
                     validate("consume", &consume.name, consume.cardinality)?;
+                    if matches!(consume.cardinality, CardinalityArtifact::Range { .. }) {
+                        if has_consume_range {
+                            reject_unsupported_range("consume", &consume.name, consume.cardinality)?;
+                        }
+                        has_consume_range = true;
+                    }
                 }
             }
             if let EmitArtifact::Outputs { outputs } = &entry.emits {
+                let mut has_emit_range = false;
                 for output in outputs {
                     validate("emit", &output.name, output.cardinality)?;
+                    if matches!(output.cardinality, CardinalityArtifact::Range { .. }) {
+                        if has_emit_range || output.actors.len() != 1 {
+                            reject_unsupported_range("emit", &output.name, output.cardinality)?;
+                        }
+                        has_emit_range = true;
+                    }
                 }
             }
             for observe in &entry.observes {

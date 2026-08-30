@@ -44,7 +44,8 @@ integers. A consumed range handle is a collection of actor input references,
 not an authored state array. `accounts[i]` is one input reference;
 `state(accounts[i])` explicitly reconstructs its authored state.
 
-The same form applies to all ordered entry sections:
+The same cardinality syntax and artifact model cover all ordered entry
+sections:
 
 ```rust
 entry rebalance(AccountState[] next_states)
@@ -63,7 +64,9 @@ An emitted range uses one bulk `become` route. The `Actor[]` suffix marks the
 route as bulk, and its state expression is an array. The compiler validates one
 output for each array item.
 
-Observed and spawned ranges use the same rule:
+Observed and spawned ranges reserve the same source form, but the current
+compiler rejects them at code generation until their transaction rules are
+implemented:
 
 ```rust
 observes assets by self.asset_id {
@@ -297,9 +300,9 @@ values.
 
 ### Observes
 
-The compiler derives each actual length from `OpCovInputCount` or
-`OpCovOutputCount`. It materializes observed input states in a bounded loop. It
-also validates observed output state arrays in a bounded loop.
+A future observed-range stage will derive each actual length from
+`OpCovInputCount` or `OpCovOutputCount`, materialize observed input states in a
+bounded loop, and validate observed output state arrays in a bounded loop.
 
 The runtime must change its observed context from one item per handle to one or
 many items per handle. Fixed actor ranges can share one template witness.
@@ -311,9 +314,9 @@ be empty.
 
 ### Spawns
 
-A ranged spawn needs one dynamic array of global output indices. The runtime
-already knows the complete named `spawn::<clause>` group, so it can supply this
-array without a new user-facing group API.
+A future ranged-spawn stage needs one dynamic array of global output indices.
+The runtime already knows the complete named `spawn::<clause>` group, so it can
+supply this array without a new user-facing group API.
 
 The generated script must:
 
@@ -338,6 +341,9 @@ and after either range. Delegate consumes, observed ranges, spawned ranges,
 and their runtime transaction construction remain follow-up work. The runtime
 rejects artifacts that claim observed or spawned ranges until those paths are
 implemented; it does not silently interpret them as singleton declarations.
+Artifact attachment also rejects more than one range on either supported
+current-covenant side and rejects ranged emits without exactly one fixed actor,
+mirroring the compiler's first-version shape.
 
 Ranged output-value policy is currently handle-level. One indexed
 `next[i].value` reference, including `unrestricted(next[i].value)`, satisfies
@@ -402,7 +408,7 @@ needed. A ranged spawn needs an output-index array. A homogeneous range must
 share template witnesses. It must not receive one template witness for each
 possible item.
 
-The runtime must:
+Across the completed and planned stages, the runtime must:
 
 - partition an ordered group into singleton items and its one range;
 - validate actor metadata for every ranged item;

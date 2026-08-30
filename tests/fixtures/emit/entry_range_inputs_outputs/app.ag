@@ -1,7 +1,9 @@
 const int MAX_INPUT_ACCOUNTS = 2;
 const int MAX_OUTPUT_ACCOUNTS = 3;
 
-state BatchState {}
+state BatchState {
+    int marker;
+}
 
 state AccountState {
     int balance;
