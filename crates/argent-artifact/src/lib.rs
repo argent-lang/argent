@@ -190,7 +190,7 @@ pub struct StateDigestExpansionArtifact {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TemplatePlanArtifact {
-    pub templates: Vec<TemplatePlanTemplateArtifact>,
+    pub templates: Vec<TemplateReceiptArtifact>,
     #[serde(default)]
     pub runtime_states: Vec<RuntimeStatePlanArtifact>,
     #[serde(default)]
@@ -199,11 +199,11 @@ pub struct TemplatePlanArtifact {
     pub route_proofs: Vec<RouteTemplateProofArtifact>,
     #[serde(default)]
     pub route_families: Vec<RouteTemplateFamilyArtifact>,
-    pub witness_recipes: Vec<TemplateWitnessRecipeArtifact>,
+    pub witness_recipes: Vec<WitnessRecipeArtifact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TemplatePlanTemplateArtifact {
+pub struct TemplateReceiptArtifact {
     pub id: String,
     pub actor: String,
     pub contract: String,
@@ -259,7 +259,7 @@ pub trait TemplatePlanLookup: TemplateHashLookup {
     fn route_families(&self) -> &[RouteTemplateFamilyArtifact];
 }
 
-impl TemplateHashLookup for [TemplatePlanTemplateArtifact] {
+impl TemplateHashLookup for [TemplateReceiptArtifact] {
     fn template_hash_by_id(&self, id: &str) -> Option<TemplateHashRef<'_>> {
         self.iter().find(|template| template.id == id).map(|template| TemplateHashRef {
             id: &template.id,
@@ -277,7 +277,7 @@ impl TemplateHashLookup for [TemplatePlanTemplateArtifact] {
     }
 }
 
-impl TemplateHashLookup for std::collections::BTreeMap<&str, &TemplatePlanTemplateArtifact> {
+impl TemplateHashLookup for std::collections::BTreeMap<&str, &TemplateReceiptArtifact> {
     fn template_hash_by_id(&self, id: &str) -> Option<TemplateHashRef<'_>> {
         self.get(id).map(|template| TemplateHashRef { id: &template.id, actor: &template.actor, hash: &template.sil_template_hash })
     }
@@ -416,7 +416,7 @@ pub enum RouteTemplateProofSideArtifact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TemplateWitnessRecipeArtifact {
+pub struct WitnessRecipeArtifact {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template_id: Option<String>,
@@ -1327,7 +1327,7 @@ impl TemplatePlanArtifact {
         entry: &str,
         actor: &str,
         template_id: &str,
-        templates_by_id: &std::collections::BTreeMap<&str, &TemplatePlanTemplateArtifact>,
+        templates_by_id: &std::collections::BTreeMap<&str, &TemplateReceiptArtifact>,
     ) -> std::result::Result<(), TemplatePlanError> {
         let Some(template) = templates_by_id.get(template_id) else {
             return Err(TemplatePlanError::MissingRouteTemplate {
@@ -1352,7 +1352,7 @@ impl TemplatePlanArtifact {
         entry: &str,
         recipe_ids: &[String],
         entry_recipe_ids: &std::collections::BTreeSet<&str>,
-        recipes_by_id: &std::collections::BTreeMap<&str, &TemplateWitnessRecipeArtifact>,
+        recipes_by_id: &std::collections::BTreeMap<&str, &WitnessRecipeArtifact>,
     ) -> std::result::Result<(), TemplatePlanError> {
         for recipe_id in recipe_ids {
             if !recipes_by_id.contains_key(recipe_id.as_str()) {
@@ -1369,7 +1369,7 @@ impl TemplatePlanArtifact {
 fn verify_actor_type_handle(
     plan: &TemplatePlanArtifact,
     artifact: &Artifact,
-    template: &TemplatePlanTemplateArtifact,
+    template: &TemplateReceiptArtifact,
     contract_name: &str,
     contract: &SilContractArtifact,
 ) -> std::result::Result<(), TemplatePlanError> {
@@ -2203,7 +2203,7 @@ mod tests {
         let template_hash_hex = "00".repeat(32);
         let templates = ["Mux", "Pawn", "Knight", "Bishop"]
             .into_iter()
-            .map(|actor| TemplatePlanTemplateArtifact {
+            .map(|actor| TemplateReceiptArtifact {
                 id: test_template_receipt_id(actor),
                 actor: actor.to_string(),
                 contract: actor.to_string(),

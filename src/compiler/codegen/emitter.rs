@@ -2078,7 +2078,7 @@ fn template_ref_artifact(actor: &str) -> TemplateRefArtifact {
 }
 
 #[derive(Debug)]
-struct TemplatePlanTemplateDraft {
+struct TemplateReceiptDraft {
     id: String,
     actor: String,
     contract: String,
@@ -2089,7 +2089,7 @@ struct TemplatePlanTemplateDraft {
 
 #[derive(Debug)]
 struct TemplatePlanDraft {
-    templates: Vec<TemplatePlanTemplateDraft>,
+    templates: Vec<TemplateReceiptDraft>,
     templates_by_id: BTreeMap<String, usize>,
     templates_by_actor: BTreeMap<String, usize>,
     runtime_states: Vec<RuntimeStatePlanArtifact>,
@@ -2143,7 +2143,7 @@ fn template_plan_artifact(
             let contract = sil_contracts
                 .get(&template.actor)
                 .ok_or_else(|| ArgentError::new(format!("missing Sil ABI contract for template actor `{}`", template.actor)))?;
-            Ok(TemplatePlanTemplateDraft {
+            Ok(TemplateReceiptDraft {
                 id: template.id.clone(),
                 actor: template.actor.clone(),
                 contract: template.actor.clone(),
@@ -2181,7 +2181,7 @@ fn template_plan_artifact(
         for entry in &actor.entries {
             for param in &entry.hidden_params {
                 if seen.insert(param.recipe_id.clone()) {
-                    witness_recipes.push(TemplateWitnessRecipeArtifact {
+                    witness_recipes.push(WitnessRecipeArtifact {
                         id: param.recipe_id.clone(),
                         template_id: match &param.subject {
                             HiddenParamSubjectArtifact::Actor { actor } if model.app_actors.contains(actor) => {
@@ -2214,7 +2214,7 @@ fn template_plan_artifact(
         .templates
         .into_iter()
         .zip(handles)
-        .map(|(template, actor_type_handle)| TemplatePlanTemplateArtifact {
+        .map(|(template, actor_type_handle)| TemplateReceiptArtifact {
             id: template.id,
             actor: template.actor,
             contract: template.contract,
@@ -2234,7 +2234,7 @@ fn template_plan_artifact(
 }
 
 fn actor_type_handle_artifact(
-    template: &TemplatePlanTemplateDraft,
+    template: &TemplateReceiptDraft,
     plan: &TemplatePlanDraft,
     model: &Model<'_>,
     actor_sil: &BTreeMap<String, String>,

@@ -3343,6 +3343,22 @@ fn aggregate_sil_abi_canonicalizes_contract_local_state_struct_references() {
 }
 
 #[test]
+fn canonicalizes_state_references_inside_array_types() {
+    let mut fixed = TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Struct { name: "State".to_string() }), len: 2 };
+    let mut dynamic = TypeArtifact::DynamicArray { item: Box::new(TypeArtifact::Struct { name: "State".to_string() }) };
+
+    assert!(type_references_state(&fixed));
+    assert!(type_references_state(&dynamic));
+    replace_state_type_ref(&mut fixed, "Details");
+    replace_state_type_ref(&mut dynamic, "Details");
+
+    assert!(!type_references_state(&fixed));
+    assert!(!type_references_state(&dynamic));
+    assert_eq!(fixed, TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Struct { name: "Details".to_string() }), len: 2 });
+    assert_eq!(dynamic, TypeArtifact::DynamicArray { item: Box::new(TypeArtifact::Struct { name: "Details".to_string() }) });
+}
+
+#[test]
 fn sil_abi_merge_rejects_conflicting_structs_and_duplicate_contracts() {
     let compile = |contract: &str, field_type: &str| {
         let source = format!(
