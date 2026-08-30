@@ -20,7 +20,7 @@ use crate::compiler::syntax::*;
 use crate::error::{ArgentError, Result};
 use silverscript_lang::ast::visit::{AstVisitorMut, visit_function_mut, walk_expr_mut};
 use silverscript_lang::ast::{
-    Expr as SilExpr, ExprKind as SilExprKind, Statement as SilStatement, parse_expression_ast, parse_function_ast,
+    Expr as SilExpr, ExprKind as SilExprKind, Statement as SilStatement, parse_expression_ast, parse_function_ast, parse_statement_ast,
 };
 
 // Body lowering uses the surrounding Sil emitter's shared witness plans,
@@ -163,7 +163,7 @@ impl<'i> AstVisitorMut<'i> for StateValueSiteCollector<'_> {
                     }
                 }
             }
-            SilExprKind::Array { type_ref, values } => {
+            SilExprKind::Array { type_ref, values, .. } => {
                 if let Some(element) =
                     self.state_values.plan_ast_type_ref(type_ref, Some(values.len())).and_then(|value| value.element())
                 {
@@ -387,7 +387,7 @@ fn planned_state_value_for_expr(
             None => state_values.constant(name).cloned(),
         },
         SilExprKind::Call { name, .. } => state_values.signature(name)?.result().cloned(),
-        SilExprKind::Array { type_ref, values } => state_values.plan_ast_type_ref(type_ref, Some(values.len())),
+        SilExprKind::Array { type_ref, values, .. } => state_values.plan_ast_type_ref(type_ref, Some(values.len())),
         SilExprKind::Append { source, args, .. } => planned_state_value_for_expr(source, state_values, bindings)?.appended(args.len()),
         SilExprKind::ArrayIndex { source, .. } => planned_state_value_for_expr(source, state_values, bindings)?.element(),
         _ => None,
@@ -916,16 +916,12 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
     }
 
     fn plain_assignment_expr(&self, statement: &str) -> Option<(Range<usize>, Option<PlannedStateValue>)> {
-        let prefix = "function gen__entry_statement() { ";
-        let source = format!("{prefix}{statement}; }}");
-        let parsed = parse_function_ast(&source).ok()?;
-        let [SilStatement::Assign { name, name_span, expr, .. }] = parsed.body.as_slice() else {
+        let source = format!("{statement};");
+        let SilStatement::Assign { name, expr, .. } = parse_statement_ast(&source).ok()? else {
             return None;
         };
-        let parsed_range = (expr.span.start() - prefix.len())..(expr.span.end() - prefix.len());
-        let binding_end = name_span.end().checked_sub(prefix.len())?;
-        let range = complete_assignment_rhs_range(statement, binding_end, parsed_range.clone()).unwrap_or(parsed_range);
-        let expected_state = self.bindings.state_value(name).cloned();
+        let range = expr.span.start()..expr.span.end();
+        let expected_state = self.bindings.state_value(&name).cloned();
         Some((range, expected_state))
     }
 
@@ -1590,15 +1586,11 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         if let Ok(mut parsed) = parse_expression_ast(expr) {
             collector.visit_expr(&mut parsed);
         } else {
-            let prefix = "function gen__entry_statement() { ";
-            let source = format!("{prefix}{expr}; }}");
-            let mut function = parse_function_ast(&source).map_err(|err| {
+            let source = format!("{expr};");
+            let mut statement = parse_statement_ast(&source).map_err(|err| {
                 self.error(format!("cannot classify state-valued function arguments in expression or statement `{expr}`: {err}"))
             })?;
-            visit_function_mut(&mut collector, &mut function);
-            for site in &mut collector.sites {
-                site.span = (site.span.start - prefix.len())..(site.span.end - prefix.len());
-            }
+            collector.visit_statement(&mut statement);
         }
         self.lower_planned_state_value_sites(expr, collector.sites, indent)
     }
@@ -1894,15 +1886,10 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         if let Ok(mut parsed) = parse_expression_ast(expr) {
             collector.visit_expr(&mut parsed);
         } else {
-            let prefix = "function gen__entry_named_calls() { ";
-            let source = format!("{prefix}{expr}; }}");
-            let mut function =
-                parse_function_ast(&source).map_err(|err| self.error(format!("cannot classify `{name}` calls in `{expr}`: {err}")))?;
-            visit_function_mut(&mut collector, &mut function);
-            for site in &mut collector.sites {
-                site.start -= prefix.len();
-                site.end -= prefix.len();
-            }
+            let source = format!("{expr};");
+            let mut statement = parse_statement_ast(&source)
+                .map_err(|err| self.error(format!("cannot classify `{name}` calls in `{expr}`: {err}")))?;
+            collector.visit_statement(&mut statement);
         }
         collector.sites.sort_by_key(|site| site.start);
         let mut outermost = Vec::<Range<usize>>::new();
@@ -1924,32 +1911,6 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             self.current_statement.map(|span| format!(" at body bytes {span}")).unwrap_or_default(),
         ))
     }
-}
-
-/// Temporary compatibility patch for incomplete Sil AST expression spans.
-///
-/// Sil currently gives a parenthesized root expression its inner semantic span,
-/// which can omit grouping delimiters.
-///
-/// TODO: Remove this range recovery when the Sil AST exposes the complete root
-/// expression span, including grouping delimiters.
-fn complete_assignment_rhs_range(statement: &str, binding_end: usize, parsed_range: Range<usize>) -> Option<Range<usize>> {
-    let before = statement.get(binding_end..parsed_range.start)?;
-    let before_tokens = lex(before).ok()?;
-    let equals = before_tokens.iter().position(|token| matches!(token.kind, TokenKind::Symbol('=')))?;
-    let start = before_tokens[equals + 1..]
-        .iter()
-        .find(|token| !matches!(token.kind, TokenKind::Eof))
-        .map_or(parsed_range.start, |token| binding_end + token.span.start);
-
-    let after = statement.get(parsed_range.end..)?;
-    let end = lex(after)
-        .ok()?
-        .iter()
-        .rfind(|token| !matches!(token.kind, TokenKind::Eof))
-        .map_or(parsed_range.end, |token| parsed_range.end + token.span.end);
-    let range = start..end;
-    parse_expression_ast(statement.get(range.clone())?).ok().map(|_| range)
 }
 
 fn binds_reserved_entry_name<'s, 'r>(
@@ -1974,9 +1935,9 @@ fn contains_physical_state_constructor(source: &str) -> bool {
         detector.visit_expr(&mut expr);
         return detector.found;
     }
-    let wrapped = format!("function gen__physical_state_constructor_check() {{ {source}; }}");
-    if let Ok(mut function) = parse_function_ast(&wrapped) {
-        visit_function_mut(&mut detector, &mut function);
+    let statement_source = format!("{source};");
+    if let Ok(mut statement) = parse_statement_ast(&statement_source) {
+        detector.visit_statement(&mut statement);
     }
     detector.found
 }

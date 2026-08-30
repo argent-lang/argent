@@ -1,20 +1,15 @@
 //! Checked AST-directed lowering of contract-local authored state types.
 //!
-//! Some Sil AST nodes classify a type name without exposing its exact span.
-//! For those nodes, `EquivalentStateLowerer` uses the grammar guarantee that
-//! the name starts the node span. Checked edits, reparsing, and the final audit
-//! make this workaround fail closed if that guarantee changes.
-//!
-//! TODO: Remove the positional span assumptions when the Sil AST exposes the
-//! exact type-name span for every classified type site.
+//! `EquivalentStateLowerer` uses classified types and their base-name starts
+//! from the Sil AST. Checked edits, reparsing, and the final audit keep the
+//! transformation limited to classified type sites.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-use silverscript_lang::ast::visit::{AstVisitorMut, walk_expr_mut, walk_function_mut, walk_param_mut, walk_statement_mut};
-use silverscript_lang::ast::{
-    Expr, ExprKind, FunctionAst, ParamAst, Statement, TypeBase, TypeRef, parse_contract_ast, parse_expression_ast, parse_function_ast,
-};
+use silverscript_lang::ast::visit::AstVisitorMut;
+use silverscript_lang::ast::{TypeBase, TypeRef, parse_contract_ast, parse_expression_ast, parse_function_ast, parse_statement_ast};
+use silverscript_lang::span::Span;
 
 use crate::error::{ArgentError, Result};
 
@@ -64,72 +59,8 @@ impl EquivalentStateLowerer {
 }
 
 impl<'i> AstVisitorMut<'i> for EquivalentStateLowerer {
-    fn visit_function(&mut self, function: &mut FunctionAst<'i>) {
-        for (ty, span) in function.return_types.iter().zip(&function.return_type_spans) {
-            self.push_type(ty, span.start());
-        }
-        walk_function_mut(self, function);
-    }
-
-    fn visit_param(&mut self, param: &mut ParamAst<'i>) {
-        self.push_type(&param.type_ref, param.type_span.start());
-        walk_param_mut(self, param);
-    }
-
-    fn visit_statement(&mut self, statement: &mut Statement<'i>) {
-        match statement {
-            Statement::VariableDefinition { type_ref, type_span, .. } => self.push_type(type_ref, type_span.start()),
-            Statement::TupleAssignment { left_type_ref, left_type_span, right_type_ref, right_type_span, .. } => {
-                self.push_type(left_type_ref, left_type_span.start());
-                self.push_type(right_type_ref, right_type_span.start());
-            }
-            Statement::FunctionCallAssign { bindings, .. } => {
-                for binding in bindings {
-                    self.push_type(&binding.type_ref, binding.type_span.start());
-                }
-            }
-            Statement::StateFunctionCallAssign { target_struct, bindings, span, .. } => {
-                // Sil classifies the target struct and its grammar places that
-                // name at the beginning of this statement.
-                self.push_name(target_struct, span.start());
-                for binding in bindings {
-                    self.push_type(&binding.type_ref, binding.type_span.start());
-                }
-            }
-            Statement::StructDestructure { struct_name, bindings, span, .. } => {
-                // Sil classifies the struct owner and its grammar places that
-                // name at the beginning of this statement.
-                self.push_name(struct_name, span.start());
-                for binding in bindings {
-                    self.push_type(&binding.type_ref, binding.type_span.start());
-                }
-            }
-            Statement::FunctionCall { .. }
-            | Statement::Assign { .. }
-            | Statement::RequireAgeDaa { .. }
-            | Statement::RequireTxDaa { .. }
-            | Statement::RequireTxTime { .. }
-            | Statement::Require { .. }
-            | Statement::Block { .. }
-            | Statement::If { .. }
-            | Statement::For { .. }
-            | Statement::Return { .. }
-            | Statement::Console { .. } => {}
-        }
-        walk_statement_mut(self, statement);
-    }
-
-    fn visit_expr(&mut self, expr: &mut Expr<'i>) {
-        match &expr.kind {
-            ExprKind::Array { type_ref, .. } => {
-                // Sil classifies the array type and its grammar places that
-                // type at the beginning of the expression.
-                self.push_type(type_ref, expr.span.start());
-            }
-            ExprKind::StructLiteral { name, name_span, .. } => self.push_name(name, name_span.start()),
-            _ => {}
-        }
-        walk_expr_mut(self, expr);
+    fn visit_type(&mut self, type_ref: &TypeRef, span: Span<'i>) {
+        self.push_type(type_ref, span.start());
     }
 }
 
@@ -193,6 +124,25 @@ fn lower_function_source(source: &str, state_values: &ContractStateValuePlan) ->
     Ok(lowered)
 }
 
+fn lower_statement_source(source: &str, state_values: &ContractStateValuePlan) -> Result<String> {
+    let mut statement = parse_statement_ast(source)
+        .map_err(|err| ArgentError::new(format!("cannot classify Sil statement for equivalent-State lowering: {err}")))?;
+    let mut lowerer = EquivalentStateLowerer::new(state_values);
+    lowerer.visit_statement(&mut statement);
+    let lowered = apply_checked_edits(source, lowerer.edits)?;
+    let mut reparsed = parse_statement_ast(&lowered)
+        .map_err(|err| ArgentError::new(format!("equivalent-State lowering produced an invalid Sil statement: {err}")))?;
+    let mut audit = EquivalentStateLowerer::new(state_values);
+    audit.visit_statement(&mut reparsed);
+    if let Some(edit) = audit.edits.first() {
+        return Err(ArgentError::new(format!(
+            "equivalent-State lowering left authored type `{}` in a Sil statement at {:?}",
+            edit.expected, edit.span
+        )));
+    }
+    Ok(lowered)
+}
+
 pub(in crate::compiler::codegen) fn lower_function_body_state_types(
     name: &str,
     params: &[String],
@@ -229,15 +179,13 @@ pub(in crate::compiler::codegen) fn lower_statement_state_types(
     statement: &str,
     state_values: &ContractStateValuePlan,
 ) -> Result<String> {
-    let prefix = "function gen__equivalent_state_statement() { ";
-    let suffix = "; }";
-    let source = format!("{prefix}{statement}{suffix}");
-    let lowered = lower_function_source(&source, state_values)?;
+    let suffix = ";";
+    let source = format!("{statement}{suffix}");
+    let lowered = lower_statement_source(&source, state_values)?;
     lowered
-        .strip_prefix(prefix)
-        .and_then(|statement| statement.strip_suffix(suffix))
+        .strip_suffix(suffix)
         .map(str::to_string)
-        .ok_or_else(|| ArgentError::new("equivalent-State statement lowering changed generated wrapper text"))
+        .ok_or_else(|| ArgentError::new("equivalent-State statement lowering changed its terminator"))
 }
 
 pub(in crate::compiler::codegen) fn audit_omitted_equivalent_state_structs(
@@ -258,17 +206,6 @@ pub(in crate::compiler::codegen) fn audit_omitted_equivalent_state_structs(
     }
 
     let mut audit = EquivalentStateLowerer::restricted(state_values, omitted);
-    for state in &contract.structs {
-        for field in &state.fields {
-            audit.push_type(&field.type_ref, field.type_span.start());
-        }
-    }
-    for field in &contract.fields {
-        audit.push_type(&field.type_ref, field.type_span.start());
-    }
-    for constant in &contract.constants {
-        audit.push_type(&constant.type_ref, constant.type_span.start());
-    }
     audit.visit_contract(&mut contract);
     if let Some(edit) = audit.edits.first() {
         return Err(ArgentError::new(format!(
@@ -322,6 +259,23 @@ mod tests {
     }
 
     #[test]
+    fn rewrites_as_cast_target_types() {
+        // Sil restricts which `as` conversions compile, but every parsed cast
+        // target must still participate in source transformation and auditing.
+        let source = r#"function retain(CounterState[] values) : CounterState[] {
+    return values as CounterState[];
+}"#;
+        let lowered = lower_function_source(source, &state_values()).expect("as-cast target lowers through the Sil type visitor");
+
+        assert_eq!(
+            lowered,
+            r#"function retain(State[] values) : State[] {
+    return values as State[];
+}"#
+        );
+    }
+
+    #[test]
     fn checked_edits_fail_closed_on_an_unexpected_slice() {
         let err = apply_checked_edits(
             "OtherState value",
@@ -341,6 +295,20 @@ mod tests {
         let omitted = ["CounterState".to_string()].into_iter().collect();
         let err = audit_omitted_equivalent_state_structs(source, &omitted, &state_values())
             .expect_err("an omitted authored name cannot remain in a struct field type");
+        assert!(err.to_string().contains("omitted authored state `CounterState` remains"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn omitted_name_audit_includes_as_cast_target_types() {
+        let source = r#"contract Inspect() {
+    function retain(State[] values) : State[] {
+        return values as CounterState[];
+    }
+}"#;
+        let omitted = ["CounterState".to_string()].into_iter().collect();
+        let err = audit_omitted_equivalent_state_structs(source, &omitted, &state_values())
+            .expect_err("an omitted authored name cannot remain in an as-cast target");
+
         assert!(err.to_string().contains("omitted authored state `CounterState` remains"), "unexpected error: {err}");
     }
 }

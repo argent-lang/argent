@@ -85,6 +85,8 @@ pub(super) fn prefix_ranges(
             | NameKind::CallTarget
             | NameKind::StateField
             | NameKind::Contract
+            | NameKind::Struct
+            | NameKind::StructField
             | NameKind::ContractField
             | NameKind::Constant => false,
         };

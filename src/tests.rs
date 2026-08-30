@@ -267,7 +267,9 @@ actor Shared owns SharedState {
     }
 }
 
-state GuardState {}
+state GuardState {
+    int marker;
+}
 
 actor Guard owns GuardState {
     entry hold() emits next: Guard {
@@ -294,7 +296,9 @@ app CohortApp {
 import actor SoloApp::Shared from "./shared.ag";
 import app CohortApp from "./shared.ag";
 
-state CtrlState {}
+state CtrlState {
+    int marker;
+}
 
 actor Ctrl owns CtrlState {
     entry inspect(cov_id solo_id, cov_id cohort_id)
@@ -608,6 +612,46 @@ fn global_amount(ChildState value) -> int {
 "#,
             ["ChildState", "ChildDetail"].as_slice(),
             ["function global_amount(ChildState", "function actor_amount(ChildState"].as_slice(),
+        ),
+        (
+            "global-function-body",
+            r#"
+fn global_amount(int amount) -> int {
+    ChildState value = ChildState {
+        amount: amount,
+        detail: ChildDetail { count: amount },
+    };
+    return value.amount;
+}
+"#,
+            "",
+            r#"
+    entry hold() emits none {
+        require(global_amount(1) == 1);
+    }
+"#,
+            ["ChildState", "ChildDetail"].as_slice(),
+            ["function global_amount(int", "ChildState gen__glob_value = ChildState"].as_slice(),
+        ),
+        (
+            "actor-function-body",
+            "",
+            r#"
+    fn actor_amount(int amount) -> int {
+        ChildState value = ChildState {
+            amount: amount,
+            detail: ChildDetail { count: amount },
+        };
+        return value.amount;
+    }
+"#,
+            r#"
+    entry hold() emits none {
+        require(actor_amount(2) == 2);
+    }
+"#,
+            ["ChildState", "ChildDetail"].as_slice(),
+            ["function actor_amount(int", "ChildState value = ChildState"].as_slice(),
         ),
         (
             "constant",
