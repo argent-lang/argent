@@ -76,6 +76,85 @@ fn output_cardinality_requires_matching_become_arity() {
 }
 
 #[test]
+fn singleton_observed_output_rejects_bulk_become_syntax() {
+    let err = emit_inline_error(
+        r#"
+            state ObserverState {
+                int nonce;
+            }
+            state AssetState {
+                int amount;
+            }
+
+            actor Observer owns ObserverState {
+                entry follow(cov_id remote_id)
+                observes remote by remote_id {
+                    outputs {
+                        asset: Asset,
+                    }
+                }
+                emits none {
+                    require remote.outputs become {
+                        asset <- Asset[](AssetState {
+                            amount: 1,
+                        }),
+                    };
+                }
+            }
+
+            actor Asset owns AssetState {}
+
+            app Test {
+                actor Observer;
+                actor Asset;
+            }
+        "#,
+    );
+
+    assert!(err.to_string().contains("must use scalar become syntax"), "unexpected error: {err}");
+}
+
+#[test]
+fn singleton_spawned_output_rejects_bulk_become_syntax() {
+    let err = emit_inline_error(
+        r#"
+            state LauncherState {
+                int launches;
+            }
+            state ChildState {
+                int amount;
+            }
+
+            actor Launcher owns LauncherState {
+                entry launch()
+                spawns children by children_id {
+                    outputs {
+                        child: Child,
+                    }
+                }
+                emits none {
+                    unrestricted(children.outputs.child.value);
+                    require children.outputs become {
+                        child <- Child[](ChildState {
+                            amount: 1,
+                        }),
+                    };
+                }
+            }
+
+            actor Child owns ChildState {}
+
+            app Test {
+                actor Launcher;
+                actor Child;
+            }
+        "#,
+    );
+
+    assert!(err.to_string().contains("must use scalar become syntax"), "unexpected error: {err}");
+}
+
+#[test]
 fn delegate_consume_ranges_are_rejected_at_the_sil_codegen_boundary() {
     let err = emit_inline_error(
         r#"

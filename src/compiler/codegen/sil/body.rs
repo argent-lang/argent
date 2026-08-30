@@ -1301,6 +1301,19 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             if !seen.insert(handle.to_string()) {
                 return Err(self.error(format!("{group_label} `{group_name}` validates output `{handle}` more than once")));
             }
+            match (output.cardinality().is_range(), route.arity) {
+                (true, RouteArity::One) => {
+                    return Err(self.error(format!(
+                        "{group_label} `{group_name}` range output `{handle}` must use bulk become syntax `{handle} <- Actor[](states)`"
+                    )));
+                }
+                (false, RouteArity::Many) => {
+                    return Err(self.error(format!(
+                        "{group_label} `{group_name}` singleton output `{handle}` must use scalar become syntax `{handle} <- Actor(state)`"
+                    )));
+                }
+                _ => {}
+            }
             let context = Self::covenant_output_context(group, output);
             if route.actor != context.actor() {
                 return Err(self.error(format!(
