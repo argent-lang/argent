@@ -166,7 +166,7 @@ fn verify_spawn_template_params(entry_id: &str, entry: &EntryArtifact, index: &S
             }
             continue;
         }
-        if actor_subject == &entry.abi.actor {
+        if actor_subject == &entry.abi.contract {
             if !source_template_params.is_empty() {
                 return Err(invalid_spawn_metadata(
                     entry_id,

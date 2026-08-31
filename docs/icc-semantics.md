@@ -303,14 +303,14 @@ both identities:
 
 ```json
 {
-  "sil_template_hash": "<sil-template-hash>",
+  "sil_template_hash": <sil-template-hash>,
   "actor_type_handle": {
     "state": "AssetCapsule",
     "context_fields": ["gen__wallet_asset_template"],
     "template": {
-      "prefix_hex": "<wider-prefix>",
-      "suffix_hex": "<sil-suffix>",
-      "hash_hex": "<external-handle>"
+      "prefix": <wider-prefix>,
+      "suffix": <sil-suffix>,
+      "hash": <external-handle>
     }
   }
 }

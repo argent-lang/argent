@@ -24,8 +24,8 @@ pub use context::{
 pub use silverscript_abi::ArtifactValue;
 
 use argent_artifact::{
-    ActorArtifact, ActorInterfaceArtifact, ArgentStateArtifact, ArtifactIdentityError, ArtifactVersionError, CardinalityArtifact,
-    CompiledTemplateArtifact, EmitArtifact, EntryArtifact, EntryKindArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact,
+    ActorArtifact, ActorInterfaceArtifact, ActorTemplateArtifact, ArgentStateArtifact, ArtifactIdentityError, ArtifactVersionError,
+    CardinalityArtifact, EmitArtifact, EntryArtifact, EntryKindArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact,
     HiddenParamSubjectArtifact, MAX_ENTRY_RANGE_CARDINALITY, ObserveArtifact, ObservedActorArtifact, ObservedActorSideArtifact,
     ObservedTargetArtifact, RouteTemplateLeafArtifact, RouteTemplateProofArtifact, RuntimeFieldRoleArtifact, RuntimeStatePlanArtifact,
     SilAbiVerificationError, SilContractArtifact, SilEntryArtifact, TemplatePlanError, fixed_runtime_context_value,
@@ -530,63 +530,67 @@ impl CovenantOutput {
 #[derive(Clone, Copy)]
 struct ContractRef<'a> {
     artifact: &'a Artifact,
+    name: &'a str,
     contract: &'a SilContractArtifact,
 }
 
 #[derive(Clone, Copy)]
 enum TemplateRef<'a> {
     Sil(&'a SilContractArtifact),
-    ActorType(&'a CompiledTemplateArtifact),
+    ActorType(&'a ActorTemplateArtifact),
 }
 
 impl TemplateRef<'_> {
     fn prefix_bytes(self) -> BuilderResult<Vec<u8>> {
         match self {
             Self::Sil(contract) => {
-                let script = decode_hex(&contract.compiled.script_hex)?;
-                let (prefix, _, _) =
-                    contract.compiled.script_parts(&script).expect("Sil ABI state span was verified when the artifact was attached");
+                let (prefix, _, _) = contract
+                    .compiled
+                    .script_parts(&contract.compiled.bytecode)
+                    .expect("Sil ABI state span was verified when the artifact was attached");
                 Ok(prefix.to_vec())
             }
-            Self::ActorType(template) => Ok(decode_hex(&template.prefix_hex)?),
+            Self::ActorType(template) => Ok(template.prefix.clone()),
         }
     }
 
     fn suffix_bytes(self) -> BuilderResult<Vec<u8>> {
         match self {
             Self::Sil(contract) => {
-                let script = decode_hex(&contract.compiled.script_hex)?;
-                let (_, _, suffix) =
-                    contract.compiled.script_parts(&script).expect("Sil ABI state span was verified when the artifact was attached");
+                let (_, _, suffix) = contract
+                    .compiled
+                    .script_parts(&contract.compiled.bytecode)
+                    .expect("Sil ABI state span was verified when the artifact was attached");
                 Ok(suffix.to_vec())
             }
-            Self::ActorType(template) => Ok(decode_hex(&template.suffix_hex)?),
+            Self::ActorType(template) => Ok(template.suffix.clone()),
         }
     }
 
     fn hash_bytes(self) -> BuilderResult<Vec<u8>> {
         match self {
-            Self::Sil(contract) => Ok(decode_hex(&contract.compiled.template_hash_hex)?),
-            Self::ActorType(template) => Ok(decode_hex(&template.hash_hex)?),
+            Self::Sil(contract) => Ok(contract.compiled.template_hash.to_vec()),
+            Self::ActorType(template) => Ok(template.hash.to_vec()),
         }
     }
 
     fn prefix_len(self) -> BuilderResult<usize> {
         match self {
             Self::Sil(contract) => Ok(contract.compiled.state_span.offset),
-            Self::ActorType(template) => Ok(decode_hex(&template.prefix_hex)?.len()),
+            Self::ActorType(template) => Ok(template.prefix.len()),
         }
     }
 
     fn suffix_len(self) -> BuilderResult<usize> {
         match self {
             Self::Sil(contract) => {
-                let script = decode_hex(&contract.compiled.script_hex)?;
-                let (_, _, suffix) =
-                    contract.compiled.script_parts(&script).expect("Sil ABI state span was verified when the artifact was attached");
+                let (_, _, suffix) = contract
+                    .compiled
+                    .script_parts(&contract.compiled.bytecode)
+                    .expect("Sil ABI state span was verified when the artifact was attached");
                 Ok(suffix.len())
             }
-            Self::ActorType(template) => Ok(decode_hex(&template.suffix_hex)?.len()),
+            Self::ActorType(template) => Ok(template.suffix.len()),
         }
     }
 }
@@ -734,12 +738,11 @@ impl<'a> TxBuilder<'a> {
         contract_ref: ContractRef<'a>,
         source_state: BTreeMap<String, ArtifactValue>,
     ) -> BuilderResult<Vec<u8>> {
-        let state = self.runtime_state_values(contract_ref.artifact, contract_ref.contract, source_state)?;
-        let state_script = encode_runtime_state_script(&contract_ref.contract.runtime_state, &state)?;
+        let state = self.runtime_state_values(contract_ref.artifact, contract_ref.name, contract_ref.contract, source_state)?;
+        let state_script = encode_runtime_state_script(&contract_ref.artifact.sil_abi, &contract_ref.contract.runtime_state, &state)?;
         let compiled = &contract_ref.contract.compiled;
-        let compiled_script = decode_hex(&compiled.script_hex)?;
         let (prefix, _, suffix) =
-            compiled.script_parts(&compiled_script).expect("Sil ABI state span was verified when the artifact was attached");
+            compiled.script_parts(&compiled.bytecode).expect("Sil ABI state span was verified when the artifact was attached");
         let mut script = prefix.to_vec();
         script.extend_from_slice(&state_script);
         script.extend_from_slice(suffix);
@@ -792,13 +795,14 @@ impl<'a> TxBuilder<'a> {
 
     fn resolve_hidden_args_in_artifact(
         &self,
-        artifact: &'a Artifact,
-        contract: &'a SilContractArtifact,
+        contract_ref: ContractRef<'a>,
         artifact_entry: &'a EntryArtifact,
         input_source_state: &BTreeMap<String, ArtifactValue>,
         template_selectors: &BTreeMap<String, String>,
         contexts: HiddenArgContexts<'_>,
     ) -> BuilderResult<Vec<ArtifactValue>> {
+        let artifact = contract_ref.artifact;
+        let contract = contract_ref.contract;
         let mut args = Vec::with_capacity(artifact_entry.hidden_params.len());
         for hidden in &artifact_entry.hidden_params {
             args.push(match &hidden.purpose {
@@ -845,9 +849,7 @@ impl<'a> TxBuilder<'a> {
                 }
                 HiddenParamPurposeArtifact::RouteTemplateLeaf => {
                     let actor = hidden_actor_subject(hidden)?;
-                    ArtifactValue::Bytes(decode_hex(
-                        &self.contract_ref_in_artifact(artifact, actor)?.contract.compiled.template_hash_hex,
-                    )?)
+                    ArtifactValue::Bytes(self.contract_ref_in_artifact(artifact, actor)?.contract.compiled.template_hash.to_vec())
                 }
                 HiddenParamPurposeArtifact::RouteTemplateProof => {
                     let actor = hidden_actor_subject(hidden)?;
@@ -877,7 +879,7 @@ impl<'a> TxBuilder<'a> {
                     )?)
                 }
                 HiddenParamPurposeArtifact::StateExpansionPreimage => {
-                    self.state_expansion_preimage_arg(artifact, contract, hidden, input_source_state)?
+                    self.state_expansion_preimage_arg(artifact, contract_ref.name, contract, hidden, input_source_state)?
                 }
                 HiddenParamPurposeArtifact::ObservedOutputFieldValue => self.observed_output_field_arg(hidden, contexts.observed)?,
             });
@@ -995,7 +997,7 @@ impl<'a> TxBuilder<'a> {
         if handle.state != storage_state || !supports_view {
             return Err(BuilderError::MissingActorTypeHandle { actor: actor.to_string(), state: state.to_string() });
         }
-        Ok(decode_hex(&handle.template.hash_hex)?)
+        Ok(handle.template.hash.to_vec())
     }
 
     fn validate_actor_interface(&self, observing_artifact: &Artifact, app: &str, actor: &str) -> BuilderResult<()> {
@@ -1037,7 +1039,9 @@ impl<'a> TxBuilder<'a> {
 
     fn contract_ref_in_artifact(&self, artifact: &'a Artifact, name: &str) -> BuilderResult<ContractRef<'a>> {
         let contract = self.contract_in_artifact(artifact, name)?;
-        Ok(ContractRef { artifact, contract })
+        let name =
+            artifact.sil_abi.contracts.get_key_value(name).map(|(name, _)| name.as_str()).expect("contract lookup just succeeded");
+        Ok(ContractRef { artifact, name, contract })
     }
 
     fn contract_ref_in_app(&self, app: &str, name: &str) -> BuilderResult<ContractRef<'a>> {
@@ -1067,17 +1071,15 @@ impl<'a> TxBuilder<'a> {
             if imported_app == primary_artifact.app {
                 return Ok(TemplateRef::Sil(contract_ref.contract));
             }
+            let actor_state = self.actor_ref_in_artifact(contract_ref.artifact, contract_ref.name)?.actor.state.clone();
             let template = contract_ref
                 .artifact
                 .argent
                 .template_plan
                 .templates
                 .iter()
-                .find(|template| template.actor == contract_ref.contract.name)
-                .ok_or_else(|| BuilderError::MissingActorTypeHandle {
-                    actor: contract_ref.contract.name.clone(),
-                    state: contract_ref.contract.runtime_state.source.clone(),
-                })?;
+                .find(|template| template.actor == contract_ref.name)
+                .ok_or_else(|| BuilderError::MissingActorTypeHandle { actor: contract_ref.name.to_string(), state: actor_state })?;
             return Ok(TemplateRef::ActorType(&template.actor_type_handle.template));
         }
         let open_state = match &hidden.subject {
@@ -1098,14 +1100,15 @@ impl<'a> TxBuilder<'a> {
         let Some(open_state) = open_state else {
             return Ok(TemplateRef::Sil(contract_ref.contract));
         };
+        let actor_state = &self.actor_ref_in_artifact(contract_ref.artifact, contract_ref.name)?.actor.state;
         let expanded_base = contract_ref
             .artifact
             .argent
             .state_expansions
             .iter()
-            .find(|expansion| expansion.state == contract_ref.contract.runtime_state.source)
+            .find(|expansion| expansion.state == *actor_state)
             .map(|expansion| expansion.base.as_str());
-        if expanded_base.is_none() && contract_ref.contract.runtime_state.source == open_state {
+        if expanded_base.is_none() && actor_state == open_state {
             return Ok(TemplateRef::Sil(contract_ref.contract));
         }
         let template = contract_ref
@@ -1114,11 +1117,11 @@ impl<'a> TxBuilder<'a> {
             .template_plan
             .templates
             .iter()
-            .find(|template| template.actor == contract_ref.contract.name)
+            .find(|template| template.actor == contract_ref.name)
             .map(|template| &template.actor_type_handle)
             .filter(|handle| handle.state == open_state)
             .ok_or_else(|| BuilderError::MissingActorTypeHandle {
-                actor: contract_ref.contract.name.clone(),
+                actor: contract_ref.name.to_string(),
                 state: open_state.to_string(),
             })?;
         Ok(TemplateRef::ActorType(&template.template))
@@ -1234,7 +1237,7 @@ impl<'a> TxBuilder<'a> {
         side: ObservedActorSideArtifact,
         handle: &str,
     ) -> BuilderResult<&'a ObservedActorArtifact> {
-        let observe = self.observe(&entry.abi.actor, &entry.name, entry, observe_name)?;
+        let observe = self.observe(&entry.abi.contract, &entry.name, entry, observe_name)?;
         let actors = match side {
             ObservedActorSideArtifact::Input => &observe.inputs,
             ObservedActorSideArtifact::Output => &observe.outputs,
@@ -1422,18 +1425,17 @@ impl<'a> TxBuilder<'a> {
     fn runtime_state_values(
         &self,
         artifact: &'a Artifact,
+        contract_name: &str,
         contract: &SilContractArtifact,
         mut source_state: BTreeMap<String, ArtifactValue>,
     ) -> BuilderResult<BTreeMap<String, ArtifactValue>> {
         let mut role_by_field = BTreeMap::new();
-        if let Some(runtime_plan) = self.runtime_state_plan(artifact, &contract.name) {
-            if runtime_plan.source != contract.runtime_state.source {
+        let actor_state = &self.actor_ref_in_artifact(artifact, contract_name)?.actor.state;
+        if let Some(runtime_plan) = self.runtime_state_plan(artifact, contract_name) {
+            if runtime_plan.source != *actor_state {
                 return Err(BuilderError::RuntimeStatePlanMismatch {
-                    contract: contract.name.clone(),
-                    message: format!(
-                        "source `{}` does not match Sil ABI source `{}`",
-                        runtime_plan.source, contract.runtime_state.source
-                    ),
+                    contract: contract_name.to_string(),
+                    message: format!("source `{}` does not match actor state `{actor_state}`", runtime_plan.source),
                 });
             }
             let sil_fields_by_name =
@@ -1441,13 +1443,13 @@ impl<'a> TxBuilder<'a> {
             for field_role in &runtime_plan.field_roles {
                 if !sil_fields_by_name.contains(field_role.name.as_str()) {
                     return Err(BuilderError::RuntimeStatePlanMismatch {
-                        contract: contract.name.clone(),
+                        contract: contract_name.to_string(),
                         message: format!("field role `{}` does not match any Sil ABI runtime field", field_role.name),
                     });
                 }
                 if role_by_field.insert(field_role.name.as_str(), field_role).is_some() {
                     return Err(BuilderError::RuntimeStatePlanMismatch {
-                        contract: contract.name.clone(),
+                        contract: contract_name.to_string(),
                         message: format!("field role `{}` is duplicated", field_role.name),
                     });
                 }
@@ -1458,11 +1460,15 @@ impl<'a> TxBuilder<'a> {
         for field in &contract.runtime_state.fields {
             match role_by_field.get(field.name.as_str()) {
                 None => {
-                    let value = if let Some(memory_state) =
-                        state_expansion_memory_for_field(artifact, &contract.runtime_state.source, &field.name)
-                    {
-                        let payload =
-                            self.state_expansion_preimage_payload(artifact, contract, &field.name, memory_state, &mut source_state)?;
+                    let value = if let Some(memory_state) = state_expansion_memory_for_field(artifact, actor_state, &field.name) {
+                        let payload = self.state_expansion_preimage_payload(
+                            artifact,
+                            contract_name,
+                            contract,
+                            &field.name,
+                            memory_state,
+                            &mut source_state,
+                        )?;
                         ArtifactValue::Bytes(blake3_32(&payload))
                     } else {
                         source_state.remove(&field.name).ok_or_else(|| CodecError::MissingField(field.name.clone()))?
@@ -1472,7 +1478,7 @@ impl<'a> TxBuilder<'a> {
                 Some(field_role) => {
                     if source_state.contains_key(&field.name) {
                         return Err(BuilderError::HiddenRuntimeFieldProvided {
-                            contract: contract.name.clone(),
+                            contract: contract_name.to_string(),
                             field: field.name.clone(),
                         });
                     }
@@ -1482,7 +1488,7 @@ impl<'a> TxBuilder<'a> {
                         | RuntimeFieldRoleArtifact::TemplateDigest { .. }
                         | RuntimeFieldRoleArtifact::TemplateRoot { .. } => {
                             let runtime_plan = self
-                                .runtime_state_plan(artifact, &contract.name)
+                                .runtime_state_plan(artifact, contract_name)
                                 .expect("generated field roles come from a runtime state plan");
                             values.insert(
                                 field.name.clone(),
@@ -1506,6 +1512,7 @@ impl<'a> TxBuilder<'a> {
     fn state_expansion_preimage_arg(
         &self,
         artifact: &'a Artifact,
+        contract_name: &str,
         contract: &SilContractArtifact,
         hidden: &HiddenParamArtifact,
         source_state: &BTreeMap<String, ArtifactValue>,
@@ -1513,14 +1520,22 @@ impl<'a> TxBuilder<'a> {
         let HiddenParamSubjectArtifact::StateExpansion { state, field, memory_state } = &hidden.subject else {
             return Err(BuilderError::UnexpectedHiddenSubject { param: hidden.name.clone(), expected: "state expansion" });
         };
-        if state != &contract.runtime_state.source {
+        let actor_state = &self.actor_ref_in_artifact(artifact, contract_name)?.actor.state;
+        if state != actor_state {
             return Err(BuilderError::UnexpectedHiddenSubject {
                 param: hidden.name.clone(),
                 expected: "current contract state expansion",
             });
         }
         let mut source_state = source_state.clone();
-        Ok(ArtifactValue::Bytes(self.state_expansion_preimage_payload(artifact, contract, field, memory_state, &mut source_state)?))
+        Ok(ArtifactValue::Bytes(self.state_expansion_preimage_payload(
+            artifact,
+            contract_name,
+            contract,
+            field,
+            memory_state,
+            &mut source_state,
+        )?))
     }
 
     fn observed_output_field_arg(
@@ -1540,7 +1555,8 @@ impl<'a> TxBuilder<'a> {
             handle: handle.clone(),
         })?;
         let contract_ref = self.contract_ref_in_app(&context.app, &output.actor)?;
-        if !state_satisfies(contract_ref.artifact, &contract_ref.contract.runtime_state.source, state) {
+        let actor_state = &self.actor_ref_in_artifact(contract_ref.artifact, contract_ref.name)?.actor.state;
+        if !state_satisfies(contract_ref.artifact, actor_state, state) {
             return Err(BuilderError::ObservedStateLayoutMismatch {
                 observe: observe.clone(),
                 side: Side::Out,
@@ -1549,13 +1565,15 @@ impl<'a> TxBuilder<'a> {
                 actor: output.actor.clone(),
             });
         }
-        let values = self.runtime_state_values(contract_ref.artifact, contract_ref.contract, output.state.clone())?;
+        let values =
+            self.runtime_state_values(contract_ref.artifact, contract_ref.name, contract_ref.contract, output.state.clone())?;
         values.get(field).cloned().ok_or_else(|| CodecError::MissingField(field.clone()).into())
     }
 
     fn state_expansion_preimage_payload(
         &self,
         artifact: &'a Artifact,
+        contract_name: &str,
         contract: &SilContractArtifact,
         digest_field: &str,
         memory_state: &str,
@@ -1564,7 +1582,7 @@ impl<'a> TxBuilder<'a> {
         let memory = state_artifact(artifact, memory_state)?;
         let Some(ArtifactValue::Object(fields)) = source_state.remove(digest_field) else {
             return Err(BuilderError::MissingStateExpansionPreimage {
-                contract: contract.name.clone(),
+                contract: contract_name.to_string(),
                 field: digest_field.to_string(),
                 memory_state: memory_state.to_string(),
             });
@@ -1572,7 +1590,7 @@ impl<'a> TxBuilder<'a> {
         for field in &memory.fields {
             if !fields.contains_key(&field.name) {
                 return Err(BuilderError::MissingStateExpansionPreimage {
-                    contract: contract.name.clone(),
+                    contract: contract_name.to_string(),
                     field: digest_field.to_string(),
                     memory_state: memory_state.to_string(),
                 });
@@ -1653,7 +1671,7 @@ impl<'a> TxBuilder<'a> {
         for entry in &route_table.entries {
             match &entry.leaf {
                 RouteTemplateLeafArtifact::Template { actor, .. } => {
-                    table.extend_from_slice(&decode_hex(&self.contract_in_artifact(artifact, actor)?.compiled.template_hash_hex)?);
+                    table.extend_from_slice(&self.contract_in_artifact(artifact, actor)?.compiled.template_hash);
                 }
                 RouteTemplateLeafArtifact::RouteFamily { family_id, .. } => {
                     return Err(BuilderError::NestedRouteFamilyTableLeaf {
@@ -1982,8 +2000,8 @@ pub fn covenant_engine_flags() -> EngineFlags {
 #[cfg(test)]
 mod tests {
     use argent_artifact::{
-        CompiledContractArtifact, FieldArtifact, RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, StateArtifact,
-        StateSpanArtifact, TypeArtifact,
+        CompiledContractArtifact, FieldArtifact, RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, StateSpanArtifact,
+        StructArtifact, TypeArtifact,
     };
     use kaspa_consensus_core::tx::{ScriptPublicKey, TransactionId};
     use kaspa_txscript::opcodes::codes::OpFalse;
@@ -2018,24 +2036,31 @@ mod tests {
     fn expansion_commitment_matches_kcc1_virtual_element_vector() {
         let abi = SilAbiArtifact {
             schema_version: SIL_ABI_SCHEMA_VERSION,
-            states: vec![StateArtifact {
-                name: "VirtualElement".to_string(),
-                fields: vec![
-                    FieldArtifact { name: "counter".to_string(), ty: TypeArtifact::Int },
-                    FieldArtifact { name: "enabled".to_string(), ty: TypeArtifact::Bool },
-                ],
-            }],
-            contracts: vec![SilContractArtifact {
-                name: "Test".to_string(),
-                source_path: "sil/Test.sil".to_string(),
-                runtime_state: RuntimeStateArtifact { source: "State".to_string(), fields: Vec::new() },
-                entries: Vec::new(),
-                compiled: CompiledContractArtifact {
-                    script_hex: String::new(),
-                    template_hash_hex: String::new(),
-                    state_span: StateSpanArtifact { offset: 0, len: 0 },
+            compiler_version: "test".to_string(),
+            structs: BTreeMap::from([(
+                "VirtualElement".to_string(),
+                StructArtifact {
+                    fields: vec![
+                        FieldArtifact { name: "counter".to_string(), ty: TypeArtifact::Int },
+                        FieldArtifact { name: "enabled".to_string(), ty: TypeArtifact::Bool },
+                    ],
                 },
-            }],
+            )]),
+            contracts: BTreeMap::from([(
+                "Test".to_string(),
+                SilContractArtifact {
+                    source_path: "sil/Test.sil".to_string(),
+                    runtime_state: RuntimeStateArtifact { source: "State".to_string(), fields: Vec::new() },
+                    entries: BTreeMap::new(),
+                    cov_decl_to_abi: BTreeMap::new(),
+                    delegate_entry_abi: None,
+                    compiled: CompiledContractArtifact {
+                        bytecode: Vec::new(),
+                        template_hash: [0; 32],
+                        state_span: StateSpanArtifact { offset: 0, len: 0 },
+                    },
+                },
+            )]),
         };
         let values =
             BTreeMap::from([("counter".to_string(), ArtifactValue::Int(-5)), ("enabled".to_string(), ArtifactValue::Bool(true))]);

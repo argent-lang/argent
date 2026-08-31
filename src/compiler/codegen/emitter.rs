@@ -11,8 +11,8 @@ use crate::codec::encode_hex;
 use crate::compiler::model::link::LinkedActor;
 use crate::compiler::model::{
     ClauseActorTypeRef, CovenantGroup, CovenantIdSource, EntryInteraction, EntryModel, GeneratedFieldId, InteractionLocation,
-    InteractionSource, Model, PhysicalFieldId, PhysicalStateLayout, ResolvedRoute, ResolvedSuccessor, RouteFamily, SourceStateId,
-    StaticActorTarget, actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding,
+    InteractionSource, Model, PhysicalFieldId, PhysicalStateLayout, ResolvedRoute, ResolvedSuccessor, RouteFamily, SilStateType,
+    SourceStateId, StaticActorTarget, actor_enum_variant_const_expr, clause_actor_type_ref, observed_is_dynamic_binding,
     observed_open_state_for_decl, packed_field_len, resolve_observe_covenant_id_source, source_actor_type_state_for_expr,
     spawn_target_state,
 };
@@ -23,7 +23,7 @@ use crate::compiler::syntax::word;
 use crate::compiler::syntax::*;
 use crate::error::{ArgentError, Result};
 use silverscript_lang::ast::Expr as SilExpr;
-use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract};
+use silverscript_lang::compiler::{COMPILER_VERSION, CompileOptions, compile_contract, sil_abi_artifact_from_compiled};
 
 use super::sil::{
     ContractStateValuePlan, EntryInputReferencePlan, EntryInputReferenceView, GlobalFunctionLowerer,
@@ -1138,7 +1138,7 @@ pub(super) struct ImportedTemplateSpec {
 
 impl ImportedTemplateSpec {
     pub(super) fn from_linked(actor: &LinkedActor) -> Self {
-        Self { app: actor.app.clone(), actor: actor.actor.clone(), hash_hex: actor.template.hash_hex.clone() }
+        Self { app: actor.app.clone(), actor: actor.actor.clone(), hash_hex: encode_hex(&actor.template.hash) }
     }
 
     pub(super) fn actor_reference(&self) -> String {
@@ -1935,7 +1935,7 @@ fn emit_manifest(program: &Program, model: &Model<'_>) -> String {
 
 fn emit_artifact_json(program: &Program, model: &Model<'_>, actor_sil: &BTreeMap<String, String>) -> Result<String> {
     let artifact = emit_artifact(program, model, actor_sil)?;
-    let mut json = serde_json::to_string_pretty(&artifact).map_err(|err| ArgentError::new(err.to_string()))?;
+    let mut json = silverscript_abi::to_pretty_json(&artifact).map_err(|err| ArgentError::new(err.to_string()))?;
     json.push('\n');
     Ok(json)
 }
@@ -1961,32 +1961,6 @@ fn emit_artifact(program: &Program, model: &Model<'_>, actor_sil: &BTreeMap<Stri
                 .collect(),
         })
         .collect::<Vec<_>>();
-    // Signature structs describe authored values. Each contract's physical
-    // `State` layout is recorded separately in its runtime-state ABI.
-    let states = model
-        .all_states()
-        .map(|state| {
-            let storage_state = model.storage_state(&state.name).expect("state expansions are valid after model validation");
-            StateArtifact {
-                name: state.name.clone(),
-                fields: storage_state
-                    .fields
-                    .iter()
-                    .map(|field| {
-                        let ty = state
-                            .expansion
-                            .as_ref()
-                            .and_then(|expansion| expansion.digests.iter().find(|digest| digest.field == field.name))
-                            .map_or_else(
-                                || type_artifact(&field.ty, model),
-                                |digest| TypeArtifact::Struct { name: digest.state.clone() },
-                            );
-                        FieldArtifact { name: field.name.clone(), ty }
-                    })
-                    .collect(),
-            }
-        })
-        .collect::<Vec<_>>();
     let state_expansions = model
         .all_states()
         .filter_map(|state| {
@@ -2002,7 +1976,7 @@ fn emit_artifact(program: &Program, model: &Model<'_>, actor_sil: &BTreeMap<Stri
         })
         .collect::<Vec<_>>();
 
-    let sil_contracts = model.actors.iter().map(|actor| sil_contract_artifact(actor, model, actor_sil)).collect::<Result<Vec<_>>>()?;
+    let sil_abi = sil_abi_artifact(model, actor_sil)?;
     let actor_enums = model
         .actor_enums
         .values()
@@ -2013,7 +1987,7 @@ fn emit_artifact(program: &Program, model: &Model<'_>, actor_sil: &BTreeMap<Stri
         })
         .collect::<Vec<_>>();
     let argent_actors = model.actors.iter().map(|actor| actor_artifact(actor, model)).collect::<Result<Vec<_>>>()?;
-    let template_plan = template_plan_artifact(model, &templates, &argent_actors, &sil_contracts, actor_sil)?;
+    let template_plan = template_plan_artifact(model, &templates, &argent_actors, &sil_abi.contracts, actor_sil)?;
     let interfaces = interface_set_artifact(model)?;
 
     let mut artifact = Artifact {
@@ -2033,7 +2007,7 @@ fn emit_artifact(program: &Program, model: &Model<'_>, actor_sil: &BTreeMap<Stri
             actor_enums,
             actors: argent_actors,
         },
-        sil_abi: SilAbiArtifact { schema_version: SIL_ABI_SCHEMA_VERSION, states, contracts: sil_contracts },
+        sil_abi,
     };
     artifact.verify_sil_abi().map_err(|err| ArgentError::new(format!("invalid Sil ABI: {err}")))?;
     artifact.verify_template_plan().map_err(|err| ArgentError::new(format!("invalid template plan receipt: {err}")))?;
@@ -2104,18 +2078,18 @@ fn template_ref_artifact(actor: &str) -> TemplateRefArtifact {
 }
 
 #[derive(Debug)]
-struct TemplatePlanTemplateDraft {
+struct TemplateReceiptDraft {
     id: String,
     actor: String,
     contract: String,
     symbol: String,
-    sil_template_hash: String,
-    compiled_template: CompiledTemplateArtifact,
+    sil_template_hash: [u8; 32],
+    compiled_template: ActorTemplateArtifact,
 }
 
 #[derive(Debug)]
 struct TemplatePlanDraft {
-    templates: Vec<TemplatePlanTemplateDraft>,
+    templates: Vec<TemplateReceiptDraft>,
     templates_by_id: BTreeMap<String, usize>,
     templates_by_actor: BTreeMap<String, usize>,
     runtime_states: Vec<RuntimeStatePlanArtifact>,
@@ -2129,7 +2103,7 @@ impl TemplateHashLookup for TemplatePlanDraft {
         self.templates_by_id.get(id).map(|index| &self.templates[*index]).map(|template| TemplateHashRef {
             id: &template.id,
             actor: &template.actor,
-            hash_hex: &template.sil_template_hash,
+            hash: &template.sil_template_hash,
         })
     }
 
@@ -2137,7 +2111,7 @@ impl TemplateHashLookup for TemplatePlanDraft {
         self.templates_by_actor.get(actor).map(|index| &self.templates[*index]).map(|template| TemplateHashRef {
             id: &template.id,
             actor: &template.actor,
-            hash_hex: &template.sil_template_hash,
+            hash: &template.sil_template_hash,
         })
     }
 }
@@ -2160,22 +2134,21 @@ fn template_plan_artifact(
     model: &Model<'_>,
     templates: &[TemplateRefArtifact],
     actors: &[ActorArtifact],
-    sil_contracts: &[SilContractArtifact],
+    sil_contracts: &BTreeMap<String, SilContractArtifact>,
     actor_sil: &BTreeMap<String, String>,
 ) -> Result<TemplatePlanArtifact> {
-    let sil_by_name = sil_contracts.iter().map(|contract| (contract.name.as_str(), contract)).collect::<BTreeMap<_, _>>();
     let templates = templates
         .iter()
         .map(|template| {
-            let contract = sil_by_name
-                .get(template.actor.as_str())
+            let contract = sil_contracts
+                .get(&template.actor)
                 .ok_or_else(|| ArgentError::new(format!("missing Sil ABI contract for template actor `{}`", template.actor)))?;
-            Ok(TemplatePlanTemplateDraft {
+            Ok(TemplateReceiptDraft {
                 id: template.id.clone(),
                 actor: template.actor.clone(),
-                contract: contract.name.clone(),
+                contract: template.actor.clone(),
                 symbol: template.symbol.clone(),
-                sil_template_hash: contract.compiled.template_hash_hex.clone(),
+                sil_template_hash: contract.compiled.template_hash,
                 compiled_template: extract_sil_template(&contract.compiled)?,
             })
         })
@@ -2208,7 +2181,7 @@ fn template_plan_artifact(
         for entry in &actor.entries {
             for param in &entry.hidden_params {
                 if seen.insert(param.recipe_id.clone()) {
-                    witness_recipes.push(TemplateWitnessRecipeArtifact {
+                    witness_recipes.push(WitnessRecipeArtifact {
                         id: param.recipe_id.clone(),
                         template_id: match &param.subject {
                             HiddenParamSubjectArtifact::Actor { actor } if model.app_actors.contains(actor) => {
@@ -2241,7 +2214,7 @@ fn template_plan_artifact(
         .templates
         .into_iter()
         .zip(handles)
-        .map(|(template, actor_type_handle)| TemplatePlanTemplateArtifact {
+        .map(|(template, actor_type_handle)| TemplateReceiptArtifact {
             id: template.id,
             actor: template.actor,
             contract: template.contract,
@@ -2261,7 +2234,7 @@ fn template_plan_artifact(
 }
 
 fn actor_type_handle_artifact(
-    template: &TemplatePlanTemplateDraft,
+    template: &TemplateReceiptDraft,
     plan: &TemplatePlanDraft,
     model: &Model<'_>,
     actor_sil: &BTreeMap<String, String>,
@@ -2300,7 +2273,15 @@ fn actor_type_handle_artifact(
     };
     let context_state_values =
         context_fields.iter().cloned().zip(context_values.iter().cloned().map(ArtifactValue::Bytes)).collect::<BTreeMap<_, _>>();
-    let context_script = crate::codec::encode_runtime_state_script(&context_state, &context_state_values)
+    // Fixed route context contains only byte leaves, so it needs no named
+    // struct definitions from the contract ABI.
+    let context_abi = SilAbiArtifact {
+        schema_version: SIL_ABI_SCHEMA_VERSION,
+        compiler_version: String::new(),
+        structs: BTreeMap::new(),
+        contracts: BTreeMap::new(),
+    };
+    let context_script = silverscript_abi::encode_runtime_state_script(&context_abi, &context_state, &context_state_values)
         .map_err(|err| ArgentError::new(format!("cannot encode actor_type<{source_state}> context: {err}")))?;
 
     let mut args = context_values.into_iter().map(SilExpr::from).collect::<Vec<_>>();
@@ -2319,7 +2300,7 @@ fn actor_type_handle_artifact(
     let compiled = compile_contract(sil, &args, CompileOptions::default()).map_err(|err| {
         ArgentError::new(format!("generated Silverscript for actor `{}` failed to compile its source-state cut: {err}", actor.name))
     })?;
-    if encode_hex(&compiled.template_hash()) != template.sil_template_hash {
+    if compiled.template_hash() != template.sil_template_hash {
         return Err(ArgentError::new(format!("actor `{}` Sil template changed while resolving its capsule context", actor.name)));
     }
     if compiled.ast.fields.len() != runtime_fields.len() {
@@ -2342,11 +2323,7 @@ fn actor_type_handle_artifact(
     Ok(ActorTypeHandleArtifact {
         state: source_state.to_string(),
         context_fields,
-        template: CompiledTemplateArtifact {
-            prefix_hex: encode_hex(prefix),
-            suffix_hex: encode_hex(suffix),
-            hash_hex: encode_hex(&hash),
-        },
+        template: ActorTemplateArtifact { prefix: prefix.to_vec(), suffix: suffix.to_vec(), hash },
     })
 }
 
@@ -2367,13 +2344,12 @@ fn route_template_families_artifact(model: &Model<'_>) -> Vec<RouteTemplateFamil
 
 fn route_template_tables_artifact(
     runtime_states: &[RuntimeStatePlanArtifact],
-    sil_contracts: &[SilContractArtifact],
+    sil_contracts: &BTreeMap<String, SilContractArtifact>,
 ) -> Result<Vec<RouteTemplateTableArtifact>> {
     let mut tables = BTreeMap::<String, RouteTemplateTableArtifact>::new();
-    let sil_by_name = sil_contracts.iter().map(|contract| (contract.name.as_str(), contract)).collect::<BTreeMap<_, _>>();
     for runtime_state in runtime_states {
-        let contract = sil_by_name
-            .get(runtime_state.contract.as_str())
+        let contract = sil_contracts
+            .get(&runtime_state.contract)
             .ok_or_else(|| ArgentError::new(format!("missing Sil ABI contract for runtime state `{}`", runtime_state.contract)))?;
         for field in &runtime_state.field_roles {
             let sil_field = contract.runtime_state.fields.iter().find(|sil_field| sil_field.name == field.name).ok_or_else(|| {
@@ -2467,39 +2443,164 @@ fn actor_artifact(actor: &ActorDecl, model: &Model<'_>) -> Result<ActorArtifact>
     Ok(ActorArtifact {
         name: actor.name.clone(),
         state: actor.state.clone(),
-        abi: ActorAbiRefArtifact { actor: actor.name.clone() },
+        abi: ActorAbiRefArtifact { contract: actor.name.clone() },
         leader_for,
         entries,
     })
 }
 
-fn sil_contract_artifact(actor: &ActorDecl, model: &Model<'_>, actor_sil: &BTreeMap<String, String>) -> Result<SilContractArtifact> {
-    let sil = actor_sil
-        .get(&actor.name)
-        .ok_or_else(|| ArgentError::new(format!("missing generated Silverscript for actor `{}`", actor.name)))?;
-    let args = constructor_args_for_actor(actor, model)?;
-    let compiled = compile_contract(sil, &args, CompileOptions::default())
-        .map_err(|err| ArgentError::new(format!("generated Silverscript for actor `{}` failed to compile: {err}", actor.name)))?;
-    let entries = actor
-        .entries
-        .iter()
-        .map(|entry| {
-            // Sil owns canonical function signatures and exposes the exact
-            // dispatch tag used by the compiled code.
-            let dispatch_tag = compiled.dispatch_tags.get(&entry.name).copied().ok_or_else(|| {
-                ArgentError::new(format!("generated Silverscript for actor `{}` has no entry `{}`", actor.name, entry.name))
-            })?;
-            Ok(sil_entry_artifact(actor, entry, model, dispatch_tag))
-        })
-        .collect::<Result<Vec<_>>>()?;
+fn sil_abi_artifact(model: &Model<'_>, actor_sil: &BTreeMap<String, String>) -> Result<SilAbiArtifact> {
+    let mut combined = SilAbiArtifact {
+        schema_version: SIL_ABI_SCHEMA_VERSION,
+        compiler_version: COMPILER_VERSION.to_string(),
+        structs: BTreeMap::new(),
+        contracts: BTreeMap::new(),
+    };
 
-    Ok(SilContractArtifact {
-        name: actor.name.clone(),
-        source_path: format!("sil/{}.sil", actor.name),
-        runtime_state: RuntimeStateArtifact { source: actor.state.clone(), fields: runtime_state_fields_for_actor(actor, model)? },
-        entries,
-        compiled: compiled_contract_artifact(&compiled)?,
-    })
+    for actor in &model.actors {
+        let sil = actor_sil
+            .get(&actor.name)
+            .ok_or_else(|| ArgentError::new(format!("missing generated Silverscript for actor `{}`", actor.name)))?;
+        let args = constructor_args_for_actor(actor, model)?;
+        let compiled = compile_contract(sil, &args, CompileOptions::default())
+            .map_err(|err| ArgentError::new(format!("generated Silverscript for actor `{}` failed to compile: {err}", actor.name)))?;
+        let mut artifact = sil_abi_artifact_from_compiled(&compiled, &args)
+            .map_err(|err| ArgentError::new(format!("cannot build Sil ABI for actor `{}`: {err}", actor.name)))?;
+        if artifact.contract(&actor.name).is_none() {
+            return Err(ArgentError::new(format!("generated Sil ABI has no contract for actor `{}`", actor.name)));
+        }
+        canonicalize_sil_abi_struct_state_refs(actor, model, &mut artifact)?;
+        combined = merge_sil_abi_artifacts(combined, artifact)?;
+    }
+
+    Ok(combined)
+}
+
+/// Remove contract-local `State` references from globally stored Sil structs.
+///
+/// Argent emits such a reference only when the actor's authored state and
+/// physical `State` layouts are identical. Preserve that layout under its
+/// stable Argent name before artifacts from several contracts are merged.
+fn canonicalize_sil_abi_struct_state_refs(actor: &ActorDecl, model: &Model<'_>, artifact: &mut SilAbiArtifact) -> Result<()> {
+    if !artifact.structs.values().any(struct_references_state) {
+        return Ok(());
+    }
+
+    let source = SourceStateId::new(&actor.state);
+    let representation = model
+        .state_lowering(&actor.name)?
+        .source_representation(&source)
+        .ok_or_else(|| ArgentError::new(format!("actor `{}` has no authored state representation", actor.name)))?;
+    if representation.sil_type() != &SilStateType::State {
+        return Err(ArgentError::new(format!(
+            "generated Sil ABI for actor `{}` contains a global struct that references physical `State`, but `{}` is not equivalent to `State`",
+            actor.name, actor.state
+        )));
+    }
+
+    let contract = artifact
+        .contract(&actor.name)
+        .ok_or_else(|| ArgentError::new(format!("generated Sil ABI has no contract for actor `{}`", actor.name)))?;
+    let authored_state = StructArtifact {
+        fields: contract
+            .runtime_state
+            .fields
+            .iter()
+            .map(|field| FieldArtifact { name: field.name.clone(), ty: field.ty.clone() })
+            .collect(),
+    };
+
+    if let Some(existing) = artifact.structs.get(&actor.state)
+        && existing != &authored_state
+    {
+        return Err(ArgentError::new(format!(
+            "cannot canonicalize Sil `State` as authored state `{}` for actor `{}`: their fields differ",
+            actor.state, actor.name
+        )));
+    }
+    artifact.structs.insert(actor.state.clone(), authored_state);
+
+    for structure in artifact.structs.values_mut() {
+        for field in &mut structure.fields {
+            replace_state_type_ref(&mut field.ty, &actor.state);
+        }
+    }
+    Ok(())
+}
+
+fn struct_references_state(structure: &StructArtifact) -> bool {
+    structure.fields.iter().any(|field| type_references_state(&field.ty))
+}
+
+fn type_references_state(ty: &TypeArtifact) -> bool {
+    match ty {
+        TypeArtifact::Struct { name } => name == "State",
+        TypeArtifact::FixedArray { item, .. } | TypeArtifact::DynamicArray { item } => type_references_state(item),
+        TypeArtifact::Int
+        | TypeArtifact::Temporal
+        | TypeArtifact::Bool
+        | TypeArtifact::Byte
+        | TypeArtifact::Bytes
+        | TypeArtifact::Text
+        | TypeArtifact::Pubkey
+        | TypeArtifact::Sig
+        | TypeArtifact::Datasig
+        | TypeArtifact::FixedBytes { .. } => false,
+    }
+}
+
+fn replace_state_type_ref(ty: &mut TypeArtifact, authored_state: &str) {
+    match ty {
+        TypeArtifact::Struct { name } if name == "State" => *name = authored_state.to_string(),
+        TypeArtifact::FixedArray { item, .. } | TypeArtifact::DynamicArray { item } => {
+            replace_state_type_ref(item, authored_state);
+        }
+        TypeArtifact::Int
+        | TypeArtifact::Temporal
+        | TypeArtifact::Bool
+        | TypeArtifact::Byte
+        | TypeArtifact::Bytes
+        | TypeArtifact::Text
+        | TypeArtifact::Pubkey
+        | TypeArtifact::Sig
+        | TypeArtifact::Datasig
+        | TypeArtifact::FixedBytes { .. }
+        | TypeArtifact::Struct { .. } => {}
+    }
+}
+
+/// Merge two complete Sil ABI artifacts without changing their contracts or
+/// struct definitions.
+fn merge_sil_abi_artifacts(mut left: SilAbiArtifact, right: SilAbiArtifact) -> Result<SilAbiArtifact> {
+    if left.schema_version != right.schema_version {
+        return Err(ArgentError::new(format!(
+            "cannot merge Sil ABI schema versions {} and {}",
+            left.schema_version, right.schema_version
+        )));
+    }
+    if left.compiler_version != right.compiler_version {
+        return Err(ArgentError::new(format!(
+            "cannot merge Sil ABI compiler versions `{}` and `{}`",
+            left.compiler_version, right.compiler_version
+        )));
+    }
+
+    for (name, structure) in right.structs {
+        if let Some(existing) = left.structs.get(&name) {
+            if existing != &structure {
+                return Err(ArgentError::new(format!("cannot merge conflicting Sil struct `{name}`")));
+            }
+        } else {
+            left.structs.insert(name, structure);
+        }
+    }
+    for (name, contract) in right.contracts {
+        if left.contracts.insert(name.clone(), contract).is_some() {
+            return Err(ArgentError::new(format!("cannot merge duplicate Sil contract `{name}`")));
+        }
+    }
+
+    Ok(left)
 }
 
 fn constructor_args_for_actor<'i>(actor: &ActorDecl, model: &Model<'_>) -> Result<Vec<SilExpr<'i>>> {
@@ -2569,38 +2670,10 @@ fn zero_byte_array_expr<'i>(len: usize) -> SilExpr<'i> {
     SilExpr::bytes(vec![0; len])
 }
 
-fn compiled_contract_artifact(compiled: &CompiledContract<'_>) -> Result<CompiledContractArtifact> {
-    let layout = compiled.state_layout;
-    let suffix_start = layout.start + layout.len;
-    if layout.start > compiled.bytecode.len() || suffix_start > compiled.bytecode.len() {
-        return Err(ArgentError::new(format!(
-            "compiled contract `{}` reported invalid state span start={} len={} for script len={}",
-            compiled.contract_name,
-            layout.start,
-            layout.len,
-            compiled.bytecode.len()
-        )));
-    }
-
-    let template_hash = compiled.template_hash();
-
-    Ok(CompiledContractArtifact {
-        script_hex: encode_hex(&compiled.bytecode),
-        template_hash_hex: encode_hex(&template_hash),
-        state_span: StateSpanArtifact { offset: layout.start, len: layout.len },
-    })
-}
-
-fn extract_sil_template(compiled: &CompiledContractArtifact) -> Result<CompiledTemplateArtifact> {
-    let script = crate::codec::decode_hex(&compiled.script_hex)
-        .map_err(|err| ArgentError::new(format!("invalid compiled script hex: {err}")))?;
+fn extract_sil_template(compiled: &CompiledContractArtifact) -> Result<ActorTemplateArtifact> {
     let (prefix, _, suffix) =
-        compiled.script_parts(&script).ok_or_else(|| ArgentError::new("compiled state span is outside its script"))?;
-    Ok(CompiledTemplateArtifact {
-        prefix_hex: encode_hex(prefix),
-        suffix_hex: encode_hex(suffix),
-        hash_hex: compiled.template_hash_hex.clone(),
-    })
+        compiled.script_parts(&compiled.bytecode).ok_or_else(|| ArgentError::new("compiled state span is outside its script"))?;
+    Ok(ActorTemplateArtifact { prefix: prefix.to_vec(), suffix: suffix.to_vec(), hash: compiled.template_hash })
 }
 
 fn runtime_state_field_defs_for_actor(
@@ -2887,7 +2960,7 @@ fn entry_artifact(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Re
             EntryKind::Leader => EntryKindArtifact::Leader,
             EntryKind::Delegate => EntryKindArtifact::Delegate,
         },
-        abi: EntryAbiRefArtifact { actor: actor.name.clone(), entry: entry.name.clone() },
+        abi: EntryAbiRefArtifact { contract: actor.name.clone(), entry: entry.name.clone() },
         route_plan: entry_route_plan_artifact(actor, entry_model, &witnesses)?,
         hidden_params,
         template_selectors: model
@@ -3081,19 +3154,6 @@ fn route_output_handles(entry: &EntryModel<'_>) -> Vec<RouteOutputHandleArtifact
             actors: output.target().actors().map(str::to_string).collect(),
         })
         .collect()
-}
-
-fn sil_entry_artifact(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>, dispatch_tag: [u8; 4]) -> SilEntryArtifact {
-    let mut params = entry
-        .params
-        .iter()
-        .map(|param| ParamArtifact { name: param.name.clone(), ty: type_artifact(&param.ty, model) })
-        .collect::<Vec<_>>();
-    params.extend(
-        hidden_params_for_entry(actor, entry, model).into_iter().map(|param| ParamArtifact { name: param.name, ty: param.ty }),
-    );
-
-    SilEntryArtifact { name: entry.name.clone(), dispatch_tag: dispatch_tag.into(), params }
 }
 
 fn emit_spec_artifact(entry: &EntryModel<'_>) -> EmitArtifact {

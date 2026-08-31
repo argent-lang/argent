@@ -124,7 +124,7 @@ dependencies = [
  "kaspa-txscript-errors",
  "secp256k1",
  "serde_json",
- "silverscript-abi 0.1.0",
+ "silverscript-abi",
  "silverscript-lang",
  "thiserror 2.0.18",
 ]
@@ -137,8 +137,9 @@ dependencies = [
  "blake3",
  "faster-hex 0.10.0",
  "serde",
+ "serde_bytes",
  "serde_json",
- "silverscript-abi 0.1.0",
+ "silverscript-abi",
  "thiserror 2.0.18",
 ]
 
@@ -152,7 +153,7 @@ dependencies = [
  "kaspa-consensus-core",
  "kaspa-txscript",
  "kaspa-txscript-errors",
- "silverscript-abi 0.1.0",
+ "silverscript-abi",
  "thiserror 2.0.18",
 ]
 
@@ -3341,19 +3342,6 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "silverscript-abi"
 version = "0.1.0"
-dependencies = [
- "blake3",
- "faster-hex 0.10.0",
- "kaspa-txscript",
- "serde",
- "serde_json",
- "silverscript-lang",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "silverscript-abi"
-version = "0.1.0"
 source = "git+https://github.com/kaspanet/silverscript?rev=c7d17a15ac88610d013ec9ffffa9520aeb69929b#c7d17a15ac88610d013ec9ffffa9520aeb69929b"
 dependencies = [
  "blake3",
@@ -3387,7 +3375,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "silverscript-abi 0.1.0 (git+https://github.com/kaspanet/silverscript?rev=c7d17a15ac88610d013ec9ffffa9520aeb69929b)",
+ "silverscript-abi",
  "thiserror 1.0.69",
 ]
 

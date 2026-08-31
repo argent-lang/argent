@@ -98,6 +98,7 @@ struct ResolveActorInput<'artifact, 'context, 'args> {
     source: &'context ActorInput<'args>,
     artifact: &'artifact Artifact,
     actor: &'artifact ActorArtifact,
+    contract_name: &'artifact str,
     contract: &'artifact SilContractArtifact,
     artifact_entry: &'artifact EntryArtifact,
     sil_entry: &'artifact SilEntryArtifact,
@@ -109,7 +110,7 @@ struct ResolveActorInput<'artifact, 'context, 'args> {
 
 impl<'artifact> ResolveActorInput<'artifact, '_, '_> {
     fn contract_ref(&self) -> ContractRef<'artifact> {
-        ContractRef { artifact: self.artifact, contract: self.contract }
+        ContractRef { artifact: self.artifact, name: self.contract_name, contract: self.contract }
     }
 }
 
@@ -182,6 +183,7 @@ impl<'artifact> TxBuilder<'artifact> {
                         source: input,
                         artifact: contract_ref.artifact,
                         actor: actor_ref.actor,
+                        contract_name: contract_ref.name,
                         contract: contract_ref.contract,
                         artifact_entry,
                         sil_entry,
@@ -516,15 +518,15 @@ impl<'artifact> TxBuilder<'artifact> {
                     format!("output `{}` at transaction index {output_index} has no actor metadata", output.name),
                 ));
             };
-            let actor_name = &actor.contract.contract.name;
+            let actor_name = actor.contract.name;
             let target_matches = if let Some(ActorTargetArtifact::StaticActor { app, actor: target_actor }) = &output.target {
                 let expected = self.observed_contract_ref(input.artifact, app, target_actor)?;
                 actor.contract.artifact.app == expected.artifact.app
-                    && actor_name == &expected.contract.name
-                    && actor.contract.contract.compiled.template_hash_hex == expected.contract.compiled.template_hash_hex
+                    && actor_name == expected.name
+                    && actor.contract.contract.compiled.template_hash == expected.contract.compiled.template_hash
             } else if input.artifact.argent.actors.iter().any(|actor| actor.name == output.actor) {
                 let expected = self.contract_in_artifact(input.artifact, &output.actor)?;
-                actor.contract.contract.compiled.template_hash_hex == expected.compiled.template_hash_hex
+                actor.contract.contract.compiled.template_hash == expected.compiled.template_hash
             } else {
                 let expected = dynamic_spawn_actor_type_handle(input, &output.actor)?;
                 let found = match self.actor_type_handle_in_artifact(actor.contract.artifact, actor_name, &output.state) {
@@ -557,7 +559,11 @@ impl<'artifact> TxBuilder<'artifact> {
             }
             spawned_actors.insert(
                 (spawn.name.clone(), output.name.clone()),
-                SpawnedActorContext { app: artifact_app_alias(&actor.contract.artifact.app), actor: actor_name.clone(), output_index },
+                SpawnedActorContext {
+                    app: artifact_app_alias(&actor.contract.artifact.app),
+                    actor: actor_name.to_string(),
+                    output_index,
+                },
             );
         }
         Ok(spawned_actors)
@@ -575,8 +581,7 @@ impl<'artifact> TxBuilder<'artifact> {
             let observations = input.observations.as_ref().expect("observation resolution precedes hidden-argument resolution");
             let spawned_actors = input.spawned_actors.as_ref().expect("spawn resolution precedes hidden-argument resolution");
             input.hidden_args = Some(self.resolve_hidden_args_in_artifact(
-                input.artifact,
-                input.contract,
+                input.contract_ref(),
                 input.artifact_entry,
                 &input.source.state,
                 &args.template_selectors,
@@ -681,7 +686,14 @@ impl<'artifact> TxBuilder<'artifact> {
                             .iter()
                             .cloned(),
                     );
-                    let abi_script = encode_entry_sig_script(&input.artifact.sil_abi, input.contract, input.sil_entry, &args)?;
+                    let abi_script = encode_entry_sig_script(
+                        &input.artifact.sil_abi,
+                        input.contract_name,
+                        input.contract,
+                        &input.artifact_entry.name,
+                        input.sil_entry,
+                        &args,
+                    )?;
                     pay_to_script_hash_signature_script_with_flags(
                         self.redeem_script_for_contract(input.contract_ref(), input.source.state.clone())?,
                         abi_script,
@@ -899,7 +911,7 @@ fn resolve_observed_output(
         });
     };
     merge_observed_app(observe, app, &artifact_app_alias(&actor.contract.artifact.app))?;
-    Ok((declaration.name.clone(), ObservedOutput { actor: actor.contract.contract.name.clone(), state: actor.state.clone() }))
+    Ok((declaration.name.clone(), ObservedOutput { actor: actor.contract.name.to_string(), state: actor.state.clone() }))
 }
 
 fn merge_observed_app(observe: &str, app: &mut Option<String>, candidate: &str) -> BuilderResult<()> {
@@ -951,10 +963,17 @@ mod tests {
     ) -> Artifact {
         let state = format!("{actor}State");
         let runtime_state = RuntimeStateArtifact {
-            source: state.clone(),
+            source: "State".to_string(),
             fields: vec![RuntimeFieldArtifact { name: "count".to_string(), ty: TypeArtifact::Int }],
         };
+        let codec_abi = SilAbiArtifact {
+            schema_version: SIL_ABI_SCHEMA_VERSION,
+            compiler_version: "test".to_string(),
+            structs: BTreeMap::new(),
+            contracts: BTreeMap::new(),
+        };
         let state_script = silverscript_abi::encode_runtime_state_script(
+            &codec_abi,
             &runtime_state,
             &BTreeMap::from([("count".to_string(), ArtifactValue::Int(0))]),
         )
@@ -977,12 +996,12 @@ mod tests {
                 actors: vec![ActorArtifact {
                     name: actor.to_string(),
                     state: state.clone(),
-                    abi: ActorAbiRefArtifact { actor: actor.to_string() },
+                    abi: ActorAbiRefArtifact { contract: actor.to_string() },
                     leader_for: Vec::new(),
                     entries: vec![EntryArtifact {
                         name: entry.to_string(),
                         kind: EntryKindArtifact::Leader,
-                        abi: EntryAbiRefArtifact { actor: actor.to_string(), entry: entry.to_string() },
+                        abi: EntryAbiRefArtifact { contract: actor.to_string(), entry: entry.to_string() },
                         route_plan: EntryRoutePlanArtifact::default(),
                         hidden_params: Vec::new(),
                         template_selectors,
@@ -997,18 +1016,26 @@ mod tests {
             },
             sil_abi: SilAbiArtifact {
                 schema_version: SIL_ABI_SCHEMA_VERSION,
-                states: Vec::new(),
-                contracts: vec![SilContractArtifact {
-                    name: actor.to_string(),
-                    source_path: format!("sil/{actor}.sil"),
-                    runtime_state,
-                    entries: vec![SilEntryArtifact { name: entry.to_string(), dispatch_tag: DispatchTag::from([0; 4]), params }],
-                    compiled: CompiledContractArtifact {
-                        script_hex: silverscript_abi::encode_hex(&state_script),
-                        template_hash_hex: silverscript_abi::encode_hex(&silverscript_abi::template_hash(&[], &[])),
-                        state_span: StateSpanArtifact { offset: 0, len: state_script.len() },
+                compiler_version: "test".to_string(),
+                structs: BTreeMap::new(),
+                contracts: BTreeMap::from([(
+                    actor.to_string(),
+                    SilContractArtifact {
+                        source_path: format!("sil/{actor}.sil"),
+                        runtime_state,
+                        entries: BTreeMap::from([(
+                            entry.to_string(),
+                            SilEntryArtifact { dispatch_tag: DispatchTag::from([0; 4]), params },
+                        )]),
+                        cov_decl_to_abi: BTreeMap::new(),
+                        delegate_entry_abi: None,
+                        compiled: CompiledContractArtifact {
+                            bytecode: state_script.clone(),
+                            template_hash: silverscript_abi::template_hash(&[], &[]),
+                            state_span: StateSpanArtifact { offset: 0, len: state_script.len() },
+                        },
                     },
-                }],
+                )]),
             },
         };
         artifact.id = artifact.computed_id_hex().expect("test artifact id computes");
