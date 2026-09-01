@@ -39,6 +39,20 @@ pub struct Artifact {
     pub sil_abi: SilAbiArtifact,
 }
 
+#[derive(Debug, Error)]
+pub enum ArtifactVerificationError {
+    #[error(transparent)]
+    Version(#[from] ArtifactVersionError),
+    #[error(transparent)]
+    SilAbi(#[from] SilAbiVerificationError),
+    #[error(transparent)]
+    TemplateFrames(#[from] TemplateFrameVerificationError),
+    #[error(transparent)]
+    TemplatePlan(#[from] TemplatePlanError),
+    #[error(transparent)]
+    Identity(#[from] ArtifactIdentityError),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppDependencyArtifact {
     pub app: String,
@@ -100,6 +114,16 @@ fn is_false(value: &bool) -> bool {
 }
 
 impl Artifact {
+    /// Verifies the complete portable Argent artifact.
+    pub fn verify(&self) -> std::result::Result<(), ArtifactVerificationError> {
+        self.check_schema_version()?;
+        self.verify_sil_abi()?;
+        self.verify_template_frames()?;
+        self.verify_template_plan()?;
+        self.verify_id()?;
+        Ok(())
+    }
+
     pub fn check_schema_version(&self) -> std::result::Result<(), ArtifactVersionError> {
         if self.schema_version != ARTIFACT_SCHEMA_VERSION {
             return Err(ArtifactVersionError {
@@ -2042,6 +2066,48 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_verification_accepts_a_valid_artifact() {
+        let mut artifact = empty_artifact();
+        artifact.id = artifact.computed_id_hex().expect("artifact id computes");
+
+        artifact.verify().expect("complete artifact verifies");
+    }
+
+    #[test]
+    fn aggregate_verification_checks_template_plan_before_identity() {
+        let mut artifact = empty_artifact();
+        artifact.argent.template_plan.templates.push(TemplateReceiptArtifact {
+            id: "template/missing".to_string(),
+            actor: "Missing".to_string(),
+            contract: "Missing".to_string(),
+            symbol: "gen__missing_template".to_string(),
+            sil_template_hash: [0; 32],
+            actor_type_handle: ActorTypeHandleArtifact {
+                state: "MissingState".to_string(),
+                context_fields: Vec::new(),
+                template: ActorTemplateArtifact { prefix: Vec::new(), suffix: Vec::new(), hash: [0; 32] },
+            },
+        });
+
+        assert!(matches!(
+            artifact.verify(),
+            Err(ArtifactVerificationError::TemplatePlan(TemplatePlanError::UnknownContract(contract)))
+                if contract == "Missing"
+        ));
+    }
+
+    #[test]
+    fn aggregate_verification_checks_identity_last() {
+        let artifact = empty_artifact();
+
+        assert!(matches!(
+            artifact.verify(),
+            Err(ArtifactVerificationError::Identity(ArtifactIdentityError::MissingArtifactId { app }))
+                if app == "Tiny"
+        ));
+    }
+
+    #[test]
     fn rejects_unknown_argent_schema_version() {
         let artifact = Artifact {
             schema_version: ARTIFACT_SCHEMA_VERSION + 1,
@@ -2433,6 +2499,33 @@ mod tests {
                         entries: Vec::new(),
                     },
                 ],
+            },
+            sil_abi: SilAbiArtifact {
+                schema_version: SIL_ABI_SCHEMA_VERSION,
+                compiler_version: "test".to_string(),
+                structs: std::collections::BTreeMap::new(),
+                contracts: std::collections::BTreeMap::new(),
+            },
+        }
+    }
+
+    fn empty_artifact() -> Artifact {
+        Artifact {
+            schema_version: ARTIFACT_SCHEMA_VERSION,
+            id: String::new(),
+            generator: GeneratorArtifact { name: "argentc".to_string(), version: "0.1.0".to_string() },
+            app: "Tiny".to_string(),
+            dependencies: Vec::new(),
+            root: "tiny.ag".to_string(),
+            modules: Vec::new(),
+            argent: ArgentArtifact {
+                templates: Vec::new(),
+                template_plan: TemplatePlanArtifact::default(),
+                interfaces: InterfaceSetArtifact::default(),
+                states: Vec::new(),
+                state_expansions: Vec::new(),
+                actor_enums: Vec::new(),
+                actors: Vec::new(),
             },
             sil_abi: SilAbiArtifact {
                 schema_version: SIL_ABI_SCHEMA_VERSION,

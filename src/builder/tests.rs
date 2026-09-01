@@ -1,9 +1,9 @@
 use super::*;
 use crate::{
     artifact::{
-        ActorTargetArtifact, ActorTemplateArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, ObservedTargetArtifact,
-        SilAbiVerificationError, SilContractArtifact, TemplatePlanError, TypeArtifact, route_template_proof_receipt_id,
-        route_template_table_receipt_id,
+        ActorTargetArtifact, ActorTemplateArtifact, ArtifactIdentityError, ArtifactVerificationError, HiddenParamPurposeArtifact,
+        HiddenParamSubjectArtifact, ObservedTargetArtifact, SilAbiVerificationError, SilContractArtifact, TemplatePlanError,
+        TypeArtifact, route_template_proof_receipt_id, route_template_table_receipt_id,
     },
     codec::{CodecError, decode_hex, encode_entry_sig_script},
     compiler::codegen::emit_build_app,
@@ -35,6 +35,13 @@ use kaspa_txscript::{
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 
 static ARTIFACT_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+fn artifact_verification(error: &BuilderError) -> (&str, &ArtifactVerificationError) {
+    match error {
+        BuilderError::ArtifactVerification { app, source } => (app, source),
+        _ => panic!("expected artifact verification error, found: {error}"),
+    }
+}
 
 fn byte_occurrences(haystack: &[u8], needle: &[u8]) -> usize {
     if needle.is_empty() { 0 } else { haystack.windows(needle.len()).filter(|window| *window == needle).count() }
@@ -2944,8 +2951,13 @@ fn builder_rejects_template_plan_hash_mismatch() {
         Ok(_) => panic!("builder must reject a corrupted template plan receipt"),
         Err(err) => err,
     };
+    let (_, source) = artifact_verification(&err);
     assert!(
-        matches!(err, BuilderError::TemplatePlan(TemplatePlanError::TemplateHashMismatch { ref id, .. }) if id == "template/issuer"),
+        matches!(
+            source,
+            ArtifactVerificationError::TemplatePlan(TemplatePlanError::TemplateHashMismatch { id, .. })
+                if id == "template/issuer"
+        ),
         "unexpected error: {err}"
     );
 }
@@ -2969,13 +2981,12 @@ fn builder_rejects_sil_template_hash_mismatch() {
         Ok(_) => panic!("builder must reject a Sil template hash that does not match its contract code"),
         Err(err) => err,
     };
+    let (_, source) = artifact_verification(&err);
     assert!(
         matches!(
-            err,
-            BuilderError::SilAbiVerification(SilAbiVerificationError::TemplateHashMismatch {
-                ref contract,
-                ..
-            }) if contract == "Issuer"
+            source,
+            ArtifactVerificationError::SilAbi(SilAbiVerificationError::TemplateHashMismatch { contract, .. })
+                if contract == "Issuer"
         ),
         "unexpected error: {err}"
     );
@@ -2998,15 +3009,16 @@ fn builder_rejects_route_template_table_mismatch() {
         Ok(_) => panic!("builder must reject a corrupted route template table receipt"),
         Err(err) => err,
     };
+    let (_, source) = artifact_verification(&err);
     assert!(
         matches!(
-            err,
-            BuilderError::TemplatePlan(TemplatePlanError::RouteTableOffsetMismatch {
-                ref id,
-                index: 1,
-                offset: 33,
-                expected: 32,
-            }) if id == "route_table/BoardState/gen__mux_routes"
+            source,
+            ArtifactVerificationError::TemplatePlan(TemplatePlanError::RouteTableOffsetMismatch {
+                    id,
+                    index: 1,
+                    offset: 33,
+                    expected: 32,
+                }) if id == "route_table/BoardState/gen__mux_routes"
         ),
         "unexpected error: {err}"
     );
@@ -3029,14 +3041,12 @@ fn builder_rejects_route_template_merkle_proof_mismatch() {
         Ok(_) => panic!("builder must reject a corrupted route template proof receipt"),
         Err(err) => err,
     };
+    let (_, source) = artifact_verification(&err);
     assert!(
         matches!(
-            err,
-            BuilderError::TemplatePlan(TemplatePlanError::RouteProofMismatch {
-                ref id,
-                index: 1,
-                ..
-            }) if id == "route_proof/BoardState/gen__mux_routes"
+            source,
+            ArtifactVerificationError::TemplatePlan(TemplatePlanError::RouteProofMismatch { id, index: 1, .. })
+                if id == "route_proof/BoardState/gen__mux_routes"
         ),
         "unexpected error: {err}"
     );
@@ -3415,7 +3425,9 @@ fn artifact_bundle_rejects_bad_ids_dependency_ids_and_interface_mismatches() {
         .expect("controller artifact remains valid")
         .with_app("kcc20_asset", &bad_id_asset)
         .expect_err("bad observed artifact id is rejected");
-    assert!(matches!(bad_id_err, BuilderError::ArtifactIdentity { app, .. } if app == "kcc20_asset"));
+    let (app, source) = artifact_verification(&bad_id_err);
+    assert_eq!(app, "kcc20_asset");
+    assert!(matches!(source, ArtifactVerificationError::Identity(ArtifactIdentityError::ArtifactIdMismatch { .. })));
 
     let mut different_asset = asset_artifact.clone();
     different_asset.generator.version.push_str("-different");
@@ -3723,7 +3735,9 @@ fn open_icc_baseline_spends_core_and_agent_covenants() {
         .expect("core artifact is valid")
         .with_app("open_agent", &bad_layout_agent_artifact)
         .expect_err("the imported artifact's own state-layout mismatch is rejected");
-    assert!(matches!(bad_layout_err, BuilderError::TemplatePlan(TemplatePlanError::ActorTypeHandleMismatch { .. })));
+    let (app, source) = artifact_verification(&bad_layout_err);
+    assert_eq!(app, "open_agent");
+    assert!(matches!(source, ArtifactVerificationError::TemplatePlan(TemplatePlanError::ActorTypeHandleMismatch { .. })));
 
     let expanded_agent_artifact = open_icc_expanded_agent_artifact();
     let expanded_bundle = ArtifactBundle::new(&core_artifact)

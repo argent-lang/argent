@@ -44,17 +44,7 @@ pub(crate) fn link_imported_actors(
         if artifact.app != *app {
             return Err(ArgentError::new(format!("linked artifact for app `{app}` declares app `{}`", artifact.app)));
         }
-        artifact
-            .check_schema_version()
-            .map_err(|err| ArgentError::new(format!("linked app `{app}` has an incompatible artifact: {err}")))?;
-        artifact.verify_sil_abi().map_err(|err| ArgentError::new(format!("linked app `{app}` has an invalid Sil ABI: {err}")))?;
-        artifact
-            .verify_template_frames()
-            .map_err(|err| ArgentError::new(format!("linked app `{app}` has invalid actor template frames: {err}")))?;
-        artifact.verify_id().map_err(|err| ArgentError::new(format!("linked app `{app}` has an invalid artifact id: {err}")))?;
-        artifact
-            .verify_template_plan()
-            .map_err(|err| ArgentError::new(format!("linked app `{app}` has an invalid template plan: {err}")))?;
+        artifact.verify().map_err(|err| ArgentError::new(format!("linked app `{app}` has an invalid artifact: {err}")))?;
     }
 
     let mut bindings = BTreeMap::<String, (String, String)>::new();

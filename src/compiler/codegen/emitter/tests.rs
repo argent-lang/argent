@@ -9142,7 +9142,7 @@ fn rejects_compiler_fixture_with_ambiguous_actor_template_frames() {
     let error = emit_artifact(&program, &model, &actor_sil).expect_err("indistinguishable actors must fail artifact construction");
     let message = error.to_string();
     for expected in [
-        "invalid actor template frames",
+        "invalid generated artifact",
         "conservative frame rule found an ambiguity",
         "actors `Alpha`",
         "`Beta`",
