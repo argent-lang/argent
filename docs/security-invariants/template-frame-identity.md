@@ -181,6 +181,54 @@ span. There is no useful reason for two actors in one app to have this unusual
 relationship. Rejecting it keeps the rule short and makes independent compiler
 and artifact implementations easier to audit.
 
+## Actor-type handle corollary
+
+An external observer only needs a fixed template around the fixed state shape
+named by `actor_type<state_type>`. It does not need the actor's compiler-owned
+route context. Argent fixes that context in an extended template prefix and
+leaves `state_type` open. The resulting actor-type handle lets Argent pass this
+external identity as a value. See
+[source-state actor handles](../icc-semantics.md#source-state-actor-handles) and
+the compiler's [state representations](../compiler-design.md#state-representations).
+
+Actor-type handles do not need a second pairwise ambiguity check. A handle
+restricts the original actor frame: every script that matches the handle also
+matches the actor. Pairwise-disjoint actor frames can therefore have only
+pairwise-disjoint handle frames.
+
+More formally, let `C_A` be the fixed leading state context moved into actor
+`A`'s handle. The handle frame `G_A` is:
+
+```text
+P'_A = P_A || C_A
+L'_A = L_A - C_A.length
+Q'_A = Q_A
+
+G_A = [ P'_A ][ open state: L'_A bytes ][ Q'_A ]
+```
+
+The complete length does not change. A script that matches `G_A` can treat
+`C_A` followed by the open state as the original `L_A`-byte physical state.
+Therefore:
+
+```text
+scripts(G_A) is a subset of scripts(F_A)
+```
+
+For two accepted actors `A` and `B`:
+
+```text
+scripts(G_A) intersect scripts(G_B)
+    is a subset of scripts(F_A) intersect scripts(F_B)
+    = empty
+```
+
+Thus, accepted in-app actor-type handle frames are pairwise disjoint. This
+reduction requires `C_A` to encode exactly the leading physical-state fields
+and to occupy their full encoded width. The handle state type covers all
+remaining fields. Compiler generation and artifact verification enforce these
+conditions.
+
 ## Enforcement
 
 The compiler applies the rule only after:

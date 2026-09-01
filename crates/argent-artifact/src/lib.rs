@@ -1465,7 +1465,7 @@ fn verify_actor_type_handle(
         return Err(mismatch(format!("runtime fields after the fixed context do not match Argent state layout `{}`", handle.state)));
     }
 
-    let (sil_prefix, _, sil_suffix) = contract
+    let (sil_prefix, sil_state, sil_suffix) = contract
         .compiled
         .script_parts(&contract.compiled.bytecode)
         .ok_or_else(|| mismatch("Sil state span is outside the compiled contract script".to_string()))?;
@@ -1490,6 +1490,35 @@ fn verify_actor_type_handle(
     let context_state =
         RuntimeStateArtifact { source: handle.state.clone(), fields: leading_runtime_fields.into_iter().cloned().collect() };
     let context_script = &handle_prefix[sil_prefix.len()..];
+    // A handle fixes the leading runtime fields in its prefix. Those values
+    // need not equal this compiled instance, but their canonical encodings
+    // must occupy the same leading span so the handle only moves the boundary.
+    let compiled_state_values = silverscript_abi::decode_runtime_state_script(&artifact.sil_abi, &contract.runtime_state, sil_state)
+        .map_err(|err| mismatch(format!("compiled physical state cannot be decoded: {err}")))?;
+    let compiled_context_values = handle
+        .context_fields
+        .iter()
+        .map(|name| {
+            compiled_state_values
+                .get(name)
+                .cloned()
+                .map(|value| (name.clone(), value))
+                .ok_or_else(|| mismatch(format!("compiled physical state has no context field `{name}`")))
+        })
+        .collect::<std::result::Result<std::collections::BTreeMap<_, _>, _>>()?;
+    let compiled_context_script =
+        silverscript_abi::encode_runtime_state_script(&artifact.sil_abi, &context_state, &compiled_context_values)
+            .map_err(|err| mismatch(format!("compiled physical state context cannot be encoded: {err}")))?;
+    if !sil_state.starts_with(&compiled_context_script) {
+        return Err(mismatch("compiled physical state does not begin with its declared context fields".to_string()));
+    }
+    if context_script.len() != compiled_context_script.len() {
+        return Err(mismatch(format!(
+            "prefix context length {} does not match compiled physical state context length {}",
+            context_script.len(),
+            compiled_context_script.len()
+        )));
+    }
     let decoded_context = silverscript_abi::decode_runtime_state_script(&artifact.sil_abi, &context_state, context_script)
         .map_err(|err| mismatch(format!("prefix context does not decode according to its runtime fields: {err}")))?;
     let canonical_context = silverscript_abi::encode_runtime_state_script(&artifact.sil_abi, &context_state, &decoded_context)
