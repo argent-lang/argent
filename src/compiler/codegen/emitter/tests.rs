@@ -4443,6 +4443,31 @@ fn expanded_actor_records_sil_and_capsule_template_cuts() {
     assert_eq!(handle.template.suffix, sil_template.suffix);
     artifact.verify_template_plan().expect("capsule template receipt verifies");
 
+    // Both contexts can be canonical while a forged variable-width ABI makes
+    // the compiled leading state narrower than the fixed handle context.
+    let context_field = handle.context_fields.first().expect("capsule handle has fixed context").clone();
+    let mut different_width = artifact.clone();
+    let contract = different_width.sil_abi.contracts.get_mut("ReserveAsset").expect("ReserveAsset Sil ABI exists");
+    contract.runtime_state.fields.iter_mut().find(|field| field.name == context_field).expect("fixed context field exists").ty =
+        TypeArtifact::Bytes;
+    let (prefix, suffix, runtime_state, mut state_values) = {
+        let contract = different_width.sil_abi.contract("ReserveAsset").expect("ReserveAsset Sil ABI exists");
+        let (prefix, state, suffix) = contract.compiled.script_parts(&contract.compiled.bytecode).expect("state span is valid");
+        let state_values = silverscript_abi::decode_runtime_state_script(&different_width.sil_abi, &contract.runtime_state, state)
+            .expect("changed context type decodes");
+        (prefix.to_vec(), suffix.to_vec(), contract.runtime_state.clone(), state_values)
+    };
+    state_values.insert(context_field, ArtifactValue::Bytes(vec![0]));
+    let state = silverscript_abi::encode_runtime_state_script(&different_width.sil_abi, &runtime_state, &state_values)
+        .expect("short context remains canonical");
+    let contract = different_width.sil_abi.contracts.get_mut("ReserveAsset").expect("ReserveAsset Sil ABI exists");
+    contract.compiled.bytecode = [prefix.as_slice(), state.as_slice(), suffix.as_slice()].concat();
+    contract.compiled.state_span.len = state.len();
+    different_width.verify_sil_abi().expect("different-width compiled context remains a valid Silverscript ABI");
+    let err = different_width.verify_template_plan().expect_err("different-width handle context is rejected");
+    assert!(matches!(err, TemplatePlanError::ActorTypeHandleMismatch { .. }), "unexpected error: {err}");
+    assert!(err.to_string().contains("prefix context length"), "unexpected error: {err}");
+
     let mut corrupted = artifact.clone();
     let receipt = corrupted
         .argent
