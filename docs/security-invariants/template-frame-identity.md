@@ -15,6 +15,28 @@ This invariant does not require global template uniqueness between unrelated
 apps. It protects actor identity inside one compiled app. Argent does not rely
 on the app author, whether unaware or malicious, to preserve that identity.
 
+## Operational actor identity
+
+Argent implements template-authenticated cross-actor state checks through
+Silverscript's
+[template builtins](https://github.com/kaspanet/silverscript/blob/master/silverscript-lang/std/builtins.sil).
+A consume uses `readInputStateWithTemplate` to authenticate an input template
+before it reads the physical state. An emit uses
+`validateOutputStateWithTemplate` to validate a successor state against its
+target template.[^single-actor]
+
+Both builtins use a template hash and the physical state layout chosen at
+compile time. Silverscript computes the fixed encoded state length from the
+flattened `State` layout and rejects a template operation if this width cannot
+be determined at compile time. The hash authenticates the fixed code around
+the state. The state length locates the state boundary and the suffix.
+Together, `(template hash, physical state length)` is the actor identity used
+by generated contracts inside one app.
+
+[^single-actor]: A single-actor app can use same-template shortcuts such as
+    `readInputState` and `validateOutputState` because it does not need to
+    distinguish between in-app actor templates.
+
 ## Template frame
 
 For a compiled actor `A`, let:
@@ -38,9 +60,6 @@ Its template hash is:
 H_A = blake3(i64le(P_A.length) || P_A || i64le(Q_A.length) || Q_A)
 ```
 
-The hash commits to the prefix, suffix, and both lengths. Together,
-`(H_A, L_A)` identifies one well-defined actor frame inside the app.
-
 A complete redeem script `R` matches this frame when it can be written as:
 
 ```text
@@ -53,17 +72,16 @@ fixed for the compiled actor.
 
 ## Required partition
 
-Within the closed app domain, the actor frames must partition the valid redeem
-scripts: each valid script belongs to exactly one actor. For any two distinct
-in-app actors `A` and `B`, their matching script sets must be disjoint:
+The operational identity `(H_A, L_A)` makes each actor frame well defined. It
+does not make actor detection unique: one complete redeem script can still
+match two different frames. Within the closed app domain, the frames must
+therefore partition the valid redeem scripts. Each valid script must belong to
+exactly one actor. For any two distinct in-app actors `A` and `B`, their
+matching script sets must be disjoint:
 
 ```text
 scripts(F_A) intersect scripts(F_B) = empty
 ```
-
-A template hash and physical state length make each individual frame well
-defined. They do not by themselves guarantee that two frames are disjoint. One
-complete script can still match two separately committed state boundaries.
 
 ## Boundary ambiguity
 
@@ -172,12 +190,12 @@ The compiler applies the rule only after:
 - every physical state span is final.
 
 For each actor, the compiler obtains `P_A`, `L_A`, and `Q_A` from the compiled
-bytecode and its Sil state span. It compares every distinct pair of actors in
-the selected app. An ambiguous pair stops artifact generation.
+bytecode and its Silverscript state span. It compares every distinct pair of
+actors in the selected app. An ambiguous pair stops artifact generation.
 
-Artifact verification repeats the same comparison over the embedded Sil
-contracts. The artifact is not trusted to claim that its actor identities are
-disjoint.
+Artifact verification repeats the same comparison over the embedded
+Silverscript contracts. The artifact is not trusted to claim that its actor
+identities are disjoint.
 
 An error should name both actors and report their prefix, state, suffix, and
 complete lengths. It should state that the conservative frame rule found an
