@@ -28,7 +28,8 @@ use argent_artifact::{
     CardinalityArtifact, EmitArtifact, EntryArtifact, EntryKindArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact,
     HiddenParamSubjectArtifact, MAX_ENTRY_RANGE_CARDINALITY, ObserveArtifact, ObservedActorArtifact, ObservedActorSideArtifact,
     ObservedTargetArtifact, RouteTemplateLeafArtifact, RouteTemplateProofArtifact, RuntimeFieldRoleArtifact, RuntimeStatePlanArtifact,
-    SilAbiVerificationError, SilContractArtifact, SilEntryArtifact, TemplatePlanError, fixed_runtime_context_value,
+    SilAbiVerificationError, SilContractArtifact, SilEntryArtifact, TemplateFrameVerificationError, TemplatePlanError,
+    fixed_runtime_context_value,
 };
 use kaspa_consensus_core::{
     Hash,
@@ -259,6 +260,8 @@ pub enum BuilderError {
     ArtifactVersion(#[from] ArtifactVersionError),
     #[error(transparent)]
     SilAbiVerification(#[from] SilAbiVerificationError),
+    #[error(transparent)]
+    TemplateFrameVerification(#[from] TemplateFrameVerificationError),
     #[error(transparent)]
     TemplatePlan(#[from] TemplatePlanError),
     #[error(transparent)]
@@ -1688,6 +1691,7 @@ impl<'a> TxBuilder<'a> {
 fn validate_artifact(app: &str, artifact: &Artifact) -> BuilderResult<()> {
     artifact.check_schema_version()?;
     artifact.verify_sil_abi()?;
+    artifact.verify_template_frames()?;
     artifact.verify_template_plan()?;
     validate_runtime_cardinality_support(app, artifact)?;
     artifact.verify_id().map_err(|source| BuilderError::ArtifactIdentity { app: app.to_string(), source })?;

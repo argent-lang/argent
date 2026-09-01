@@ -1,0 +1,20 @@
+state SharedState {
+    int count;
+}
+
+actor Alpha owns SharedState {
+    entry inspect() emits none {
+        require(count >= 0);
+    }
+}
+
+actor Beta owns SharedState {
+    entry inspect() emits none {
+        require(count >= 0);
+    }
+}
+
+app AmbiguousFrames {
+    actor Alpha;
+    actor Beta;
+}

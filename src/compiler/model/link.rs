@@ -48,6 +48,9 @@ pub(crate) fn link_imported_actors(
             .check_schema_version()
             .map_err(|err| ArgentError::new(format!("linked app `{app}` has an incompatible artifact: {err}")))?;
         artifact.verify_sil_abi().map_err(|err| ArgentError::new(format!("linked app `{app}` has an invalid Sil ABI: {err}")))?;
+        artifact
+            .verify_template_frames()
+            .map_err(|err| ArgentError::new(format!("linked app `{app}` has invalid actor template frames: {err}")))?;
         artifact.verify_id().map_err(|err| ArgentError::new(format!("linked app `{app}` has an invalid artifact id: {err}")))?;
         artifact
             .verify_template_plan()

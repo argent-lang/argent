@@ -9,7 +9,10 @@
 //! families, or hidden-field roles into `silverscript-abi`. Store them here as
 //! metadata that points at Sil ABI contract and field names.
 
+mod template_frames;
 mod verify_spawns;
+
+pub use template_frames::{TemplateFrameLengths, TemplateFrameVerificationError};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -114,6 +117,16 @@ impl Artifact {
 
     pub fn verify_sil_abi(&self) -> std::result::Result<(), SilAbiVerificationError> {
         self.sil_abi.verify()
+    }
+
+    /// Verifies that local actor frames are unambiguous under Argent's
+    /// conservative frame rule.
+    ///
+    /// Frames are derived only from each actor's referenced embedded Sil
+    /// contract. Linked-app actors are not part of this artifact's local actor
+    /// set and are therefore not compared here.
+    pub fn verify_template_frames(&self) -> std::result::Result<(), TemplateFrameVerificationError> {
+        template_frames::verify(self)
     }
 
     pub fn computed_id_hex(&self) -> std::result::Result<String, ArtifactIdentityError> {

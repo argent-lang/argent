@@ -57,7 +57,7 @@ actor Pawn owns BoardState {
 
 actor Knight owns BoardState {
     entry inspect() emits none {
-        require(ply >= 0);
+        require(ply >= 1);
     }
 }
 

@@ -69,7 +69,7 @@ actor Alpha owns BoardState {
 
 actor Beta owns BoardState {
     entry inspect() emits none {
-        require(count >= 0);
+        require(count >= 1);
     }
 }
 
@@ -111,7 +111,7 @@ actor Alpha owns BoardState {
 
 actor Beta owns BoardState {
     entry inspect() emits none {
-        require(count >= 0);
+        require(count >= 1);
     }
 }
 
@@ -162,7 +162,7 @@ actor Alpha owns BoardState {
 
 actor Beta owns BoardState {
     entry inspect() emits none {
-        require(count >= 0);
+        require(count >= 1);
     }
 }
 

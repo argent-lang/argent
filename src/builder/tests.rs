@@ -2872,7 +2872,7 @@ fn gate_less_route_family_rejects_selector_for_appended_rep() {
 
             actor Knight owns BoardState {
                 entry idle() emits none {
-                    require(ply >= 0);
+                    require(ply >= 1);
                 }
             }
 
