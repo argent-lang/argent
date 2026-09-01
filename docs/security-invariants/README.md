@@ -1,9 +1,25 @@
-# Security
+# Argent security invariants
 
 This document records subtle security arguments behind Argent's generated
 checks. It states the assumptions, claims, and short proofs that are easy to
 lose when reading the compiler or generated Sil in isolation. It is not a
 substitute for an audit of an application or its generated contracts.
+
+## In-app actor template identity
+
+A covenant ID defines a closed app domain. Generated template readers
+distinguish actors within that app. Each actor is identified by its template
+hash and physical state length, but two actor frames can still accept the same
+complete redeem script.
+
+The actor frames must partition the valid app scripts: each valid script must
+belong to exactly one actor. Argent conservatively rejects two in-app actors
+when their complete script lengths are equal, their prefixes are comparable,
+and their suffixes are comparable. The compiler checks final compiled frames,
+and artifact verification repeats the check.
+
+The complete definition and security argument are in
+[Template-frame identity](template-frame-identity.md).
 
 ## Single-actor direct input state reads
 
