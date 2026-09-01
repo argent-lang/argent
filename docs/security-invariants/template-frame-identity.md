@@ -118,8 +118,29 @@ and (P_A starts with P_B or P_B starts with P_A)
 and (Q_A ends with Q_B or Q_B ends with Q_A)
 ```
 
-Every real frame overlap satisfies these conditions. One script cannot start
-with two incompatible prefixes or end with two incompatible suffixes.
+### Safety proof
+
+Assume that one script `R` matches both `F_A` and `F_B`. Then:
+
+```text
+T_A = R.length = T_B
+```
+
+`P_A` and `P_B` are both prefixes of `R`, so the shorter is a prefix of the
+longer. Likewise, `Q_A` and `Q_B` are both suffixes of `R`, so the shorter is a
+suffix of the longer. The rule predicate must therefore be true for every pair
+of overlapping frames.
+
+Argent checks every distinct actor pair and accepts the app only when the
+predicate is false for every pair. Therefore:
+
+```text
+scripts(F_A) intersect scripts(F_B) = empty
+```
+
+The accepted frame sets are pairwise disjoint.
+
+### Conservative false positives
 
 The full exact algorithm would perform one additional step. It would align the
 complete frames and compare every position fixed by both actors. It would
