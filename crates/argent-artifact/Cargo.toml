@@ -3,6 +3,7 @@ name = "argent-artifact"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.94.0"
+license = "ISC"
 
 [dependencies]
 blake2b_simd = { workspace = true }
