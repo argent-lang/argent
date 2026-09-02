@@ -9,7 +9,10 @@
 //! families, or hidden-field roles into `silverscript-abi`. Store them here as
 //! metadata that points at Sil ABI contract and field names.
 
+mod template_frames;
 mod verify_spawns;
+
+pub use template_frames::{TemplateFrameLengths, TemplateFrameVerificationError};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -34,6 +37,20 @@ pub struct Artifact {
     pub modules: Vec<String>,
     pub argent: ArgentArtifact,
     pub sil_abi: SilAbiArtifact,
+}
+
+#[derive(Debug, Error)]
+pub enum ArtifactVerificationError {
+    #[error(transparent)]
+    Version(#[from] ArtifactVersionError),
+    #[error(transparent)]
+    SilAbi(#[from] SilAbiVerificationError),
+    #[error(transparent)]
+    TemplateFrames(#[from] TemplateFrameVerificationError),
+    #[error(transparent)]
+    TemplatePlan(#[from] TemplatePlanError),
+    #[error(transparent)]
+    Identity(#[from] ArtifactIdentityError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +114,26 @@ fn is_false(value: &bool) -> bool {
 }
 
 impl Artifact {
+    /// Verifies the complete portable Argent artifact.
+    ///
+    /// Verification checks consistency between the artifact's schema, ABI,
+    /// template plan, compiled frames, and declared identity. It assumes the
+    /// artifact was produced by supported Argent and Silverscript compilers and
+    /// may rely on their representation invariants.
+    ///
+    /// This method does not prove that the embedded bytecode was generated from
+    /// the recorded source or make an attacker-supplied artifact trustworthy.
+    /// Consumers must obtain the artifact from a trusted build or compare its
+    /// computed identity with a separately trusted identity.
+    pub fn verify(&self) -> std::result::Result<(), ArtifactVerificationError> {
+        self.check_schema_version()?;
+        self.verify_sil_abi()?;
+        self.verify_template_frames()?;
+        self.verify_template_plan()?;
+        self.verify_id()?;
+        Ok(())
+    }
+
     pub fn check_schema_version(&self) -> std::result::Result<(), ArtifactVersionError> {
         if self.schema_version != ARTIFACT_SCHEMA_VERSION {
             return Err(ArtifactVersionError {
@@ -114,6 +151,16 @@ impl Artifact {
 
     pub fn verify_sil_abi(&self) -> std::result::Result<(), SilAbiVerificationError> {
         self.sil_abi.verify()
+    }
+
+    /// Verifies that local actor frames are unambiguous under Argent's
+    /// conservative frame rule.
+    ///
+    /// Frames are derived only from each actor's referenced embedded Sil
+    /// contract. Linked-app actors are not part of this artifact's local actor
+    /// set and are therefore not compared here.
+    pub fn verify_template_frames(&self) -> std::result::Result<(), TemplateFrameVerificationError> {
+        template_frames::verify(self)
     }
 
     pub fn computed_id_hex(&self) -> std::result::Result<String, ArtifactIdentityError> {
@@ -217,12 +264,23 @@ pub struct TemplateReceiptArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActorTypeHandleArtifact {
-    /// Physical state that remains outside the fixed template prefix.
+    /// Argent state layout left open between the handle's template prefix and
+    /// suffix.
     ///
-    /// `ActorArtifact::state` and `state_expansions` can expose an authored
-    /// expanded view of these same bytes. Both views use this one template.
+    /// This is normally the actor's owned state. For an expanded state, it is
+    /// the expansion base. The base and expanded authored views use the same
+    /// handle.
     pub state: String,
+    /// Ordered names of the leading compiler-owned runtime fields fixed in the
+    /// handle's template prefix.
+    ///
+    /// Each name refers to a field in the Silverscript contract's runtime
+    /// state. The matching `RuntimeStatePlanArtifact::field_roles` entry tells
+    /// verification and runtime construction how to derive its canonical value
+    /// from the template plan.
     pub context_fields: Vec<String>,
+    /// External template frame after the compiler-owned context has been moved
+    /// into its fixed prefix, leaving `state` open.
     pub template: ActorTemplateArtifact,
 }
 
@@ -317,8 +375,21 @@ impl TemplatePlanLookup for TemplatePlanArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeStatePlanArtifact {
+    /// Silverscript contract whose runtime `State` this plan describes.
+    ///
+    /// This name joins the plan to the contract ABI and its Argent actor.
     pub contract: String,
+    /// State type declared as owned by the Argent actor, before storage and
+    /// physical layout lowering.
+    ///
+    /// Runtime construction uses this name to interpret authored values and
+    /// apply state expansions before producing the contract's physical state.
     pub source: String,
+    /// Ordered descriptions of the compiler-owned fields in the contract's
+    /// physical runtime state.
+    ///
+    /// Each entry names a runtime ABI field and defines how its value is
+    /// derived from the canonical route and template plan.
     pub field_roles: Vec<RuntimeFieldRolePlanArtifact>,
 }
 
@@ -328,13 +399,30 @@ pub struct RuntimeFieldRolePlanArtifact {
     pub role: RuntimeFieldRoleArtifact,
 }
 
+/// Describes how the template plan derives one compiler-owned runtime field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RuntimeFieldRoleArtifact {
-    Template { contract: String },
-    TemplateTable { contracts: Vec<String> },
-    TemplateDigest { id: String },
-    TemplateRoot { leaves: Vec<RuntimeRouteLeafArtifact> },
+    /// Stores the compiled template hash of one contract.
+    Template {
+        /// Contract whose template hash supplies the field value.
+        contract: String,
+    },
+    /// Stores the concatenated template hashes of an ordered route table.
+    TemplateTable {
+        /// Contracts whose template hashes appear in table order.
+        contracts: Vec<String>,
+    },
+    /// Stores the Blake3 digest of a route family's template table.
+    TemplateDigest {
+        /// Route-family ID used to locate the table and derive its digest.
+        id: String,
+    },
+    /// Stores the root commitment of a route-template proof.
+    TemplateRoot {
+        /// Ordered contract or digest leaves committed by the proof.
+        leaves: Vec<RuntimeRouteLeafArtifact>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -380,25 +468,43 @@ pub struct RouteTemplateProofLeafArtifact {
     pub proof: Vec<RouteTemplateProofStepArtifact>,
 }
 
+/// One 32-byte commitment leaf in a route-template table and its proof.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RouteTemplateLeafArtifact {
-    Template { actor: String, template_id: String },
-    RouteFamily { family_id: String, proof_id: String },
+    /// Commits directly to one actor's compiled template hash.
+    Template {
+        /// Actor represented by this leaf.
+        actor: String,
+        /// Template receipt that supplies the committed hash.
+        template_id: String,
+    },
+    /// Commits to the proof root of another route family.
+    RouteFamily {
+        /// Route family represented by this leaf.
+        family_id: String,
+        /// Proof receipt whose root supplies the committed hash.
+        proof_id: String,
+    },
 }
 
+/// One state-local family represented by direct templates and one route table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RouteTemplateFamilyArtifact {
+    /// Stable ID used to reference this family from fields and witnesses.
     pub id: String,
+    /// Argent state type owned by every actor in the family.
     pub state: String,
-    /// Stable family identity; the representative may be stored in the table.
-    pub representative_actor: String,
-    /// Component actors stored directly rather than in `table_id`.
+    /// Family member used to derive stable family identity and generated names.
     ///
-    /// This historical name does not necessarily equal the graph's inbound
-    /// gates because a selector can place a gate in the table.
+    /// The representative has no special position in the route table.
+    pub representative_actor: String,
+    /// Family actors kept as direct template commitments rather than entries
+    /// in `table_id`.
     pub entry_actors: Vec<String>,
+    /// Route-template table containing the remaining family actors.
     pub table_id: String,
+    /// Complete family membership.
     pub actors: Vec<String>,
 }
 
@@ -833,11 +939,14 @@ impl TemplatePlanArtifact {
     /// Verifies that this template plan is a complete and internally consistent
     /// coordination view of the containing artifact.
     ///
-    /// The Sil ABI is authoritative for compiled templates and runtime layouts.
-    /// This validates that template receipts, actor-type handles, route metadata,
-    /// spawn groups, and witness recipes agree with that ABI and with each other,
-    /// so the runtime can resolve hidden arguments without relying on dangling,
-    /// ambiguous, or stale metadata.
+    /// Within supported compiler output, the embedded Silverscript ABI is the
+    /// reference for compiled templates and runtime layouts. This method verifies
+    /// that template receipts, actor-type handles, route metadata, spawn groups,
+    /// and witness recipes agree with that ABI and with each other.
+    ///
+    /// Like `Artifact::verify`, this is a consistency check that may rely on
+    /// compiler-enforced invariants. It does not attest compilation provenance or
+    /// validate arbitrary attacker-supplied bytecode.
     pub fn verify(&self, artifact: &Artifact) -> std::result::Result<(), TemplatePlanError> {
         use std::collections::{BTreeMap, BTreeSet};
 
@@ -1098,7 +1207,15 @@ impl TemplatePlanArtifact {
                         continue;
                     }
                     RuntimeFieldRoleArtifact::TemplateRoot { leaves } => (leaves.clone(), TypeArtifact::FixedBytes { len: 32 }),
-                    RuntimeFieldRoleArtifact::Template { .. } => continue,
+                    RuntimeFieldRoleArtifact::Template { .. } => {
+                        if sil_field.ty != (TypeArtifact::FixedBytes { len: 32 }) {
+                            return Err(TemplatePlanError::RuntimeStatePlanMismatch {
+                                contract: runtime_state.contract.clone(),
+                                message: format!("template field `{}` must have type `byte[32]`", field.name),
+                            });
+                        }
+                        continue;
+                    }
                 };
                 let id = route_template_table_receipt_id(&runtime_state.source, &field.name);
                 let Some(table) = route_tables_by_id.get(id.as_str()) else {
@@ -1366,6 +1483,8 @@ impl TemplatePlanArtifact {
     }
 }
 
+/// Verifies one exported actor-type handle against its actor, physical layout,
+/// compiled template, and compiler-planned route context.
 fn verify_actor_type_handle(
     plan: &TemplatePlanArtifact,
     artifact: &Artifact,
@@ -1374,6 +1493,9 @@ fn verify_actor_type_handle(
     contract: &SilContractArtifact,
 ) -> std::result::Result<(), TemplatePlanError> {
     let mismatch = |message| TemplatePlanError::ActorTypeHandleMismatch { id: template.id.clone(), message };
+
+    // An expanded actor exposes its base state through the external handle.
+    // Other actors expose their owned state directly.
     let actor = artifact
         .argent
         .actors
@@ -1391,11 +1513,13 @@ fn verify_actor_type_handle(
     let handle = &template.actor_type_handle;
     if source_state != handle.state {
         return Err(mismatch(format!(
-            "handle state `{}` does not match actor `{}` source-state cut `{source_state}`",
-            handle.state, actor.name
+            "handle state `{}` does not match actor `{}` (base) state `{source_state}`",
+            handle.state, actor.name,
         )));
     }
 
+    // Split the physical state into leading compiler-owned context and the
+    // source state that remains open in the handle.
     let runtime_plan = plan.runtime_states.iter().find(|runtime_state| runtime_state.contract == contract_name);
     let expected_context_fields = runtime_plan
         .map(|runtime_state| runtime_state.field_roles.iter().map(|field| field.name.clone()).collect::<Vec<_>>())
@@ -1428,6 +1552,8 @@ fn verify_actor_type_handle(
         return Err(mismatch(format!("runtime fields after the fixed context do not match Argent state layout `{}`", handle.state)));
     }
 
+    // The handle keeps the compiled suffix and extends only the compiled
+    // prefix. Its hash must commit to this new template cut.
     let (sil_prefix, _, sil_suffix) = contract
         .compiled
         .script_parts(&contract.compiled.bytecode)
@@ -1453,6 +1579,9 @@ fn verify_actor_type_handle(
     let context_state =
         RuntimeStateArtifact { source: handle.state.clone(), fields: leading_runtime_fields.into_iter().cloned().collect() };
     let context_script = &handle_prefix[sil_prefix.len()..];
+
+    // Round-trip the prefix context through its typed layout to reject invalid
+    // or noncanonical bytes; the template hash commits to this exact encoding.
     let decoded_context = silverscript_abi::decode_runtime_state_script(&artifact.sil_abi, &context_state, context_script)
         .map_err(|err| mismatch(format!("prefix context does not decode according to its runtime fields: {err}")))?;
     let canonical_context = silverscript_abi::encode_runtime_state_script(&artifact.sil_abi, &context_state, &decoded_context)
@@ -1460,6 +1589,7 @@ fn verify_actor_type_handle(
     if canonical_context != context_script {
         return Err(mismatch("prefix context is not canonically encoded".to_string()));
     }
+    // Finally, compare the actual commitments with the planned routes.
     if let Some(runtime_plan) = runtime_plan {
         for field in &runtime_plan.field_roles {
             let expected = fixed_runtime_context_value(plan, runtime_plan, field)?;
@@ -2029,6 +2159,48 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_verification_accepts_a_valid_artifact() {
+        let mut artifact = empty_artifact();
+        artifact.id = artifact.computed_id_hex().expect("artifact id computes");
+
+        artifact.verify().expect("complete artifact verifies");
+    }
+
+    #[test]
+    fn aggregate_verification_checks_template_plan_before_identity() {
+        let mut artifact = empty_artifact();
+        artifact.argent.template_plan.templates.push(TemplateReceiptArtifact {
+            id: "template/missing".to_string(),
+            actor: "Missing".to_string(),
+            contract: "Missing".to_string(),
+            symbol: "gen__missing_template".to_string(),
+            sil_template_hash: [0; 32],
+            actor_type_handle: ActorTypeHandleArtifact {
+                state: "MissingState".to_string(),
+                context_fields: Vec::new(),
+                template: ActorTemplateArtifact { prefix: Vec::new(), suffix: Vec::new(), hash: [0; 32] },
+            },
+        });
+
+        assert!(matches!(
+            artifact.verify(),
+            Err(ArtifactVerificationError::TemplatePlan(TemplatePlanError::UnknownContract(contract)))
+                if contract == "Missing"
+        ));
+    }
+
+    #[test]
+    fn aggregate_verification_checks_identity_last() {
+        let artifact = empty_artifact();
+
+        assert!(matches!(
+            artifact.verify(),
+            Err(ArtifactVerificationError::Identity(ArtifactIdentityError::MissingArtifactId { app }))
+                if app == "Tiny"
+        ));
+    }
+
+    #[test]
     fn rejects_unknown_argent_schema_version() {
         let artifact = Artifact {
             schema_version: ARTIFACT_SCHEMA_VERSION + 1,
@@ -2420,6 +2592,33 @@ mod tests {
                         entries: Vec::new(),
                     },
                 ],
+            },
+            sil_abi: SilAbiArtifact {
+                schema_version: SIL_ABI_SCHEMA_VERSION,
+                compiler_version: "test".to_string(),
+                structs: std::collections::BTreeMap::new(),
+                contracts: std::collections::BTreeMap::new(),
+            },
+        }
+    }
+
+    fn empty_artifact() -> Artifact {
+        Artifact {
+            schema_version: ARTIFACT_SCHEMA_VERSION,
+            id: String::new(),
+            generator: GeneratorArtifact { name: "argentc".to_string(), version: "0.1.0".to_string() },
+            app: "Tiny".to_string(),
+            dependencies: Vec::new(),
+            root: "tiny.ag".to_string(),
+            modules: Vec::new(),
+            argent: ArgentArtifact {
+                templates: Vec::new(),
+                template_plan: TemplatePlanArtifact::default(),
+                interfaces: InterfaceSetArtifact::default(),
+                states: Vec::new(),
+                state_expansions: Vec::new(),
+                actor_enums: Vec::new(),
+                actors: Vec::new(),
             },
             sil_abi: SilAbiArtifact {
                 schema_version: SIL_ABI_SCHEMA_VERSION,

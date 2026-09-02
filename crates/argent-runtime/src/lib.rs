@@ -24,11 +24,11 @@ pub use context::{
 pub use silverscript_abi::ArtifactValue;
 
 use argent_artifact::{
-    ActorArtifact, ActorInterfaceArtifact, ActorTemplateArtifact, ArgentStateArtifact, ArtifactIdentityError, ArtifactVersionError,
-    CardinalityArtifact, EmitArtifact, EntryArtifact, EntryKindArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact,
-    HiddenParamSubjectArtifact, MAX_ENTRY_RANGE_CARDINALITY, ObserveArtifact, ObservedActorArtifact, ObservedActorSideArtifact,
-    ObservedTargetArtifact, RouteTemplateLeafArtifact, RouteTemplateProofArtifact, RuntimeFieldRoleArtifact, RuntimeStatePlanArtifact,
-    SilAbiVerificationError, SilContractArtifact, SilEntryArtifact, TemplatePlanError, fixed_runtime_context_value,
+    ActorArtifact, ActorInterfaceArtifact, ActorTemplateArtifact, ArgentStateArtifact, ArtifactVerificationError, CardinalityArtifact,
+    EmitArtifact, EntryArtifact, EntryKindArtifact, HiddenParamArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact,
+    MAX_ENTRY_RANGE_CARDINALITY, ObserveArtifact, ObservedActorArtifact, ObservedActorSideArtifact, ObservedTargetArtifact,
+    RouteTemplateLeafArtifact, RouteTemplateProofArtifact, RuntimeFieldRoleArtifact, RuntimeStatePlanArtifact, SilContractArtifact,
+    SilEntryArtifact, fixed_runtime_context_value,
 };
 use kaspa_consensus_core::{
     Hash,
@@ -255,12 +255,12 @@ impl From<ObservedActorSideArtifact> for Side {
 
 #[derive(Debug, Error)]
 pub enum BuilderError {
-    #[error(transparent)]
-    ArtifactVersion(#[from] ArtifactVersionError),
-    #[error(transparent)]
-    SilAbiVerification(#[from] SilAbiVerificationError),
-    #[error(transparent)]
-    TemplatePlan(#[from] TemplatePlanError),
+    #[error("artifact bundle app `{app}` is invalid: {source}")]
+    ArtifactVerification {
+        app: String,
+        #[source]
+        source: Box<ArtifactVerificationError>,
+    },
     #[error(transparent)]
     Codec(#[from] CodecError),
     #[error(transparent)]
@@ -277,8 +277,6 @@ pub enum BuilderError {
     UnknownAppAlias(String),
     #[error("artifact `{app}` must be attached as `{expected}`, got `{found}`")]
     AppAliasMismatch { app: String, expected: String, found: String },
-    #[error("artifact bundle app `{app}` has invalid artifact id: {source}")]
-    ArtifactIdentity { app: String, source: ArtifactIdentityError },
     #[error(
         "artifact bundle app `{app}` entry `{actor}::{entry}` has invalid cardinality {minimum}..={maximum} for {section} `{handle}`"
     )]
@@ -1492,11 +1490,14 @@ impl<'a> TxBuilder<'a> {
                                 .expect("generated field roles come from a runtime state plan");
                             values.insert(
                                 field.name.clone(),
-                                ArtifactValue::Bytes(fixed_runtime_context_value(
-                                    &artifact.argent.template_plan,
-                                    runtime_plan,
-                                    field_role,
-                                )?),
+                                ArtifactValue::Bytes(
+                                    fixed_runtime_context_value(&artifact.argent.template_plan, runtime_plan, field_role).map_err(
+                                        |source| BuilderError::ArtifactVerification {
+                                            app: artifact_app_alias(&artifact.app),
+                                            source: Box::new(source.into()),
+                                        },
+                                    )?,
+                                ),
                             );
                         }
                     }
@@ -1686,11 +1687,8 @@ impl<'a> TxBuilder<'a> {
 }
 
 fn validate_artifact(app: &str, artifact: &Artifact) -> BuilderResult<()> {
-    artifact.check_schema_version()?;
-    artifact.verify_sil_abi()?;
-    artifact.verify_template_plan()?;
+    artifact.verify().map_err(|source| BuilderError::ArtifactVerification { app: app.to_string(), source: Box::new(source) })?;
     validate_runtime_cardinality_support(app, artifact)?;
-    artifact.verify_id().map_err(|source| BuilderError::ArtifactIdentity { app: app.to_string(), source })?;
     Ok(())
 }
 

@@ -4272,7 +4272,7 @@ fn non_active_selector_declares_and_uses_its_canonical_named_type() {
 
             actor Beta owns BoardState {
                 entry advance() emits next: Tail {
-                    BoardState next_state = BoardState { ply: ply + 1 };
+                    BoardState next_state = BoardState { ply: ply + 2 };
                     unrestricted(next.value);
                     become next <- Tail(next_state);
                 }
@@ -4283,7 +4283,7 @@ fn non_active_selector_declares_and_uses_its_canonical_named_type() {
             }
 
             actor Extra owns BoardState {
-                entry hold() emits none { require(ply >= 0); }
+                entry hold() emits none { require(ply >= 1); }
             }
 
             app Test {
@@ -4442,6 +4442,23 @@ fn expanded_actor_records_sil_and_capsule_template_cuts() {
     assert!(capsule_prefix.len() > sil_prefix.len());
     assert_eq!(handle.template.suffix, sil_template.suffix);
     artifact.verify_template_plan().expect("capsule template receipt verifies");
+
+    // A direct template role always stores one fixed-width template hash.
+    let mut dynamic_template_field = artifact.clone();
+    let contract = dynamic_template_field.sil_abi.contracts.get_mut("ReserveAsset").expect("ReserveAsset Sil ABI exists");
+    contract
+        .runtime_state
+        .fields
+        .iter_mut()
+        .find(|field| field.name == "gen__reserve_asset_template")
+        .expect("template context field exists")
+        .ty = TypeArtifact::Bytes;
+    let err = dynamic_template_field.verify_template_plan().expect_err("dynamic template context is rejected");
+    assert!(
+        matches!(err, TemplatePlanError::RuntimeStatePlanMismatch { ref contract, .. } if contract == "ReserveAsset"),
+        "unexpected error: {err}"
+    );
+    assert!(err.to_string().contains("must have type `byte[32]`"), "unexpected error: {err}");
 
     let mut corrupted = artifact.clone();
     let receipt = corrupted
@@ -6115,7 +6132,7 @@ fn compiler_lowers_injected_deep_forest_cuts() {
             actor B1 owns SharedState {
                 entry advance() emits next: B2 {
                     unrestricted(next.value);
-                    SharedState next_state = { amount: amount + 1 };
+                    SharedState next_state = { amount: amount + 2 };
                     become next <- B2(next_state);
                 }
             }
@@ -6396,7 +6413,7 @@ fn foreign_routes_materialize_the_target_actors_cut() {
                 entry leave() emits next: TailB {
                     unrestricted(next.value);
                     TailBState next_state = {
-                        amount: amount,
+                        amount: amount + 1,
                     };
                     become next <- TailB(next_state);
                 }
@@ -6410,7 +6427,7 @@ fn foreign_routes_materialize_the_target_actors_cut() {
 
             actor TailB owns TailBState {
                 entry hold() emits none {
-                    require(amount >= 0);
+                    require(amount >= 1);
                 }
             }
 
@@ -6574,7 +6591,7 @@ fn in_app_observed_output_opens_the_target_family_cut() {
             actor Knight owns BoardState {
                 entry finish() emits next: Mux {
                     unrestricted(next.value);
-                    BoardState next_state = { turn: turn + 1 };
+                    BoardState next_state = { turn: turn + 2 };
                     become next <- Mux(next_state);
                 }
             }
@@ -6854,7 +6871,7 @@ fn selected_gates_open_from_the_family_table_and_direct_consumes_stay_concrete()
 
             actor Knight owns BoardState {
                 entry inspect() emits none {
-                    require(ply >= 0);
+                    require(ply >= 1);
                 }
             }
 
@@ -7271,7 +7288,7 @@ fn route_family_state_keeps_downstream_templates() {
                 entry back_to_mux() emits next: Mux {
                     unrestricted(next.value);
                     BoardState next_board = {
-                        ply: ply + 1,
+                        ply: ply + 2,
                     };
                     become next <- Mux(next_board);
                 }
@@ -7383,7 +7400,7 @@ fn gate_less_family_appends_rep_after_selector_variants() {
 
             actor Knight owns BoardState {
                 entry idle() emits none {
-                    require(ply >= 0);
+                    require(ply >= 1);
                 }
             }
 
@@ -7475,7 +7492,7 @@ fn actor_enum_local_drives_selector_domain_and_route_expansion() {
 
             actor Knight owns BoardState {
                 entry idle() emits none {
-                    require(ply >= 0);
+                    require(ply >= 1);
                 }
             }
 
@@ -7943,7 +7960,7 @@ fn route_family_with_one_table_actor_uses_direct_template_fields() {
                 entry to_leaf() emits next: Leaf {
                     unrestricted(next.value);
                     BoardState next_state = {
-                        n: n + 1,
+                        n: n + 2,
                     };
 
                     become next <- Leaf(next_state);
@@ -8310,7 +8327,7 @@ fn scalar_state_arguments_lower_after_actor_enum_literals() {
 
             actor Knight owns CounterState {
                 entry hold() emits none {
-                    require(count >= 0);
+                    require(count >= 1);
                 }
             }
 
@@ -9036,7 +9053,7 @@ fn fixed_actor_spawn_opens_the_target_family_cut() {
             actor Knight owns BoardState {
                 entry finish() emits next: Mux {
                     unrestricted(next.value);
-                    BoardState next_state = { turn: turn + 1 };
+                    BoardState next_state = { turn: turn + 2 };
                     become next <- Mux(next_state);
                 }
             }
@@ -9131,6 +9148,59 @@ fn rejects_spawn_covenant_binding_shared_with_source_value() {
     .expect_err("spawn covenant bindings must not shadow source values");
 
     assert!(err.to_string().contains("spawn covenant binding `pair_id` collides with a source value"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_compiler_fixture_with_ambiguous_actor_template_frames() {
+    let program = load_fixture_program("template_frame_ambiguity");
+    let model = Model::from_program(&program).expect("fixture model validates");
+    let actor_sil = actor_sil_for_model(&model);
+
+    let error = emit_artifact(&program, &model, &actor_sil).expect_err("indistinguishable actors must fail artifact construction");
+    let message = error.to_string();
+    for expected in [
+        "invalid generated artifact",
+        "conservative frame rule found an ambiguity",
+        "actors `Alpha`",
+        "`Beta`",
+        "prefix length",
+        "state length",
+        "suffix length",
+        "total length",
+    ] {
+        assert!(message.contains(expected), "missing `{expected}` in compiler diagnostic: {message}");
+    }
+}
+
+#[test]
+fn normal_multi_actor_app_has_distinct_template_frames() {
+    let artifact = inline_artifact(
+        "distinct-template-frames",
+        r#"
+            state SharedState {
+                int count;
+            }
+
+            actor Alpha owns SharedState {
+                entry inspect() emits none {
+                    require(count >= 0);
+                }
+            }
+
+            actor Beta owns SharedState {
+                entry inspect() emits none {
+                    require(count >= 1);
+                }
+            }
+
+            app DistinctFrames {
+                actor Alpha;
+                actor Beta;
+            }
+        "#,
+    );
+
+    artifact.verify_template_frames().expect("ordinary distinct actor scripts verify");
 }
 
 fn emit_fixture(case: &str, actor: &str) -> (String, Artifact) {

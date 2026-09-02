@@ -89,10 +89,7 @@ pub fn inspect_path(input: impl AsRef<Path>) -> Result<InspectionReport> {
 }
 
 pub fn inspect_artifact(artifact: &Artifact) -> Result<InspectionReport> {
-    artifact.check_schema_version().map_err(|err| ArgentError::new(format!("unsupported artifact: {err}")))?;
-    artifact.verify_sil_abi().map_err(|err| ArgentError::new(format!("invalid Sil ABI: {err}")))?;
-    artifact.verify_id().map_err(|err| ArgentError::new(format!("invalid artifact identity: {err}")))?;
-    artifact.verify_template_plan().map_err(|err| ArgentError::new(format!("invalid artifact template plan: {err}")))?;
+    artifact.verify().map_err(|err| ArgentError::new(format!("invalid artifact: {err}")))?;
 
     let mut actors = Vec::with_capacity(artifact.argent.actors.len());
     for actor in &artifact.argent.actors {

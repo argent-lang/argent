@@ -83,7 +83,7 @@ actor RightAlt owns RightState {
     entry bump() emits next: RightAlt {
         unrestricted(next.value);
         RightState next_state = {
-            amount: amount + 1,
+            amount: amount + 2,
         };
         become next <- RightAlt(next_state);
     }

@@ -30,7 +30,7 @@ contract Knight(
         // :: auth outputs
         require(OpAuthOutputCount(this.activeInputIndex) == 0);
 
-        require(ply >= 0);
+        require(ply >= 1);
     }
 
 }
