@@ -399,13 +399,30 @@ pub struct RuntimeFieldRolePlanArtifact {
     pub role: RuntimeFieldRoleArtifact,
 }
 
+/// Describes how the template plan derives one compiler-owned runtime field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RuntimeFieldRoleArtifact {
-    Template { contract: String },
-    TemplateTable { contracts: Vec<String> },
-    TemplateDigest { id: String },
-    TemplateRoot { leaves: Vec<RuntimeRouteLeafArtifact> },
+    /// Stores the compiled template hash of one contract.
+    Template {
+        /// Contract whose template hash supplies the field value.
+        contract: String,
+    },
+    /// Stores the concatenated template hashes of an ordered route table.
+    TemplateTable {
+        /// Contracts whose template hashes appear in table order.
+        contracts: Vec<String>,
+    },
+    /// Stores the Blake3 digest of a route family's template table.
+    TemplateDigest {
+        /// Route-family ID used to locate the table and derive its digest.
+        id: String,
+    },
+    /// Stores the root commitment of a route-template proof.
+    TemplateRoot {
+        /// Ordered contract or digest leaves committed by the proof.
+        leaves: Vec<RuntimeRouteLeafArtifact>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -451,25 +468,43 @@ pub struct RouteTemplateProofLeafArtifact {
     pub proof: Vec<RouteTemplateProofStepArtifact>,
 }
 
+/// One 32-byte commitment leaf in a route-template table and its proof.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RouteTemplateLeafArtifact {
-    Template { actor: String, template_id: String },
-    RouteFamily { family_id: String, proof_id: String },
+    /// Commits directly to one actor's compiled template hash.
+    Template {
+        /// Actor represented by this leaf.
+        actor: String,
+        /// Template receipt that supplies the committed hash.
+        template_id: String,
+    },
+    /// Commits to the proof root of another route family.
+    RouteFamily {
+        /// Route family represented by this leaf.
+        family_id: String,
+        /// Proof receipt whose root supplies the committed hash.
+        proof_id: String,
+    },
 }
 
+/// One state-local family represented by direct templates and one route table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RouteTemplateFamilyArtifact {
+    /// Stable ID used to reference this family from fields and witnesses.
     pub id: String,
+    /// Argent state type owned by every actor in the family.
     pub state: String,
-    /// Stable family identity; the representative may be stored in the table.
-    pub representative_actor: String,
-    /// Component actors stored directly rather than in `table_id`.
+    /// Family member used to derive stable family identity and generated names.
     ///
-    /// This historical name does not necessarily equal the graph's inbound
-    /// gates because a selector can place a gate in the table.
+    /// The representative has no special position in the route table.
+    pub representative_actor: String,
+    /// Family actors kept as direct template commitments rather than entries
+    /// in `table_id`.
     pub entry_actors: Vec<String>,
+    /// Route-template table containing the remaining family actors.
     pub table_id: String,
+    /// Complete family membership.
     pub actors: Vec<String>,
 }
 
@@ -1172,7 +1207,15 @@ impl TemplatePlanArtifact {
                         continue;
                     }
                     RuntimeFieldRoleArtifact::TemplateRoot { leaves } => (leaves.clone(), TypeArtifact::FixedBytes { len: 32 }),
-                    RuntimeFieldRoleArtifact::Template { .. } => continue,
+                    RuntimeFieldRoleArtifact::Template { .. } => {
+                        if sil_field.ty != (TypeArtifact::FixedBytes { len: 32 }) {
+                            return Err(TemplatePlanError::RuntimeStatePlanMismatch {
+                                contract: runtime_state.contract.clone(),
+                                message: format!("template field `{}` must have type `byte[32]`", field.name),
+                            });
+                        }
+                        continue;
+                    }
                 };
                 let id = route_template_table_receipt_id(&runtime_state.source, &field.name);
                 let Some(table) = route_tables_by_id.get(id.as_str()) else {

@@ -4443,6 +4443,23 @@ fn expanded_actor_records_sil_and_capsule_template_cuts() {
     assert_eq!(handle.template.suffix, sil_template.suffix);
     artifact.verify_template_plan().expect("capsule template receipt verifies");
 
+    // A direct template role always stores one fixed-width template hash.
+    let mut dynamic_template_field = artifact.clone();
+    let contract = dynamic_template_field.sil_abi.contracts.get_mut("ReserveAsset").expect("ReserveAsset Sil ABI exists");
+    contract
+        .runtime_state
+        .fields
+        .iter_mut()
+        .find(|field| field.name == "gen__reserve_asset_template")
+        .expect("template context field exists")
+        .ty = TypeArtifact::Bytes;
+    let err = dynamic_template_field.verify_template_plan().expect_err("dynamic template context is rejected");
+    assert!(
+        matches!(err, TemplatePlanError::RuntimeStatePlanMismatch { ref contract, .. } if contract == "ReserveAsset"),
+        "unexpected error: {err}"
+    );
+    assert!(err.to_string().contains("must have type `byte[32]`"), "unexpected error: {err}");
+
     let mut corrupted = artifact.clone();
     let receipt = corrupted
         .argent
