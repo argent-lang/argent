@@ -5,6 +5,21 @@ checks. It states the assumptions, claims, and short proofs that are easy to
 lose when reading the compiler or generated Sil in isolation. It is not a
 substitute for an audit of an application or its generated contracts.
 
+## Artifact verification trust boundary
+
+Artifact verification checks consistency between the schema, Silverscript
+ABI, template plan, compiled frames, and declared artifact identity. It assumes
+the artifact was produced by supported Argent and Silverscript compilers and
+may rely on compiler-enforced representation invariants, such as fixed-size
+runtime state fields.
+
+Verification does not recompile the recorded source or attest compiler
+provenance. An attacker can replace bytecode and related metadata together.
+Consumers must obtain an artifact from a trusted build or compare its computed
+identity with a separately trusted identity. Verification should not reproduce
+parts of compilation only to reject representations that the supported
+compilers cannot emit.
+
 ## In-app actor template identity
 
 A covenant ID defines a closed app domain. Generated template readers

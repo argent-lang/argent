@@ -115,6 +115,16 @@ fn is_false(value: &bool) -> bool {
 
 impl Artifact {
     /// Verifies the complete portable Argent artifact.
+    ///
+    /// Verification checks consistency between the artifact's schema, ABI,
+    /// template plan, compiled frames, and declared identity. It assumes the
+    /// artifact was produced by supported Argent and Silverscript compilers and
+    /// may rely on their representation invariants.
+    ///
+    /// This method does not prove that the embedded bytecode was generated from
+    /// the recorded source or make an attacker-supplied artifact trustworthy.
+    /// Consumers must obtain the artifact from a trusted build or compare its
+    /// computed identity with a separately trusted identity.
     pub fn verify(&self) -> std::result::Result<(), ArtifactVerificationError> {
         self.check_schema_version()?;
         self.verify_sil_abi()?;
@@ -894,11 +904,14 @@ impl TemplatePlanArtifact {
     /// Verifies that this template plan is a complete and internally consistent
     /// coordination view of the containing artifact.
     ///
-    /// The Sil ABI is authoritative for compiled templates and runtime layouts.
-    /// This validates that template receipts, actor-type handles, route metadata,
-    /// spawn groups, and witness recipes agree with that ABI and with each other,
-    /// so the runtime can resolve hidden arguments without relying on dangling,
-    /// ambiguous, or stale metadata.
+    /// Within supported compiler output, the embedded Silverscript ABI is the
+    /// reference for compiled templates and runtime layouts. This method verifies
+    /// that template receipts, actor-type handles, route metadata, spawn groups,
+    /// and witness recipes agree with that ABI and with each other.
+    ///
+    /// Like `Artifact::verify`, this is a consistency check that may rely on
+    /// compiler-enforced invariants. It does not attest compilation provenance or
+    /// validate arbitrary attacker-supplied bytecode.
     pub fn verify(&self, artifact: &Artifact) -> std::result::Result<(), TemplatePlanError> {
         use std::collections::{BTreeMap, BTreeSet};
 
@@ -1498,7 +1511,7 @@ fn verify_actor_type_handle(
 
     // The handle keeps the compiled suffix and extends only the compiled
     // prefix. Its hash must commit to this new template cut.
-    let (sil_prefix, sil_state, sil_suffix) = contract
+    let (sil_prefix, _, sil_suffix) = contract
         .compiled
         .script_parts(&contract.compiled.bytecode)
         .ok_or_else(|| mismatch("Sil state span is outside the compiled contract script".to_string()))?;
@@ -1524,39 +1537,8 @@ fn verify_actor_type_handle(
         RuntimeStateArtifact { source: handle.state.clone(), fields: leading_runtime_fields.into_iter().cloned().collect() };
     let context_script = &handle_prefix[sil_prefix.len()..];
 
-    // Recover the exact span occupied by the compiled leading context fields.
-    let compiled_state_values = silverscript_abi::decode_runtime_state_script(&artifact.sil_abi, &contract.runtime_state, sil_state)
-        .map_err(|err| mismatch(format!("compiled physical state cannot be decoded: {err}")))?;
-    let compiled_context_values = handle
-        .context_fields
-        .iter()
-        .map(|name| {
-            compiled_state_values
-                .get(name)
-                .cloned()
-                .map(|value| (name.clone(), value))
-                .ok_or_else(|| mismatch(format!("compiled physical state has no context field `{name}`")))
-        })
-        .collect::<std::result::Result<std::collections::BTreeMap<_, _>, _>>()?;
-    // Re-encoding only these fields preserves their ABI order and boundaries.
-    let compiled_context_script =
-        silverscript_abi::encode_runtime_state_script(&artifact.sil_abi, &context_state, &compiled_context_values)
-            .map_err(|err| mismatch(format!("compiled physical state context cannot be encoded: {err}")))?;
-    if !sil_state.starts_with(&compiled_context_script) {
-        return Err(mismatch("compiled physical state does not begin with its declared context fields".to_string()));
-    }
-    // Placeholder and planned values may differ. Their encoded widths must
-    // match so extending the prefix only moves the state boundary.
-    if context_script.len() != compiled_context_script.len() {
-        return Err(mismatch(format!(
-            "prefix context length {} does not match compiled physical state context length {}",
-            context_script.len(),
-            compiled_context_script.len()
-        )));
-    }
-
-    // The fixed prefix context must itself be canonical and contain exactly
-    // the commitments derived from the route plan.
+    // Round-trip the prefix context through its typed layout to reject invalid
+    // or noncanonical bytes; the template hash commits to this exact encoding.
     let decoded_context = silverscript_abi::decode_runtime_state_script(&artifact.sil_abi, &context_state, context_script)
         .map_err(|err| mismatch(format!("prefix context does not decode according to its runtime fields: {err}")))?;
     let canonical_context = silverscript_abi::encode_runtime_state_script(&artifact.sil_abi, &context_state, &decoded_context)
@@ -1564,6 +1546,7 @@ fn verify_actor_type_handle(
     if canonical_context != context_script {
         return Err(mismatch("prefix context is not canonically encoded".to_string()));
     }
+    // Finally, compare the actual commitments with the planned routes.
     if let Some(runtime_plan) = runtime_plan {
         for field in &runtime_plan.field_roles {
             let expected = fixed_runtime_context_value(plan, runtime_plan, field)?;

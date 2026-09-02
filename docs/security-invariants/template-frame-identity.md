@@ -226,8 +226,10 @@ scripts(G_A) intersect scripts(G_B)
 Thus, accepted in-app actor-type handle frames are pairwise disjoint. This
 reduction requires `C_A` to encode exactly the leading physical-state fields
 and to occupy their full encoded width. The handle state type covers all
-remaining fields. Compiler generation and artifact verification enforce these
-conditions.
+remaining fields. Compiler generation enforces these conditions. Artifact
+verification checks the handle against the embedded layout and route plan
+under the compiler invariant that runtime state fields have fixed encoded
+widths.
 
 ## Enforcement
 
