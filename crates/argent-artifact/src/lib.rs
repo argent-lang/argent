@@ -254,12 +254,23 @@ pub struct TemplateReceiptArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActorTypeHandleArtifact {
-    /// Physical state that remains outside the fixed template prefix.
+    /// Argent state layout left open between the handle's template prefix and
+    /// suffix.
     ///
-    /// `ActorArtifact::state` and `state_expansions` can expose an authored
-    /// expanded view of these same bytes. Both views use this one template.
+    /// This is normally the actor's owned state. For an expanded state, it is
+    /// the expansion base. The base and expanded authored views use the same
+    /// handle.
     pub state: String,
+    /// Ordered names of the leading compiler-owned runtime fields fixed in the
+    /// handle's template prefix.
+    ///
+    /// Each name refers to a field in the Silverscript contract's runtime
+    /// state. The matching `RuntimeStatePlanArtifact::field_roles` entry tells
+    /// verification and runtime construction how to derive its canonical value
+    /// from the template plan.
     pub context_fields: Vec<String>,
+    /// External template frame after the compiler-owned context has been moved
+    /// into its fixed prefix, leaving `state` open.
     pub template: ActorTemplateArtifact,
 }
 
@@ -354,8 +365,21 @@ impl TemplatePlanLookup for TemplatePlanArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeStatePlanArtifact {
+    /// Silverscript contract whose runtime `State` this plan describes.
+    ///
+    /// This name joins the plan to the contract ABI and its Argent actor.
     pub contract: String,
+    /// State type declared as owned by the Argent actor, before storage and
+    /// physical layout lowering.
+    ///
+    /// Runtime construction uses this name to interpret authored values and
+    /// apply state expansions before producing the contract's physical state.
     pub source: String,
+    /// Ordered descriptions of the compiler-owned fields in the contract's
+    /// physical runtime state.
+    ///
+    /// Each entry names a runtime ABI field and defines how its value is
+    /// derived from the canonical route and template plan.
     pub field_roles: Vec<RuntimeFieldRolePlanArtifact>,
 }
 
@@ -1403,6 +1427,8 @@ impl TemplatePlanArtifact {
     }
 }
 
+/// Verifies one exported actor-type handle against its actor, physical layout,
+/// compiled template, and compiler-planned route context.
 fn verify_actor_type_handle(
     plan: &TemplatePlanArtifact,
     artifact: &Artifact,
@@ -1411,6 +1437,9 @@ fn verify_actor_type_handle(
     contract: &SilContractArtifact,
 ) -> std::result::Result<(), TemplatePlanError> {
     let mismatch = |message| TemplatePlanError::ActorTypeHandleMismatch { id: template.id.clone(), message };
+
+    // An expanded actor exposes its base state through the external handle.
+    // Other actors expose their owned state directly.
     let actor = artifact
         .argent
         .actors
@@ -1428,11 +1457,13 @@ fn verify_actor_type_handle(
     let handle = &template.actor_type_handle;
     if source_state != handle.state {
         return Err(mismatch(format!(
-            "handle state `{}` does not match actor `{}` source-state cut `{source_state}`",
-            handle.state, actor.name
+            "handle state `{}` does not match actor `{}` (base) state `{source_state}`",
+            handle.state, actor.name,
         )));
     }
 
+    // Split the physical state into leading compiler-owned context and the
+    // source state that remains open in the handle.
     let runtime_plan = plan.runtime_states.iter().find(|runtime_state| runtime_state.contract == contract_name);
     let expected_context_fields = runtime_plan
         .map(|runtime_state| runtime_state.field_roles.iter().map(|field| field.name.clone()).collect::<Vec<_>>())
@@ -1465,6 +1496,8 @@ fn verify_actor_type_handle(
         return Err(mismatch(format!("runtime fields after the fixed context do not match Argent state layout `{}`", handle.state)));
     }
 
+    // The handle keeps the compiled suffix and extends only the compiled
+    // prefix. Its hash must commit to this new template cut.
     let (sil_prefix, sil_state, sil_suffix) = contract
         .compiled
         .script_parts(&contract.compiled.bytecode)
@@ -1490,9 +1523,8 @@ fn verify_actor_type_handle(
     let context_state =
         RuntimeStateArtifact { source: handle.state.clone(), fields: leading_runtime_fields.into_iter().cloned().collect() };
     let context_script = &handle_prefix[sil_prefix.len()..];
-    // A handle fixes the leading runtime fields in its prefix. Those values
-    // need not equal this compiled instance, but their canonical encodings
-    // must occupy the same leading span so the handle only moves the boundary.
+
+    // Recover the exact span occupied by the compiled leading context fields.
     let compiled_state_values = silverscript_abi::decode_runtime_state_script(&artifact.sil_abi, &contract.runtime_state, sil_state)
         .map_err(|err| mismatch(format!("compiled physical state cannot be decoded: {err}")))?;
     let compiled_context_values = handle
@@ -1506,12 +1538,15 @@ fn verify_actor_type_handle(
                 .ok_or_else(|| mismatch(format!("compiled physical state has no context field `{name}`")))
         })
         .collect::<std::result::Result<std::collections::BTreeMap<_, _>, _>>()?;
+    // Re-encoding only these fields preserves their ABI order and boundaries.
     let compiled_context_script =
         silverscript_abi::encode_runtime_state_script(&artifact.sil_abi, &context_state, &compiled_context_values)
             .map_err(|err| mismatch(format!("compiled physical state context cannot be encoded: {err}")))?;
     if !sil_state.starts_with(&compiled_context_script) {
         return Err(mismatch("compiled physical state does not begin with its declared context fields".to_string()));
     }
+    // Placeholder and planned values may differ. Their encoded widths must
+    // match so extending the prefix only moves the state boundary.
     if context_script.len() != compiled_context_script.len() {
         return Err(mismatch(format!(
             "prefix context length {} does not match compiled physical state context length {}",
@@ -1519,6 +1554,9 @@ fn verify_actor_type_handle(
             compiled_context_script.len()
         )));
     }
+
+    // The fixed prefix context must itself be canonical and contain exactly
+    // the commitments derived from the route plan.
     let decoded_context = silverscript_abi::decode_runtime_state_script(&artifact.sil_abi, &context_state, context_script)
         .map_err(|err| mismatch(format!("prefix context does not decode according to its runtime fields: {err}")))?;
     let canonical_context = silverscript_abi::encode_runtime_state_script(&artifact.sil_abi, &context_state, &decoded_context)
