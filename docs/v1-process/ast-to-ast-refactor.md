@@ -43,6 +43,8 @@ pub struct Program {
 }
 
 pub struct Module {
+    name: ModuleName,
+    source: SourceFile,
     imports: Vec<Import>,
     constants: Vec<ConstDecl>,
     states: Vec<StateDecl>,
@@ -50,6 +52,11 @@ pub struct Module {
     actors: Vec<ActorDecl>,
     actor_enums: Vec<ActorEnumDecl>,
     apps: Vec<AppDecl>,
+}
+
+pub struct SourceFile {
+    path: PathBuf,
+    text: String,
 }
 
 pub struct FunctionDecl {
@@ -134,8 +141,10 @@ pub enum Successor {
 rejects `become` inside a loop, so the final combined AST needs no Argent
 `For` variant.
 
-Every authored node retains its source file and span. Generated nodes use
-synthetic spans. Source text is kept for diagnostics, not as a semantic node.
+Each module identifies its source file and retains its source text. Authored
+nodes carry spans within that source. Compiler passes carry the module context
+when they use those spans. Generated nodes use synthetic spans. Source text is
+used for diagnostics, not as a semantic node.
 
 The Silverscript AST API is fixed. Argent owns the combined envelope and any
 adapters that it needs.
