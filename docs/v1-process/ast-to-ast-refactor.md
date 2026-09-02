@@ -210,26 +210,41 @@ output <- self         -> exact script preservation
 
 No Argent construct reaches `compile_contract_ast()`.
 
-## Direction
+## Migration direction
 
-- Parse each construct once.
-- Use Silverscript AST nodes instead of Argent strings for ordinary code.
-- Resolve scopes and references by identity, not by name-based rescans.
-- Keep state and generated-field provenance typed until final lowering.
-- Construct Silverscript AST directly. Do not generate, edit, or reparse Sil
-  source fragments.
-- Build artifacts from the resolved model and compiled Sil ABI. Do not infer
-  artifact data from rendered `.sil`.
-- Let Silverscript own formatting and compilation of the final AST.
-
-## Remaining outline
-
-1. Map these objects to the current parser, model, body lowerer, emitter, and
-   artifact code.
-2. List the current string fields, token scans, span edits, reparsing, and
-   duplicated semantic paths.
-3. Define a sequence of small migrations that keeps the compiler working after
-   each commit.
-4. Define expected identity changes, parity tests, runtime tests, and security
-   review.
-5. List the old types and helpers that must be removed at completion.
+- Start in [`syntax`](../../src/compiler/syntax/mod.rs). Keep Argent
+  declarations in the combined AST, but replace stored strings with
+  Silverscript type, expression, and statement nodes where the code is ordinary
+  Silverscript.
+- Parse every source construct once. Keep its source location for diagnostics,
+  but do not keep source text as its semantic representation.
+- Change `id.co_spent()` to `co_spent(id)`. The new form is a normal
+  Silverscript call and can appear in entries, global functions, and actor
+  functions.
+- Replace the temporary `For` node in
+  [`syntax::body`](../../src/compiler/syntax/body/mod.rs) with a nested
+  `sil::Statement`. Keep `Block` and `If` in the Argent entry tree because they
+  may contain `become`. Keep `Become` as an Argent operation.
+- Make `ResolvedProgram` hold the meaning of the selected app. Resolve names,
+  scopes, input references, routes, state layouts, and witnesses to stable
+  identities before code generation starts.
+- Move any remaining semantic decisions out of
+  [`emitter`](../../src/compiler/codegen/emitter.rs). Code generation should use
+  the resolved program instead of searching source text or rebuilding model
+  facts.
+- Adapt the typed state, input-reference, route, and witness code in
+  [`codegen::sil`](../../src/compiler/codegen/sil) to read AST nodes and produce
+  AST nodes. Keep the source-state and generated-field origins typed until the
+  final physical state is built.
+- Build one `sil::ContractAst` for each actor. Do not generate a Silverscript
+  source fragment and then parse it again.
+- Give the same final contract AST to Silverscript for both formatting and
+  compilation. The generated `.sil` file and bytecode must never follow
+  separate code paths.
+- Build the Argent artifact from `ResolvedProgram` and the compiled Sil ABI. Do
+  not recover artifact facts from formatted `.sil` source.
+- Remove the old token scans, source-span edits, parsing wrappers, repeated
+  parsing, and text-emission helpers when their AST replacements are in use.
+- Keep the compiler working after each migration commit. Compare generated
+  output, explain any contract-identity change, run runtime tests, and finish
+  with a security review of the complete lowering path.
