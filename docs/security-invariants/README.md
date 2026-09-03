@@ -20,6 +20,18 @@ identity with a separately trusted identity. Verification should not reproduce
 parts of compilation only to reject representations that the supported
 compilers cannot emit.
 
+## Covenant state provenance
+
+Argent treats state read from declared `consumes` and `observes` inputs as a
+previously authorized covenant state. This relies on two separate facts:
+KIP-20 keeps the input inside its covenant lineage, and generated template
+checks identify the actor and physical state layout. The reader does not replay
+the covenant's history. It also relies on that lineage preserving canonical
+state-field push framing; input-state reads do not validate each push again.
+
+The complete assumptions and induction argument are in
+[Covenant state provenance](covenant-state-provenance.md).
+
 ## In-app actor template identity
 
 A covenant ID defines a closed app domain. Generated template readers
