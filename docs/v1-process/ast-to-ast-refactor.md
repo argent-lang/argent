@@ -115,8 +115,9 @@ pub enum EntryStatement {
 
     Become(Vec<Route>),
     
-    // Currently `ValidateOutputsBecome`.
-    ObservedBecome {
+    // Currently `ValidateOutputsBecome`. These routes describe outputs of an
+    // observed or spawned covenant, not a transition of the current actor.
+    ForeignBecome {
         group: Name,
         routes: Vec<Route>,
     },
