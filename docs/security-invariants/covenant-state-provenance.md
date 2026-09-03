@@ -82,19 +82,20 @@ than one program, those program identities must be unambiguous.
 
 ## What a typed read must prove
 
-A typed cross-input state relies on two independent facts:
+A typed cross-input state read relies on two independent guarantees:
 
 1. **Lineage provenance.** The input carries the covenant ID selected by the
    application. Consensus proves its membership and ancestry. Trust in the
    genesis definition and successful execution of the authorizing programs
    prove that the lineage preserves valid, canonical state writes.
-2. **Program identity.** The reader authenticates the input's program template
-   before it decodes the physical state. This proves which program and state
-   layout the input uses.
+2. **Program identity.** The reader selects the expected physical state layout
+   and authenticates its program template before decoding the state. Together
+   with provenance-backed canonical framing, this identifies the program and
+   state layout being decoded.
 
 Lineage membership alone does not identify a program. Template authentication
 alone does not prove that the input belongs to the intended covenant instance.
-A typed read needs both facts.
+A typed read needs both guarantees.
 
 ## State provenance by induction
 
@@ -200,10 +201,12 @@ and template. Application policy determines why that covenant ID is trusted.
 The compiler representation of these checks is described under the
 [authenticated input boundary](../compiler-design.md#authenticated-input-boundary).
 
-Generated Argent code normally uses `readInputStateWithTemplate` for an
-external reference. A restricted same-template case can use `readInputState`;
-the [single-actor rule](README.md#single-actor-direct-input-state-reads) makes
-the expected template implicit.
+Generated Argent code uses `readInputStateWithTemplate` for an external
+reference.[^single-actor]
+
+[^single-actor]: A single-actor application can use `readInputState` because it
+    does not need to distinguish between in-app actor templates. See the
+    [single-actor rule](README.md#single-actor-direct-input-state-reads).
 
 For an observed covenant, the observing app must obtain the expected covenant
 ID and actor identity from a trusted source. Authentication proves that the
