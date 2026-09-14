@@ -1,0 +1,15 @@
+import app TokenApp from "./token.ag";
+
+state CurveState {
+    actor_type<Kcc20State> token_type;
+}
+
+actor Curve owns CurveState {
+    entry graduate() emits none {
+        require(token_type == TokenApp::Kcc20);
+    }
+}
+
+app Launchpad {
+    actor Curve;
+}

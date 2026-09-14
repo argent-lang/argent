@@ -1,0 +1,13 @@
+state Kcc20State {
+    int amount;
+}
+
+actor Kcc20 owns Kcc20State {
+    entry hold() emits none {
+        require(amount >= 0);
+    }
+}
+
+app TokenApp {
+    actor Kcc20;
+}

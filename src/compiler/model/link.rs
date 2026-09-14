@@ -16,6 +16,8 @@ pub(crate) struct LinkedActor {
     pub app: String,
     pub actor: String,
     pub state: String,
+    /// Source state exposed by the linked actor's exported actor-type handle.
+    pub actor_type_state: String,
     pub interface: ActorInterfaceArtifact,
     pub template: ActorTemplateArtifact,
 }
@@ -107,6 +109,7 @@ pub(crate) fn link_imported_actors(
             .iter()
             .find(|template| template.actor == actor_name)
             .ok_or_else(|| ArgentError::new(format!("app `{app}` has no template receipt for actor `{actor_name}`")))?;
+        let actor_type_state = template.actor_type_handle.state.clone();
         let exported_template = template.actor_type_handle.template.clone();
 
         import_linked_state_closure(artifact, &actor.state, local_states, &mut states)?;
@@ -131,6 +134,7 @@ pub(crate) fn link_imported_actors(
             app,
             actor: actor.name.clone(),
             state: actor.state.clone(),
+            actor_type_state,
             interface: interface.clone(),
             template: exported_template,
         };

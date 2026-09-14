@@ -20,7 +20,8 @@ use crate::compiler::syntax::*;
 use crate::error::{ArgentError, Result};
 use silverscript_lang::ast::visit::{AstVisitorMut, visit_function_mut, walk_expr_mut};
 use silverscript_lang::ast::{
-    Expr as SilExpr, ExprKind as SilExprKind, Statement as SilStatement, parse_expression_ast, parse_function_ast, parse_statement_ast,
+    BinaryOp as SilBinaryOp, Expr as SilExpr, ExprKind as SilExprKind, Statement as SilStatement, parse_expression_ast,
+    parse_function_ast, parse_statement_ast,
 };
 
 // Body lowering uses the surrounding Sil emitter's shared witness plans,
@@ -46,6 +47,7 @@ mod range_tests;
 pub(in crate::compiler::codegen) struct LoweredEntryBody {
     pub(in crate::compiler::codegen) sil: String,
     pub(in crate::compiler::codegen) digest_helpers: BTreeSet<SourceStateId>,
+    pub(in crate::compiler::codegen) imported_templates: BTreeSet<ImportedTemplateSpec>,
 }
 
 pub(in crate::compiler::codegen) fn lower_entry_body(
@@ -113,6 +115,7 @@ struct BodyLowerer<'a, 'm, 'p> {
     // Expression lowering records contract-level helpers without making the
     // otherwise read-only lowering API mutable.
     digest_helpers: RefCell<BTreeSet<SourceStateId>>,
+    imported_templates: RefCell<BTreeSet<ImportedTemplateSpec>>,
     conditional_depth: usize,
     current_statement: Option<Span>,
 }
@@ -139,6 +142,33 @@ struct StateValueSiteCollector<'a> {
 struct NamedCallSiteCollector<'a> {
     name: &'a str,
     sites: Vec<Range<usize>>,
+}
+
+#[derive(Clone)]
+struct LinkedActorLiteral {
+    reference: String,
+    state: String,
+    spec: ImportedTemplateSpec,
+}
+
+struct LinkedActorComparisonCollector<'a> {
+    literals: &'a BTreeSet<String>,
+    comparisons: Vec<(String, LinkedActorComparisonOperand)>,
+    invalid: Option<String>,
+}
+
+enum LinkedActorComparisonOperand {
+    Binding(String),
+    ActiveField(String),
+}
+
+impl LinkedActorComparisonOperand {
+    fn source(&self) -> String {
+        match self {
+            Self::Binding(name) => name.clone(),
+            Self::ActiveField(field) => format!("{}.{field}", word::SELF),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -200,6 +230,67 @@ impl<'i> AstVisitorMut<'i> for NamedCallSiteCollector<'_> {
     fn visit_expr(&mut self, expr: &mut SilExpr<'i>) {
         if matches!(&expr.kind, SilExprKind::Call { name, .. } if name == self.name) {
             self.sites.push(expr.span.start()..expr.span.end());
+        }
+        walk_expr_mut(self, expr);
+    }
+}
+
+impl LinkedActorComparisonCollector<'_> {
+    fn ident<'e>(&self, expr: &'e SilExpr<'_>) -> Option<&'e str> {
+        let SilExprKind::Identifier(name) = &expr.kind else {
+            return None;
+        };
+        Some(name)
+    }
+
+    fn actor_handle_operand(&self, expr: &SilExpr<'_>) -> Option<LinkedActorComparisonOperand> {
+        match &expr.kind {
+            SilExprKind::Identifier(name) => Some(LinkedActorComparisonOperand::Binding(name.clone())),
+            SilExprKind::FieldAccess { source, field, .. } if matches!(&source.kind, SilExprKind::Identifier(name) if name == word::SELF) => {
+                Some(LinkedActorComparisonOperand::ActiveField(field.clone()))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl<'i> AstVisitorMut<'i> for LinkedActorComparisonCollector<'_> {
+    fn visit_expr(&mut self, expr: &mut SilExpr<'i>) {
+        if self.invalid.is_some() {
+            return;
+        }
+        if let SilExprKind::Binary { op: SilBinaryOp::Eq | SilBinaryOp::Ne, left, right } = &mut expr.kind {
+            let left_name = self.ident(left);
+            let right_name = self.ident(right);
+            let left_literal = left_name.filter(|name| self.literals.contains(*name));
+            let right_literal = right_name.filter(|name| self.literals.contains(*name));
+            match (left_literal, right_literal) {
+                (Some(literal), None) => {
+                    if let Some(operand) = self.actor_handle_operand(right) {
+                        self.comparisons.push((literal.to_string(), operand));
+                    } else {
+                        self.invalid = Some(literal.to_string());
+                    }
+                    return;
+                }
+                (None, Some(literal)) => {
+                    if let Some(operand) = self.actor_handle_operand(left) {
+                        self.comparisons.push((literal.to_string(), operand));
+                    } else {
+                        self.invalid = Some(literal.to_string());
+                    }
+                    return;
+                }
+                (Some(literal), Some(_)) => {
+                    self.invalid = Some(literal.to_string());
+                    return;
+                }
+                (None, None) => {}
+            }
+        }
+        if let Some(name) = self.ident(expr).filter(|name| self.literals.contains(*name)) {
+            self.invalid = Some(name.to_string());
+            return;
         }
         walk_expr_mut(self, expr);
     }
@@ -789,6 +880,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             observed_output_fields,
             validated_spawns: BTreeSet::new(),
             digest_helpers: RefCell::new(BTreeSet::new()),
+            imported_templates: RefCell::new(BTreeSet::new()),
             conditional_depth: 0,
             current_statement: None,
         })
@@ -809,7 +901,11 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             }
         }
         self.validate_output_value_refs()?;
-        Ok(LoweredEntryBody { sil: out, digest_helpers: self.digest_helpers.into_inner() })
+        Ok(LoweredEntryBody {
+            sil: out,
+            digest_helpers: self.digest_helpers.into_inner(),
+            imported_templates: self.imported_templates.into_inner(),
+        })
     }
 
     fn validate_output_value_refs(&self) -> Result<()> {
@@ -1068,6 +1164,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         push_indent(out, indent);
         let statement = lower_co_spent_calls(&statement, &self.bindings)?;
         let statement = lower_actor_enum_literals(&statement, self.model)?;
+        let statement = self.lower_linked_actor_literals(&statement)?;
         let statement = if value_lowered { statement } else { self.lower_nested_state_values(&statement, indent)? };
         let statement = if self.state_values.has_equivalent_state_sources() {
             lower_statement_state_types(&statement, self.state_values).map_err(|err| self.error(err.to_string()))?
@@ -1781,6 +1878,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         // their exact argument spans.
         let expr = lower_co_spent_calls(expr, &self.bindings)?;
         let expr = lower_actor_enum_literals(&expr, self.model)?;
+        let expr = self.lower_linked_actor_literals(&expr)?;
         if let Some(expected) = expected_state_value.as_ref() {
             let parsed = parse_expression_ast(&expr).ok();
             if let Some(actual) = parsed.as_ref().and_then(|expr| self.planned_state_value_for_expr(expr))
@@ -1799,6 +1897,112 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         self.lower_refs(&expr, indent)
     }
 
+    fn lower_linked_actor_literals(&self, expr: &str) -> Result<String> {
+        if !expr.contains("::") {
+            return Ok(expr.to_string());
+        }
+        let tokens = lex(expr)
+            .map_err(|err| self.error(format!("cannot inspect qualified actor references in expression `{expr}`: {}", err.message)))?;
+        let mut occurrences = Vec::new();
+        let mut pos = 0;
+        while pos + 3 < tokens.len() {
+            let TokenKind::Ident(app) = &tokens[pos].kind else {
+                pos += 1;
+                continue;
+            };
+            if !matches!(tokens[pos + 1].kind, TokenKind::Symbol(':')) || !matches!(tokens[pos + 2].kind, TokenKind::Symbol(':')) {
+                pos += 1;
+                continue;
+            }
+            let TokenKind::Ident(actor) = &tokens[pos + 3].kind else {
+                pos += 1;
+                continue;
+            };
+            let reference = format!("{app}::{actor}");
+            let Some(linked) = self.model.linked_actor(&reference) else {
+                return Err(
+                    self.error(format!("unknown actor enum variant or linked actor reference `{reference}` in expression `{expr}`"))
+                );
+            };
+            let spec = ImportedTemplateSpec::from_linked(linked);
+            let replacement = hidden_imported_template_const_name(&spec);
+            occurrences.push((
+                tokens[pos].span.start..tokens[pos + 3].span.end,
+                replacement,
+                LinkedActorLiteral { reference, state: linked.actor_type_state.clone(), spec },
+            ));
+            pos += 4;
+        }
+        if occurrences.is_empty() {
+            return Ok(expr.to_string());
+        }
+
+        // Make the Argent-only qualified references valid Sil identifiers so
+        // the Sil AST can classify their exact equality context.
+        let mut lowered = expr.to_string();
+        let mut literals = BTreeMap::new();
+        for (range, replacement, literal) in occurrences.into_iter().rev() {
+            lowered.replace_range(range, &replacement);
+            literals.insert(replacement, literal);
+        }
+        let literal_names = literals.keys().cloned().collect();
+        let mut collector = LinkedActorComparisonCollector { literals: &literal_names, comparisons: Vec::new(), invalid: None };
+        if let Ok(mut parsed) = parse_expression_ast(&lowered) {
+            collector.visit_expr(&mut parsed);
+        } else {
+            let source = format!("{lowered};");
+            let mut statement = parse_statement_ast(&source)
+                .map_err(|err| self.error(format!("cannot classify linked actor comparison `{expr}`: {err}")))?;
+            collector.visit_statement(&mut statement);
+        }
+        if let Some(name) = collector.invalid {
+            return Err(self.error(format!(
+                "linked actor reference `{}` is only supported as a direct `==` or `!=` operand against a visible scalar actor handle",
+                literals[&name].reference
+            )));
+        }
+        let mut imported_templates = self.imported_templates.borrow_mut();
+        for (literal_name, operand) in collector.comparisons {
+            let literal = &literals[&literal_name];
+            let operand_source = operand.source();
+            let source_type = match &operand {
+                LinkedActorComparisonOperand::Binding(binding) => self.bindings.source_type(binding).map(str::to_string),
+                LinkedActorComparisonOperand::ActiveField(field) => self
+                    .model
+                    .storage_state(&self.actor.state)?
+                    .fields
+                    .iter()
+                    .find(|candidate| candidate.name == *field)
+                    .map(|field| source_type_ref(&field.ty)),
+            }
+            .ok_or_else(|| {
+                self.error(format!(
+                    "linked actor reference `{}` cannot be compared with `{operand_source}` because it is not a visible scalar actor handle",
+                    literal.reference
+                ))
+            })?;
+            let binding_state = actor_type_state_from_source_type(&source_type).ok_or_else(|| {
+                self.error(format!(
+                    "linked actor reference `{}` cannot be compared with `{operand_source}` of type `{source_type}`; expected `{}<{}>`",
+                    literal.reference,
+                    word::ACTOR_TYPE,
+                    literal.state
+                ))
+            })?;
+            if binding_state != literal.state {
+                return Err(self.error(format!(
+                    "linked actor reference `{}` has type `{}<{}>`, but `{operand_source}` has type `{}<{binding_state}>`",
+                    literal.reference,
+                    word::ACTOR_TYPE,
+                    literal.state,
+                    word::ACTOR_TYPE
+                )));
+            }
+            imported_templates.insert(literal.spec.clone());
+        }
+        Ok(lowered)
+    }
+
     fn reject_physical_state_constructors(&self, source: &str) -> Result<()> {
         if contains_physical_state_constructor(source) {
             return Err(self.error("physical `State` is compiler-owned and cannot be constructed in Argent source"));
@@ -1810,6 +2014,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         debug_assert!(!expected.shape().is_scalar());
         let expr = lower_co_spent_calls(expr, &self.bindings)?;
         let expr = lower_actor_enum_literals(&expr, self.model)?;
+        let expr = self.lower_linked_actor_literals(&expr)?;
         let mut parsed = parse_expression_ast(&expr).map_err(|err| {
             self.error(format!(
                 "cannot classify authored state-array expression `{expr}` as `{}`: {err}",
@@ -2851,6 +3056,11 @@ fn array_element_type(ty: &str) -> Option<&str> {
         return None;
     }
     Some(&ty[tokens[0].span.start..tokens[0].span.end])
+}
+
+fn actor_type_state_from_source_type(ty: &str) -> Option<&str> {
+    let state = ty.strip_prefix("actor_type<")?.strip_suffix('>')?;
+    is_identifier(state).then_some(state)
 }
 
 fn is_ident(tokens: &[Token], pos: usize, ident: &str) -> bool {

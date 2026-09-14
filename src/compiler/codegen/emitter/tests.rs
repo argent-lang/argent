@@ -8140,6 +8140,253 @@ fn inline_actor_sil_and_artifact(name: &str, source: &str) -> (BTreeMap<String, 
     (actor_sil, artifact)
 }
 
+fn emit_linked_actor(dependency_app: &str, dependency: &Artifact, selected_app: &str, actor: &str, source: &str) -> Result<String> {
+    let path = PathBuf::from(format!("{selected_app}.ag"));
+    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("linked source parses");
+    let program = Program { root: path, modules: vec![module] };
+    let dependencies = BTreeMap::from([(dependency_app.to_string(), dependency)]);
+    let model = Model::from_program_app_linked(&program, selected_app, &dependencies)?;
+    emit_actor(model.actor(actor)?, &model)
+}
+
+fn linked_kcc20_artifact() -> Artifact {
+    inline_artifact(
+        "linked-kcc20",
+        r#"
+            state Kcc20State {
+                int amount;
+            }
+
+            actor Kcc20 owns Kcc20State {
+                entry hold() emits none {
+                    require(amount >= 0);
+                }
+            }
+
+            app TokenApp {
+                actor Kcc20;
+            }
+        "#,
+    )
+}
+
+#[test]
+fn linked_actor_literal_fixture_pins_generated_sil() {
+    let dependency =
+        inline_artifact("linked-actor-literal-token", include_str!("../../../../tests/fixtures/emit/linked_actor_literal/token.ag"));
+    let sil = emit_linked_actor(
+        "TokenApp",
+        &dependency,
+        "Launchpad",
+        "Curve",
+        include_str!("../../../../tests/fixtures/emit/linked_actor_literal/app.ag"),
+    )
+    .expect("linked actor literal fixture compiles");
+
+    assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/linked_actor_literal/Curve.sil"));
+}
+
+#[test]
+fn entry_body_compares_actor_handle_with_linked_actor_template() {
+    let dependency = linked_kcc20_artifact();
+    let sil = emit_linked_actor(
+        "TokenApp",
+        &dependency,
+        "Launchpad",
+        "Curve",
+        r#"
+            import app TokenApp from "./token.ag";
+
+            state CurveState {
+                actor_type<Kcc20State> token_type;
+            }
+
+            actor Curve owns CurveState {
+                entry graduate(actor_type<Kcc20State> expected) emits none {
+                    require(token_type == TokenApp::Kcc20);
+                    require(self.token_type == TokenApp::Kcc20);
+                    require(TokenApp::Kcc20 != expected);
+                    require((expected) == (TokenApp::Kcc20));
+                    // TokenApp::Kcc20 in a comment is not a dependency.
+                    require("TokenApp::Kcc20" == "TokenApp::Kcc20");
+                }
+            }
+
+            app Launchpad {
+                actor Curve;
+            }
+        "#,
+    )
+    .expect("linked actor comparisons compile");
+
+    let constant = "gen__token_app__kcc20_template_const";
+    assert_eq!(sil.matches(&format!("byte[32] constant {constant} =")).count(), 1, "{sil}");
+    assert_eq!(sil.matches(&format!("require(token_type == {constant});")).count(), 2, "{sil}");
+    assert!(sil.contains(&format!("require({constant} != expected);")), "{sil}");
+    assert!(sil.contains(&format!("require((expected) == ({constant}));")), "{sil}");
+    assert!(!sil.contains("byte[32] gen__token_app__kcc20_template ="), "{sil}");
+}
+
+#[test]
+fn linked_actor_literal_uses_exported_handle_state() {
+    let dependency = inline_artifact(
+        "linked-expanded",
+        r#"
+            state Capsule {
+                int amount;
+                virtual detail;
+            }
+            state Details {
+                int nonce;
+            }
+            state Expanded expands Capsule {
+                detail: Details;
+            }
+
+            actor ExpandedActor owns Expanded {
+                entry hold() emits none {
+                    require(amount >= 0);
+                }
+            }
+
+            app ForeignApp {
+                actor ExpandedActor;
+            }
+        "#,
+    );
+    let source = |state: &str| {
+        format!(
+            r#"
+                import app ForeignApp from "./foreign.ag";
+
+                state LocalState {{}}
+
+                actor Local owns LocalState {{
+                    entry inspect(actor_type<{state}> target) emits none {{
+                        require(target == ForeignApp::ExpandedActor);
+                    }}
+                }}
+
+                app LocalApp {{
+                    actor Local;
+                }}
+            "#
+        )
+    };
+
+    let sil = emit_linked_actor("ForeignApp", &dependency, "LocalApp", "Local", &source("Capsule"))
+        .expect("the linked actor literal exposes its base handle state");
+    assert!(sil.contains("require(target == gen__foreign_app__expanded_actor_template_const);"), "{sil}");
+
+    let err = emit_linked_actor("ForeignApp", &dependency, "LocalApp", "Local", &source("Expanded"))
+        .expect_err("the authored expanded state is not the exported actor-handle state");
+    assert!(
+        err.to_string().contains(
+            "linked actor reference `ForeignApp::ExpandedActor` has type `actor_type<Capsule>`, but `target` has type `actor_type<Expanded>`"
+        ),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn linked_actor_text_in_comments_and_strings_does_not_import_a_template() {
+    let dependency = linked_kcc20_artifact();
+    let sil = emit_linked_actor(
+        "TokenApp",
+        &dependency,
+        "Launchpad",
+        "Curve",
+        r#"
+            import app TokenApp from "./token.ag";
+
+            state CurveState {}
+
+            actor Curve owns CurveState {
+                entry inspect() emits none {
+                    // TokenApp::Kcc20
+                    require("TokenApp::Kcc20" == "TokenApp::Kcc20");
+                }
+            }
+
+            app Launchpad {
+                actor Curve;
+            }
+        "#,
+    )
+    .expect("qualified text in trivia compiles without importing a template");
+
+    assert!(!sil.contains("gen__token_app__kcc20_template_const"), "{sil}");
+}
+
+#[test]
+fn linked_actor_literal_requires_a_scalar_actor_handle_operand() {
+    let dependency = linked_kcc20_artifact();
+    let err = emit_linked_actor(
+        "TokenApp",
+        &dependency,
+        "Launchpad",
+        "Curve",
+        r#"
+            import app TokenApp from "./token.ag";
+
+            state CurveState {}
+
+            actor Curve owns CurveState {
+                entry inspect(int target) emits none {
+                    require(target == TokenApp::Kcc20);
+                }
+            }
+
+            app Launchpad {
+                actor Curve;
+            }
+        "#,
+    )
+    .expect_err("a linked actor literal must not compare as an untyped byte value");
+
+    assert!(
+        err.to_string().contains("cannot be compared with `target` of type `int`; expected `actor_type<Kcc20State>`"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn qualified_active_actor_handle_ignores_lexical_shadowing() {
+    let dependency = linked_kcc20_artifact();
+    let source = |comparison: &str| {
+        format!(
+            r#"
+                import app TokenApp from "./token.ag";
+
+                state CurveState {{
+                    actor_type<Kcc20State> token_type;
+                }}
+
+                actor Curve owns CurveState {{
+                    entry inspect(int token_type) emits none {{
+                        require({comparison});
+                    }}
+                }}
+
+                app Launchpad {{
+                    actor Curve;
+                }}
+            "#
+        )
+    };
+
+    let sil = emit_linked_actor("TokenApp", &dependency, "Launchpad", "Curve", &source("self.token_type == TokenApp::Kcc20"))
+        .expect("qualified active fields resolve independently from lexical bindings");
+    assert!(sil.contains("require(token_type == gen__token_app__kcc20_template_const);"), "{sil}");
+
+    let err = emit_linked_actor("TokenApp", &dependency, "Launchpad", "Curve", &source("token_type == TokenApp::Kcc20"))
+        .expect_err("a bare name resolves to the shadowing entry parameter");
+    assert!(
+        err.to_string().contains("cannot be compared with `token_type` of type `int`; expected `actor_type<Kcc20State>`"),
+        "unexpected error: {err}"
+    );
+}
+
 #[test]
 fn standalone_entry_body_block_lowers_and_compiles() {
     let (actor_sil, _) = inline_actor_sil_and_artifact(
