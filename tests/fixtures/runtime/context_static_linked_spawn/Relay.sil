@@ -15,6 +15,10 @@ contract Relay(
         // :: user declared fields
         int forwards;
     }
+    struct ChildState {
+        // :: user declared fields
+        int amount;
+    }
 
     // :: route templates
     byte[32] gen__launcher_template = gen__init_launcher_template;

@@ -112,6 +112,166 @@ fn compile_inline_returns_artifact_without_a_user_output_dir() {
 }
 
 #[test]
+fn aliased_helpers_keep_their_defining_module_bindings() {
+    let temp = std::env::temp_dir().join(format!("argent-module-helper-bindings-{}", std::process::id()));
+    std::fs::create_dir_all(&temp).expect("test directory created");
+    let library = r#"
+        const int LIMIT = 1;
+        fn source_limit() -> int { return LIMIT; }
+        fn limit() -> int { return source_limit(); }
+    "#;
+    for root_constant in ["", "const int LIMIT = 2;"] {
+        let root = format!(
+            r#"
+            import "./library.ag" as lib;
+            {root_constant}
+            fn source_limit() -> int {{ return 2; }}
+            state S {{}}
+            actor A owns S {{
+                entry check(int value) emits none {{ require(value == lib::limit()); }}
+            }}
+            app Test {{ actor A; }}
+        "#
+        );
+        std::fs::write(temp.join("root.ag"), root).expect("root source written");
+        std::fs::write(temp.join("library.ag"), library).expect("library source written");
+        let actual = build_file(temp.join("root.ag"), temp.join("actual")).expect("module-local dependency closure compiles");
+
+        std::fs::write(temp.join("library.ag"), library.replace("return LIMIT;", "return 1;")).expect("reference source written");
+        let expected = build_file(temp.join("root.ag"), temp.join("expected")).expect("literal reference compiles");
+        assert_eq!(
+            actual.sil_abi.contract("A").unwrap().compiled.bytecode,
+            expected.sil_abi.contract("A").unwrap().compiled.bytecode,
+            "lib::limit() must return its own module's 1, with or without a root LIMIT"
+        );
+    }
+    std::fs::remove_dir_all(temp).expect("test directory removed");
+}
+
+#[test]
+fn qualified_library_names_do_not_capture_actor_or_function_locals() {
+    let temp = std::env::temp_dir().join(format!("argent-qualified-name-capture-{}", std::process::id()));
+    std::fs::create_dir_all(&temp).unwrap();
+    std::fs::write(
+        temp.join("library.ag"),
+        r#"
+        const int LIMIT = 1;
+        fn limit() -> int { return LIMIT; }
+        fn identity(int ROOT_LIMIT) -> int { return ROOT_LIMIT; }
+    "#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.join("root.ag"),
+        r#"
+        import "./library.ag" as lib;
+        const int ROOT_LIMIT = 3;
+        state S {}
+        actor A owns S {
+            fn limit() -> int { return 2; }
+            entry check(int LIMIT) emits none {
+                require(LIMIT == lib::LIMIT);
+                require(lib::limit() == 1);
+                require(limit() == 2);
+                require(lib::identity(ROOT_LIMIT) == 3);
+            }
+        }
+        app Test { actor A; }
+    "#,
+    )
+    .unwrap();
+    let actual = build_file(temp.join("root.ag"), temp.join("actual")).expect("qualified library references remain hygienic");
+    let expected = compile_inline(
+        "literal-reference.ag",
+        r#"
+        fn library_limit() -> int { return 1; }
+        fn identity(int x) -> int { return x; }
+        state S {}
+        actor A owns S {
+            fn limit() -> int { return 2; }
+            entry check(int LIMIT) emits none {
+                require(LIMIT == 1);
+                require(library_limit() == 1);
+                require(limit() == 2);
+                require(identity(3) == 3);
+            }
+        }
+        app Test { actor A; }
+    "#,
+    )
+    .expect("literal reference compiles");
+    assert_eq!(actual.sil_abi.contract("A").unwrap().compiled.bytecode, expected.sil_abi.contract("A").unwrap().compiled.bytecode);
+    std::fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
+fn importing_module_cannot_supply_an_unresolved_library_identifier() {
+    let temp = std::env::temp_dir().join(format!("argent-unresolved-library-name-{}", std::process::id()));
+    std::fs::create_dir_all(&temp).unwrap();
+    std::fs::write(temp.join("library.ag"), "fn limit() -> int { return LIMIT; }").unwrap();
+    std::fs::write(
+        temp.join("root.ag"),
+        r#"
+        import "./library.ag" as lib;
+        const int LIMIT = 2;
+        state S {}
+        actor A owns S { entry check(int value) emits none { require(value == lib::limit()); } }
+        app Test { actor A; }
+    "#,
+    )
+    .unwrap();
+    let error = build_file(temp.join("root.ag"), temp.join("out")).expect_err("root constants are not in the library's scope");
+    assert!(error.to_string().contains("unresolved identifier `LIMIT`"), "{error}");
+    std::fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
+fn unused_import_does_not_change_linked_app_artifacts() {
+    let temp = std::env::temp_dir().join(format!("argent-stable-app-exports-{}", std::process::id()));
+    std::fs::create_dir_all(&temp).expect("test directory created");
+    // Both libraries define Asset and AssetState, but only actor.ag is used.
+    std::fs::write(temp.join("actor.ag"), "state AssetState { int n; } actor Asset owns AssetState { entry check() emits none {} }")
+        .unwrap();
+    std::fs::write(
+        temp.join("unused.ag"),
+        "state AssetState { bool n; } actor Asset owns AssetState { entry unused() emits none {} }",
+    )
+    .unwrap();
+    std::fs::write(
+        temp.join("consumer.ag"),
+        r#"
+        import "./asset.ag" as asset;
+        state ConsumerState {}
+        actor Consumer owns ConsumerState {
+            entry check(cov_id id)
+            observes asset by id { inputs { source: asset::AssetApp::Asset, } }
+            emits none { require(1 == 1); }
+        }
+        app ConsumerApp { actor Consumer; }
+    "#,
+    )
+    .unwrap();
+    let source = r#"import "./actor.ag" as actor; app AssetApp { actor actor::Asset; }"#;
+    std::fs::write(temp.join("asset.ag"), source).unwrap();
+    let baseline = build_file_app_bundle(temp.join("consumer.ag"), "ConsumerApp", temp.join("baseline")).expect("baseline links");
+    let baseline_asset = baseline.app("AssetApp").unwrap();
+    assert_eq!(baseline_asset.argent.actors.iter().map(|actor| actor.name.as_str()).collect::<Vec<_>>(), ["Asset"]);
+    assert!(baseline_asset.sil_abi.contract("Asset").is_some());
+
+    // Adding the unused import in either position must preserve both apps' artifacts.
+    let unused_import = r#"import "./unused.ag" as unused;"#;
+    for changed_source in [format!("{unused_import} {source}"), format!("{source} {unused_import}")] {
+        std::fs::write(temp.join("asset.ag"), changed_source).unwrap();
+        let changed = build_file_app_bundle(temp.join("consumer.ag"), "ConsumerApp", temp.join("changed"))
+            .expect("AssetApp::Asset still links after an unused name collision");
+        // Artifact IDs cover exported names, interfaces, and compiled code.
+        assert_eq!(changed.app("AssetApp").unwrap().id, baseline_asset.id, "asset artifact changed");
+        assert_eq!(changed.primary().id, baseline.primary().id, "consumer artifact changed");
+    }
+    std::fs::remove_dir_all(temp).expect("test directory removed");
+}
+
+#[test]
 fn compile_inline_supports_helpers_without_return_types() {
     let source = r#"
         fn authorize(int value) {
@@ -297,8 +457,7 @@ app CohortApp {
     std::fs::write(
         temp.join("controller.ag"),
         r#"
-import actor SoloApp::Shared from "./shared.ag";
-import app CohortApp from "./shared.ag";
+import "./shared.ag";
 
 state CtrlState {
     int marker;
@@ -308,7 +467,7 @@ actor Ctrl owns CtrlState {
     entry inspect(cov_id solo_id, cov_id cohort_id)
     observes solo by solo_id {
         inputs {
-            src: Shared,
+            src: SoloApp::Shared,
         }
     }
     observes cohort by cohort_id {
@@ -425,7 +584,7 @@ app LeafApp {
     std::fs::write(
         temp.join("middle.ag"),
         r#"
-import actor LeafApp::Leaf from "./leaf.ag";
+import "./leaf.ag";
 
 state MiddleState {
     int n;
@@ -435,17 +594,17 @@ actor Middle owns MiddleState {
     entry update(cov_id leaf_id)
     observes leaf by leaf_id {
         inputs {
-            src: Leaf,
+            src: LeafApp::Leaf,
         }
         outputs {
-            leaf_output: Leaf,
+            leaf_output: LeafApp::Leaf,
         }
     }
     emits next: Middle {
         unrestricted(next.value);
         LeafState next_leaf = state(leaf.inputs.src);
         require leaf.outputs become {
-            leaf_output <- Leaf(next_leaf),
+            leaf_output <- LeafApp::Leaf(next_leaf),
         };
         MiddleState next_state = {
             n: n + 1,
@@ -463,7 +622,7 @@ app MiddleApp {
     std::fs::write(
         temp.join("root.ag"),
         r#"
-import actor MiddleApp::Middle from "./middle.ag";
+import "./middle.ag";
 
 state RootState {
     int n;
@@ -473,17 +632,17 @@ actor Root owns RootState {
     entry update(cov_id middle_id)
     observes middle by middle_id {
         inputs {
-            src: Middle,
+            src: MiddleApp::Middle,
         }
         outputs {
-            middle_output: Middle,
+            middle_output: MiddleApp::Middle,
         }
     }
     emits next: Root {
         unrestricted(next.value);
         MiddleState next_middle = state(middle.inputs.src);
         require middle.outputs become {
-            middle_output <- Middle(next_middle),
+            middle_output <- MiddleApp::Middle(next_middle),
         };
         RootState next_state = {
             n: n + 1,
@@ -738,7 +897,7 @@ const ChildState INITIAL_CHILD = ChildState {
     for (name, global, member, entry, declarations, expected) in cases {
         let source = format!(
             r#"
-import app ChildApp from "./child.ag";
+import "./child.ag";
 
 {global}
 
@@ -802,7 +961,7 @@ app SharedApp {
     std::fs::write(
         temp.join("left.ag"),
         r#"
-import app SharedApp from "./shared.ag";
+import "./shared.ag";
 
 state LeftState {
     int n;
@@ -830,7 +989,7 @@ app LeftApp {
     std::fs::write(
         temp.join("right.ag"),
         r#"
-import actor SharedApp::Shared from "./shared.ag";
+import "./shared.ag";
 
 state RightState {
     byte tag;
@@ -840,7 +999,7 @@ actor Right owns RightState {
     entry inspect(cov_id shared_id)
     observes shared by shared_id {
         inputs {
-            src: Shared,
+            src: SharedApp::Shared,
         }
     }
     emits none {
@@ -858,8 +1017,8 @@ app RightApp {
     std::fs::write(
         temp.join("root.ag"),
         r#"
-import app LeftApp from "./left.ag";
-import actor RightApp::Right from "./right.ag";
+import "./left.ag" as left;
+import "./right.ag" as right;
 
 state RootState {}
 
@@ -867,12 +1026,12 @@ actor Root owns RootState {
     entry inspect(cov_id left_id, cov_id right_id)
     observes left by left_id {
         inputs {
-            src: LeftApp::Left,
+            src: left::LeftApp::Left,
         }
     }
     observes right by right_id {
         inputs {
-            src: Right,
+            src: right::RightApp::Right,
         }
     }
     emits none {
@@ -1023,4 +1182,270 @@ fn build_file_requires_selection_for_multiple_root_apps() {
     assert!(error.to_string().contains("select one with `--app <name>`"));
 
     let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn aliased_signature_type_must_be_qualified() {
+    let temp = std::env::temp_dir().join(format!("argent-aliased-signature-{}", std::process::id()));
+    std::fs::create_dir_all(&temp).unwrap();
+    std::fs::write(temp.join("asset.ag"), "state S { int n; } actor A owns S {}").unwrap();
+    std::fs::write(
+        temp.join("root.ag"),
+        r#"
+        import "./asset.ag" as asset;
+        state R { int nonce; }
+        actor Root owns R { entry check(S value) emits none { require(value.n >= 0); } }
+        app Test { actor Root; actor asset::A; }
+    "#,
+    )
+    .unwrap();
+
+    let error = build_file(temp.join("root.ag"), temp.join("out"))
+        .expect_err("selecting asset::A must not make its state S visible by bare name");
+    assert!(error.to_string().contains("unknown export `S`"), "{error}");
+    std::fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
+fn aliased_observation_actor_must_be_qualified() {
+    let temp = std::env::temp_dir().join(format!("argent-aliased-observation-{}", std::process::id()));
+    std::fs::create_dir_all(&temp).unwrap();
+    std::fs::write(temp.join("asset.ag"), "state S { int n; } actor A owns S {}").unwrap();
+    std::fs::write(
+        temp.join("root.ag"),
+        r#"
+        import "./asset.ag" as asset;
+        state R { int nonce; }
+        actor Root owns R {
+            entry check(cov_id id) observes source by id { inputs { a: A, } } emits none {}
+        }
+        app Test { actor Root; actor asset::A; }
+    "#,
+    )
+    .unwrap();
+
+    let error = build_file(temp.join("root.ag"), temp.join("out"))
+        .expect_err("selecting asset::A must not make bare A visible in observations");
+    assert!(error.to_string().contains("unknown export `A`"), "{error}");
+    std::fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
+fn body_app_reference_must_include_import_alias() {
+    let temp = std::env::temp_dir().join(format!("argent-body-app-alias-{}", std::process::id()));
+    std::fs::create_dir_all(&temp).unwrap();
+    std::fs::write(
+        temp.join("asset.ag"),
+        "state S { int n; } actor A owns S { entry hold() emits none {} } app AssetApp { actor A; }",
+    )
+    .unwrap();
+    std::fs::write(
+        temp.join("root.ag"),
+        r#"
+        import "./asset.ag" as asset;
+        state R { int nonce; }
+        actor Root owns R {
+            entry send(cov_id id)
+            observes source by id {
+                inputs { a: asset::AssetApp::A, }
+                outputs { a: asset::AssetApp::A, }
+            }
+            emits none {
+                require source.outputs become { a <- AssetApp::A(state(source.inputs.a)), };
+            }
+        }
+        app Test { actor Root; }
+    "#,
+    )
+    .unwrap();
+
+    let error = build_file(temp.join("root.ag"), temp.join("out"))
+        .expect_err("a linker-generated app name must not resolve an authored successor");
+    assert!(error.to_string().contains("unknown export `AssetApp`"), "{error}");
+    std::fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
+fn local_state_does_not_conflict_with_linked_state() {
+    let temp = std::env::temp_dir().join(format!("argent-local-linked-state-{}", std::process::id()));
+    std::fs::create_dir_all(&temp).unwrap();
+    std::fs::write(
+        temp.join("asset.ag"),
+        "state S { int amount; } actor A owns S { entry hold() emits none {} } app AssetApp { actor A; }",
+    )
+    .unwrap();
+    std::fs::write(
+        temp.join("root.ag"),
+        r#"
+        import "./asset.ag" as asset;
+        state S { bool active; }
+        actor Root owns S {
+            entry check(cov_id id)
+            observes source by id { inputs { a: asset::AssetApp::A, } }
+            emits none { require(state(source.inputs.a).amount >= 0); }
+        }
+        app Test { actor Root; }
+    "#,
+    )
+    .unwrap();
+
+    build_file(temp.join("root.ag"), temp.join("out")).expect("unrelated local and linked S declarations may have different layouts");
+    std::fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
+fn dependencies_can_have_distinct_states_named_s() {
+    let temp = std::env::temp_dir().join(format!("argent-dependency-state-collision-{}", std::process::id()));
+    std::fs::create_dir_all(&temp).unwrap();
+    std::fs::write(
+        temp.join("left.ag"),
+        "state S { int amount; } actor A owns S { entry hold() emits none {} } app LeftApp { actor A; }",
+    )
+    .unwrap();
+    std::fs::write(
+        temp.join("right.ag"),
+        "state S { bool active; } actor A owns S { entry hold() emits none {} } app RightApp { actor A; }",
+    )
+    .unwrap();
+    std::fs::write(
+        temp.join("root.ag"),
+        r#"
+        import "./left.ag" as left;
+        import "./right.ag" as right;
+        state R { int nonce; }
+        actor Root owns R {
+            entry check(cov_id left_id, cov_id right_id)
+            observes left by left_id { inputs { a: left::LeftApp::A, } }
+            observes right by right_id { inputs { a: right::RightApp::A, } }
+            emits none {
+                require(state(left.inputs.a).amount >= 0);
+                require(state(right.inputs.a).active);
+            }
+        }
+        app Test { actor Root; }
+    "#,
+    )
+    .unwrap();
+
+    build_file(temp.join("root.ag"), temp.join("out")).expect("each dependency keeps its own S layout");
+    std::fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
+fn actor_handle_accepts_imported_state_with_local_name_collision() {
+    let temp = std::env::temp_dir().join(format!("argent-shared-state-handle-{}", std::process::id()));
+    std::fs::create_dir_all(&temp).unwrap();
+    std::fs::write(
+        temp.join("asset.ag"),
+        "state S { int amount; } actor A owns S { entry hold() emits none {} } app AssetApp { actor A; }",
+    )
+    .unwrap();
+    std::fs::write(
+        temp.join("root.ag"),
+        r#"
+        import "./asset.ag" as asset;
+        state S { byte tag; }
+        actor Root owns S {
+            entry send(cov_id id, actor_type<asset::S> target)
+            observes source by id { inputs { a: asset::AssetApp::A, } }
+            spawns children by child_id { outputs { a: target, } }
+            emits none {
+                asset::S current = state(source.inputs.a);
+                unrestricted(children.outputs.a.value);
+                require children.outputs become { a <- target(current), };
+            }
+        }
+        app Test { actor Root; }
+    "#,
+    )
+    .unwrap();
+
+    // The local S forces asset::S to use a different name from its dependency build.
+    build_file(temp.join("root.ag"), temp.join("out")).expect("the observed source state must still match actor_type<asset::S>");
+    std::fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
+fn transitive_linked_enum_variants_keep_their_defining_app() {
+    let temp = std::env::temp_dir().join(format!("argent-transitive-enum-{}", std::process::id()));
+    std::fs::create_dir_all(&temp).unwrap();
+    std::fs::write(
+        temp.join("asset.ag"),
+        r#"
+        state S { int n; }
+        actor A owns S { entry hold() emits none { require(n >= 0); } }
+        actor B owns S { entry hold() emits none { require(n > 1); } }
+        actor enum Kind { A; B; }
+        app AssetApp { actor A; actor B; }
+    "#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.join("middle.ag"),
+        r#"
+        import "./asset.ag" as asset;
+        state M { int count; }
+        actor Middle owns M {
+            entry check(cov_id id)
+            observes source by id { inputs { a: asset::AssetApp::A, } }
+            emits none {}
+        }
+        app MiddleApp { actor Middle; }
+    "#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.join("root.ag"),
+        r#"
+        import "./asset.ag" as asset;
+        import "./middle.ag" as middle;
+        state R { int nonce; }
+        actor Root owns R {
+            entry check(cov_id id, cov_id middle_id)
+            observes source by id { inputs { a: asset::AssetApp::A, } }
+            observes bridge by middle_id { inputs { a: middle::MiddleApp::Middle, } }
+            emits none {}
+        }
+        app Test { actor Root; }
+    "#,
+    )
+    .unwrap();
+
+    let artifact = build_file(temp.join("root.ag"), temp.join("out")).unwrap();
+    assert_eq!(artifact.argent.actor_enums[0].variants, ["AssetApp::A", "AssetApp::B"]);
+    std::fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
+fn aliased_actor_enum_variant_compiles() {
+    let temp = std::env::temp_dir().join(format!("argent-aliased-enum-variant-{}", std::process::id()));
+    std::fs::create_dir_all(&temp).unwrap();
+    std::fs::write(
+        temp.join("asset.ag"),
+        r#"
+        state S { int n; }
+        actor A owns S { entry hold() emits none { require(n >= 0); } }
+        actor B owns S { entry hold() emits none { require(n > 1); } }
+        actor enum Kind { A; B; }
+    "#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.join("root.ag"),
+        r#"
+        import "./asset.ag" as asset;
+        actor Root owns asset::S {
+            entry choose() emits next: asset::Kind {
+                asset::Kind selected = asset::Kind::A;
+                unrestricted(next.value);
+                become next <- selected(state(self));
+            }
+        }
+        app Test { actor Root; actor asset::A; actor asset::B; }
+    "#,
+    )
+    .unwrap();
+
+    build_file(temp.join("root.ag"), temp.join("out")).expect("the qualified enum variant resolves through its alias");
+    std::fs::remove_dir_all(temp).unwrap();
 }

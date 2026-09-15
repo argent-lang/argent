@@ -65,32 +65,10 @@ impl Parser {
 
     fn parse_import(&mut self) -> Result<Import> {
         self.expect_ident(word::IMPORT)?;
-        if self.consume_ident(word::ACTOR) {
-            let first = self.expect_any_ident()?;
-            let qualified_actor = if self.consume_symbol(':') {
-                self.expect_symbol(':')?;
-                Some(self.expect_any_ident()?)
-            } else {
-                None
-            };
-            self.expect_ident(word::FROM)?;
-            let path = self.expect_string()?;
-            self.expect_symbol(';')?;
-            Ok(match qualified_actor {
-                Some(actor) => Import::AppActor { app: first, actor, path },
-                None => Import::Actor { actor: first, path },
-            })
-        } else if self.consume_ident(word::APP) {
-            let app = self.expect_any_ident()?;
-            self.expect_ident(word::FROM)?;
-            let path = self.expect_string()?;
-            self.expect_symbol(';')?;
-            Ok(Import::App { app, path })
-        } else {
-            let path = self.expect_string()?;
-            self.expect_symbol(';')?;
-            Ok(Import::Module { path })
-        }
+        let path = self.expect_string()?;
+        let alias = if self.consume_ident(word::AS) { Some(self.expect_any_ident()?) } else { None };
+        self.expect_symbol(';')?;
+        Ok(Import { path, alias })
     }
 
     fn parse_const(&mut self) -> Result<ConstDecl> {
@@ -110,7 +88,7 @@ impl Parser {
     fn parse_state(&mut self) -> Result<StateDecl> {
         self.expect_ident(word::STATE)?;
         let name = self.expect_any_ident()?;
-        let expands = if self.consume_ident(word::EXPANDS) { Some(self.expect_any_ident()?) } else { None };
+        let expands = if self.consume_ident(word::EXPANDS) { Some(self.expect_any_qualified_ident()?) } else { None };
         self.expect_symbol('{')?;
         let mut fields = Vec::new();
         let mut digest_expansions = Vec::new();
@@ -118,7 +96,7 @@ impl Parser {
             if expands.is_some() {
                 let field = self.expect_any_ident()?;
                 self.expect_symbol(':')?;
-                let state = self.expect_any_ident()?;
+                let state = self.expect_any_qualified_ident()?;
                 self.expect_symbol(';')?;
                 digest_expansions.push(StateDigestExpansionDecl { field, state });
             } else if self.consume_ident(word::VIRTUAL) {
@@ -150,7 +128,7 @@ impl Parser {
         self.expect_ident(word::ACTOR)?;
         let name = self.expect_any_ident()?;
         self.expect_ident(word::OWNS)?;
-        let state = self.expect_any_ident()?;
+        let state = self.expect_any_qualified_ident()?;
         self.expect_symbol('{')?;
         let mut functions = Vec::new();
         let mut entries = Vec::new();
@@ -172,7 +150,7 @@ impl Parser {
         self.expect_symbol('{')?;
         let mut variants = Vec::new();
         while !self.check_symbol('}') {
-            variants.push(self.expect_any_ident()?);
+            variants.push(self.expect_any_qualified_ident()?);
             if self.consume_symbol(';') || self.consume_symbol(',') {
                 continue;
             }
@@ -245,7 +223,7 @@ impl Parser {
         let mut actors = Vec::new();
         while !self.check_symbol('}') {
             if self.consume_ident(word::ACTOR) {
-                actors.push(self.expect_any_ident()?);
+                actors.push(self.expect_any_qualified_ident()?);
                 self.expect_symbol(';')?;
             } else {
                 return Err(self.error(format!("expected `actor`, found {}", self.describe_current())));
@@ -278,7 +256,7 @@ impl Parser {
         while !self.check_symbol('}') {
             let name = self.expect_any_ident()?;
             self.expect_symbol(':')?;
-            let actor = self.expect_any_ident()?;
+            let actor = self.expect_any_qualified_ident()?;
             let cardinality = self.parse_cardinality()?;
             consumes.push(ConsumeDecl { name, actor, cardinality });
             self.expect_list_separator_or_end('}')?;
@@ -379,7 +357,7 @@ impl Parser {
                     return Err(self.error("open observed actor bindings are only declared in `inputs`"));
                 }
                 self.expect_symbol('<')?;
-                let state = self.expect_any_ident()?;
+                let state = self.expect_any_qualified_ident()?;
                 self.expect_symbol('>')?;
                 self.expect_ident(word::AS)?;
                 let actor = self.expect_any_ident()?;
@@ -469,13 +447,13 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Result<TypeRef> {
-        let name = self.expect_any_ident()?;
+        let name = self.expect_any_qualified_ident()?;
         self.parse_type_tail(name)
     }
 
     fn parse_type_tail(&mut self, name: String) -> Result<TypeRef> {
         if name == word::ACTOR_TYPE && self.consume_symbol('<') {
-            let state = self.expect_any_ident()?;
+            let state = self.expect_any_qualified_ident()?;
             self.expect_symbol('>')?;
             Ok(TypeRef::actor_type(state))
         } else if self.consume_symbol('[') {
@@ -525,9 +503,9 @@ impl Parser {
 
     fn parse_actor_union(&mut self) -> Result<Vec<String>> {
         let mut actors = Vec::new();
-        actors.push(self.expect_any_ident()?);
+        actors.push(self.expect_any_qualified_ident()?);
         while self.consume_symbol('|') {
-            actors.push(self.expect_any_ident()?);
+            actors.push(self.expect_any_qualified_ident()?);
         }
         Ok(actors)
     }
@@ -555,10 +533,7 @@ impl Parser {
                     if negative { value.checked_neg().ok_or_else(|| self.error("range bound integer is too small"))? } else { value };
                 Ok(CardinalityBound::Literal(value))
             }
-            TokenKind::Ident(name) if !negative => {
-                self.advance();
-                Ok(CardinalityBound::Const(name))
-            }
+            TokenKind::Ident(_) if !negative => Ok(CardinalityBound::Const(self.expect_any_qualified_ident()?)),
             _ => Err(self.error("range bound must be an integer literal or const identifier")),
         }
     }
@@ -621,6 +596,17 @@ impl Parser {
             }
             _ => Err(self.error(format!("expected identifier, found {}", self.describe_current()))),
         }
+    }
+
+    /// Same as [expect_any_ident], with optional namespace qualification.
+    fn expect_any_qualified_ident(&mut self) -> Result<String> {
+        let mut name = self.expect_any_ident()?;
+        while self.consume_symbol(':') {
+            self.expect_symbol(':')?;
+            name.push_str("::");
+            name.push_str(&self.expect_any_ident()?);
+        }
+        Ok(name)
     }
 
     fn check_ident(&self, expected: &str) -> bool {

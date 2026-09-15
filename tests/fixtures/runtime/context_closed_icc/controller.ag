@@ -1,4 +1,4 @@
-import app BadgeAsset from "./asset.ag";
+import "./asset.ag";
 
 state ControllerState {
     int minted;

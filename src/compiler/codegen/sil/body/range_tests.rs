@@ -3,11 +3,11 @@
 use std::path::PathBuf;
 
 use super::*;
+use crate::compiler::loader::{ResolvedModules, load_inline_program};
 
-fn test_program(source: &str) -> Program {
+fn test_program(source: &str) -> ResolvedModules {
     let path = PathBuf::from("body-lowering.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
-    Program { root: path, modules: vec![module] }
+    load_inline_program(path, source.to_string()).expect("source resolves")
 }
 
 fn lower_test_body(source: &str, actor_name: &str) -> String {
@@ -16,7 +16,8 @@ fn lower_test_body(source: &str, actor_name: &str) -> String {
 
 fn lower_test_body_result(source: &str, actor_name: &str) -> Result<String> {
     let program = test_program(source);
-    let model = Model::from_program(&program).expect("model builds");
+    let source = crate::compiler::model::ModelSource::new(&program, None).expect("source adapts");
+    let model = Model::from_source(&source).expect("model builds");
     let actor = model.actor(actor_name).expect("actor exists");
     let entry = actor.entries.first().expect("actor has an entry");
     let state_values = ContractStateValuePlan::new(actor, &model).expect("state values plan");
@@ -361,7 +362,8 @@ fn records_ranged_current_inputs_as_reference_collections() {
             }
         "#,
     );
-    let model = Model::from_program(&program).expect("model builds");
+    let source = crate::compiler::model::ModelSource::new(&program, None).expect("source adapts");
+    let model = Model::from_source(&source).expect("model builds");
     let actor = model.actor("Batch").expect("actor exists");
     let entry = actor.entries.first().expect("actor has an entry");
     let state_values = ContractStateValuePlan::new(actor, &model).expect("state values plan");

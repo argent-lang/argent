@@ -1,15 +1,14 @@
 //! Builds the selected application's compiler model.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::path::Path;
 
-use crate::artifact::{AppDependencyArtifact, Artifact, EntryRefArtifact};
-use crate::compiler::syntax::word;
+use super::ModelSource;
+use crate::artifact::{AppDependencyArtifact, EntryRefArtifact};
+use crate::compiler::loader::ResolvedDeclaration;
 use crate::compiler::syntax::*;
 use crate::error::{ArgentError, Result};
 
-use super::link::{LinkedContext, link_imported_actors};
+use super::link::{LinkedContext, LinkedDependency};
 use super::{
     ActorEnumInfo, ActorModel, AppActors, CompilerRoutePlan, CompilerRoutePlanner, ConstResolver, Model,
     build_contract_state_lowerings, default_route_planner, infer_direct_routes,
@@ -35,60 +34,51 @@ fn compute_leader_for(actors: &[&ActorDecl]) -> BTreeMap<String, Vec<EntryRefArt
 }
 
 impl<'a> Model<'a> {
-    pub(crate) fn from_program(program: &'a Program) -> Result<Self> {
-        Self::from_program_selected(program, None, &BTreeMap::new())
+    pub(crate) fn from_source(program: &'a ModelSource<'_>) -> Result<Self> {
+        Self::from_source_with_route_planner(program, &BTreeMap::new(), &default_route_planner)
     }
 
-    #[cfg(test)]
-    pub(crate) fn from_program_app(program: &'a Program, app_name: &str) -> Result<Self> {
-        Self::from_program_selected(program, Some(app_name), &BTreeMap::new())
-    }
-
-    pub(crate) fn from_program_app_linked(
-        program: &'a Program,
-        app_name: &str,
-        dependencies: &BTreeMap<String, &Artifact>,
+    pub(crate) fn from_source_linked(
+        program: &'a ModelSource<'_>,
+        dependencies: &BTreeMap<String, LinkedDependency<'_>>,
     ) -> Result<Self> {
-        Self::from_program_selected(program, Some(app_name), dependencies)
+        Self::from_source_with_route_planner(program, dependencies, &default_route_planner)
     }
 
-    fn from_program_selected(
-        program: &'a Program,
-        app_name: Option<&str>,
-        dependencies: &BTreeMap<String, &Artifact>,
-    ) -> Result<Self> {
-        Self::from_program_selected_with_route_planner(program, app_name, dependencies, &default_route_planner)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_program_with_route_planner(program: &'a Program, route_planner: &CompilerRoutePlanner) -> Result<Self> {
-        Self::from_program_selected_with_route_planner(program, None, &BTreeMap::new(), route_planner)
-    }
-
-    fn from_program_selected_with_route_planner(
-        program: &'a Program,
-        app_name: Option<&str>,
-        dependencies: &BTreeMap<String, &Artifact>,
+    pub(crate) fn from_source_with_route_planner(
+        program: &'a ModelSource<'_>,
+        dependencies: &BTreeMap<String, LinkedDependency<'_>>,
         route_planner: &CompilerRoutePlanner,
     ) -> Result<Self> {
-        validate_unique_apps(program)?;
-        let consts = collect_consts(program)?;
+        // collect all program declarations
+        let mut consts = Vec::new();
+        let mut functions = Vec::new();
+        let mut states = BTreeMap::new();
+        let mut all_actors = BTreeMap::new();
+        let mut actor_enum_decls = BTreeMap::new();
+        for declaration in program.declarations() {
+            match declaration {
+                ResolvedDeclaration::Const(declaration) => consts.push(declaration),
+                ResolvedDeclaration::State(declaration) => {
+                    states.insert(declaration.name.clone(), declaration);
+                }
+                ResolvedDeclaration::Function(declaration) => functions.push(declaration),
+                ResolvedDeclaration::Actor(declaration) => {
+                    all_actors.insert(declaration.name.clone(), declaration);
+                }
+                ResolvedDeclaration::ActorEnum(declaration) => {
+                    actor_enum_decls.insert(declaration.name.clone(), declaration);
+                }
+                ResolvedDeclaration::App(_) => {}
+            }
+        }
+
+        let app_name = program.app_name.clone();
+        let app_actors = program.actors.clone();
         let const_resolver = ConstResolver::new(&consts);
-        let functions = collect_functions(program)?;
-        let states = collect_states(program)?;
-        let all_actors = collect_actors(program)?;
-        let actor_enum_decls = collect_actor_enums(program)?;
-
-        let app = select_root_app(program, app_name)?;
-        // app_actors define the selected app's actor domain.
-        let (app_name, app_actors) = if let Some(app) = app {
-            (app.name.clone(), app.actors.clone())
-        } else {
-            ("ArgentApp".to_string(), all_actors.keys().cloned().collect())
-        };
         let app_actors = AppActors::new(app_actors);
-        validate_direct_actor_imports(program, &app_name, &app_actors)?;
 
+        // actors filtered by the selected app
         let mut actors = Vec::new();
         for name in app_actors.iter() {
             let actor =
@@ -104,7 +94,8 @@ impl<'a> Model<'a> {
             actor_decls: linked_actor_decls,
             actors: linked_actors,
             actor_enums: linked_actor_enums,
-        } = link_imported_actors(program, dependencies, &states, &all_actors)?;
+            origins: declaration_origins,
+        } = LinkedContext::new(dependencies, program.declaration_origins(), &program.unbound_names, &states, &all_actors)?;
         let mut actor_enums = build_actor_enums(&actor_enum_decls, &all_actors, &states, &app_actors)?;
         for (name, linked) in linked_actor_enums {
             let linked = ActorEnumInfo { name: linked.name, state: linked.state, variants: linked.variants };
@@ -120,9 +111,13 @@ impl<'a> Model<'a> {
         let leader_for = compute_leader_for(&actors);
         let mut model = Self {
             app_name,
+            declaration_origins,
             app_dependencies: dependencies
                 .iter()
-                .map(|(app, artifact)| AppDependencyArtifact { app: app.clone(), artifact_id: artifact.id.clone() })
+                .map(|(app, linked_dependency)| AppDependencyArtifact {
+                    app: app.clone(),
+                    artifact_id: linked_dependency.artifact.id.clone(),
+                })
                 .collect(),
             app_actors,
             route_families,
@@ -145,66 +140,6 @@ impl<'a> Model<'a> {
         model.state_lowering_by_actor = build_contract_state_lowerings(&model)?;
         Ok(model)
     }
-}
-
-fn collect_consts(program: &Program) -> Result<Vec<&ConstDecl>> {
-    let mut seen = BTreeMap::new();
-    let mut consts = Vec::new();
-    for module in &program.modules {
-        for ct in &module.consts {
-            reject_duplicate_top_level(word::CONST, &ct.name, &module.path, &mut seen)?;
-            consts.push(ct);
-        }
-    }
-    Ok(consts)
-}
-
-fn collect_functions(program: &Program) -> Result<Vec<&FunctionDecl>> {
-    let mut seen = BTreeMap::new();
-    let mut functions = Vec::new();
-    for module in &program.modules {
-        for function in &module.functions {
-            reject_duplicate_top_level(word::FN, &function.name, &module.path, &mut seen)?;
-            functions.push(function);
-        }
-    }
-    Ok(functions)
-}
-
-fn collect_states(program: &Program) -> Result<BTreeMap<String, &StateDecl>> {
-    let mut seen = BTreeMap::new();
-    let mut states = BTreeMap::new();
-    for module in &program.modules {
-        for state in &module.states {
-            reject_duplicate_top_level(word::STATE, &state.name, &module.path, &mut seen)?;
-            states.insert(state.name.clone(), state);
-        }
-    }
-    Ok(states)
-}
-
-fn collect_actors(program: &Program) -> Result<BTreeMap<String, &ActorDecl>> {
-    let mut seen = BTreeMap::new();
-    let mut actors = BTreeMap::new();
-    for module in &program.modules {
-        for actor in &module.actors {
-            reject_duplicate_top_level(word::ACTOR, &actor.name, &module.path, &mut seen)?;
-            actors.insert(actor.name.clone(), actor);
-        }
-    }
-    Ok(actors)
-}
-
-fn collect_actor_enums(program: &Program) -> Result<BTreeMap<String, &ActorEnumDecl>> {
-    let mut seen = BTreeMap::new();
-    let mut actor_enums = BTreeMap::new();
-    for module in &program.modules {
-        for actor_enum in &module.actor_enums {
-            reject_duplicate_top_level("actor enum", &actor_enum.name, &module.path, &mut seen)?;
-            actor_enums.insert(actor_enum.name.clone(), actor_enum);
-        }
-    }
-    Ok(actor_enums)
 }
 
 fn build_actor_enums(
@@ -269,92 +204,4 @@ fn build_actor_models<'a>(
     const_resolver: &ConstResolver<'_>,
 ) -> Result<BTreeMap<&'a str, ActorModel<'a>>> {
     actors.iter().map(|actor| Ok((actor.name.as_str(), ActorModel::build(actor, actor_enums, const_resolver)?))).collect()
-}
-
-fn validate_unique_apps(program: &Program) -> Result<()> {
-    let mut seen = BTreeMap::new();
-    for module in &program.modules {
-        for app in &module.apps {
-            reject_duplicate_top_level(word::APP, &app.name, &module.path, &mut seen)?;
-        }
-    }
-    Ok(())
-}
-
-fn select_root_app<'a>(program: &'a Program, app_name: Option<&str>) -> Result<Option<&'a AppDecl>> {
-    let root = program
-        .modules
-        .iter()
-        .find(|module| module.path == program.root)
-        .ok_or_else(|| ArgentError::at(&program.root, "root module is missing from the loaded program"))?;
-
-    if let Some(app_name) = app_name {
-        return root
-            .apps
-            .iter()
-            .find(|app| app.name == app_name)
-            .map(Some)
-            .ok_or_else(|| ArgentError::at(&program.root, format!("root module has no app named `{app_name}`")));
-    }
-
-    match root.apps.as_slice() {
-        [] => Ok(None),
-        [app] => Ok(Some(app)),
-        apps => Err(ArgentError::at(
-            &program.root,
-            format!(
-                "root module declares multiple apps ({}); select one with `--app <name>`",
-                apps.iter().map(|app| app.name.as_str()).collect::<Vec<_>>().join(", ")
-            ),
-        )),
-    }
-}
-
-fn validate_direct_actor_imports(program: &Program, app_name: &str, app_actors: &AppActors) -> Result<()> {
-    for module in &program.modules {
-        let base = module.path.parent().ok_or_else(|| ArgentError::at(&module.path, "module path has no parent"))?;
-        for import in &module.imports {
-            let Import::Actor { actor, path } = import else {
-                continue;
-            };
-            let source = fs::canonicalize(base.join(path)).map_err(|err| ArgentError::at(&module.path, err.to_string()))?;
-            let imported = program
-                .modules
-                .iter()
-                .find(|candidate| candidate.path == source)
-                .ok_or_else(|| ArgentError::at(&module.path, format!("direct actor import source `{path}` was not loaded")))?;
-            if !imported.actors.iter().any(|candidate| candidate.name == *actor) {
-                return Err(ArgentError::at(
-                    &module.path,
-                    format!("direct actor import `{actor}` does not name an actor declared by `{path}`"),
-                ));
-            }
-            if app_actors.contains(actor) {
-                continue;
-            }
-
-            let defining_apps =
-                imported.apps.iter().filter(|app| app.actors.contains(actor)).map(|app| app.name.as_str()).collect::<Vec<_>>();
-            let suggestion = match defining_apps.as_slice() {
-                [defining_app] => format!("; use `import actor {defining_app}::{actor} from \"{path}\";`"),
-                _ => "; add it to the selected app or import it through its defining app".to_string(),
-            };
-            return Err(ArgentError::at(
-                &module.path,
-                format!("direct actor import `{actor}` is not part of selected app `{app_name}`{suggestion}"),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn reject_duplicate_top_level<'a>(kind: &str, name: &str, path: &'a Path, seen: &mut BTreeMap<String, &'a Path>) -> Result<()> {
-    if let Some(first_path) = seen.insert(name.to_string(), path) {
-        return Err(ArgentError::new(format!(
-            "duplicate top-level {kind} `{name}` in `{}`; first declared in `{}`",
-            path.display(),
-            first_path.display()
-        )));
-    }
-    Ok(())
 }

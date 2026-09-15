@@ -3,11 +3,9 @@
 //! Linked interfaces, templates, states, and actor enums become model inputs.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::path::Path;
 
 use crate::artifact::*;
-use crate::compiler::loader::stdlib::is_standard_module;
+use crate::compiler::loader::SymbolKind;
 use crate::compiler::syntax::*;
 use crate::error::{ArgentError, Result};
 
@@ -27,215 +25,244 @@ pub(crate) struct LinkedActorEnum {
     pub variants: Vec<String>,
 }
 
+/// identity carried privately between builds
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum DeclarationOrigin {
+    Source { path: std::path::PathBuf, kind: SymbolKind, index: usize },
+    Dependency { app: String, name: String, kind: SymbolKind },
+}
+
+pub(crate) struct LinkedDependency<'a> {
+    pub artifact: &'a Artifact,
+    pub origins: &'a BTreeMap<String, DeclarationOrigin>,
+}
+
 pub(crate) struct LinkedContext {
     pub states: BTreeMap<String, StateDecl>,
     pub actor_decls: BTreeMap<String, ActorDecl>,
     pub actors: BTreeMap<String, LinkedActor>,
     pub actor_enums: BTreeMap<String, LinkedActorEnum>,
+    pub origins: BTreeMap<String, DeclarationOrigin>,
 }
 
-pub(crate) fn link_imported_actors(
-    program: &Program,
-    dependencies: &BTreeMap<String, &Artifact>,
-    local_states: &BTreeMap<String, &StateDecl>,
-    local_actors: &BTreeMap<String, &ActorDecl>,
-) -> Result<LinkedContext> {
-    for (app, artifact) in dependencies {
-        if artifact.app != *app {
-            return Err(ArgentError::new(format!("linked artifact for app `{app}` declares app `{}`", artifact.app)));
-        }
-        artifact.check_consistency().map_err(|err| ArgentError::new(format!("linked app `{app}` has an invalid artifact: {err}")))?;
-    }
+impl LinkedContext {
+    pub(super) fn new(
+        dependencies: &BTreeMap<String, LinkedDependency<'_>>,
+        origins: BTreeMap<String, DeclarationOrigin>,
+        unbound_names: &BTreeSet<String>,
+        local_states: &BTreeMap<String, &StateDecl>,
+        local_actors: &BTreeMap<String, &ActorDecl>,
+    ) -> Result<Self> {
+        let mut context = Self {
+            states: BTreeMap::new(),
+            actor_decls: BTreeMap::new(),
+            actors: BTreeMap::new(),
+            actor_enums: BTreeMap::new(),
+            origins,
+        };
+        let mut names_by_origin =
+            context.origins.iter().map(|(name, origin)| (origin.clone(), name.clone())).collect::<BTreeMap<_, _>>();
 
-    let mut bindings = BTreeMap::<String, (String, String)>::new();
-    for module in &program.modules {
-        for import in &module.imports {
-            match import {
-                Import::AppActor { app, actor, .. } => {
-                    insert_linked_binding(&mut bindings, actor.clone(), app, actor, &module.path)?;
-                }
-                Import::App { app, .. } => {
-                    insert_app_bindings(&mut bindings, dependencies, app, &module.path)?;
-                }
-                Import::Module { path } if !is_standard_module(path) => {
-                    let base = module.path.parent().ok_or_else(|| ArgentError::at(&module.path, "module path has no parent"))?;
-                    let source = fs::canonicalize(base.join(path)).map_err(|err| ArgentError::at(&module.path, err.to_string()))?;
-                    let imported = program
-                        .modules
-                        .iter()
-                        .find(|candidate| candidate.path == source)
-                        .ok_or_else(|| ArgentError::at(&module.path, format!("module import source `{path}` was not loaded")))?;
-                    for app in &imported.apps {
-                        if dependencies.contains_key(&app.name) {
-                            insert_app_bindings(&mut bindings, dependencies, &app.name, &module.path)?;
-                        }
+        // for each linked dependencies, link state, actors and actor enums declarations to the context
+        for (app, dependency) in dependencies {
+            let artifact = dependency.artifact;
+            if artifact.app != *app {
+                return Err(ArgentError::new(format!("linked artifact for app `{app}` declares app `{}`", artifact.app)));
+            }
+            artifact
+                .check_consistency()
+                .map_err(|err| ArgentError::new(format!("linked app `{app}` has an invalid artifact: {err}")))?;
+
+            let mut names = BTreeMap::new();
+            for (name, kind) in artifact
+                .argent
+                .states
+                .iter()
+                .map(|state| (&state.name, SymbolKind::State))
+                .chain(artifact.argent.actor_enums.iter().map(|item| (&item.name, SymbolKind::ActorEnum)))
+            {
+                let origin = dependency.origins.get(name).cloned().unwrap_or_else(|| DeclarationOrigin::Dependency {
+                    app: app.clone(),
+                    name: name.clone(),
+                    kind,
+                });
+                let model_name = if let Some(name) = names_by_origin.get(&origin) {
+                    name.clone()
+                } else {
+                    let mut candidate = name.clone();
+                    let mut suffix = 0;
+                    while context.origins.contains_key(&candidate) || unbound_names.contains(&candidate) {
+                        suffix += 1;
+                        candidate = format!("Argent__linked__{suffix}__{name}");
                     }
+                    names_by_origin.insert(origin.clone(), candidate.clone());
+                    context.origins.insert(candidate.clone(), origin);
+                    candidate
+                };
+                names.insert(name.clone(), model_name);
+            }
+            for interface in &artifact.argent.interfaces.exports {
+                let actor_name = &interface.actor;
+                if interface.app != *app {
+                    return Err(ArgentError::new(format!("app `{app}` has no exported interface for actor `{actor_name}`")));
                 }
-                Import::Module { .. } | Import::Actor { .. } => {}
+                let reference = format!("{app}::{actor_name}");
+                if local_actors.contains_key(&reference) {
+                    return Err(ArgentError::new(format!(
+                        "imported actor reference `{reference}` conflicts with a local actor declaration"
+                    )));
+                }
+                let actor = artifact
+                    .argent
+                    .actors
+                    .iter()
+                    .find(|actor| &actor.name == actor_name)
+                    .ok_or_else(|| ArgentError::new(format!("app `{app}` does not export actor `{actor_name}`")))?;
+                let template = artifact
+                    .argent
+                    .template_plan
+                    .templates
+                    .iter()
+                    .find(|template| &template.actor == actor_name)
+                    .ok_or_else(|| ArgentError::new(format!("app `{app}` has no template receipt for actor `{actor_name}`")))?;
+
+                // add linked actor's state, and its potential sub-states (expansion)
+                context.import_state_closure(artifact, &actor.state, &names, local_states)?;
+
+                let state = names[&actor.state].clone();
+                context.actor_decls.insert(
+                    reference.clone(),
+                    ActorDecl { name: reference.clone(), state: state.clone(), functions: Vec::new(), entries: Vec::new() },
+                );
+                context.actors.insert(
+                    reference,
+                    LinkedActor {
+                        app: app.clone(),
+                        actor: actor_name.clone(),
+                        state,
+                        interface: interface.clone(),
+                        template: template.actor_type_handle.template.clone(),
+                    },
+                );
+            }
+            for actor_enum in &artifact.argent.actor_enums {
+                let name = names[&actor_enum.name].clone();
+                let state = names.get(&actor_enum.state).cloned().ok_or_else(|| {
+                    ArgentError::new(format!("linked app `{app}` does not describe enum state `{}`", actor_enum.state))
+                })?;
+                if !context.states.contains_key(&state) && !local_states.contains_key(&state) {
+                    continue;
+                }
+                let variants = actor_enum
+                    .variants
+                    .iter()
+                    .map(|actor| {
+                        // Imported enum variants already carry their defining app.
+                        if actor.contains("::") {
+                            return actor.clone();
+                        }
+                        dependency
+                            .origins
+                            .get(actor)
+                            .and_then(|origin| names_by_origin.get(origin))
+                            .cloned()
+                            .unwrap_or_else(|| format!("{app}::{actor}"))
+                    })
+                    .collect();
+                let linked = LinkedActorEnum { name: name.clone(), state, variants };
+                if let Some(previous) = context.actor_enums.insert(name.clone(), linked.clone())
+                    && previous != linked
+                {
+                    return Err(ArgentError::new(format!("linked apps provide conflicting actor enum definitions for `{name}`")));
+                }
             }
         }
+        Ok(context)
     }
 
-    let mut states = BTreeMap::<String, StateDecl>::new();
-    let mut actor_decls = BTreeMap::<String, ActorDecl>::new();
-    let mut actors = BTreeMap::<String, LinkedActor>::new();
-    let mut actor_enums = BTreeMap::<String, LinkedActorEnum>::new();
-    for (reference, (app, actor_name)) in bindings {
-        if local_actors.contains_key(&reference) {
-            return Err(ArgentError::new(format!("imported actor reference `{reference}` conflicts with a local actor declaration")));
-        }
-        let artifact = dependencies
-            .get(&app)
-            .ok_or_else(|| ArgentError::new(format!("actor import `{app}::{actor_name}` has no compiled dependency artifact")))?;
-        let actor = artifact
-            .argent
-            .actors
-            .iter()
-            .find(|actor| actor.name == actor_name)
-            .ok_or_else(|| ArgentError::new(format!("app `{app}` does not export actor `{actor_name}`")))?;
-        let interface = artifact
-            .argent
-            .interfaces
-            .exports
-            .iter()
-            .find(|interface| interface.app == app && interface.actor == actor_name)
-            .ok_or_else(|| ArgentError::new(format!("app `{app}` has no exported interface for actor `{actor_name}`")))?;
-        let template = artifact
-            .argent
-            .template_plan
-            .templates
-            .iter()
-            .find(|template| template.actor == actor_name)
-            .ok_or_else(|| ArgentError::new(format!("app `{app}` has no template receipt for actor `{actor_name}`")))?;
-        let exported_template = template.actor_type_handle.template.clone();
-
-        import_linked_state_closure(artifact, &actor.state, local_states, &mut states)?;
-        for actor_enum in &artifact.argent.actor_enums {
-            if !states.contains_key(&actor_enum.state) {
+    /// Import and remap all state-bearing edges before comparing shared declarations.
+    fn import_state_closure(
+        &mut self,
+        artifact: &Artifact,
+        root: &str,
+        names: &BTreeMap<String, String>,
+        local_states: &BTreeMap<String, &StateDecl>,
+    ) -> Result<()> {
+        let states = artifact.argent.states.iter().map(|state| (state.name.as_str(), state)).collect::<BTreeMap<_, _>>();
+        let expansions =
+            artifact.argent.state_expansions.iter().map(|expansion| (expansion.state.as_str(), expansion)).collect::<BTreeMap<_, _>>();
+        let enums = artifact.argent.actor_enums.iter().map(|item| (item.name.as_str(), item)).collect::<BTreeMap<_, _>>();
+        let mapped_state = |name: &str| {
+            names
+                .get(name)
+                .filter(|_| states.contains_key(name))
+                .cloned()
+                .ok_or_else(|| ArgentError::new(format!("linked app `{}` does not describe state `{name}`", artifact.app)))
+        };
+        let mut pending = vec![root.to_string()];
+        let mut visited = BTreeSet::new();
+        while let Some(name) = pending.pop() {
+            if !visited.insert(name.clone()) {
                 continue;
             }
-            let linked = LinkedActorEnum {
-                name: actor_enum.name.clone(),
-                state: actor_enum.state.clone(),
-                variants: actor_enum.variants.clone(),
+            let state = states
+                .get(name.as_str())
+                .ok_or_else(|| ArgentError::new(format!("linked app `{}` does not describe state `{name}`", artifact.app)))?;
+            let expansion = expansions.get(name.as_str()).copied();
+            let mut fields = if expansion.is_some() {
+                Vec::new()
+            } else {
+                state.fields.iter().map(linked_field_decl).collect::<Result<Vec<_>>>()?
             };
-            if let Some(previous) = actor_enums.insert(linked.name.clone(), linked.clone())
-                && previous != linked
+            for field in &mut fields {
+                if let Some(target) = states.get(field.ty.name.as_str()) {
+                    pending.push(target.name.clone());
+                } else if let Some(actor_enum) = enums.get(field.ty.name.as_str()) {
+                    pending.push(actor_enum.state.clone());
+                }
+                if let Some(actor_state) = &mut field.ty.actor_state {
+                    pending.push(actor_state.clone());
+                    *actor_state = mapped_state(actor_state)?;
+                }
+                if !field.ty.is_builtin() {
+                    field.ty.name = names.get(&field.ty.name).cloned().ok_or_else(|| {
+                        ArgentError::new(format!("linked app `{}` does not describe type `{}`", artifact.app, field.ty.name))
+                    })?;
+                }
+            }
+            let expansion = expansion
+                .map(|expansion| -> Result<_> {
+                    pending.push(expansion.base.clone());
+                    pending.extend(expansion.digests.iter().map(|digest| digest.state.clone()));
+                    Ok(StateExpansionDecl {
+                        base: mapped_state(&expansion.base)?,
+                        digests: expansion
+                            .digests
+                            .iter()
+                            .map(|digest| {
+                                Ok(StateDigestExpansionDecl { field: digest.field.clone(), state: mapped_state(&digest.state)? })
+                            })
+                            .collect::<Result<_>>()?,
+                    })
+                })
+                .transpose()?;
+            let model_name = names[&name].clone();
+            let decl = StateDecl { name: model_name.clone(), fields, expansion };
+            if let Some(local) = local_states.get(&model_name) {
+                if !same_state_decl(local, &decl) {
+                    return Err(ArgentError::new(format!(
+                        "linked app `{}` state `{name}` conflicts with its imported source declaration",
+                        artifact.app
+                    )));
+                }
+            } else if let Some(previous) = self.states.insert(model_name.clone(), decl.clone())
+                && !same_state_decl(&previous, &decl)
             {
-                return Err(ArgentError::new(format!("linked apps provide conflicting actor enum definitions for `{}`", linked.name)));
+                return Err(ArgentError::new(format!("linked apps provide conflicting state definitions for `{model_name}`")));
             }
         }
-
-        let decl = ActorDecl { name: reference.clone(), state: actor.state.clone(), functions: Vec::new(), entries: Vec::new() };
-        let linked = LinkedActor {
-            app,
-            actor: actor.name.clone(),
-            state: actor.state.clone(),
-            interface: interface.clone(),
-            template: exported_template,
-        };
-        actor_decls.insert(reference.clone(), decl);
-        actors.insert(reference, linked);
+        Ok(())
     }
-
-    Ok(LinkedContext { states, actor_decls, actors, actor_enums })
-}
-
-fn insert_linked_binding(
-    bindings: &mut BTreeMap<String, (String, String)>,
-    reference: String,
-    app: &str,
-    actor: &str,
-    path: &Path,
-) -> Result<()> {
-    let binding = (app.to_string(), actor.to_string());
-    if let Some(previous) = bindings.insert(reference.clone(), binding.clone())
-        && previous != binding
-    {
-        return Err(ArgentError::at(
-            path,
-            format!("actor reference `{reference}` is imported as both `{}::{}` and `{app}::{actor}`", previous.0, previous.1),
-        ));
-    }
-    Ok(())
-}
-
-fn insert_app_bindings(
-    bindings: &mut BTreeMap<String, (String, String)>,
-    dependencies: &BTreeMap<String, &Artifact>,
-    app: &str,
-    path: &Path,
-) -> Result<()> {
-    let artifact =
-        dependencies.get(app).ok_or_else(|| ArgentError::at(path, format!("app `{app}` has no compiled dependency artifact")))?;
-    for interface in &artifact.argent.interfaces.exports {
-        insert_linked_binding(bindings, format!("{app}::{}", interface.actor), app, &interface.actor, path)?;
-    }
-    Ok(())
-}
-
-fn import_linked_state_closure(
-    artifact: &Artifact,
-    root: &str,
-    local_states: &BTreeMap<String, &StateDecl>,
-    linked_states: &mut BTreeMap<String, StateDecl>,
-) -> Result<()> {
-    let states = artifact.argent.states.iter().map(|state| (state.name.as_str(), state)).collect::<BTreeMap<_, _>>();
-    let expansions =
-        artifact.argent.state_expansions.iter().map(|expansion| (expansion.state.as_str(), expansion)).collect::<BTreeMap<_, _>>();
-    let mut pending = vec![root.to_string()];
-    let mut visited = BTreeSet::new();
-    while let Some(name) = pending.pop() {
-        if !visited.insert(name.clone()) {
-            continue;
-        }
-        let state = states
-            .get(name.as_str())
-            .ok_or_else(|| ArgentError::new(format!("linked app `{}` does not describe state `{name}`", artifact.app)))?;
-        let expansion = expansions.get(name.as_str()).copied();
-        let fields =
-            if expansion.is_some() { Vec::new() } else { state.fields.iter().map(linked_field_decl).collect::<Result<Vec<_>>>()? };
-        let expansion = expansion.map(|expansion| StateExpansionDecl {
-            base: expansion.base.clone(),
-            digests: expansion
-                .digests
-                .iter()
-                .map(|digest| StateDigestExpansionDecl { field: digest.field.clone(), state: digest.state.clone() })
-                .collect(),
-        });
-        let decl = StateDecl { name: name.clone(), fields, expansion };
-        if let Some(local) = local_states.get(&name) {
-            if !same_state_decl(local, &decl) {
-                return Err(ArgentError::new(format!(
-                    "linked app `{}` state `{name}` conflicts with its imported source declaration",
-                    artifact.app
-                )));
-            }
-        } else if let Some(previous) = linked_states.insert(name.clone(), decl.clone())
-            && !same_state_decl(&previous, &decl)
-        {
-            return Err(ArgentError::new(format!("linked apps provide conflicting state definitions for `{name}`")));
-        }
-
-        if let Some(expansion) = &decl.expansion {
-            pending.push(expansion.base.clone());
-            pending.extend(expansion.digests.iter().map(|digest| digest.state.clone()));
-        }
-        let physical_state =
-            expansions.get(name.as_str()).and_then(|expansion| states.get(expansion.base.as_str()).copied()).unwrap_or(state);
-        for field in &physical_state.fields {
-            let ty = linked_field_type(field)?;
-            if states.contains_key(ty.name.as_str()) {
-                pending.push(ty.name.clone());
-            }
-            if let Some(actor_state) = ty.actor_state
-                && states.contains_key(actor_state.as_str())
-            {
-                pending.push(actor_state);
-            }
-        }
-    }
-    Ok(())
 }
 
 fn linked_field_decl(field: &ArgentFieldArtifact) -> Result<FieldDecl> {

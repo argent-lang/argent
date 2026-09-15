@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use compiler::{loader, syntax};
+use compiler::loader;
 
 pub mod artifact;
 pub mod builder;
@@ -81,7 +81,7 @@ pub fn build_inline(
 ) -> Result<artifact::Artifact> {
     let source_label = source_label.as_ref().to_path_buf();
     let program = inline_program(source_label, source.into())?;
-    compiler::codegen::emit_build(&program, out_dir.as_ref())?;
+    compiler::codegen::emit_resolved_build(&program, out_dir.as_ref())?;
     read_artifact(out_dir.as_ref())
 }
 
@@ -93,12 +93,12 @@ pub fn build_file(input: impl AsRef<Path>, out_dir: impl AsRef<Path>) -> Result<
     let input = input.as_ref();
     let out_dir = out_dir.as_ref();
     let program = loader::load_program(input)?;
-    let root = program.modules.iter().find(|module| module.path == program.root).expect("loaded program contains its root module");
+    let root = program.root_module();
     if let [app] = root.apps.as_slice() {
         let app_name = app.name.clone();
         return Ok(build_app_graph(loader::plan_app_graph(program, &app_name)?, &app_name, out_dir)?.into_primary());
     }
-    compiler::codegen::emit_build(&program, out_dir)?;
+    compiler::codegen::emit_resolved_build(&program, out_dir)?;
     read_artifact(out_dir)
 }
 
@@ -123,7 +123,7 @@ pub fn build_file_app_bundle(input: impl AsRef<Path>, app_name: &str, out_dir: i
 }
 
 fn build_app_graph(
-    apps: Vec<(loader::SourceApp, Vec<loader::SourceApp>, syntax::Program)>,
+    apps: Vec<(loader::SourceApp, Vec<loader::SourceApp>, loader::ResolvedModules)>,
     app_name: &str,
     out_dir: &Path,
 ) -> Result<CompiledAppBundle> {
@@ -133,17 +133,28 @@ fn build_app_graph(
     }
 
     let mut artifacts = BTreeMap::<String, artifact::Artifact>::new();
+    let mut origins = BTreeMap::new();
     for (index, (source_app, dependencies, program)) in apps.iter().enumerate() {
         let linked = dependencies
             .iter()
             .map(|dependency| {
-                artifacts.get(&dependency.app).map(|artifact| (dependency.app.clone(), artifact)).ok_or_else(|| {
-                    ArgentError::new(format!("app `{}` dependency `{}` was not compiled first", source_app.app, dependency.app))
-                })
+                artifacts
+                    .get(&dependency.app)
+                    .map(|artifact| {
+                        (
+                            dependency.app.clone(),
+                            compiler::model::link::LinkedDependency { artifact, origins: &origins[&dependency.app] },
+                        )
+                    })
+                    // shouldn't happen as ordered by dependency order
+                    .ok_or_else(|| {
+                        ArgentError::new(format!("app `{}` dependency `{}` was not compiled first", source_app.app, dependency.app))
+                    })
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
         let app_out = if index + 1 == apps.len() { out_dir.to_path_buf() } else { dependency_dir.join(&source_app.app) };
-        compiler::codegen::emit_build_app_linked(program, &source_app.app, &linked, &app_out)?;
+        let app_origins = compiler::codegen::emit_build_app_linked(program, &source_app.app, &linked, &app_out)?;
+        origins.insert(source_app.app.clone(), app_origins);
         let artifact = read_artifact(&app_out)?;
         if artifacts.insert(source_app.app.clone(), artifact).is_some() {
             return Err(ArgentError::new(format!(
@@ -156,7 +167,7 @@ fn build_app_graph(
     Ok(CompiledAppBundle { primary_app: app_name.to_string(), artifacts })
 }
 
-fn inline_program(source_label: PathBuf, source: String) -> Result<syntax::Program> {
+fn inline_program(source_label: PathBuf, source: String) -> Result<loader::ResolvedModules> {
     loader::load_inline_program(source_label, source)
 }
 

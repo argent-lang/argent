@@ -6,7 +6,7 @@ use crate::{
         TypeArtifact, route_template_proof_receipt_id, route_template_table_receipt_id,
     },
     codec::{CodecError, decode_hex, encode_entry_sig_script},
-    compiler::codegen::emit_build_app,
+    compiler::codegen::emit_build_app_linked,
     compiler::loader::load_program,
 };
 use std::{
@@ -1898,7 +1898,7 @@ app ChildApp {
     std::fs::write(
         temp.join("launcher.ag"),
         r#"
-import app ChildApp from "./child.ag";
+import "./child.ag";
 
 state LauncherState {
     int launches;
@@ -3618,11 +3618,11 @@ fn foreign_source_actors_require_an_app_import() {
     let fixture = "tests/fixtures/runtime/context_observed_self_merge";
     let direct =
         crate::build_file(format!("{fixture}/controller_direct.ag"), std::env::temp_dir().join("argent-invalid-direct-actor-import"))
-            .expect_err("a direct actor import cannot add a foreign actor to the selected app");
+            .expect_err("a namespaced source actor cannot add a foreign actor to the selected app");
     assert!(
         direct
             .to_string()
-            .contains("direct actor import `Asset` is not part of selected app `CtrlApp`; use `import actor AssetApp::Asset"),
+            .contains("references actor `Asset` outside selected app `CtrlApp`; foreign actors must be imported through their app"),
         "unexpected error: {direct}"
     );
 
@@ -4037,7 +4037,7 @@ fn selected_app_artifact(input: &str, app: &str, name: &str) -> Artifact {
         fs::remove_dir_all(&out_dir).expect("old temp dir removed");
     }
     let program = load_program(PathBuf::from(input).as_path()).expect("fixture source loads");
-    emit_build_app(&program, app, &out_dir).expect("selected app artifact builds");
+    emit_build_app_linked(&program, app, &BTreeMap::new(), &out_dir).expect("selected app artifact builds");
     let json = fs::read_to_string(out_dir.join("artifact.json")).expect("artifact json exists");
     let artifact = serde_json::from_str(&json).expect("artifact deserializes");
     fs::remove_dir_all(out_dir).expect("temp build dir removed");

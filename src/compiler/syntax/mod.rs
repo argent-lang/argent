@@ -13,12 +13,6 @@ pub mod parser;
 pub(crate) mod word;
 
 #[derive(Debug, Clone)]
-pub struct Program {
-    pub root: PathBuf,
-    pub modules: Vec<Module>,
-}
-
-#[derive(Debug, Clone)]
 pub struct Module {
     pub path: PathBuf,
     pub imports: Vec<Import>,
@@ -32,11 +26,9 @@ pub struct Module {
 }
 
 #[derive(Debug, Clone)]
-pub enum Import {
-    Module { path: String },
-    Actor { actor: String, path: String },
-    AppActor { app: String, actor: String, path: String },
-    App { app: String, path: String },
+pub struct Import {
+    pub path: String,
+    pub alias: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +203,13 @@ pub enum ArrayDim {
 }
 
 impl TypeRef {
+    pub(crate) fn is_builtin(&self) -> bool {
+        matches!(
+            self.name.as_str(),
+            "int" | "temporal" | "bool" | "byte" | "bytes" | "string" | "pubkey" | "sig" | "datasig" | "State" | word::COVENANT_ID
+        ) || self.is_actor_type()
+    }
+
     pub fn new(name: impl Into<String>) -> Self {
         Self { name: name.into(), array: None, actor_state: None }
     }

@@ -117,7 +117,8 @@ app CoffeeShop { actor CoffeeMachine; actor Cup; actor Coffee; }
 fn compile_coffee_shop(source: &str) -> (BTreeMap<String, String>, Artifact) {
     let program = crate::compiler::loader::load_inline_program(PathBuf::from("coffee_shop.ag"), source.to_owned())
         .expect("coffee shop source resolves");
-    let model = Model::from_program(&program).expect("coffee shop model validates");
+    let source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&source).expect("coffee shop model validates");
     let sil = model.actors.iter().map(|actor| (actor.name.clone(), emit_actor(actor, &model).expect("actor emits"))).collect();
     let artifact = emit_artifact(&program, &model, &sil).expect("coffee shop contracts compile");
     (sil, artifact)

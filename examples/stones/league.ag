@@ -2,7 +2,7 @@ import "std::core";
 import "./types.ag";
 
 // Actor imports are template capabilities for cross-actor `become` outputs.
-import actor Player from "./player.ag";
+import "./player.ag";
 
 actor League owns LeagueState {
     entry register_player(sig owner_sig, pubkey owner_pk) emits {

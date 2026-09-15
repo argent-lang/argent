@@ -8,7 +8,8 @@ use std::path::Path;
 
 use crate::artifact::*;
 use crate::codec::encode_hex;
-use crate::compiler::model::link::LinkedActor;
+use crate::compiler::loader::ResolvedModules;
+use crate::compiler::model::link::{DeclarationOrigin, LinkedActor, LinkedDependency};
 use crate::compiler::model::{
     ClauseActorTypeRef, CovenantGroup, CovenantIdSource, EntryInteraction, EntryModel, GeneratedFieldId, InteractionLocation,
     InteractionSource, Model, PhysicalFieldId, PhysicalStateLayout, ResolvedRoute, ResolvedSuccessor, RouteFamily, SilStateType,
@@ -38,48 +39,37 @@ mod leader_delegate_tests;
 #[cfg(test)]
 mod tests;
 
-pub fn emit_build(program: &Program, out_dir: impl AsRef<Path>) -> Result<()> {
-    emit_build_selected(program, None, &BTreeMap::new(), out_dir)
-}
-
-#[cfg(test)]
-pub fn emit_build_app(program: &Program, app_name: &str, out_dir: impl AsRef<Path>) -> Result<()> {
-    emit_build_selected(program, Some(app_name), &BTreeMap::new(), out_dir)
+pub(crate) fn emit_resolved_build(program: &ResolvedModules, out_dir: impl AsRef<Path>) -> Result<()> {
+    let source = crate::compiler::model::ModelSource::new(program, None)?;
+    let model = Model::from_source(&source)?;
+    emit_build_model(program, &model, out_dir)
 }
 
 /// Build one app with its direct app dependencies already compiled.
 ///
-/// The map is keyed by the source app name used in explicit app imports or
-/// exposed by an ordinary module import.
+/// The map is keyed by an app name exposed through a module import.
 pub(crate) fn emit_build_app_linked(
-    program: &Program,
+    program: &ResolvedModules,
     app_name: &str,
-    dependencies: &BTreeMap<String, &Artifact>,
+    dependencies: &BTreeMap<String, LinkedDependency<'_>>,
     out_dir: impl AsRef<Path>,
-) -> Result<()> {
-    emit_build_selected(program, Some(app_name), dependencies, out_dir)
+) -> Result<BTreeMap<String, DeclarationOrigin>> {
+    let source = crate::compiler::model::ModelSource::new(program, Some(app_name))?;
+    let model = Model::from_source_linked(&source, dependencies)?;
+    emit_build_model(program, &model, out_dir)?;
+    Ok(model.declaration_origins)
 }
 
-fn emit_build_selected(
-    program: &Program,
-    app_name: Option<&str>,
-    dependencies: &BTreeMap<String, &Artifact>,
-    out_dir: impl AsRef<Path>,
-) -> Result<()> {
+fn emit_build_model(program: &ResolvedModules, model: &Model<'_>, out_dir: impl AsRef<Path>) -> Result<()> {
     let out_dir = out_dir.as_ref();
     let sil_dir = out_dir.join("sil");
-
-    let model = match app_name {
-        Some(app_name) => Model::from_program_app_linked(program, app_name, dependencies)?,
-        None => Model::from_program(program)?,
-    };
     let mut actor_sil = BTreeMap::new();
     for actor in &model.actors {
-        let sil = emit_actor(actor, &model)?;
+        let sil = emit_actor(actor, model)?;
         actor_sil.insert(actor.name.clone(), sil);
     }
-    let manifest = emit_manifest(program, &model);
-    let artifact = emit_artifact_json(program, &model, &actor_sil)?;
+    let manifest = emit_manifest(program, model);
+    let artifact = emit_artifact_json(program, model, &actor_sil)?;
 
     if sil_dir.exists() {
         fs::remove_dir_all(&sil_dir).map_err(|err| ArgentError::at(&sil_dir, err.to_string()))?;
@@ -1863,18 +1853,18 @@ pub(super) fn first_observed_input_for_actor<'a>(observe: &'a ObserveDecl, actor
     observe.inputs.iter().find(|input| input.actor == actor)
 }
 
-fn emit_manifest(program: &Program, model: &Model<'_>) -> String {
+fn emit_manifest(program: &ResolvedModules, model: &Model<'_>) -> String {
     let mut out = String::new();
     out.push_str("{\n");
     out.push_str(&format!("  \"app\": \"{}\",\n", json_escape(&model.app_name)));
-    out.push_str(&format!("  \"root\": \"{}\",\n", json_escape(&manifest_path(&program.root))));
+    out.push_str(&format!("  \"root\": \"{}\",\n", json_escape(&manifest_path(program.root_path()))));
 
     out.push_str("  \"modules\": [\n");
-    for (idx, module) in program.modules.iter().enumerate() {
+    for (idx, path) in program.module_paths().enumerate() {
         if idx > 0 {
             out.push_str(",\n");
         }
-        out.push_str(&format!("    \"{}\"", json_escape(&manifest_path(&module.path))));
+        out.push_str(&format!("    \"{}\"", json_escape(&manifest_path(path))));
     }
     out.push_str("\n  ],\n");
 
@@ -1967,14 +1957,14 @@ fn emit_manifest(program: &Program, model: &Model<'_>) -> String {
     out
 }
 
-fn emit_artifact_json(program: &Program, model: &Model<'_>, actor_sil: &BTreeMap<String, String>) -> Result<String> {
+fn emit_artifact_json(program: &ResolvedModules, model: &Model<'_>, actor_sil: &BTreeMap<String, String>) -> Result<String> {
     let artifact = emit_artifact(program, model, actor_sil)?;
     let mut json = silverscript_abi::to_pretty_json(&artifact).map_err(|err| ArgentError::new(err.to_string()))?;
     json.push('\n');
     Ok(json)
 }
 
-fn emit_artifact(program: &Program, model: &Model<'_>, actor_sil: &BTreeMap<String, String>) -> Result<Artifact> {
+fn emit_artifact(program: &ResolvedModules, model: &Model<'_>, actor_sil: &BTreeMap<String, String>) -> Result<Artifact> {
     let templates = model.app_actors.iter().map(|actor| template_ref_artifact(actor)).collect::<Vec<_>>();
 
     let argent_states = model
@@ -2030,8 +2020,8 @@ fn emit_artifact(program: &Program, model: &Model<'_>, actor_sil: &BTreeMap<Stri
         generator: GeneratorArtifact { name: "argentc".to_string(), version: env!("CARGO_PKG_VERSION").to_string() },
         app: model.app_name.clone(),
         dependencies: model.app_dependencies.clone(),
-        root: manifest_path(&program.root),
-        modules: program.modules.iter().map(|module| manifest_path(&module.path)).collect(),
+        root: manifest_path(program.root_path()),
+        modules: program.module_paths().map(manifest_path).collect(),
         argent: ArgentArtifact {
             templates,
             template_plan,

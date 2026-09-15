@@ -16,7 +16,9 @@ mod consts;
 mod entry;
 mod layout;
 pub(crate) mod link;
+mod source;
 mod validate;
+pub(crate) use source::ModelSource;
 
 #[cfg(test)]
 mod tests;
@@ -39,6 +41,7 @@ pub(crate) use layout::{
 #[derive(Debug)]
 pub(crate) struct Model<'a> {
     pub(crate) app_name: String,
+    pub(crate) declaration_origins: BTreeMap<String, link::DeclarationOrigin>,
     /// Direct artifacts used to link the selected app.
     pub(crate) app_dependencies: Vec<AppDependencyArtifact>,
     pub(crate) app_actors: AppActors,

@@ -1,7 +1,7 @@
 import "./types.ag";
 
 // Actor imports are template capabilities for multi-output settlement.
-import actor Player from "./player.ag";
+import "./player.ag";
 
 actor StonesSettle owns SettleState {
     entry settle() consumes {

@@ -967,7 +967,8 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         } else {
             self.lower_local_type(source_ty)
         };
-        let declared_type = self.entry.body.span_text(declaration.declared_type).trim();
+        let declared_type =
+            self.entry.body.span_text(declaration.binding.type_span.expect("local declaration has an authored type span")).trim();
         let type_suffix = declared_type.strip_prefix(source_ty).expect("declared type starts with its parsed source type");
         let emitted_type = format!("{lowered_ty}{type_suffix}");
         push_indent(out, indent);

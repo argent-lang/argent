@@ -1,21 +1,21 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::compiler::syntax::parser::parse_module;
-use crate::compiler::syntax::{Program, TypeRef};
+use crate::compiler::loader::{ResolvedModules, load_inline_program};
+use crate::compiler::syntax::TypeRef;
 
 use super::*;
 
-fn program(source: &str) -> Program {
+fn program(source: &str) -> ResolvedModules {
     let path = PathBuf::from("state-layout-plan-test.ag");
-    let module = parse_module(path.clone(), source.to_string()).expect("test source parses");
-    Program { root: path, modules: vec![module] }
+    load_inline_program(path, source.to_string()).expect("test source resolves")
 }
 
 #[test]
 fn contract_plans_select_state_only_for_the_aligned_active_source() {
     let program = program(include_str!("../../../../tests/fixtures/state_layout/function_contexts/app.ag"));
-    let model = Model::from_program(&program).expect("function context fixture plans");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("function context fixture plans");
     let shared = SourceStateId::new("SharedState");
 
     let aligned = model.state_lowering("Aligned").expect("Aligned lowering exists");
@@ -57,7 +57,8 @@ fn compatible_foreign_target_does_not_select_the_active_authored_representation(
             }
         "#,
     );
-    let model = Model::from_program(&program).expect("compatible actors plan");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("compatible actors plan");
     let lowering = model.state_lowering("First").expect("First lowering exists");
     assert_eq!(
         lowering.source_representation(&SourceStateId::new("SharedState")).expect("active source is represented").sil_type(),
@@ -97,7 +98,8 @@ fn equal_looking_foreign_source_remains_nominally_named() {
             }
         "#,
     );
-    let model = Model::from_program(&program).expect("equal-looking foreign state plans");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("equal-looking foreign state plans");
     let lowering = model.state_lowering("Local").expect("Local lowering exists");
     let local = SourceStateId::new("LocalState");
     let foreign = SourceStateId::new("ForeignState");
@@ -130,7 +132,8 @@ fn nominal_source_identity_is_independent_of_shared_storage_compatibility() {
             }
         "#,
     );
-    let model = Model::from_program(&program).expect("shared storage views plan");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("shared storage views plan");
     let lowering = model.state_lowering("First").expect("First lowering exists");
     let second = lowering.target_for_actor("Second").expect("Second target exists");
     let detail = lowering.active().source().field_id("detail").expect("source detail field is indexed");
@@ -165,7 +168,8 @@ fn open_actor_type_targets_have_a_state_keyed_storage_cut() {
             app Test { actor Local; }
         "#,
     );
-    let model = Model::from_program(&program).expect("open actor type plans");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("open actor type plans");
     let lowering = model.state_lowering("Local").expect("Local lowering exists");
     let remote = SourceStateId::new("RemoteState");
     let target = lowering.open_state_target(&remote).expect("open state target exists");
@@ -210,7 +214,8 @@ fn same_source_open_output_does_not_inherit_active_generated_fields() {
             }
         "#,
     );
-    let model = Model::from_program(&program).expect("same-source open target plans");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("same-source open target plans");
     let lowering = model.state_lowering("Current").expect("Current lowering exists");
     let shared = SourceStateId::new("SharedState");
     let target = lowering.open_state_target(&shared).expect("same-source open target exists");
@@ -288,7 +293,8 @@ fn dynamic_actor_domains_reject_incompatible_semantic_layouts() {
 #[test]
 fn actor_domain_output_records_its_target_and_canonical_type_owner() {
     let program = program(include_str!("../../../../examples/route_state_body_choice.ag"));
-    let model = Model::from_program(&program).expect("selector example plans");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("selector example plans");
     let lowering = model.state_lowering("Mux").expect("Mux lowering exists");
     let variants = vec!["Pawn".to_string(), "Knight".to_string()];
     let output =

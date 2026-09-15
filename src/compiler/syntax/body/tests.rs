@@ -110,7 +110,7 @@ fn statements_record_sil_bindings() {
     let EntryStatement::Local { declaration, .. } = &body.statements()[1] else {
         panic!("expected the constant declaration to be structured");
     };
-    assert_eq!(body.span_text(declaration.declared_type), "byte[32] constant");
+    assert_eq!(body.span_text(declaration.binding.type_span.expect("local declaration has a type span")), "byte[32] constant");
     assert_eq!(body.span_text(declaration.initializer.expect("initializer exists")), "digest");
 }
 

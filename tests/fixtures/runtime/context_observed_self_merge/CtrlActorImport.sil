@@ -35,7 +35,7 @@ contract Ctrl(
         byte[32] gen__asset_cov_id = asset_id; // observe asset
         require(OpCovInputCount(gen__asset_cov_id) == 1);
         require(OpCovOutputCount(gen__asset_cov_id) == 1);
-        // :: observed input asset.src: Asset
+        // :: observed input asset.src: AssetApp::Asset
         int gen__asset_src_input_idx = OpCovInputIdx(gen__asset_cov_id, 0);
         AssetState gen__asset_src_state = readInputStateWithTemplate(
             gen__asset_src_input_idx,
@@ -43,7 +43,7 @@ contract Ctrl(
             gen__asset_app__asset_suffix_len,
             gen__asset_app__asset_template
         );
-        // :: observed output asset.next: Asset
+        // :: observed output asset.next: AssetApp::Asset
         int gen__asset_next_output_idx = OpCovOutputIdx(gen__asset_cov_id, 0);
 
         // :: auth outputs
@@ -56,7 +56,7 @@ contract Ctrl(
             owner: new_owner,
             amount: source.amount,
         };
-        // :: observed become asset.next -> Asset
+        // :: observed become asset.next -> AssetApp::Asset
         validateOutputStateWithInputTemplate(
             gen__asset_next_output_idx,
             next_asset,

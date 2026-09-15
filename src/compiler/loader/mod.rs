@@ -6,32 +6,35 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::compiler::syntax::Import;
 use crate::compiler::syntax::parser::parse_module;
-use crate::compiler::syntax::{Import, Program};
 use crate::error::{ArgentError, Result};
 
+use self::resolve::ResolvedImport;
+pub(crate) use self::resolve::{
+    ActorSite, DeclId, ModuleId, ResolvedDeclaration, ResolvedModules, ResolvedName, SymbolKind, TextSite,
+};
 use self::stdlib::{is_standard_module, load_standard_module};
 
+mod resolve;
 pub(crate) mod stdlib;
 
 #[cfg(test)]
 mod tests;
 
-pub fn load_program(root: impl AsRef<Path>) -> Result<Program> {
-    let root = root.as_ref().to_path_buf();
-    let canonical_root = fs::canonicalize(&root).map_err(|err| ArgentError::at(&root, err.to_string()))?;
+pub fn load_program(root: impl AsRef<Path>) -> Result<ResolvedModules> {
     let mut loader = Loader::default();
-    loader.load_module(&canonical_root)?;
-    Ok(Program { root: canonical_root, modules: loader.modules })
+    let root = loader.load_module(root.as_ref())?;
+    loader.finish(root)
 }
 
-pub fn load_inline_program(root: PathBuf, source: String) -> Result<Program> {
-    let module = parse_module(root.clone(), source)?;
+pub fn load_inline_program(root: PathBuf, source: String) -> Result<ResolvedModules> {
+    let module = parse_module(root, source)?;
     let imports = module.imports.clone();
     let mut loader = Loader::default();
-    loader.modules.push(module);
-    loader.load_inline_imports(imports)?;
-    Ok(Program { root, modules: loader.modules })
+    let root = loader.insert_module(module);
+    loader.load_inline_imports(root, imports)?;
+    loader.finish(root)
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -44,13 +47,13 @@ pub(crate) struct SourceApp {
 ///
 /// Each `(canonical source path, app name)` pair appears once. The requested
 /// root app is the last item.
-pub(crate) fn load_app_graph(root: impl AsRef<Path>, app: &str) -> Result<Vec<(SourceApp, Vec<SourceApp>, Program)>> {
+pub(crate) fn load_app_graph(root: impl AsRef<Path>, app: &str) -> Result<Vec<(SourceApp, Vec<SourceApp>, ResolvedModules)>> {
     let program = load_program(root)?;
     plan_app_graph(program, app)
 }
 
-pub(crate) fn plan_app_graph(program: Program, app: &str) -> Result<Vec<(SourceApp, Vec<SourceApp>, Program)>> {
-    let root = program.root.clone();
+pub(crate) fn plan_app_graph(program: ResolvedModules, app: &str) -> Result<Vec<(SourceApp, Vec<SourceApp>, ResolvedModules)>> {
+    let root = program.root_path().to_path_buf();
     let mut planner = AppGraphPlanner::default();
     planner.programs.insert(root.clone(), program);
     planner.visit(SourceApp { source: root, app: app.to_string() })?;
@@ -59,69 +62,80 @@ pub(crate) fn plan_app_graph(program: Program, app: &str) -> Result<Vec<(SourceA
 
 #[derive(Default)]
 struct Loader {
-    visited: BTreeSet<PathBuf>,
-    visited_standard: BTreeSet<String>,
     modules: Vec<crate::compiler::syntax::Module>,
+    imports: Vec<Vec<ResolvedImport>>,
+    module_ids: BTreeMap<PathBuf, ModuleId>,
 }
 
 impl Loader {
-    fn load_module(&mut self, path: &Path) -> Result<()> {
+    fn load_module(&mut self, path: &Path) -> Result<ModuleId> {
         let canonical = fs::canonicalize(path).map_err(|err| ArgentError::at(path, err.to_string()))?;
-        if !self.visited.insert(canonical.clone()) {
-            return Ok(());
+        if let Some(module) = self.module_ids.get(&canonical).copied() {
+            return Ok(module);
         }
 
         let source = fs::read_to_string(&canonical).map_err(|err| ArgentError::at(&canonical, err.to_string()))?;
         let module = parse_module(canonical.clone(), source)?;
         let base = canonical.parent().ok_or_else(|| ArgentError::at(&canonical, "module path has no parent"))?.to_path_buf();
         let imports = module.imports.clone();
-        self.modules.push(module);
+        let module = self.insert_module(module);
 
         for import in imports {
-            self.load_import(&base, import)?;
+            let target = self.load_import(&base, &import.path)?;
+            self.imports[module.index()].push(ResolvedImport { target, alias: import.alias });
         }
 
-        Ok(())
+        Ok(module)
     }
 
-    fn load_inline_imports(&mut self, imports: Vec<Import>) -> Result<()> {
-        for import in imports {
-            if let Import::Module { path } = import
-                && is_standard_module(&path)
-            {
-                self.load_standard_module(&path)?;
+    fn load_inline_imports(&mut self, module: ModuleId, imports: Vec<Import>) -> Result<()> {
+        for Import { path, alias } in imports {
+            if is_standard_module(&path) {
+                let target = self.load_standard_module(&path)?;
+                self.imports[module.index()].push(ResolvedImport { target, alias });
+            } else {
+                return Err(ArgentError::at(
+                    &self.modules[module.index()].path,
+                    format!("inline source cannot import filesystem module `{path}`"),
+                ));
             }
         }
         Ok(())
     }
 
-    fn load_import(&mut self, base: &Path, import: Import) -> Result<()> {
-        match import {
-            Import::Module { path } if is_standard_module(&path) => self.load_standard_module(&path),
-            Import::Module { path } | Import::Actor { path, .. } => self.load_module(&base.join(path)),
-            Import::AppActor { .. } | Import::App { .. } => Ok(()),
-        }
+    fn load_import(&mut self, base: &Path, path: &str) -> Result<ModuleId> {
+        if is_standard_module(path) { self.load_standard_module(path) } else { self.load_module(&base.join(path)) }
     }
 
-    fn load_standard_module(&mut self, path: &str) -> Result<()> {
-        if !self.visited_standard.insert(path.to_string()) {
-            return Ok(());
+    fn load_standard_module(&mut self, path: &str) -> Result<ModuleId> {
+        let module_path = PathBuf::from(path);
+        if let Some(module) = self.module_ids.get(&module_path).copied() {
+            return Ok(module);
         }
         let module = load_standard_module(path)?;
         let imports = module.imports.clone();
-        self.modules.push(module);
+        let module = self.insert_module(module);
         for import in imports {
-            match import {
-                Import::Module { path } if is_standard_module(&path) => self.load_standard_module(&path)?,
-                Import::Module { path } | Import::Actor { path, .. } => {
-                    return Err(ArgentError::new(format!("Argent standard module `{path}` cannot import a filesystem module")));
-                }
-                Import::AppActor { .. } | Import::App { .. } => {
-                    return Err(ArgentError::new("Argent standard modules cannot import apps"));
-                }
+            if is_standard_module(&import.path) {
+                let target = self.load_standard_module(&import.path)?;
+                self.imports[module.index()].push(ResolvedImport { target, alias: import.alias });
+            } else {
+                return Err(ArgentError::new(format!("Argent standard module `{}` cannot import a filesystem module", import.path)));
             }
         }
-        Ok(())
+        Ok(module)
+    }
+
+    fn insert_module(&mut self, module: crate::compiler::syntax::Module) -> ModuleId {
+        let id = ModuleId::new(self.modules.len());
+        self.module_ids.insert(module.path.clone(), id);
+        self.modules.push(module);
+        self.imports.push(Vec::new());
+        id
+    }
+
+    fn finish(self, root: ModuleId) -> Result<ResolvedModules> {
+        ResolvedModules::from_loaded(self.modules, root, self.imports)
     }
 }
 
@@ -133,11 +147,11 @@ enum Visit {
 
 #[derive(Default)]
 struct AppGraphPlanner {
-    programs: BTreeMap<PathBuf, Program>,
+    programs: BTreeMap<PathBuf, ResolvedModules>,
     app_sources: BTreeMap<String, PathBuf>,
     visits: BTreeMap<SourceApp, Visit>,
     stack: Vec<SourceApp>,
-    order: Vec<(SourceApp, Vec<SourceApp>, Program)>,
+    order: Vec<(SourceApp, Vec<SourceApp>, ResolvedModules)>,
 }
 
 impl AppGraphPlanner {
@@ -170,8 +184,20 @@ impl AppGraphPlanner {
         self.stack.push(app.clone());
 
         let program = self.load_source(&app.source)?;
-        let selected_app = root_app(&program, &app)?;
-        let dependencies = app_dependencies(&program, selected_app)?;
+        if program.root_path() != app.source {
+            return Err(ArgentError::at(&app.source, "app source is not the root module"));
+        }
+        let Some(selected_app) = program.root_app(Some(&app.app))? else {
+            return Err(ArgentError::at(&app.source, format!("source does not declare app `{}`", app.app)));
+        };
+        let dependencies = program
+            .referenced_app_members(selected_app)?
+            .into_iter()
+            .map(|member| {
+                let (source, app) = program.app_source(member.app);
+                SourceApp { source: source.to_path_buf(), app: app.name.clone() }
+            })
+            .collect::<BTreeSet<_>>();
         for dependency in &dependencies {
             self.visit(dependency.clone())?;
         }
@@ -182,7 +208,7 @@ impl AppGraphPlanner {
         Ok(())
     }
 
-    fn load_source(&mut self, source: &Path) -> Result<Program> {
+    fn load_source(&mut self, source: &Path) -> Result<ResolvedModules> {
         if let Some(program) = self.programs.get(source) {
             return Ok(program.clone());
         }
@@ -190,105 +216,4 @@ impl AppGraphPlanner {
         self.programs.insert(source.to_path_buf(), program.clone());
         Ok(program)
     }
-}
-
-fn app_dependencies(program: &Program, selected_app: &crate::compiler::syntax::AppDecl) -> Result<BTreeSet<SourceApp>> {
-    let mut dependencies = BTreeSet::<SourceApp>::new();
-    let mut app_sources = BTreeMap::<String, PathBuf>::new();
-    let referenced_apps = qualified_app_references(program, selected_app);
-    for module in &program.modules {
-        let base = module.path.parent().ok_or_else(|| ArgentError::at(&module.path, "module path has no parent"))?;
-        for import in &module.imports {
-            match import {
-                Import::AppActor { app, path, .. } | Import::App { app, path } => {
-                    let source = canonical_source(&base.join(path))?;
-                    insert_app_dependency(&mut dependencies, &mut app_sources, SourceApp { source, app: app.clone() }, &module.path)?;
-                }
-                Import::Module { path } if !is_standard_module(path) => {
-                    let source = canonical_source(&base.join(path))?;
-                    let imported = program
-                        .modules
-                        .iter()
-                        .find(|candidate| candidate.path == source)
-                        .ok_or_else(|| ArgentError::at(&module.path, format!("module import source `{path}` was not loaded")))?;
-                    for app in imported.apps.iter().filter(|app| referenced_apps.contains(&app.name)) {
-                        insert_app_dependency(
-                            &mut dependencies,
-                            &mut app_sources,
-                            SourceApp { source: source.clone(), app: app.name.clone() },
-                            &module.path,
-                        )?;
-                    }
-                }
-                Import::Module { .. } | Import::Actor { .. } => {}
-            }
-        }
-    }
-    Ok(dependencies)
-}
-
-fn qualified_app_references(program: &Program, selected_app: &crate::compiler::syntax::AppDecl) -> BTreeSet<String> {
-    let actors =
-        program.modules.iter().flat_map(|module| &module.actors).map(|actor| (actor.name.as_str(), actor)).collect::<BTreeMap<_, _>>();
-    let mut apps = BTreeSet::new();
-    // Consumes and emits are always in-app. Only observations and spawns can
-    // introduce a foreign static actor dependency.
-    for actor in selected_app.actors.iter().filter_map(|name| actors.get(name.as_str())) {
-        for entry in &actor.entries {
-            for observe in &entry.observes {
-                for observed in observe.inputs.iter().chain(&observe.outputs) {
-                    insert_qualified_app(&mut apps, &observed.actor);
-                }
-            }
-            for spawn in &entry.spawns {
-                for output in &spawn.outputs {
-                    insert_qualified_app(&mut apps, &output.actor);
-                }
-            }
-        }
-    }
-    apps
-}
-
-fn insert_qualified_app(apps: &mut BTreeSet<String>, actor: &str) {
-    if let Some((app, actor)) = actor.split_once("::")
-        && !app.is_empty()
-        && !actor.is_empty()
-    {
-        apps.insert(app.to_string());
-    }
-}
-
-fn insert_app_dependency(
-    dependencies: &mut BTreeSet<SourceApp>,
-    app_sources: &mut BTreeMap<String, PathBuf>,
-    dependency: SourceApp,
-    importing_module: &Path,
-) -> Result<()> {
-    if let Some(previous) = app_sources.insert(dependency.app.clone(), dependency.source.clone())
-        && previous != dependency.source
-    {
-        return Err(ArgentError::at(
-            importing_module,
-            format!("app `{}` is imported from both `{}` and `{}`", dependency.app, previous.display(), dependency.source.display()),
-        ));
-    }
-    dependencies.insert(dependency);
-    Ok(())
-}
-
-fn root_app<'a>(program: &'a Program, source_app: &SourceApp) -> Result<&'a crate::compiler::syntax::AppDecl> {
-    let root = program
-        .modules
-        .iter()
-        .find(|module| module.path == source_app.source)
-        .ok_or_else(|| ArgentError::at(&source_app.source, "app source is not the root module"))?;
-    root.apps
-        .iter()
-        .find(|app| app.name == source_app.app)
-        .ok_or_else(|| ArgentError::at(&source_app.source, format!("source does not declare app `{}`", source_app.app)))
-}
-
-fn canonical_source(path: &Path) -> Result<PathBuf> {
-    fs::canonicalize(path).map_err(|err| ArgentError::at(path, err.to_string()))
 }

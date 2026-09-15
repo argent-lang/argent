@@ -1,7 +1,7 @@
 import "./types.ag";
 
 // Actor imports are template capabilities for cross-actor `become`.
-import actor StonesSettle from "./settle.ag";
+import "./settle.ag";
 
 actor StonesGame owns GameState {
     entry take(

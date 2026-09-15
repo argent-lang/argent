@@ -1,37 +1,7 @@
 use std::path::PathBuf;
 
 use super::parse_module;
-use super::{Cardinality, CardinalityBound, EmitSpec, Import, TypeRef};
-
-#[test]
-fn parses_source_backed_app_imports() {
-    let module = parse_module(
-        PathBuf::from("controller.ag"),
-        r#"
-            import actor AssetApp::Asset from "./asset.ag";
-            import app RegistryApp from "./registry.ag";
-            import actor Helper from "./helper.ag";
-            "#
-        .to_string(),
-    )
-    .expect("app-qualified imports parse");
-
-    assert!(matches!(
-        &module.imports[0],
-        Import::AppActor { app, actor, path }
-            if app == "AssetApp" && actor == "Asset" && path == "./asset.ag"
-    ));
-    assert!(matches!(
-        &module.imports[1],
-        Import::App { app, path }
-            if app == "RegistryApp" && path == "./registry.ag"
-    ));
-    assert!(matches!(
-        &module.imports[2],
-        Import::Actor { actor, path }
-            if actor == "Helper" && path == "./helper.ag"
-    ));
-}
+use super::{Cardinality, CardinalityBound, EmitSpec, TypeRef};
 
 #[test]
 fn parses_type_first_function_entry_and_delegate_parameters() {
@@ -142,7 +112,7 @@ fn rejects_name_first_parameters() {
     let err = parse_module(PathBuf::from("params.ag"), "fn helper(amount: int) -> int { return amount; }".to_string())
         .expect_err("name-first parameters must not parse");
 
-    assert!(err.to_string().contains("expected identifier, found `:`"), "unexpected error: {err}");
+    assert!(err.to_string().contains("expected `:`, found identifier `int`"), "unexpected error: {err}");
 }
 
 #[test]

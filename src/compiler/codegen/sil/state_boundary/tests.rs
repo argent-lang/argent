@@ -1,15 +1,14 @@
 use std::path::PathBuf;
 
+use crate::compiler::loader::{ResolvedModules, load_inline_program};
 use crate::compiler::model::Model;
-use crate::compiler::syntax::parser::parse_module;
-use crate::compiler::syntax::{ActorDecl, EntryDecl, Program};
+use crate::compiler::syntax::{ActorDecl, EntryDecl};
 
 use super::*;
 
-fn program(source: &str) -> Program {
+fn program(source: &str) -> ResolvedModules {
     let path = PathBuf::from("state-boundary-test.ag");
-    let module = parse_module(path.clone(), source.to_string()).expect("test source parses");
-    Program { root: path, modules: vec![module] }
+    load_inline_program(path, source.to_string()).expect("test source resolves")
 }
 
 fn actor_entry<'a>(model: &'a Model<'a>, actor: &str, entry: &str) -> (&'a ActorDecl, &'a EntryDecl) {
@@ -26,7 +25,8 @@ fn input_reference_plan(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>)
 #[test]
 fn aligned_active_input_is_direct_authored_state_with_the_covenant_domain_proof() {
     let program = program(include_str!("../../../../../tests/fixtures/emit/single_actor_self_consume/app.ag"));
-    let model = Model::from_program(&program).expect("self-consume fixture plans");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("self-consume fixture plans");
     let (actor, entry) = actor_entry(&model, "Counter", "merge");
     let plan = input_reference_plan(actor, entry, &model);
     let input = plan.consumed("other").expect("self input exists");
@@ -47,7 +47,8 @@ fn aligned_active_input_is_direct_authored_state_with_the_covenant_domain_proof(
 #[test]
 fn named_identity_input_is_already_an_authored_source_value() {
     let program = program(include_str!("../../../../../tests/fixtures/emit/input_template_route_reuse/app.ag"));
-    let model = Model::from_program(&program).expect("peer input fixture plans");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("peer input fixture plans");
     let (actor, entry) = actor_entry(&model, "Controller", "step");
     let plan = input_reference_plan(actor, entry, &model);
     let input = plan.consumed("peer").expect("peer input exists");
@@ -83,7 +84,8 @@ fn augmented_input_projects_only_user_fields_from_its_actor_keyed_type() {
             app Test { actor Left; actor Right; }
         "#,
     );
-    let model = Model::from_program(&program).expect("paired actors plan");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("paired actors plan");
     let (actor, entry) = actor_entry(&model, "Left", "shift");
     let plan = input_reference_plan(actor, entry, &model);
     let input = plan.consumed("peer").expect("peer input exists");
@@ -119,7 +121,8 @@ fn expanded_input_requires_a_validated_preimage_for_authored_access() {
             app Test { actor Vault; actor Reader; }
         "#,
     );
-    let model = Model::from_program(&program).expect("expanded input plans");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("expanded input plans");
     let (actor, entry) = actor_entry(&model, "Reader", "inspect");
     let plan = input_reference_plan(actor, entry, &model);
     let input = plan.consumed("vault").expect("vault input exists");
@@ -135,7 +138,8 @@ fn expanded_input_requires_a_validated_preimage_for_authored_access() {
 #[test]
 fn active_expanded_reference_reconstructs_from_validated_openings() {
     let program = program(include_str!("../../../../../tests/fixtures/emit/state_expansion/app.ag"));
-    let model = Model::from_program(&program).expect("expanded active state plans");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("expanded active state plans");
     let (actor, entry) = actor_entry(&model, "Forager", "hold");
     let plan = input_reference_plan(actor, entry, &model);
     let active = plan.active();
@@ -180,7 +184,8 @@ fn entry_input_views_distinguish_complete_body_lowering_from_clause_expressions(
             app Test { actor Observer; actor Source; actor Peer; }
         "#,
     );
-    let model = Model::from_program(&program).expect("mixed input entry plans");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("mixed input entry plans");
     let (actor, entry) = actor_entry(&model, "Observer", "inspect");
     let plan = input_reference_plan(actor, entry, &model);
 
@@ -194,7 +199,8 @@ fn entry_input_views_distinguish_complete_body_lowering_from_clause_expressions(
 #[test]
 fn observed_input_plan_uses_the_canonical_reference_identity() {
     let program = program(include_str!("../../../../../tests/fixtures/emit/observed_template_witnesses/app.ag"));
-    let model = Model::from_program(&program).expect("observed input fixture plans");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("observed input fixture plans");
     let (actor, entry) = actor_entry(&model, "Local", "step");
     let plan = input_reference_plan(actor, entry, &model);
     let input = plan.observed("asset", "src").expect("observed input exists");
@@ -213,7 +219,8 @@ fn observed_input_plan_uses_the_canonical_reference_identity() {
 #[test]
 fn selector_output_uses_the_actor_domain_plan_and_its_selected_type() {
     let program = program(include_str!("../../../../../examples/route_state_body_choice.ag"));
-    let model = Model::from_program(&program).expect("selector example plans");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("selector example plans");
     let (actor, entry) = actor_entry(&model, "Mux", "choose");
     let selector = model
         .entry_model(actor, entry)
@@ -233,7 +240,8 @@ fn selector_output_uses_the_actor_domain_plan_and_its_selected_type() {
 #[test]
 fn augmented_output_materialization_injects_only_planned_generated_fields() {
     let program = program(include_str!("../../../../../tests/fixtures/state_layout/function_contexts/app.ag"));
-    let model = Model::from_program(&program).expect("function context fixture plans");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("function context fixture plans");
     let (actor, _) = actor_entry(&model, "Routed", "advance");
     let target = plan_actor_output_state(actor, "Routed", &model).expect("self output plans");
     let physical = materialize_output_state(
@@ -257,7 +265,8 @@ fn augmented_output_materialization_injects_only_planned_generated_fields() {
 #[test]
 fn expanded_output_lowers_authored_values_to_digest_storage_before_physical_state() {
     let program = program(include_str!("../../../../../tests/fixtures/emit/state_expansion/app.ag"));
-    let model = Model::from_program(&program).expect("expanded state fixture plans");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("expanded state fixture plans");
     let (actor, _) = actor_entry(&model, "Forager", "hold");
     let target = plan_actor_output_state(actor, "Forager", &model).expect("expanded self output plans");
     let physical = materialize_output_state(

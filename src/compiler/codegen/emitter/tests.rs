@@ -11,25 +11,55 @@ use crate::routing::{CommitmentNode, RouteGraph, SelectorRequirement};
 
 #[test]
 fn rejects_route_outside_named_output_union() {
-    let mut program = test_program();
-    set_entry_body(&mut program.modules[0].actors[0].entries[0], "become next <- Game(next_game);");
+    let program = crate::compiler::loader::load_inline_program(
+        PathBuf::from("test.ag"),
+        r#"
+            state PlayerState {}
+            state GameState {}
 
-    let err = Model::from_program(&program).expect_err("route must be rejected");
+            actor Player owns PlayerState {
+                entry step() emits next: Player {
+                    unrestricted(next.value);
+                    become next <- Game(GameState {});
+                }
+            }
+
+            actor Game owns GameState {}
+            app Test { actor Player; actor Game; }
+        "#
+        .to_string(),
+    )
+    .expect("source resolves");
+
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let err = Model::from_source(&program_source).expect_err("route must be rejected");
     assert!(err.to_string().contains("routes output `next` to `Game`"), "unexpected error: {err}");
 }
 
 #[test]
 fn accepts_route_inside_named_output_union() {
-    let mut program = test_program();
-    program.modules[0].actors[0].entries[0].emits = EmitSpec::Outputs(vec![EmitOutput {
-        name: "next".to_string(),
-        actors: vec!["Player".to_string(), "Game".to_string()],
-        cardinality: Cardinality::One,
-        auth_index: 0,
-    }]);
-    set_entry_body(&mut program.modules[0].actors[0].entries[0], "become next <- Game(next_game);");
+    let program = crate::compiler::loader::load_inline_program(
+        PathBuf::from("test.ag"),
+        r#"
+            state PlayerState {}
+            state GameState {}
 
-    Model::from_program(&program).expect("route should be accepted");
+            actor Player owns PlayerState {
+                entry step() emits next: Player | Game {
+                    unrestricted(next.value);
+                    become next <- Game(GameState {});
+                }
+            }
+
+            actor Game owns GameState {}
+            app Test { actor Player; actor Game; }
+        "#
+        .to_string(),
+    )
+    .expect("source resolves");
+
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    Model::from_source(&program_source).expect("route should be accepted");
 }
 
 #[test]
@@ -244,7 +274,7 @@ fn spawn_ranges_are_rejected_at_the_sil_codegen_boundary() {
 #[test]
 fn artifacts_record_resolved_cardinality_for_every_interaction_kind() {
     let path = PathBuf::from("artifact-cardinality.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         path.clone(),
         r#"
             const int MAX_ACCOUNTS = 3;
@@ -305,9 +335,9 @@ fn artifacts_record_resolved_cardinality_for_every_interaction_kind() {
         "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model builds");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model builds");
     let actor = model.actor("Batch").expect("actor exists");
     let entry = entry_artifact(actor, &actor.entries[0], &model).expect("entry artifact builds");
 
@@ -338,7 +368,7 @@ fn lowers_planned_singleton_locations_to_section_indices() {
 #[test]
 fn planning_uses_declared_emit_domain_not_body_routes() {
     let path = PathBuf::from("declared-emit-domain.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         path.clone(),
         r#"
             state SourceState {
@@ -370,10 +400,10 @@ fn planning_uses_declared_emit_domain_not_body_routes() {
             "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
+    .expect("source resolves");
 
-    let model = Model::from_program(&program).expect("declared emit domain plans");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("declared emit domain plans");
     let source = model.actor("Source").expect("Source exists");
     let entry = &source.entries[0];
     assert_eq!(
@@ -414,21 +444,8 @@ fn rejects_user_state_named_state() {
 }
 
 #[test]
-fn rejects_missing_named_output_coverage() {
-    let mut program = test_program();
-    program.modules[0].actors[0].entries[0].emits = EmitSpec::Outputs(vec![
-        EmitOutput { name: "a".to_string(), actors: vec!["Player".to_string()], cardinality: Cardinality::One, auth_index: 0 },
-        EmitOutput { name: "b".to_string(), actors: vec!["Player".to_string()], cardinality: Cardinality::One, auth_index: 1 },
-    ]);
-    set_entry_body(&mut program.modules[0].actors[0].entries[0], "become a <- Player(next_a);");
-
-    let err = Model::from_program(&program).expect_err("missing output coverage must be rejected");
-    assert!(err.to_string().contains("does not validate output `b`"), "unexpected error: {err}");
-}
-
-#[test]
 fn rejects_source_with_missing_named_output_coverage() {
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         PathBuf::from("test.ag"),
         r#"
             state FooState {}
@@ -450,10 +467,10 @@ fn rejects_source_with_missing_named_output_coverage() {
             "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: PathBuf::from("test.ag"), modules: vec![module] };
+    .expect("source resolves");
 
-    let err = Model::from_program(&program).expect_err("missing output coverage must be rejected");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let err = Model::from_source(&program_source).expect_err("missing output coverage must be rejected");
     assert!(err.to_string().contains("does not validate output `b`"), "unexpected error: {err}");
 }
 
@@ -490,29 +507,50 @@ fn rejects_explicit_auth_output_index_syntax() {
 
 #[test]
 fn rejects_duplicate_named_output_coverage() {
-    let mut program = test_program();
-    set_entry_body(
-        &mut program.modules[0].actors[0].entries[0],
-        "become { next <- Player(next_player), next <- Player(other_player) };",
-    );
+    let program = crate::compiler::loader::load_inline_program(
+        PathBuf::from("test.ag"),
+        r#"
+            state PlayerState {}
 
-    let err = Model::from_program(&program).expect_err("duplicate output coverage must be rejected");
+            actor Player owns PlayerState {
+                entry step() emits next: Player {
+                    unrestricted(next.value);
+                    become { next <- Player(PlayerState {}), next <- Player(PlayerState {}) };
+                }
+            }
+
+            app Test { actor Player; }
+        "#
+        .to_string(),
+    )
+    .expect("source resolves");
+
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let err = Model::from_source(&program_source).expect_err("duplicate output coverage must be rejected");
     assert!(err.to_string().contains("validates output `next` more than once"), "unexpected error: {err}");
 }
 
 #[test]
 fn rejects_delegate_become() {
-    let mut program = test_program();
-    program.modules[0].actors[0].entries[0].kind = EntryKind::Delegate;
-    program.modules[0].actors[0].entries[0].consumes.push(ConsumeDecl {
-        name: "leader".to_string(),
-        actor: "Player".to_string(),
-        cardinality: Cardinality::One,
-    });
-    program.modules[0].actors[0].entries[0].emits = EmitSpec::None;
-    set_entry_body(&mut program.modules[0].actors[0].entries[0], "become next <- Player(next_player);");
+    let program = crate::compiler::loader::load_inline_program(
+        PathBuf::from("test.ag"),
+        r#"
+            state PlayerState {}
 
-    let err = Model::from_program(&program).expect_err("delegate become must be rejected");
+            actor Player owns PlayerState {
+                delegate step() consumes { leader: Player, } {
+                    become next <- Player(PlayerState {});
+                }
+            }
+
+            app Test { actor Player; }
+        "#
+        .to_string(),
+    )
+    .expect("source resolves");
+
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let err = Model::from_source(&program_source).expect_err("delegate become must be rejected");
     assert!(err.to_string().contains("cannot use `become`"), "unexpected error: {err}");
 }
 
@@ -590,9 +628,9 @@ fn leader_actors_close_all_leader_input_groups() {
             }
         "#;
     let path = PathBuf::from("test.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source.to_string()).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
 
     let leader_sil = emit_actor(model.actor("Leader").expect("Leader exists"), &model).expect("Leader emits");
     assert!(leader_sil.contains("// :: leader entry (1:N)\n    entry standalone("), "{leader_sil}");
@@ -616,76 +654,52 @@ fn leader_actors_close_all_leader_input_groups() {
 
 #[test]
 fn rejects_duplicate_state_declarations() {
-    let mut program = test_program();
-    let mut duplicate = empty_module("second.ag");
-    duplicate.states.push(StateDecl { name: "PlayerState".to_string(), fields: Vec::new(), expansion: None });
-    program.modules.push(duplicate);
-
-    let err = Model::from_program(&program).expect_err("duplicate state declaration must be rejected");
-    assert_duplicate_top_level_error(&err, "state", "PlayerState");
+    let err = crate::compiler::loader::load_inline_program(
+        PathBuf::from("test.ag"),
+        "state PlayerState {}\nstate PlayerState {}\n".to_string(),
+    )
+    .expect_err("duplicate state declaration must be rejected");
+    assert!(err.to_string().contains("ambiguous export `PlayerState`"), "unexpected error: {err}");
 }
 
 #[test]
 fn rejects_duplicate_actor_declarations() {
-    let mut program = test_program();
-    let mut duplicate = empty_module("second.ag");
-    duplicate.actors.push(ActorDecl {
-        name: "Player".to_string(),
-        state: "PlayerState".to_string(),
-        functions: Vec::new(),
-        entries: Vec::new(),
-    });
-    program.modules.push(duplicate);
-
-    let err = Model::from_program(&program).expect_err("duplicate actor declaration must be rejected");
-    assert_duplicate_top_level_error(&err, "actor", "Player");
+    let err = crate::compiler::loader::load_inline_program(
+        PathBuf::from("test.ag"),
+        "state PlayerState {}\nactor Player owns PlayerState {}\nactor Player owns PlayerState {}\n".to_string(),
+    )
+    .expect_err("duplicate actor declaration must be rejected");
+    assert!(err.to_string().contains("ambiguous export `Player`"), "unexpected error: {err}");
 }
 
 #[test]
 fn rejects_duplicate_const_declarations() {
-    let mut program = test_program();
-    program.modules[0].consts.push(ConstDecl { ty: TypeRef::new("int"), name: "Limit".to_string(), value: "1".to_string() });
-    let mut duplicate = empty_module("second.ag");
-    duplicate.consts.push(ConstDecl { ty: TypeRef::new("int"), name: "Limit".to_string(), value: "2".to_string() });
-    program.modules.push(duplicate);
-
-    let err = Model::from_program(&program).expect_err("duplicate const declaration must be rejected");
-    assert_duplicate_top_level_error(&err, "const", "Limit");
+    let err = crate::compiler::loader::load_inline_program(
+        PathBuf::from("test.ag"),
+        "const int Limit = 1;\nconst int Limit = 2;\n".to_string(),
+    )
+    .expect_err("duplicate const declaration must be rejected");
+    assert!(err.to_string().contains("ambiguous export `Limit`"), "unexpected error: {err}");
 }
 
 #[test]
 fn rejects_duplicate_function_declarations() {
-    let mut program = test_program();
-    program.modules[0].functions.push(FunctionDecl {
-        name: "helper".to_string(),
-        params: Vec::new(),
-        return_ty: Some(TypeRef::new("int")),
-        body: "1".to_string(),
-    });
-    let mut duplicate = empty_module("second.ag");
-    duplicate.functions.push(FunctionDecl {
-        name: "helper".to_string(),
-        params: Vec::new(),
-        return_ty: Some(TypeRef::new("int")),
-        body: "2".to_string(),
-    });
-    program.modules.push(duplicate);
-
-    let err = Model::from_program(&program).expect_err("duplicate function declaration must be rejected");
-    assert_duplicate_top_level_error(&err, "fn", "helper");
+    let err = crate::compiler::loader::load_inline_program(
+        PathBuf::from("test.ag"),
+        "fn helper() -> int { return 1; }\nfn helper() -> int { return 2; }\n".to_string(),
+    )
+    .expect_err("duplicate function declaration must be rejected");
+    assert!(err.to_string().contains("ambiguous export `helper`"), "unexpected error: {err}");
 }
 
 #[test]
 fn rejects_function_named_unrestricted() {
-    let mut program = test_program();
-    program.modules[0].functions.push(FunctionDecl {
-        name: word::UNRESTRICTED.to_string(),
-        params: Vec::new(),
-        return_ty: Some(TypeRef::new("int")),
-        body: "0".to_string(),
-    });
+    let program =
+        crate::compiler::loader::load_inline_program(PathBuf::from("test.ag"), "fn unrestricted() -> int { return 0; }".to_string())
+            .expect("source resolves");
 
-    let err = Model::from_program(&program).expect_err("the output-value declaration must not be shadowed");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let err = Model::from_source(&program_source).expect_err("the output-value declaration must not be shadowed");
     assert!(
         err.to_string().contains("function identifier `unrestricted` is reserved for output-value declarations"),
         "unexpected error: {err}"
@@ -762,43 +776,41 @@ fn rejects_global_and_actor_functions_named_digest() {
 
 #[test]
 fn rejects_global_and_actor_functions_with_the_same_name() {
-    let mut program = test_program();
-    program.modules[0].actors[0].entries.clear();
-    program.modules[0].functions.push(FunctionDecl {
-        name: "helper".to_string(),
-        params: Vec::new(),
-        return_ty: Some(TypeRef::new("int")),
-        body: "return 1;".to_string(),
-    });
-    program.modules[0].actors[0].functions.push(FunctionDecl {
-        name: "helper".to_string(),
-        params: Vec::new(),
-        return_ty: Some(TypeRef::new("int")),
-        body: "return 2;".to_string(),
-    });
+    let program = crate::compiler::loader::load_inline_program(
+        PathBuf::from("test.ag"),
+        r#"
+            fn helper() -> int { return 1; }
+            state PlayerState {}
+            actor Player owns PlayerState { fn helper() -> int { return 2; } }
+            app Test { actor Player; }
+        "#
+        .to_string(),
+    )
+    .expect("source resolves");
 
-    let err = Model::from_program(&program).expect_err("global and actor functions share the generated contract namespace");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let err = Model::from_source(&program_source).expect_err("global and actor functions share the generated contract namespace");
 
     assert_eq!(err.message, "actor `Player` function `helper` conflicts with a global function of the same name");
 }
 
 #[test]
 fn rejects_global_calls_to_actor_functions() {
-    let mut program = test_program();
-    program.modules[0].actors[0].entries.clear();
-    program.modules[0].functions.push(FunctionDecl {
-        name: "global_helper".to_string(),
-        params: Vec::new(),
-        return_ty: Some(TypeRef::new("int")),
-        body: "return actor_helper();".to_string(),
-    });
-    program.modules[0].actors[1].functions.push(FunctionDecl {
-        name: "actor_helper".to_string(),
-        params: Vec::new(),
-        return_ty: Some(TypeRef::new("int")),
-        body: "return 2;".to_string(),
-    });
-    let model = Model::from_program(&program).expect("function declarations form distinct namespaces");
+    let program = crate::compiler::loader::load_inline_program(
+        PathBuf::from("test.ag"),
+        r#"
+            fn global_helper() -> int { return actor_helper(); }
+            state PlayerState {}
+            state GameState {}
+            actor Player owns PlayerState {}
+            actor Game owns GameState { fn actor_helper() -> int { return 2; } }
+            app Test { actor Player; actor Game; }
+        "#
+        .to_string(),
+    )
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("function declarations form distinct namespaces");
 
     let err = emit_actor(model.actor("Player").expect("Player exists"), &model)
         .expect_err("global functions must not depend on actor functions");
@@ -808,24 +820,27 @@ fn rejects_global_calls_to_actor_functions() {
 
 #[test]
 fn allows_the_same_function_name_on_different_actors() {
-    let mut program = test_program();
-    for actor in &mut program.modules[0].actors {
-        actor.entries.clear();
-        actor.functions.push(FunctionDecl {
-            name: "helper".to_string(),
-            params: Vec::new(),
-            return_ty: Some(TypeRef::new("int")),
-            body: "return 1;".to_string(),
-        });
-    }
+    let program = crate::compiler::loader::load_inline_program(
+        PathBuf::from("test.ag"),
+        r#"
+            state PlayerState {}
+            state GameState {}
+            actor Player owns PlayerState { fn helper() -> int { return 1; } }
+            actor Game owns GameState { fn helper() -> int { return 1; } }
+            app Test { actor Player; actor Game; }
+        "#
+        .to_string(),
+    )
+    .expect("source resolves");
 
-    Model::from_program(&program).expect("actor-local function names may repeat across contracts");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    Model::from_source(&program_source).expect("actor-local function names may repeat across contracts");
 }
 
 #[test]
 fn emits_actor_functions_only_in_their_owning_contract() {
     let path = PathBuf::from("actor-functions.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         path.clone(),
         r#"
             const int BIAS = 1;
@@ -878,12 +893,11 @@ fn emits_actor_functions_only_in_their_owning_contract() {
             "#
         .to_string(),
     )
-    .expect("actor-function source parses");
-    let program = Program { root: path, modules: vec![module] };
+    .expect("source resolves");
     let out_dir = std::env::temp_dir().join(format!("argent-actor-functions-test-{}", std::process::id()));
     let _ = fs::remove_dir_all(&out_dir);
 
-    emit_build(&program, &out_dir).expect("actor functions compile in their owning contracts");
+    emit_resolved_build(&program, &out_dir).expect("actor functions compile in their owning contracts");
     let counter = fs::read_to_string(out_dir.join("sil/Counter.sil")).expect("generated Counter Sil exists");
     let other = fs::read_to_string(out_dir.join("sil/Other.sil")).expect("generated Other Sil exists");
 
@@ -913,7 +927,7 @@ fn global_function_variables_do_not_collide_with_actor_fields() {
     let out_dir = std::env::temp_dir().join(format!("argent-global-function-scope-test-{}", std::process::id()));
     let _ = fs::remove_dir_all(&out_dir);
 
-    emit_build(&program, &out_dir).expect("global function with actor-field name collisions builds");
+    emit_resolved_build(&program, &out_dir).expect("global function with actor-field name collisions builds");
     let sil = fs::read_to_string(out_dir.join("sil/Counter.sil")).expect("generated Counter Sil exists");
     assert!(sil.contains("function increment(int gen__glob_cycles) : int"), "{sil}");
     assert!(sil.contains("int gen__glob_result = gen__glob_cycles + 1;"), "{sil}");
@@ -933,7 +947,8 @@ fn global_function_bare_names_do_not_capture_actor_fields() {
         "#,
         "read_cycles() >= 0",
     );
-    let model = Model::from_program(&program).expect("program models");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("program models");
     let counter = model.actor("Counter").expect("Counter exists");
     let err = emit_actor(counter, &model).expect_err("undeclared global-function name must not capture an actor field");
     assert!(
@@ -952,7 +967,8 @@ fn global_function_assignments_do_not_capture_actor_fields() {
         "#,
         "true",
     );
-    let model = Model::from_program(&program).expect("program models");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("program models");
     let counter = model.actor("Counter").expect("Counter exists");
     let err = emit_actor(counter, &model).expect_err("global-function assignment must not capture an actor field");
     assert!(
@@ -977,7 +993,7 @@ fn global_function_contextual_names_and_literals_are_lowered_by_sil_syntax() {
     let out_dir = std::env::temp_dir().join(format!("argent-global-function-syntax-test-{}", std::process::id()));
     let _ = fs::remove_dir_all(&out_dir);
 
-    emit_build(&program, &out_dir).expect("contextual names and complete Sil literals build");
+    emit_resolved_build(&program, &out_dir).expect("contextual names and complete Sil literals build");
     let sil = fs::read_to_string(out_dir.join("sil/Counter.sil")).expect("generated Counter Sil exists");
     assert!(sil.contains("function echo(int gen__glob_seconds) : int"), "{sil}");
     assert!(sil.contains("byte[2] gen__glob_marker = byte[_](0xaabb);"), "{sil}");
@@ -987,7 +1003,7 @@ fn global_function_contextual_names_and_literals_are_lowered_by_sil_syntax() {
     let _ = fs::remove_dir_all(out_dir);
 }
 
-fn global_function_program(function: &str, requirement: &str) -> Program {
+fn global_function_program(function: &str, requirement: &str) -> ResolvedModules {
     let path = PathBuf::from("global-function-scope.ag");
     let source = format!(
         r#"
@@ -1009,31 +1025,32 @@ fn global_function_program(function: &str, requirement: &str) -> Program {
             }}
         "#
     );
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source).expect("scope test source parses");
-    Program { root: path, modules: vec![module] }
+    crate::compiler::loader::load_inline_program(path, source).expect("scope test source resolves")
 }
 
 #[test]
 fn rejects_duplicate_app_declarations() {
-    let mut program = test_program();
-    let mut duplicate = empty_module("second.ag");
-    duplicate.apps.push(AppDecl { name: "Test".to_string(), actors: vec!["Player".to_string()] });
-    program.modules.push(duplicate);
-
-    let err = Model::from_program(&program).expect_err("duplicate app declaration must be rejected");
-    assert_duplicate_top_level_error(&err, "app", "Test");
+    let err = crate::compiler::loader::load_inline_program(
+        PathBuf::from("test.ag"),
+        r#"
+            state PlayerState {}
+            actor Player owns PlayerState {}
+            app Test { actor Player; }
+            app Test { actor Player; }
+        "#
+        .to_string(),
+    )
+    .expect_err("duplicate app declaration must be rejected");
+    assert!(err.to_string().contains("ambiguous export `Test`"), "unexpected error: {err}");
 }
 
 #[test]
 fn rejects_reserved_state_field_from_model() {
-    let mut program = test_program();
-    program.modules[0].states[0].fields.push(FieldDecl {
-        ty: TypeRef::new("int"),
-        name: "gen__player_template".to_string(),
-        virtual_slot: false,
-    });
-
-    let err = Model::from_program(&program).expect_err("reserved state field must be rejected");
+    let err = crate::compiler::loader::load_inline_program(
+        PathBuf::from("test.ag"),
+        "state PlayerState { int gen__player_template; }".to_string(),
+    )
+    .expect_err("reserved state field must be rejected");
     assert!(err.to_string().contains("reserved generated namespace"), "unexpected error: {err}");
 }
 
@@ -1118,12 +1135,17 @@ fn rejects_reserved_self_member_in_expanded_base_state() {
 
 #[test]
 fn rejects_reserved_entry_parameter_from_model() {
-    let mut program = test_program();
-    program.modules[0].actors[0].entries[0]
-        .params
-        .push(ParamDecl { name: "gen__next_output_idx".to_string(), ty: TypeRef::new("int") });
-
-    let err = Model::from_program(&program).expect_err("reserved entry parameter must be rejected");
+    let err = crate::compiler::loader::load_inline_program(
+        PathBuf::from("test.ag"),
+        r#"
+            state PlayerState {}
+            actor Player owns PlayerState {
+                entry step(int gen__next_output_idx) emits none {}
+            }
+        "#
+        .to_string(),
+    )
+    .expect_err("reserved entry parameter must be rejected");
     assert!(err.to_string().contains("reserved generated namespace"), "unexpected error: {err}");
 }
 
@@ -1270,34 +1292,46 @@ fn rejects_entry_body_bindings_that_collide_with_handles_or_parameters() {
 
 #[test]
 fn rejects_reserved_output_handle_from_model() {
-    let mut program = test_program();
-    program.modules[0].actors[0].entries[0].emits = EmitSpec::Outputs(vec![EmitOutput {
-        name: "gen__next".to_string(),
-        actors: vec!["Player".to_string()],
-        cardinality: Cardinality::One,
-        auth_index: 0,
-    }]);
-    set_entry_body(&mut program.modules[0].actors[0].entries[0], "become gen__next <- Player(next_player);");
-
-    let err = Model::from_program(&program).expect_err("reserved output handle must be rejected");
+    let err = crate::compiler::loader::load_inline_program(
+        PathBuf::from("test.ag"),
+        r#"
+            state PlayerState {}
+            actor Player owns PlayerState {
+                entry step() emits gen__next: Player {
+                    unrestricted(gen__next.value);
+                    become gen__next <- Player(PlayerState {});
+                }
+            }
+        "#
+        .to_string(),
+    )
+    .expect_err("reserved output handle must be rejected");
     assert!(err.to_string().contains("reserved generated namespace"), "unexpected error: {err}");
 }
 
 #[test]
 fn rejects_template_actor_snake_case_collision() {
-    let mut program = test_program();
-    program.modules[0].actors[0].name = "FooBar".to_string();
-    program.modules[0].actors[1].name = "Foo_Bar".to_string();
-    program.modules[0].actors[0].entries.clear();
-    program.modules[0].apps[0].actors = vec!["FooBar".to_string(), "Foo_Bar".to_string()];
+    let program = crate::compiler::loader::load_inline_program(
+        PathBuf::from("test.ag"),
+        r#"
+            state PlayerState {}
+            state GameState {}
+            actor FooBar owns PlayerState {}
+            actor Foo_Bar owns GameState {}
+            app Test { actor FooBar; actor Foo_Bar; }
+        "#
+        .to_string(),
+    )
+    .expect("source resolves");
 
-    let err = Model::from_program(&program).expect_err("snake-case generated names must not collide");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let err = Model::from_source(&program_source).expect_err("snake-case generated names must not collide");
     assert!(err.to_string().contains("both map to generated suffix `foo_bar`"), "unexpected error: {err}");
 }
 
 #[test]
 fn allows_legacy_template_like_user_field_after_namespace_move() {
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         PathBuf::from("test.ag"),
         r#"
             state FooState {
@@ -1312,15 +1346,15 @@ fn allows_legacy_template_like_user_field_after_namespace_move() {
             "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: PathBuf::from("test.ag"), modules: vec![module] };
+    .expect("source resolves");
 
-    Model::from_program(&program).expect("ordinary template-like names should be legal");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    Model::from_source(&program_source).expect("ordinary template-like names should be legal");
 }
 
 #[test]
 fn emits_reserved_generated_namespace_names() {
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         PathBuf::from("test.ag"),
         r#"
             state FooState {}
@@ -1338,9 +1372,9 @@ fn emits_reserved_generated_namespace_names() {
             "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: PathBuf::from("test.ag"), modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let actor = model.actor("Foo").expect("actor exists");
     let sil = emit_actor(actor, &model).expect("actor emits");
     let manifest = emit_manifest(&program, &model);
@@ -1422,9 +1456,9 @@ fn output_value_reference_anywhere_in_the_entry_satisfies_the_check() {
             }
         "#;
     let path = PathBuf::from("test.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source.to_string()).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let sil = emit_actor(model.actor("Foo").expect("actor exists"), &model).expect("actor emits");
 
     assert!(sil.contains("int output_value = tx.outputs[gen__next_output_idx].value;"), "{sil}");
@@ -1447,9 +1481,9 @@ fn unrestricted_output_value_policy_is_compile_time_only() {
             }
         "#;
     let path = PathBuf::from("test.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source.to_string()).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let sil = emit_actor(model.actor("Foo").expect("actor exists"), &model).expect("actor emits");
 
     assert!(!sil.contains(word::UNRESTRICTED), "{sil}");
@@ -1512,9 +1546,9 @@ fn spawn_output_value_can_be_constrained_by_qualified_handle() {
             }
         "#;
     let path = PathBuf::from("test.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source.to_string()).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let sil = emit_actor(model.actor("Launcher").expect("actor exists"), &model).expect("actor emits");
 
     assert!(sil.contains("require(tx.outputs[gen__children_child_output_idx].value > 0);"), "{sil}");
@@ -1620,9 +1654,9 @@ fn observed_output_value_is_the_emitter_contracts_responsibility() {
             }
         "#;
     let path = PathBuf::from("test.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source.to_string()).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
 
     emit_actor(model.actor("Observer").expect("actor exists"), &model).expect("observed output needs no local value policy");
 }
@@ -1645,9 +1679,9 @@ fn self_cov_id_lowers_to_the_active_input_covenant_id() {
             }
         "#;
     let path = PathBuf::from("test.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source.to_string()).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let sil = emit_actor(model.actor("Foo").expect("actor exists"), &model).expect("actor emits");
 
     assert!(sil.contains("require(OpInputCovenantId(this.activeInputIndex) == OpInputCovenantId(this.activeInputIndex));"), "{sil}");
@@ -1684,9 +1718,9 @@ fn self_member_prefixes_remain_state_field_refs() {
             }
         "#;
     let path = PathBuf::from("test.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source.to_string()).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let sil = emit_actor(model.actor("Foo").expect("actor exists"), &model).expect("actor emits");
 
     assert!(sil.contains("require(value_note == value_note);"), "{sil}");
@@ -1696,7 +1730,7 @@ fn self_member_prefixes_remain_state_field_refs() {
 
 #[test]
 fn self_transition_uses_same_template_shortcut() {
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         PathBuf::from("test.ag"),
         r#"
             state FooState {
@@ -1719,9 +1753,9 @@ fn self_transition_uses_same_template_shortcut() {
             "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: PathBuf::from("test.ag"), modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let actor = model.actor("Foo").expect("actor exists");
     let sil = emit_actor(actor, &model).expect("actor emits");
     let actor_sil = actor_sil_for_model(&model);
@@ -2449,7 +2483,7 @@ fn observed_state_reference_can_supply_a_matching_route_state() {
 #[test]
 fn consumed_input_handles_reject_same_named_locals() {
     let path = PathBuf::from("consumed-reference-shadowing.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         path.clone(),
         r#"
             state LocalState {
@@ -2486,9 +2520,9 @@ fn consumed_input_handles_reject_same_named_locals() {
         "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let actor = model.actor("Local").expect("Local exists");
     let err = emit_actor(actor, &model).expect_err("entry locals must not shadow consumed input handles");
     assert!(err.to_string().contains("entry binding `peer` collides with consume handle of the same name"), "{err}");
@@ -2843,7 +2877,7 @@ fn observe_roots_reject_same_named_locals() {
 #[test]
 fn observed_input_leaves_do_not_reserve_bare_body_names() {
     let path = PathBuf::from("observed-input-leaf-local.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         path.clone(),
         r#"
             state ForeignState {
@@ -2866,9 +2900,9 @@ fn observed_input_leaves_do_not_reserve_bare_body_names() {
         "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let actor = model.actor("Foreign").expect("Foreign exists");
     let sil = emit_actor(actor, &model).expect("a local may share a qualified observed input leaf name");
 
@@ -2879,7 +2913,7 @@ fn observed_input_leaves_do_not_reserve_bare_body_names() {
 #[test]
 fn observed_input_and_output_leaves_may_share_a_name() {
     let path = PathBuf::from("observed-input-output-leaf.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         path.clone(),
         r#"
             state ForeignState { int amount; }
@@ -2908,9 +2942,9 @@ fn observed_input_and_output_leaves_may_share_a_name() {
         "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("qualified input and output leaves may share a name");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("qualified input and output leaves may share a name");
     let actor_sil = actor_sil_for_model(&model);
 
     emit_artifact(&program, &model, &actor_sil).expect("same-named qualified input and output leaves compile");
@@ -3015,7 +3049,7 @@ fn current_state_array_entry_param_uses_selected_state_type() {
 #[test]
 fn rejects_mismatched_authored_state_array_shapes_at_function_boundaries() {
     let path = PathBuf::from("state-array-shape-mismatch.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         path.clone(),
         r#"
             state NoteState {
@@ -3039,9 +3073,9 @@ fn rejects_mismatched_authored_state_array_shapes_at_function_boundaries() {
         "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let err = emit_actor(model.actor("Note").expect("Note exists"), &model).expect_err("array shapes must agree at the call boundary");
 
     assert!(err.to_string().contains("authored state value has type `State[]`, not `State[2]`"), "unexpected error: {err}");
@@ -3421,7 +3455,7 @@ fn active_expanded_field_rejects_whole_value_destructuring() {
 #[test]
 fn expanded_input_fields_require_validated_preimages() {
     let path = PathBuf::from("expanded-input-projection.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         path.clone(),
         r#"
             state Capsule { int nonce; virtual detail; }
@@ -3445,9 +3479,9 @@ fn expanded_input_fields_require_validated_preimages() {
         "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("expanded input plans");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("expanded input plans");
 
     let err = emit_actor(model.actor("Reader").expect("Reader exists"), &model)
         .expect_err("a stored expansion digest cannot expose its authored payload");
@@ -3486,7 +3520,7 @@ fn expanded_input_state_reconstruction_requires_validated_preimages() {
 #[test]
 fn expanded_actor_functions_require_explicit_authored_parameters() {
     let path = PathBuf::from("expanded-function-capture.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         path.clone(),
         r#"
             state Capsule { int nonce; virtual detail; }
@@ -3507,9 +3541,9 @@ fn expanded_actor_functions_require_explicit_authored_parameters() {
         "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("expanded actor plans");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("expanded actor plans");
     let err = emit_actor(model.actor("Vault").expect("Vault exists"), &model)
         .expect_err("actor functions cannot capture an entry-specific expansion preimage");
     assert!(err.to_string().contains("actor function `Vault::captured_count`"), "unexpected error: {err}");
@@ -3623,7 +3657,7 @@ fn entry_state_params_use_selected_types_for_actor_function_calls() {
 #[test]
 fn terminal_state_does_not_carry_its_own_template() {
     let path = PathBuf::from("terminal-route.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         path.clone(),
         r#"
             state SourceState {
@@ -3661,9 +3695,9 @@ fn terminal_state_does_not_carry_its_own_template() {
             "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let terminal = model.actor("Terminal").expect("Terminal actor exists");
     let terminal_sil = emit_actor(terminal, &model).expect("Terminal emits");
     let artifact = emit_artifact(&program, &model, &actor_sil_for_model(&model)).expect("artifact emits");
@@ -3693,7 +3727,7 @@ fn terminal_state_does_not_carry_its_own_template() {
 
 #[test]
 fn emits_portable_artifact_schema() {
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         PathBuf::from("test.ag"),
         r#"
             state FooState {
@@ -3714,9 +3748,9 @@ fn emits_portable_artifact_schema() {
             "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: PathBuf::from("test.ag"), modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let actor_sil = actor_sil_for_model(&model);
 
     let artifact = emit_artifact(&program, &model, &actor_sil).expect("artifact emits");
@@ -3932,7 +3966,7 @@ fn scalar_byte_expansion_fields_use_indexed_extraction() {
 #[test]
 fn static_output_to_a_foreign_expanded_state_declares_the_planned_physical_type() {
     let path = PathBuf::from("static-expanded-output.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         path.clone(),
         r#"
             state SourceState {
@@ -3976,9 +4010,9 @@ fn static_output_to_a_foreign_expanded_state_declares_the_planned_physical_type(
         "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("expanded target plans");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("expanded target plans");
     let actor_sil = actor_sil_for_model(&model);
     let source_sil = &actor_sil["Source"];
 
@@ -4244,7 +4278,7 @@ fn non_active_selector_declares_and_uses_its_canonical_named_type() {
     use crate::routing::{CommitmentForest, CommitmentPlan, Cut, FamilyPlan, NodePath, RoutePlan};
 
     let path = PathBuf::from("non-active-selector-output.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         path.clone(),
         r#"
             state BoardState { int ply; }
@@ -4296,8 +4330,7 @@ fn non_active_selector_declares_and_uses_its_canonical_named_type() {
         "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
+    .expect("source resolves");
     let leaf = |actor: &str| CommitmentNode::Leaf { actor: actor.to_string() };
     let cut = |paths: &[&[usize]]| paths.iter().map(|path| NodePath::new(path.to_vec())).collect::<Cut>();
     // Default selector cohorts align these cuts; inject a valid asymmetric
@@ -4335,7 +4368,9 @@ fn non_active_selector_declares_and_uses_its_canonical_named_type() {
         assert_eq!(selectors.len(), 1);
         Ok(crafted_plan.clone())
     };
-    let model = Model::from_program_with_route_planner(&program, &injected_planner).expect("non-active selector plans");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source_with_route_planner(&program_source, &BTreeMap::new(), &injected_planner)
+        .expect("non-active selector plans");
     let mux = model.actor("Mux").expect("Mux exists");
     let choose = mux.entries.iter().find(|entry| entry.name == "choose").expect("choose entry exists");
     let selector = model
@@ -4551,7 +4586,7 @@ fn state_expansion_requires_virtual_byte32_backing_field() {
 
 #[test]
 fn state_expansion_slots_require_typed_payload_constructors() {
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         PathBuf::from("test.ag"),
         r#"
             state AgentCapsule {
@@ -4585,9 +4620,9 @@ fn state_expansion_slots_require_typed_payload_constructors() {
             "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: PathBuf::from("test.ag"), modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let actor = model.actor("Forager").expect("Forager actor exists");
     let err = emit_actor(actor, &model).expect_err("anonymous virtual slot payload must be rejected");
 
@@ -5027,7 +5062,7 @@ fn icc_asset_lowers_cov_id_co_spend_and_else_if() {
     let _ = fs::remove_dir_all(&out_dir);
 
     let program = crate::compiler::loader::load_program(Path::new("examples/icc/kcc20_asset.ag")).expect("ICC asset app loads");
-    emit_build(&program, &out_dir).expect("ICC asset app builds");
+    emit_resolved_build(&program, &out_dir).expect("ICC asset app builds");
 
     let kcc20_sil = fs::read_to_string(out_dir.join("sil/KCC20.sil")).expect("KCC20.sil exists");
     assert!(kcc20_sil.contains("} else if (identifier_type == IDENTIFIER_COVENANT_ID) {"), "{kcc20_sil}");
@@ -5075,9 +5110,9 @@ fn lowers_co_spend_and_output_value_in_the_same_expression() {
             }
         "#;
     let path = PathBuf::from("test.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source.to_string()).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let sil = emit_actor(model.actor("Counter").expect("actor exists"), &model).expect("actor emits");
 
     assert!(sil.contains("require(OpCovInputCount(guard) > 0 && tx.outputs[gen__next_output_idx].value >= 0);"), "{sil}");
@@ -5087,7 +5122,7 @@ fn lowers_co_spend_and_output_value_in_the_same_expression() {
 fn rejects_co_spent_on_non_cov_id_value() {
     let out_dir = std::env::temp_dir().join(format!("argent-co-spent-type-test-{}", std::process::id()));
     let _ = fs::remove_dir_all(&out_dir);
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         PathBuf::from("test.ag"),
         r#"
             state FooState {
@@ -5106,10 +5141,9 @@ fn rejects_co_spent_on_non_cov_id_value() {
             "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: PathBuf::from("test.ag"), modules: vec![module] };
+    .expect("source resolves");
 
-    let err = emit_build(&program, &out_dir).expect_err("non-covenant-id co-spend must be rejected");
+    let err = emit_resolved_build(&program, &out_dir).expect_err("non-covenant-id co-spend must be rejected");
     assert!(err.to_string().contains(&format!("only available on `{}` values", word::COVENANT_ID)), "unexpected error: {err}");
 
     let _ = fs::remove_dir_all(out_dir);
@@ -5569,7 +5603,7 @@ fn singleton_input_can_authenticate_a_template_also_used_by_an_optional_range() 
 #[test]
 fn selected_app_actor_count_controls_self_consume_template_authentication() {
     let path = PathBuf::from("multi_actor_self_consume.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         path.clone(),
         r#"
             state CounterState {
@@ -5612,9 +5646,9 @@ fn selected_app_actor_count_controls_self_consume_template_authentication() {
             "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let multi_model = Model::from_program_app(&program, "Multi").expect("multi-actor model validates");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, Some("Multi")).expect("model source adapts");
+    let multi_model = Model::from_source_linked(&program_source, &BTreeMap::new()).expect("multi-actor model validates");
     let counter = multi_model.actor("Counter").expect("Counter actor exists");
     let sil = emit_actor(counter, &multi_model).expect("Counter emits for the multi-actor app");
     let actor_sil = actor_sil_for_model(&multi_model);
@@ -5634,7 +5668,8 @@ fn selected_app_actor_count_controls_self_consume_template_authentication() {
     );
     assert!(runtime_state_plan(&artifact, "Counter").is_some());
 
-    let single_model = Model::from_program_app(&program, "Single").expect("single-actor model validates");
+    let program_source = crate::compiler::model::ModelSource::new(&program, Some("Single")).expect("model source adapts");
+    let single_model = Model::from_source_linked(&program_source, &BTreeMap::new()).expect("single-actor model validates");
     let counter = single_model.actor("Counter").expect("Counter actor exists");
     let sil = emit_actor(counter, &single_model).expect("Counter emits for the single-actor app");
     let actor_sil = actor_sil_for_model(&single_model);
@@ -5648,7 +5683,7 @@ fn selected_app_actor_count_controls_self_consume_template_authentication() {
 #[test]
 fn unselected_actors_do_not_shape_selected_app_state() {
     let path = PathBuf::from("app_state_isolation.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         path.clone(),
         r#"
             state SharedState {
@@ -5693,9 +5728,9 @@ fn unselected_actors_do_not_shape_selected_app_state() {
             "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program_app(&program, "CurrentApp").expect("selected app model validates");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, Some("CurrentApp")).expect("model source adapts");
+    let model = Model::from_source_linked(&program_source, &BTreeMap::new()).expect("selected app model validates");
     let actor_sil = actor_sil_for_model(&model);
     let artifact = emit_artifact(&program, &model, &actor_sil).expect("selected app artifact emits");
     let template =
@@ -5944,7 +5979,7 @@ fn stones_delegate_reads_use_length_only_template_witnesses() {
     let _ = fs::remove_dir_all(&out_dir);
 
     let program = crate::compiler::loader::load_program(Path::new("examples/stones/app.ag")).expect("stones example loads");
-    emit_build(&program, &out_dir).expect("stones example builds");
+    emit_resolved_build(&program, &out_dir).expect("stones example builds");
     let player_sil = fs::read_to_string(out_dir.join("sil/Player.sil")).expect("Player.sil exists");
     let league_sil = fs::read_to_string(out_dir.join("sil/League.sil")).expect("League.sil exists");
     let artifact_json = fs::read_to_string(out_dir.join("artifact.json")).expect("artifact json exists");
@@ -6163,8 +6198,7 @@ fn compiler_lowers_injected_deep_forest_cuts() {
             }
         "#;
     let path = PathBuf::from("deep-forest.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("deep-forest app parses");
-    let program = Program { root: path, modules: vec![module] };
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source.to_string()).expect("source resolves");
 
     // The useful family branches live four levels below the forest root.
     // Wrapper branches are deliberately absent from every partial cut;
@@ -6230,7 +6264,9 @@ fn compiler_lowers_injected_deep_forest_cuts() {
         assert!(selectors.is_empty());
         Ok(crafted_plan.clone())
     };
-    let model = Model::from_program_with_route_planner(&program, &injected_planner).expect("injected route plan validates");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source_with_route_planner(&program_source, &BTreeMap::new(), &injected_planner)
+        .expect("injected route plan validates");
 
     let family_a_id = "route_family/SharedState/hub_a".to_string();
     let family_b_id = "route_family/SharedState/hub_b".to_string();
@@ -6255,7 +6291,7 @@ fn compiler_lowers_injected_deep_forest_cuts() {
 #[test]
 fn shared_state_actors_retain_distinct_transitive_cuts() {
     let path = PathBuf::from("actor-route-cuts.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         path.clone(),
         r#"
             state SharedState {
@@ -6303,10 +6339,10 @@ fn shared_state_actors_retain_distinct_transitive_cuts() {
             "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
+    .expect("source resolves");
 
-    let model = Model::from_program(&program).expect("model retains the planned actor cuts");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model retains the planned actor cuts");
 
     assert_eq!(
         model.route_leaves_by_actor["A"],
@@ -6441,9 +6477,9 @@ fn foreign_routes_materialize_the_target_actors_cut() {
         "#;
 
     let path = PathBuf::from("foreign-actor-cuts.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source.to_string()).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let source_sil = emit_actor(model.actor("Source").expect("Source exists"), &model).expect("Source Sil emits");
 
     let actor_layout = source_sil
@@ -6465,10 +6501,10 @@ fn foreign_routes_materialize_the_target_actors_cut() {
 #[test]
 fn typed_actor_layouts_distinguish_local_tables_from_foreign_commitments() {
     let path = PathBuf::from("actor-route-field-kinds.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), toy_chess_source()).expect("toy chess source parses");
-    let program = Program { root: path, modules: vec![module] };
+    let program = crate::compiler::loader::load_inline_program(path.clone(), toy_chess_source()).expect("source resolves");
 
-    let model = Model::from_program(&program).expect("toy chess model validates");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("toy chess model validates");
 
     let mux_fields = model
         .state_lowering("Mux")
@@ -6518,9 +6554,9 @@ fn typed_actor_layouts_distinguish_local_tables_from_foreign_commitments() {
 #[test]
 fn family_table_witnesses_follow_cut_transitions() {
     let path = PathBuf::from("transition-family-witnesses.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), toy_chess_source()).expect("toy chess source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("toy chess model validates");
+    let program = crate::compiler::loader::load_inline_program(path.clone(), toy_chess_source()).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("toy chess model validates");
 
     let player = model.actor("Player").expect("Player exists");
     let enter_mux = player.entries.iter().find(|entry| entry.name == "enter_mux").expect("enter_mux exists");
@@ -6909,9 +6945,9 @@ fn selected_gates_open_from_the_family_table_and_direct_consumes_stay_concrete()
             }
         "#;
     let path = PathBuf::from("selected-family-gate.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source.to_string()).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
 
     let family = model.route_family_for_actor("Pawn").expect("Pawn belongs to the selected family");
     assert!(family.direct_template_actors().is_empty());
@@ -6957,9 +6993,9 @@ fn family_commitments_pack_on_planned_cut_transitions() {
 "#,
     );
     let path = PathBuf::from("family-pack-transition.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.clone()).expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source.clone()).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
 
     let family_id = "route_family/BoardState/mux".to_string();
     assert_eq!(
@@ -6979,10 +7015,10 @@ fn family_commitments_pack_on_planned_cut_transitions() {
 fn route_neutral_state_locals_convert_at_actor_routes() {
     let straight_path = PathBuf::from("examples/route_state_bodies.ag");
     let straight_source = fs::read_to_string(&straight_path).expect("route state body example exists");
-    let straight_module =
-        crate::compiler::syntax::parser::parse_module(straight_path.clone(), straight_source.clone()).expect("example parses");
-    let straight_program = Program { root: straight_path, modules: vec![straight_module] };
-    let straight_model = Model::from_program(&straight_program).expect("example model validates");
+    let straight_program =
+        crate::compiler::loader::load_inline_program(straight_path.clone(), straight_source.clone()).expect("example resolves");
+    let straight_program_source = crate::compiler::model::ModelSource::new(&straight_program, None).expect("model source adapts");
+    let straight_model = Model::from_source(&straight_program_source).expect("example model validates");
     let straight_sil = actor_sil_for_model(&straight_model);
 
     assert!(straight_sil["Lobby"].contains("struct BoardState {"), "{}", straight_sil["Lobby"]);
@@ -7015,9 +7051,10 @@ fn route_neutral_state_locals_convert_at_actor_routes() {
 
     let choice_path = PathBuf::from("examples/route_state_body_choice.ag");
     let choice_source = fs::read_to_string(&choice_path).expect("route state body choice example exists");
-    let choice_module = crate::compiler::syntax::parser::parse_module(choice_path.clone(), choice_source).expect("example parses");
-    let choice_program = Program { root: choice_path, modules: vec![choice_module] };
-    let choice_model = Model::from_program(&choice_program).expect("example model validates");
+    let choice_program =
+        crate::compiler::loader::load_inline_program(choice_path.clone(), choice_source).expect("choice example resolves");
+    let choice_program_source = crate::compiler::model::ModelSource::new(&choice_program, None).expect("model source adapts");
+    let choice_model = Model::from_source(&choice_program_source).expect("example model validates");
     let choice_sil = emit_actor(choice_model.actor("Lobby").expect("Lobby exists"), &choice_model).expect("Lobby Sil emits");
 
     assert!(choice_sil.contains("struct BoardState {"), "{choice_sil}");
@@ -7181,9 +7218,9 @@ fn direct_route_families_are_inferred_without_hints() {
 #[test]
 fn toy_chess_sil_uses_one_level_route_family_shape() {
     let path = PathBuf::from("toy-chess-shape.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), toy_chess_source()).expect("toy chess source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("toy chess model validates");
+    let program = crate::compiler::loader::load_inline_program(path.clone(), toy_chess_source()).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("toy chess model validates");
     let actor_sil = actor_sil_for_model(&model);
 
     let league_sil = actor_sil.get("League").expect("League Sil is emitted");
@@ -7240,7 +7277,7 @@ fn toy_chess_sil_uses_one_level_route_family_shape() {
 #[test]
 fn route_family_state_keeps_downstream_templates() {
     let path = PathBuf::from("route-family-with-downstream-actor.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         path.clone(),
         r#"
             state BoardState {
@@ -7313,9 +7350,9 @@ fn route_family_state_keeps_downstream_templates() {
             "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let actor_sil = actor_sil_for_model(&model);
 
     let mux_sil = actor_sil.get("Mux").expect("Mux Sil is emitted");
@@ -7333,9 +7370,9 @@ fn actor_enum_order_drives_route_table_order() {
         "actor enum MoveActor {\n                Knight;\n                Pawn;\n            }",
     );
     let path = PathBuf::from("toy-chess-selector-order.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source).expect("toy chess source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("reordered selector enum defines route table order");
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("reordered selector enum defines route table order");
     let actor_sil = actor_sil_for_model(&model);
     let artifact = emit_artifact(&program, &model, &actor_sil).expect("artifact emits");
 
@@ -7368,7 +7405,7 @@ fn actor_enum_order_drives_route_table_order() {
 #[test]
 fn gate_less_family_appends_rep_after_selector_variants() {
     let path = PathBuf::from("fixed-selector-table.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         path.clone(),
         r#"
             state BoardState {
@@ -7412,9 +7449,9 @@ fn gate_less_family_appends_rep_after_selector_variants() {
             "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("fixed selector still infers the full enum table");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("fixed selector still infers the full enum table");
     let actor_sil = actor_sil_for_model(&model);
     let artifact = emit_artifact(&program, &model, &actor_sil).expect("artifact emits");
 
@@ -7461,7 +7498,7 @@ fn gate_less_family_appends_rep_after_selector_variants() {
 #[test]
 fn actor_enum_local_drives_selector_domain_and_route_expansion() {
     let path = PathBuf::from("local-actor-enum-selector.ag");
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         path.clone(),
         r#"
             state BoardState {
@@ -7504,9 +7541,9 @@ fn actor_enum_local_drives_selector_domain_and_route_expansion() {
             "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("local actor enum defines a selector domain");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("local actor enum defines a selector domain");
     let actor_sil = actor_sil_for_model(&model);
     let artifact = emit_artifact(&program, &model, &actor_sil).expect("generated Sil compiles");
 
@@ -7569,10 +7606,10 @@ fn actor_enums_over_same_route_table_must_use_one_order() {
             }
         "#;
     let path = PathBuf::from("conflicting-selector-order.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source.to_string()).expect("source resolves");
 
-    let err = Model::from_program(&program).expect_err("conflicting actor enum orders must be rejected");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let err = Model::from_source(&program_source).expect_err("conflicting actor enum orders must be rejected");
     assert!(err.to_string().contains("conflicts with requirement"), "unexpected error: {err}");
 }
 
@@ -7621,10 +7658,10 @@ fn actor_enum_variants_form_a_prefix_of_the_inferred_route_family() {
             }
         "#;
     let path = PathBuf::from("selector-prefix.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source.to_string()).expect("source resolves");
 
-    let model = Model::from_program(&program).expect("selector variants may prefix other family actors");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("selector variants may prefix other family actors");
 
     assert_eq!(model.route_families.len(), 1);
     assert_eq!(model.route_families[0].table_actors, ["Pawn", "Knight", "Mux", "Bishop"]);
@@ -7695,10 +7732,10 @@ fn rejects_actor_enum_variants_with_different_owned_states() {
             }
             "#;
     let path = PathBuf::from("bad-actor-enum.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), artifact_source.to_string()).expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
+    let program = crate::compiler::loader::load_inline_program(path.clone(), artifact_source.to_string()).expect("source resolves");
 
-    let err = Model::from_program(&program).expect_err("mixed actor enum state must be rejected");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let err = Model::from_source(&program_source).expect_err("mixed actor enum state must be rejected");
     assert!(err.to_string().contains("variant `B` owns state `BState`, expected `AState`"), "unexpected error: {err}");
 }
 
@@ -8132,9 +8169,9 @@ fn inline_artifact(name: &str, source: &str) -> Artifact {
 
 fn inline_actor_sil_and_artifact(name: &str, source: &str) -> (BTreeMap<String, String>, Artifact) {
     let path = PathBuf::from(format!("{name}.ag"));
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source.to_string()).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let actor_sil = actor_sil_for_model(&model);
     let artifact = emit_artifact(&program, &model, &actor_sil).expect("artifact emits");
     (actor_sil, artifact)
@@ -8769,9 +8806,9 @@ fn genesis_spawn_groups_must_follow_first_output_order() {
             }
         "#;
     let path = PathBuf::from("test.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source.to_string()).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let sil = emit_actor(model.actor("Launcher").expect("launcher exists"), &model).expect("Launcher emits");
     assert!(sil.contains("require(gen__first_pair_output_idx < gen__second_pair_output_idx);"), "{sil}");
     let actor_sil = actor_sil_for_model(&model);
@@ -9153,7 +9190,8 @@ fn rejects_spawn_covenant_binding_shared_with_source_value() {
 #[test]
 fn rejects_compiler_fixture_with_ambiguous_actor_template_frames() {
     let program = load_fixture_program("template_frame_ambiguity");
-    let model = Model::from_program(&program).expect("fixture model validates");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("fixture model validates");
     let actor_sil = actor_sil_for_model(&model);
 
     let error = emit_artifact(&program, &model, &actor_sil).expect_err("indistinguishable actors must fail artifact construction");
@@ -9205,7 +9243,8 @@ fn normal_multi_actor_app_has_distinct_template_frames() {
 
 fn emit_fixture(case: &str, actor: &str) -> (String, Artifact) {
     let program = load_fixture_program(case);
-    let model = Model::from_program(&program).expect("fixture model validates");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("fixture model validates");
     let actor = model.actor(actor).expect("fixture actor exists");
     let sil = emit_actor(actor, &model).expect("fixture actor emits");
     let actor_sil = actor_sil_for_model(&model);
@@ -9213,16 +9252,16 @@ fn emit_fixture(case: &str, actor: &str) -> (String, Artifact) {
     (sil, artifact)
 }
 
-fn load_fixture_program(case: &str) -> Program {
+fn load_fixture_program(case: &str) -> ResolvedModules {
     let path = PathBuf::from("tests/fixtures/emit").join(case).join("app.ag");
     let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(&path)).expect("fixture source exists");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source).expect("fixture source parses");
-    Program { root: path, modules: vec![module] }
+    crate::compiler::loader::load_inline_program(path, source).expect("fixture source resolves")
 }
 
 fn emit_fixture_manifest(case: &str) -> serde_json::Value {
     let program = load_fixture_program(case);
-    let model = Model::from_program(&program).expect("fixture model validates");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("fixture model validates");
     serde_json::from_str(&emit_manifest(&program, &model)).expect("fixture manifest is valid JSON")
 }
 
@@ -9237,9 +9276,9 @@ fn assert_fixture_artifact(case: &str, artifact: &Artifact) {
 fn emit_selected_fixture(path: &str, app: &str, actor: &str) -> (String, Artifact) {
     let path = PathBuf::from(path);
     let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(&path)).expect("fixture source exists");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source).expect("fixture source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program_app(&program, app).expect("selected fixture model validates");
+    let program = crate::compiler::loader::load_inline_program(path, source).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, Some(app)).expect("model source adapts");
+    let model = Model::from_source_linked(&program_source, &BTreeMap::new()).expect("selected fixture model validates");
     let actor = model.actor(actor).expect("selected fixture actor exists");
     let sil = emit_actor(actor, &model).expect("selected fixture actor emits");
     let actor_sil = actor_sil_for_model(&model);
@@ -9249,9 +9288,9 @@ fn emit_selected_fixture(path: &str, app: &str, actor: &str) -> (String, Artifac
 
 fn emit_inline_error(source: &str) -> ArgentError {
     let path = PathBuf::from("test.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source.to_string()).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     for actor in &model.actors {
         if let Err(err) = emit_actor(actor, &model) {
             return err;
@@ -9262,18 +9301,18 @@ fn emit_inline_error(source: &str) -> ArgentError {
 
 fn emit_inline_actor(source: &str, actor_name: &str) -> String {
     let path = PathBuf::from("inline-emission.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string()).expect("source parses");
-    let program = Program { root: path, modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    let program = crate::compiler::loader::load_inline_program(path.clone(), source.to_string()).expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let actor = model.actor(actor_name).expect("actor exists");
     emit_actor(actor, &model).expect("actor emits")
 }
 
 fn parse_and_validate(source: &str) -> Result<()> {
     let path = PathBuf::from("test.ag");
-    let module = crate::compiler::syntax::parser::parse_module(path.clone(), source.to_string())?;
-    let program = Program { root: path, modules: vec![module] };
-    Model::from_program(&program).map(|_| ())
+    let program = crate::compiler::loader::load_inline_program(path, source.to_string())?;
+    let program_source = crate::compiler::model::ModelSource::new(&program, None)?;
+    Model::from_source(&program_source).map(|_| ())
 }
 
 fn toy_chess_source() -> String {
@@ -9399,7 +9438,7 @@ fn toy_chess_source() -> String {
 
 #[test]
 fn artifact_codec_uses_compiled_sil_dispatch_tags() {
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         PathBuf::from("test.ag"),
         r#"
             state FooState {
@@ -9424,9 +9463,9 @@ fn artifact_codec_uses_compiled_sil_dispatch_tags() {
             "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: PathBuf::from("test.ag"), modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let actor = model.actor("Foo").expect("actor exists");
     let actor_sil = actor_sil_for_model(&model);
     let artifact = emit_artifact(&program, &model, &actor_sil).expect("artifact emits");
@@ -9464,7 +9503,7 @@ fn artifact_codec_uses_compiled_sil_dispatch_tags() {
 
 #[test]
 fn sil_signature_builtins_pass_through() {
-    let module = crate::compiler::syntax::parser::parse_module(
+    let program = crate::compiler::loader::load_inline_program(
         PathBuf::from("test.ag"),
         r#"
             state AuthState {
@@ -9492,9 +9531,9 @@ fn sil_signature_builtins_pass_through() {
             "#
         .to_string(),
     )
-    .expect("source parses");
-    let program = Program { root: PathBuf::from("test.ag"), modules: vec![module] };
-    let model = Model::from_program(&program).expect("model validates");
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
     let actor_sil = actor_sil_for_model(&model);
     let sil = actor_sil.get("Auth").expect("Auth Sil exists");
 
@@ -9507,11 +9546,20 @@ fn sil_signature_builtins_pass_through() {
 #[test]
 fn manifest_uses_relative_paths_when_possible() {
     let cwd = std::env::current_dir().expect("current dir");
-    let mut program = test_program();
-    program.root = cwd.join("examples/tickets.ag");
-    program.modules[0].path = cwd.join("examples/tickets.ag");
-    program.modules[0].actors[0].entries.clear();
-    let model = Model::from_program(&program).expect("model validates");
+    let program = crate::compiler::loader::load_inline_program(
+        cwd.join("examples/tickets.ag"),
+        r#"
+            state PlayerState {}
+            state GameState {}
+            actor Player owns PlayerState {}
+            actor Game owns GameState {}
+            app Test { actor Player; actor Game; }
+        "#
+        .to_string(),
+    )
+    .expect("source resolves");
+    let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+    let model = Model::from_source(&program_source).expect("model validates");
 
     let manifest = emit_manifest(&program, &model);
 
@@ -9525,26 +9573,6 @@ fn generated_snake_suffixes_preserve_acronym_runs() {
     assert_eq!(to_snake("MinterProxy"), "minter_proxy");
     assert_eq!(to_snake("KCC20"), "kcc20");
     assert_eq!(to_snake("KCC20Minter"), "kcc20_minter");
-}
-
-fn assert_duplicate_top_level_error(err: &ArgentError, kind: &str, name: &str) {
-    let message = err.to_string();
-    assert!(message.contains(&format!("duplicate top-level {kind} `{name}`")), "unexpected error: {err}");
-    assert!(message.contains("second.ag"), "expected duplicate path in error: {err}");
-    assert!(message.contains("test.ag"), "expected first declaration path in error: {err}");
-}
-
-fn empty_module(path: &str) -> Module {
-    Module {
-        path: PathBuf::from(path),
-        imports: Vec::new(),
-        consts: Vec::new(),
-        states: Vec::new(),
-        functions: Vec::new(),
-        actors: Vec::new(),
-        actor_enums: Vec::new(),
-        apps: Vec::new(),
-    }
 }
 
 fn actor_sil_for_model(model: &Model<'_>) -> BTreeMap<String, String> {
@@ -9618,57 +9646,6 @@ fn subject_label(subject: &HiddenParamSubjectArtifact) -> &str {
         HiddenParamSubjectArtifact::TemplateSelector { selector } => selector,
         HiddenParamSubjectArtifact::StateExpansion { memory_state, .. } => memory_state,
     }
-}
-
-fn test_program() -> Program {
-    Program {
-        root: PathBuf::from("test.ag"),
-        modules: vec![Module {
-            path: PathBuf::from("test.ag"),
-            imports: Vec::new(),
-            consts: Vec::new(),
-            states: vec![
-                StateDecl { name: "PlayerState".to_string(), fields: Vec::new(), expansion: None },
-                StateDecl { name: "GameState".to_string(), fields: Vec::new(), expansion: None },
-            ],
-            functions: Vec::new(),
-            actors: vec![
-                ActorDecl {
-                    name: "Player".to_string(),
-                    state: "PlayerState".to_string(),
-                    functions: Vec::new(),
-                    entries: vec![EntryDecl {
-                        kind: EntryKind::Leader,
-                        name: "step".to_string(),
-                        params: Vec::new(),
-                        consumes: Vec::new(),
-                        observes: Vec::new(),
-                        spawns: Vec::new(),
-                        emits: EmitSpec::Outputs(vec![EmitOutput {
-                            name: "next".to_string(),
-                            actors: vec!["Player".to_string()],
-                            cardinality: Cardinality::One,
-                            auth_index: 0,
-                        }]),
-                        body: EntryBody::default(),
-                        routes: Vec::new(),
-                        terminal_route_sets: Vec::new(),
-                    }],
-                },
-                ActorDecl { name: "Game".to_string(), state: "GameState".to_string(), functions: Vec::new(), entries: Vec::new() },
-            ],
-            actor_enums: Vec::new(),
-            apps: vec![AppDecl { name: "Test".to_string(), actors: vec!["Player".to_string(), "Game".to_string()] }],
-        }],
-    }
-}
-
-fn set_entry_body(entry: &mut EntryDecl, source: &str) {
-    let body = EntryBody::new(source).expect("test entry body parses");
-    let analysis = crate::compiler::syntax::body::routes::analyze_entry_routes(&body).expect("test entry routes analyze");
-    entry.body = body;
-    entry.routes = analysis.routes;
-    entry.terminal_route_sets = analysis.terminal_route_sets;
 }
 
 fn resolved_constructed_actor(route: &ResolvedRoute) -> &str {

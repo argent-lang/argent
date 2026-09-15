@@ -124,7 +124,7 @@ Example: a mint controller observes the concrete `MinterProxy` and `KCC20`
 actors from the KCC20 asset app.
 
 ```rust
-import app KCC20Asset from "./kcc20_asset.ag";
+import "./kcc20_asset.ag";
 
 actor Minter owns MinterState {
     entry mint(...)

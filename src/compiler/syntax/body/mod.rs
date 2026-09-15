@@ -179,15 +179,20 @@ impl EntryStatement {
 #[derive(Debug, Clone)]
 pub(crate) struct EntryLocalDecl {
     pub(crate) binding: EntryBinding,
-    /// The source type and any following declaration qualifiers.
-    pub(crate) declared_type: Span,
     pub(crate) initializer: Option<Span>,
 }
 
 /// One lexically scoped value introduced by ordinary Sil syntax.
+/// Represents a variable binding inside an entry body
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EntryBinding {
     pub(crate) name: String,
+    /// Authored binding/type positions let resolution distinguish declarations
+    /// from value references without reconstructing or changing the source.
+    pub(crate) name_span: Span,
+    /// Span covering the written type and trailing qualifiers, e.g. `byte[32] constant`.
+    /// None for loop bindings, whose type is implicitly `int`.
+    pub(crate) type_span: Option<Span>,
     pub(crate) source_type: String,
     /// Inner state when the declared type is a scalar `actor_type<State>`.
     pub(crate) actor_type_state: Option<String>,
@@ -385,7 +390,13 @@ impl EntryStatementParser<'_> {
         } else if self.cursor.consume_ident(word::FOR) {
             self.expect_symbol('(')?;
             let binding = match self.cursor.current().kind.clone() {
-                TokenKind::Ident(name) => EntryBinding { name, source_type: "int".to_string(), actor_type_state: None },
+                TokenKind::Ident(name) => EntryBinding {
+                    name,
+                    name_span: self.cursor.current().span,
+                    type_span: None,
+                    source_type: "int".to_string(),
+                    actor_type_state: None,
+                },
                 _ => return Err(self.error("expected loop binding identifier")),
             };
             let header = self.cursor.take_balanced_after_open('(', ')').ok_or_else(|| self.error("unterminated `(` group"))?;
@@ -651,11 +662,6 @@ struct ParsedBindingType {
     actor_type_state: Option<String>,
 }
 
-struct ParsedVariableBinding {
-    binding: EntryBinding,
-    declared_type: Span,
-}
-
 impl<'a> PlainBindingParser<'a> {
     fn new(body: &'a EntryBody, tokens: &'a [Token]) -> Self {
         Self { body, tokens, pos: 0 }
@@ -726,44 +732,53 @@ impl<'a> PlainBindingParser<'a> {
         if self.consume_symbol(',') {
             let second = self.parse_typed_binding()?;
             self.consume_symbol('=').then_some(())?;
-            return Some(ParsedPlain::Bindings { bindings: vec![first.binding, second], destructuring: None });
+            return Some(ParsedPlain::Bindings { bindings: vec![first, second], destructuring: None });
         }
         if self.consume_symbol('=') {
-            return self.remaining_initializer_span().map(|initializer| {
-                ParsedPlain::Local(EntryLocalDecl {
-                    binding: first.binding,
-                    declared_type: first.declared_type,
-                    initializer: Some(initializer),
-                })
-            });
+            return self
+                .remaining_initializer_span()
+                .map(|initializer| ParsedPlain::Local(EntryLocalDecl { binding: first, initializer: Some(initializer) }));
         }
         self.check_symbol(';').then_some(())?;
-        Some(ParsedPlain::Local(EntryLocalDecl { binding: first.binding, declared_type: first.declared_type, initializer: None }))
+        Some(ParsedPlain::Local(EntryLocalDecl { binding: first, initializer: None }))
     }
 
-    fn parse_variable_binding(&mut self) -> Option<ParsedVariableBinding> {
+    fn parse_variable_binding(&mut self) -> Option<EntryBinding> {
         let declared_type_start = self.current()?.span.start;
         let ty = self.parse_type()?;
         while self.consume_ident("constant") {}
         let declared_type_end = self.tokens.get(self.pos.checked_sub(1)?)?.span.end;
+        let name_span = self.current()?.span;
         let name = self.take_ident()?;
-        Some(ParsedVariableBinding {
-            binding: EntryBinding { name, source_type: ty.source, actor_type_state: ty.actor_type_state },
-            declared_type: Span { start: declared_type_start, end: declared_type_end },
+        Some(EntryBinding {
+            name,
+            name_span,
+            type_span: Some(Span { start: declared_type_start, end: declared_type_end }),
+            source_type: ty.source,
+            actor_type_state: ty.actor_type_state,
         })
     }
 
     fn parse_typed_binding(&mut self) -> Option<EntryBinding> {
+        let start = self.current()?.span.start;
         let ty = self.parse_type()?;
+        let end = self.tokens.get(self.pos.checked_sub(1)?)?.span.end;
+        let name_span = self.current()?.span;
         let name = self.take_ident()?;
-        Some(EntryBinding { name, source_type: ty.source, actor_type_state: ty.actor_type_state })
+        Some(EntryBinding {
+            name,
+            name_span,
+            type_span: Some(Span { start, end }),
+            source_type: ty.source,
+            actor_type_state: ty.actor_type_state,
+        })
     }
 
     fn parse_type(&mut self) -> Option<ParsedBindingType> {
         let start = self.current()?.span.start;
-        let base = self.take_ident()?;
+        let base = self.take_qualified_ident()?;
         let actor_type_state = if base == word::ACTOR_TYPE && self.consume_symbol('<') {
-            let state = self.take_ident()?;
+            let state = self.take_qualified_ident()?;
             self.consume_symbol('>').then_some(())?;
             Some(state)
         } else {
@@ -820,6 +835,17 @@ impl<'a> PlainBindingParser<'a> {
         };
         let name = name.clone();
         self.pos += 1;
+        Some(name)
+    }
+
+    /// Same as [take_ident], with optional namespace qualification.
+    fn take_qualified_ident(&mut self) -> Option<String> {
+        let mut name = self.take_ident()?;
+        while self.consume_symbol(':') {
+            self.consume_symbol(':').then_some(())?;
+            name.push_str("::");
+            name.push_str(&self.take_ident()?);
+        }
         Some(name)
     }
 
