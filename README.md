@@ -120,9 +120,39 @@ compilation. Argent does not use Silverscript covenant macros.
 ## Language at a glance
 
 ```rust
+state EventState {
+    int remaining_tickets;
+    int price;
+}
+
 state TicketState {
     byte[32] owner;
     int units;
+}
+
+actor Event owns EventState {
+    entry buy(byte[32] buyer) emits {
+        event: Event,
+        ticket: Ticket,
+    } {
+        require(remaining_tickets > 0);
+        require(event.value == self.value + price);
+        unrestricted(ticket.value);
+
+        EventState next_event = {
+            remaining_tickets: remaining_tickets - 1,
+            price: price,
+        };
+        TicketState new_ticket = {
+            owner: buyer,
+            units: 1,
+        };
+
+        become {
+            event <- Event(next_event),
+            ticket <- Ticket(new_ticket),
+        };
+    }
 }
 
 actor Ticket owns TicketState {
@@ -141,9 +171,13 @@ actor Ticket owns TicketState {
 }
 
 app Tickets {
+    actor Event;
     actor Ticket;
 }
 ```
+
+One `Event::buy` transaction advances the Event actor and creates a separately
+owned Ticket actor. The Ticket can later be transferred independently.
 
 Argent uses type-first syntax for declarations and callable parameters.
 Bindings put the local name on the left. See
