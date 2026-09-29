@@ -130,8 +130,9 @@ state TicketState {
 }
 
 actor Event owns EventState {
+    entry buy(byte[32] buyer)
     // The `emits` clause declares the complete actor-output shape for this entry.
-    entry buy(byte[32] buyer) emits {
+    emits {
         event: Event,
         ticket: Ticket,
     } {
