@@ -158,38 +158,10 @@ must continue to work without a code change.
 
 **Area:** `argent-rt`, launch APIs, and audit tools.
 
-**Context:** One genesis output group launches one covenant. The covenant ID
-depends on the authorizing funding outpoint and the ordered outputs. One
-transaction can launch more than one covenant.
-
-An auditor can find a live covenant UTXO without knowing its launch transaction
-or initial actor states.
-
-Argent has no standard proof package that explains how a live covenant ID was
-launched. An auditor must collect and check the launch data manually.
-
-**Follow-up:** Support one launch proof for each genesis covenant group. A
-transaction that launches multiple covenants can have multiple proofs.
-
-The proof must contain:
-
-- The authorizing funding outpoint.
-- The covenant ID that the system calculates from the outpoint and the ordered
-  launch outputs.
-- Each initial actor state.
-- The redeem-script preimage for each output. This preimage contains the
-  template prefix, the encoded state, and the template suffix.
-- The related P2SH script public key for each output.
-
-Verification must prove:
-
-- The actor state encodes to the specified redeem script.
-- The redeem script hashes to the launch-output script public key.
-- The ordered outputs and the authorizing outpoint produce the specified
-  covenant ID.
-
-This proof lets an auditor confirm which contracts and initial states started
-the live covenant.
+**Follow-up:** Implement the layered composition and verification plan in
+[Genesis proof tooling](genesis-proof-tooling.md). It covers the consensus
+preimage, Silverscript contracts and physical state, Argent actors and authored
+state, and the source dependency closure.
 
 ## KCC20 bootstrap with `spawns`
 
