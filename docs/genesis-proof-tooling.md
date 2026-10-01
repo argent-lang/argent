@@ -155,8 +155,11 @@ A portable source package must therefore identify:
 - every source module in the compilation closure;
 - linked application artifacts, unless their complete source closures are
   included instead;
-- the Argent compiler version;
-- the Silverscript compiler version used by Argent.
+- the Argent compiler version.
+
+The selected Argent compiler determines its Silverscript dependency. The
+generated Sil ABI records the Silverscript compiler version, so the source
+package does not need to declare it separately.
 
 Source verification compiles this closed input and compares the produced
 artifact identities with the artifacts used by the Argent proof. Repository
@@ -256,7 +259,7 @@ It should:
 - call Kaspa's consensus `covenant_id` function directly;
 - expose separate operations to compute the ID and compare it with an external
   expected ID;
-- return precise errors for an empty proof, unordered or repeated indices, a
+- return precise errors for an empty proof, non-increasing output indices, a
   mismatched package claim, and a mismatched external ID;
 - avoid serialization, Argent artifacts, Silverscript ABI data, source loading,
   and command-line work.

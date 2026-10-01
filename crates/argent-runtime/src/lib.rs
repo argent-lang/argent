@@ -11,6 +11,7 @@
 //! split out later if the artifact model becomes generic enough.
 
 mod context;
+mod genesis_proof;
 mod resolve;
 pub mod stdlib;
 
@@ -21,6 +22,7 @@ pub use context::{
     ActorInput, ActorPath, ContextInput, ContextOutput, EntryArgs, EntryCall, InputSigScript, OrdinaryInput, OutputCovenant,
     OutputOwner, OutputState, StateContext, TxContext, state_with, try_state_with,
 };
+pub use genesis_proof::{ConsensusGenesisProof, GenesisProofError, IndexedGenesisOutput};
 pub use silverscript_abi::ArtifactValue;
 
 use argent_artifact::{
