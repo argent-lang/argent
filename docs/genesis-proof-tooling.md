@@ -70,21 +70,32 @@ A Silverscript proof explains each P2SH output in the consensus preimage:
 
 ```rust
 struct SilGenesisProof {
-    abi: SilAbiArtifact,
+    abis: Vec<SilAbiArtifact>,
+    authorizing_outpoint: TransactionOutpoint,
+    claimed_covenant_id: Hash,
     outputs: Vec<SilGenesisOutput>,
 }
 
 struct SilGenesisOutput {
     index: u32,
     value: u64,
+    abi_index: usize,
     contract: String,
-    runtime_state: ArtifactValue,
+    runtime_state: BTreeMap<String, ArtifactValue>,
 }
 ```
 
+ABI units retain caller-supplied order. Each output selects one unit by its
+zero-based `abi_index` within the proof.
+
+The proof preserves each original ABI compilation unit. It never merges their
+global struct tables. This permits independent ABI units to use the same
+contract or struct names and avoids changing the meaning of contract-local
+`State` references.
+
 Verification performs these steps for each output:
 
-1. Find the compiled contract in the ABI.
+1. Find the selected ABI unit and compiled contract.
 2. Encode the complete physical runtime state with the ABI.
 3. Insert the encoded state into the compiled contract frame.
 4. Fold the redeem script into its P2SH script public key.
@@ -94,8 +105,8 @@ The result is a `ConsensusGenesisProof`. The consensus layer then computes the
 covenant ID.
 
 The Silverscript proof is self-contained. Cross-app template constants are
-already present in the compiled contracts. The proof supplies complete physical
-runtime state, including route values.
+already present in the compiled contracts. The proof supplies complete
+physical runtime state, including route values.
 
 This layer checks that the runtime state matches the Silverscript ABI. It does
 not prove that a route value expresses the intended Argent route plan. A user
@@ -271,3 +282,25 @@ and prove that each change affects verification.
 
 This leg establishes the consensus meaning of every later proof without making
 any decision about the portable package format.
+
+## Second implementation leg
+
+The second commit adds `genesis_proof/sil.rs`.
+
+It should:
+
+- preserve independent Sil ABI compilation units in a vector;
+- check each ABI without merging its contracts or structs with another ABI;
+- encode complete physical runtime state and insert it into the checked
+  contract frame;
+- fold each redeem script into P2SH and produce a
+  `ConsensusGenesisProof`;
+- share contract-frame materialization with `TxBuilder`;
+- expose composition, internal consistency, and external-ID verification;
+- avoid serialization, Argent-authored state, source loading, and command-line
+  work.
+
+Tests must include two independent ABI units with the same contract and struct
+names but different definitions. They must also cover an invalid ABI, unknown
+ABI and contract references, malformed runtime state, state mutation, and an
+external covenant-ID mismatch.

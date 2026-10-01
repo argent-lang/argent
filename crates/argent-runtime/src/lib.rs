@@ -22,7 +22,9 @@ pub use context::{
     ActorInput, ActorPath, ContextInput, ContextOutput, EntryArgs, EntryCall, InputSigScript, OrdinaryInput, OutputCovenant,
     OutputOwner, OutputState, StateContext, TxContext, state_with, try_state_with,
 };
-pub use genesis_proof::{ConsensusGenesisProof, GenesisProofError, IndexedGenesisOutput};
+pub use genesis_proof::{
+    ConsensusGenesisProof, GenesisProofError, IndexedGenesisOutput, SilGenesisOutput, SilGenesisProof, SilGenesisProofError,
+};
 pub use silverscript_abi::ArtifactValue;
 
 use argent_artifact::{
@@ -48,7 +50,7 @@ use kaspa_txscript::{
     script_builder::ScriptBuilderError,
 };
 use kaspa_txscript_errors::TxScriptError;
-use silverscript_abi::{CodecError, decode_hex, encode_runtime_state_script, encode_struct_payload};
+use silverscript_abi::{CodecError, decode_hex, encode_struct_payload};
 use thiserror::Error;
 
 pub type BuilderResult<T> = std::result::Result<T, BuilderError>;
@@ -749,14 +751,7 @@ impl<'a> TxBuilder<'a> {
         source_state: BTreeMap<String, ArtifactValue>,
     ) -> BuilderResult<Vec<u8>> {
         let state = self.runtime_state_values(contract_ref.artifact, contract_ref.name, contract_ref.contract, source_state)?;
-        let state_script = encode_runtime_state_script(&contract_ref.artifact.sil_abi, &contract_ref.contract.runtime_state, &state)?;
-        let compiled = &contract_ref.contract.compiled;
-        let (prefix, _, suffix) =
-            compiled.script_parts(&compiled.bytecode).expect("Sil ABI state span was verified when the artifact was attached");
-        let mut script = prefix.to_vec();
-        script.extend_from_slice(&state_script);
-        script.extend_from_slice(suffix);
-        Ok(script)
+        Ok(genesis_proof::materialize_redeem_script(&contract_ref.artifact.sil_abi, contract_ref.contract, &state)?)
     }
 
     fn script_public_key_for_actor(
