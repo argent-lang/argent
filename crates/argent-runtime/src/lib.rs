@@ -23,7 +23,8 @@ pub use context::{
     OutputOwner, OutputState, StateContext, TxContext, state_with, try_state_with,
 };
 pub use genesis_proof::{
-    ConsensusGenesisProof, GenesisProofError, IndexedGenesisOutput, SilGenesisOutput, SilGenesisProof, SilGenesisProofError,
+    ArgentGenesisOutput, ArgentGenesisProof, ArgentGenesisProofError, ConsensusGenesisProof, GenesisProofError, IndexedGenesisOutput,
+    SilGenesisOutput, SilGenesisProof, SilGenesisProofError,
 };
 pub use silverscript_abi::ArtifactValue;
 
@@ -647,6 +648,7 @@ struct HiddenArgContexts<'a> {
 }
 
 impl<'a> ArtifactBundle<'a> {
+    /// Check the primary artifact and create a bundle under its canonical app alias.
     pub fn new(primary: &'a Artifact) -> BuilderResult<Self> {
         let primary_alias = artifact_app_alias(&primary.app);
         Self::named(primary_alias, primary)
@@ -664,6 +666,7 @@ impl<'a> ArtifactBundle<'a> {
         Ok(Self { primary_alias: alias, apps })
     }
 
+    /// Check and attach an artifact under its canonical app alias.
     pub fn with_app(mut self, alias: impl Into<String>, artifact: &'a Artifact) -> BuilderResult<Self> {
         let alias = alias.into();
         let expected = artifact_app_alias(&artifact.app);
@@ -688,6 +691,7 @@ impl<'a> ArtifactBundle<'a> {
         self.apps.get(alias).copied().ok_or_else(|| BuilderError::UnknownAppAlias(alias.to_string()))
     }
 
+    /// Return the primary app's checked artifact.
     fn primary(&self) -> &'a Artifact {
         self.apps.get(&self.primary_alias).copied().expect("bundle contains its primary app")
     }
@@ -703,6 +707,7 @@ impl<'a> TxBuilder<'a> {
         Self::from_bundle(&bundle)
     }
 
+    /// Create a builder after checking dependency identities and imported actor interfaces.
     pub fn from_bundle(bundle: &ArtifactBundle<'a>) -> BuilderResult<Self> {
         let builder = Self { bundle: bundle.clone() };
         builder.validate_bundle_dependencies()?;
@@ -745,6 +750,7 @@ impl<'a> TxBuilder<'a> {
         Ok(())
     }
 
+    /// Materialize authored state and insert it into the compiled contract frame.
     fn redeem_script_for_contract(
         &self,
         contract_ref: ContractRef<'a>,
@@ -1038,6 +1044,7 @@ impl<'a> TxBuilder<'a> {
         self.observed_contract_ref(primary_artifact, app, contract)
     }
 
+    /// Find a compiled contract by its exact name in this artifact only.
     fn contract_in_artifact(&self, artifact: &'a Artifact, name: &str) -> BuilderResult<&'a SilContractArtifact> {
         artifact.sil_abi.contract(name).ok_or_else(|| BuilderError::UnknownActor(name.to_string()))
     }
@@ -1427,6 +1434,7 @@ impl<'a> TxBuilder<'a> {
         }
     }
 
+    /// Convert authored state to physical fields, hashing expansions and deriving route commitments.
     fn runtime_state_values(
         &self,
         artifact: &'a Artifact,

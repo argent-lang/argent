@@ -34,6 +34,8 @@ use kaspa_txscript::{
 };
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 
+mod genesis_proof;
+
 static ARTIFACT_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn artifact_verification(error: &BuilderError) -> (&str, &ArtifactVerificationError) {

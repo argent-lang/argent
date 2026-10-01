@@ -123,31 +123,43 @@ An Argent proof starts from actor names and authored state:
 
 ```rust
 struct ArgentGenesisProof {
-    artifacts: ArgentArtifactBundle,
+    bundle: ArtifactBundle,
+    authorizing_outpoint: TransactionOutpoint,
+    claimed_covenant_id: Hash,
     outputs: Vec<ArgentGenesisOutput>,
 }
 
 struct ArgentGenesisOutput {
     index: u32,
     value: u64,
-    actor: ActorPath,
-    authored_state: ArtifactValue,
+    actor: String,
+    authored_state: BTreeMap<String, ArtifactValue>,
 }
 ```
+
+The runtime API uses the existing `ArtifactBundle`. It borrows the artifacts,
+as `TxBuilder` does. An owned portable package is a later layer.
+
+One proof describes one genesis group from the bundle's primary app. Actor
+names resolve only in that app, and outputs may repeat an actor. Dependency
+actors cannot join this group. Dependencies supply the checked templates and
+interfaces needed by the primary app.
 
 Verification performs these steps:
 
 1. Check the primary artifact and its dependency artifacts.
-2. Resolve each actor in the artifact bundle.
+2. Resolve each actor in the primary app.
 3. Validate and encode its authored state.
 4. Derive expansion digests and compiler-owned route state.
 5. Produce the corresponding `SilGenesisOutput`.
 6. Delegate script construction and covenant-ID calculation to the lower
    layers.
 
-The existing `TxBuilder::genesis_output` path already performs the central
-authored-to-physical conversion. The proof implementation should extract or
-reuse that path. It must not create a second route-state encoder.
+`ArtifactBundle` checks artifact consistency when each artifact is attached.
+`TxBuilder::from_bundle` checks the dependency IDs and imported interfaces.
+The proof uses the same authored-to-physical state materializer as
+`TxBuilder::genesis_output`, then delegates to `SilGenesisProof`. It does not
+create a second route-state encoder.
 
 An Argent verifier must derive all compiler-owned values itself. It must not
 accept route values from the proof as authoritative. If the serialized package
@@ -176,17 +188,18 @@ Source verification compiles this closed input and compares the produced
 artifact identities with the artifacts used by the Argent proof. Repository
 paths or network lookups must not silently supply missing dependencies.
 
-The core Rust proof API should accept an already compiled and checked artifact
-bundle. Source collection and module loading belong in a higher orchestration
-layer:
+The core Rust proof API accepts a compiled artifact bundle. Source collection
+and module loading belong in a higher orchestration layer:
 
 ```rust
-fn compose_argent_genesis_proof(
-    bundle: &CompiledAppBundle,
-    authorizing_outpoint: TransactionOutpoint,
-    outputs: &[ArgentGenesisOutput],
-) -> Result<ArgentGenesisProof>;
+let bundle = compiled.runtime_bundle()?;
+let proof = ArgentGenesisProof::compose(&bundle, authorizing_outpoint, outputs)?;
+proof.verify(node_covenant_id)?;
 ```
+
+Compiler callers can obtain this runtime view with
+`CompiledAppBundle::runtime_bundle()`. The proof layer itself has no compiler
+dependency.
 
 This separation lets callers verify the same genesis through source, Argent
 artifacts, or a lower-level Silverscript ABI.
@@ -304,3 +317,27 @@ Tests must include two independent ABI units with the same contract and struct
 names but different definitions. They must also cover an invalid ABI, unknown
 ABI and contract references, malformed runtime state, state mutation, and an
 external covenant-ID mismatch.
+
+## Third implementation leg
+
+The third commit adds `genesis_proof/ag.rs`.
+
+It should:
+
+- use the existing runtime `ArtifactBundle` and check its dependency closure;
+- keep every genesis actor within the primary app;
+- accept authored state maps, including nested expansion preimages;
+- derive generated route fields and expansion digests through the existing
+  `TxBuilder` state materializer;
+- produce one `SilGenesisProof` using the primary app's embedded ABI;
+- retain the published covenant-ID claim when lowering, and compare it with
+  an independently supplied ID during verification;
+- leave portable package ownership, serialization, source loading, and
+  command-line work for later legs.
+
+Compiled-app tests should compare the proof with an executed genesis
+transaction and with `TxBuilder::genesis_output`. They must cover repeated
+actors, non-contiguous output indices, generated route context, expansion
+digests, changed authored states and actors, malformed states, rejected
+caller-supplied route fields, missing or mismatched dependencies, and a
+foreign actor in the genesis group.
