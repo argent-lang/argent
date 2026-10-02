@@ -1,0 +1,30 @@
+{
+  "authorizing_outpoint": {
+    "transactionId": "6161616161616161616161616161616161616161616161616161616161616161",
+    "index": 4
+  },
+  "outputs": [
+    {
+      "index": 2,
+      "value": 1000,
+      "actor": "ReserveAsset",
+      "authored_state": {
+        "owner_kind": { "kind": "int", "value": 0 },
+        "owner_id": { "kind": "bytes", "value": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0] },
+        "policy": { "kind": "object", "value": { "nonce": { "kind": "int", "value": 7 } } },
+        "balance": { "kind": "int", "value": 100 }
+      }
+    },
+    {
+      "index": 5,
+      "value": 2000,
+      "actor": "WalletAsset",
+      "authored_state": {
+        "owner_kind": { "kind": "int", "value": 0 },
+        "owner_id": { "kind": "bytes", "value": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0] },
+        "policy": { "kind": "object", "value": { "nonce": { "kind": "int", "value": 8 } } },
+        "balance": { "kind": "int", "value": 200 }
+      }
+    }
+  ]
+}

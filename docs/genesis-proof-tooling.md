@@ -270,9 +270,9 @@ A later source package can support reproducible compilation. It requires exact
 compiler versions and the complete source and dependency closure. That format
 is separate from this artifact package.
 
-## Planned command-line shape
+## Command-line tools
 
-The command-line interface can expose the same layers:
+Compose an Argent package from source and an authored genesis definition:
 
 ```text
 argentc genesis compose \
@@ -280,26 +280,100 @@ argentc genesis compose \
   --app Tickets \
   --definition genesis.json \
   --out genesis-proof.json
-
-argentc genesis verify \
-  app.ag \
-  --app Tickets \
-  --proof genesis-proof.json \
-  --covenant-id <node-provided-id>
 ```
 
-Artifact and Silverscript modes can start at lower layers:
+The source file must declare exactly one app unless `--app` selects it. Imports
+supply the complete source dependency closure. Compilation uses a temporary
+build directory; it does not write build files into the source tree.
+
+Existing artifacts can supply the same compilation result:
+
+```text
+argentc genesis compose \
+  --artifact build/launcher/artifact.json \
+  --dependency build/launcher/apps/ChildApp/artifact.json \
+  --definition genesis.json \
+  --out genesis-proof.json
+```
+
+Source and artifact inputs are mutually exclusive. Repeat `--dependency` for
+all dependency artifacts. The runtime checks their app names and artifact IDs;
+the CLI does not accept aliases or fetch missing artifacts.
+
+The definition has no covenant-ID claim:
+
+```rust
+struct ArgentGenesisDefinition {
+    authorizing_outpoint: TransactionOutpoint,
+    outputs: Vec<ArgentGenesisOutput>,
+}
+```
+
+Output values are KAS values in sompi units. Output indices must be strictly
+increasing; the CLI does not sort them. Authored state uses the tagged
+`ArtifactValue` JSON format. For example:
+
+```json
+{
+  "authorizing_outpoint": {
+    "transactionId": "6161616161616161616161616161616161616161616161616161616161616161",
+    "index": 4
+  },
+  "outputs": [
+    {
+      "index": 2,
+      "value": 1000,
+      "actor": "Counter",
+      "authored_state": {
+        "count": { "kind": "int", "value": 7 }
+      }
+    }
+  ]
+}
+```
+
+Composition derives the ID, prints it, and writes a self-contained Argent
+package with unchanged embedded artifacts. `--out` must name a new file; an
+existing file is not overwritten.
+
+Verify any supported package against an independent covenant ID:
 
 ```text
 argentc genesis verify \
-  --artifact-bundle build/tickets \
-  --proof genesis-proof.json \
+  genesis-proof.json \
   --covenant-id <node-provided-id>
+```
 
-argentc genesis verify \
-  --sil-abi contracts.json \
-  --proof genesis-proof.json \
-  --covenant-id <node-provided-id>
+This command accepts Argent, Silverscript, and consensus packages. It checks
+the selected format and reports which data it checked. A Silverscript package
+needs no Argent app or metadata; its independent ABI units remain separate.
+Use `--require-argent` when authored-state and route-plan checks are required.
+
+Source comparison is an additional Argent check:
+
+```text
+argentc genesis verify genesis-proof.json \
+  --covenant-id <node-provided-id> \
+  --source app.ag \
+  --app Tickets
+```
+
+It verifies the stored claim, recompiles the source and dependencies, and
+compares the primary and dependency artifact IDs with the package. It never
+replaces the claim with a new ID. Without `--source`, the command states that
+source correspondence was not checked. Neither mode proves application logic
+correct.
+
+CLI composition from Silverscript source or ABI files, and comparison with
+Silverscript source, remain follow-up work. The Rust API already supports
+Silverscript composition. Portable source collection also remains separate.
+
+The CLI tests use a complete definition with expanded state and route fields:
+
+```text
+cargo run -- genesis compose tests/fixtures/emit/capsule_route_context/app.ag \
+  --definition tests/fixtures/genesis_cli/expanded.json \
+  --out asset-genesis-proof.json
 ```
 
 Node access remains outside the first implementation. The caller supplies the

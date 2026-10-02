@@ -1,6 +1,8 @@
-//! Command-line entry point for building and inspecting Argent applications.
+//! Command-line entry point for Argent applications and genesis proofs.
 //!
 //! CLI commands delegate to the public library operations.
+
+mod cli;
 
 use std::path::PathBuf;
 
@@ -9,7 +11,12 @@ use argent::{Result, build_file, build_file_app_bundle};
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "argentc", version, about = "Build and inspect Argent applications", arg_required_else_help = true)]
+#[command(
+    name = "argentc",
+    version,
+    about = "Build and inspect Argent applications and genesis proofs",
+    arg_required_else_help = true
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -21,6 +28,9 @@ enum Command {
     Build(BuildArgs),
     /// Inspect a build directory or artifact JSON file.
     Inspect(InspectArgs),
+    /// Compose or verify a covenant genesis proof package.
+    #[command(subcommand)]
+    Genesis(cli::genesis::GenesisCommand),
 }
 
 #[derive(Debug, Args)]
@@ -57,6 +67,7 @@ fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Build(args) => build(args),
         Command::Inspect(args) => inspect(args),
+        Command::Genesis(command) => cli::genesis::run(command),
     }
 }
 

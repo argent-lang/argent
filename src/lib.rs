@@ -123,6 +123,20 @@ pub fn build_file_app_bundle(input: impl AsRef<Path>, app_name: &str, out_dir: i
     build_app_graph(apps, app_name, out_dir.as_ref())
 }
 
+/// Compile the only app declared in a source file, including its dependencies.
+///
+/// Use [`build_file_app_bundle`] when the file declares more than one app.
+pub fn build_file_bundle(input: impl AsRef<Path>, out_dir: impl AsRef<Path>) -> Result<CompiledAppBundle> {
+    let input = input.as_ref();
+    let program = loader::load_program(input)?;
+    let [app] = program.root_module().apps.as_slice() else {
+        return Err(ArgentError::at(input, "expected exactly one app in the source file; select an app with --app"));
+    };
+    let app_name = app.name.clone();
+    let apps = loader::plan_app_graph(program, &app_name)?;
+    build_app_graph(apps, &app_name, out_dir.as_ref())
+}
+
 fn build_app_graph(
     apps: Vec<(loader::SourceApp, Vec<loader::SourceApp>, loader::ResolvedModules)>,
     app_name: &str,
