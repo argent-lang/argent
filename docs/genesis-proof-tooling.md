@@ -308,7 +308,7 @@ the CLI does not accept aliases or fetch missing artifacts.
 The bootstrap has no covenant-ID claim:
 
 ```rust
-struct CovenantBootstrap {
+struct ArgentCovenantBootstrap {
     app: String,
     authorizing_outpoint: TransactionOutpoint,
     outputs: Vec<ArgentGenesisOutput>,
@@ -343,6 +343,54 @@ Composition derives the ID, prints it, and writes a self-contained Argent
 package with unchanged embedded artifacts. `--out` must name a new file; an
 existing file is not overwritten.
 
+Independent Silverscript ABI files can supply contracts without an Argent app:
+
+```text
+argentc genesis compose \
+  --sil-abi mint.json \
+  --sil-abi ticket.json \
+  --bootstrap genesis.json \
+  --out genesis-proof.json
+```
+
+ABI files remain separate and unchanged, in command-line order. Each output
+selects one by `abi_index`, starting at zero. This mode cannot be combined with
+Argent source, `--artifact`, `--app`, or `--dependency`. It accepts a
+`SilCovenantBootstrap`, with physical state rather than authored actor state:
+
+```rust
+struct SilCovenantBootstrap {
+    authorizing_outpoint: TransactionOutpoint,
+    outputs: Vec<SilGenesisOutput>,
+}
+```
+
+For example, one output using the first ABI file has this form:
+
+```json
+{
+  "authorizing_outpoint": {
+    "transactionId": "6161616161616161616161616161616161616161616161616161616161616161",
+    "index": 4
+  },
+  "outputs": [
+    {
+      "index": 2,
+      "value": 1000,
+      "abi_index": 0,
+      "contract": "Mint",
+      "runtime_state": {
+        "amount": { "kind": "int", "value": 7 }
+      }
+    }
+  ]
+}
+```
+
+This mode checks the ABI and complete physical state. It does not derive
+Argent route commitments or expansion digests. Direct `.sil` compilation is
+not part of this command; supply ABI files produced by Silverscript instead.
+
 Verify any supported package against an independent covenant ID:
 
 ```text
@@ -371,9 +419,8 @@ replaces the claim with a new ID. Without `--source`, the command states that
 source correspondence was not checked. Neither mode proves application logic
 correct.
 
-CLI composition from Silverscript source or ABI files, and comparison with
-Silverscript source, remain follow-up work. The Rust API already supports
-Silverscript composition. Portable source collection also remains separate.
+Comparison with Silverscript source remains follow-up work. Portable source
+collection also remains separate.
 
 The CLI tests use a complete bootstrap with expanded state and route fields:
 
@@ -385,6 +432,38 @@ cargo run -- genesis compose tests/fixtures/emit/capsule_route_context/app.ag \
 
 Node access remains outside the first implementation. The caller supplies the
 covenant ID obtained from the selected UTXO.
+
+## Bootstrap export API
+
+Both bootstrap types support Serde serialization and deserialization. They
+carry no artifacts or covenant-ID claim. Their `compose` methods check the
+supplied artifacts or ABI units and derive a proof; JSON parsing alone does
+not perform those checks.
+
+An Argent caller can export the authored bootstrap from the same `TxContext`
+used to build a launch transaction:
+
+```rust
+let bootstrap = ArgentCovenantBootstrap::from_context(
+    &bundle, &context, authorizing_input, "launch::asset",
+)?;
+let json = silverscript_abi::to_pretty_json(&bootstrap)?;
+let proof = bootstrap.compose(&bundle)?;
+let package = GenesisProofPackage::new(ArgentGenesisPackage::new(&bundle, proof));
+```
+
+The exporter selects the group by both authorizing input and subgroup name.
+It records that input's previous outpoint and preserves each selected output's
+global transaction index and value. Primary-app actor paths become local actor
+names under the top-level `app` field. Authored state keeps expansion preimages;
+composition derives their digests and compiler-owned route fields.
+
+The selected group must be nonempty and contain only primary-app actors with
+static authored states. Raw-script outputs, foreign-app actors, and deferred
+states are rejected, not omitted. The exporter does not build the transaction
+or evaluate callbacks. Unrelated outputs are not part of the exported group.
+After launch, verify the resulting package against the covenant ID from a
+node-provided UTXO, as with any other proof.
 
 ## Crate boundaries
 

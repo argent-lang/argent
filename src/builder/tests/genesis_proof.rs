@@ -1,7 +1,7 @@
 use super::*;
 use crate::genesis::{
-    ArgentGenesisOutput, ArgentGenesisPackage, ArgentGenesisProof, ArgentGenesisProofError, GenesisProofError, GenesisProofLayer,
-    GenesisProofPackage, GenesisProofPackageError, SilGenesisProofError,
+    ArgentCovenantBootstrap, ArgentGenesisOutput, ArgentGenesisPackage, ArgentGenesisProof, ArgentGenesisProofError,
+    GenesisProofError, GenesisProofLayer, GenesisProofPackage, GenesisProofPackageError, SilGenesisProofError,
 };
 
 fn outpoint() -> TransactionOutpoint {
@@ -29,12 +29,15 @@ fn authored_proof_data_outlives_its_bundle_and_round_trips_without_artifacts() {
     let (artifact, proof) = {
         let artifact = capsule_route_context_artifact();
         let bundle = ArtifactBundle::new(&artifact).expect("artifact forms a bundle");
-        let proof = ArgentGenesisProof::compose(
-            &bundle,
-            outpoint(),
-            vec![ArgentGenesisOutput::new(0, 1_000, "ReserveAsset", expanded_state(7))],
-        )
-        .expect("proof composes");
+        let bootstrap = ArgentCovenantBootstrap {
+            app: artifact.app.clone(),
+            authorizing_outpoint: outpoint(),
+            outputs: vec![ArgentGenesisOutput::new(0, 1_000, "ReserveAsset", expanded_state(7))],
+        };
+        let json = silverscript_abi::to_pretty_json(&bootstrap).expect("bootstrap serializes");
+        let decoded: ArgentCovenantBootstrap = serde_json::from_str(&json).expect("bootstrap deserializes without artifacts");
+        assert_eq!(decoded, bootstrap);
+        let proof = decoded.compose(&bundle).expect("bootstrap composes");
         (artifact, proof)
     };
     let json = serde_json::to_string(&proof).expect("proof data serializes without artifacts");
@@ -137,16 +140,39 @@ fn authored_package_retains_artifacts_and_rechecks_serialized_claims() {
 }
 
 #[test]
-fn authored_proof_matches_genesis_transaction_with_routes_and_expansions() {
+fn context_bootstrap_round_trip_matches_launch_and_first_spend_with_routes_and_expansions() {
     let artifact = capsule_route_context_artifact();
     let bundle = ArtifactBundle::new(&artifact).expect("artifact forms a bundle");
     let builder = TxBuilder::from_bundle(&bundle).expect("builder accepts bundle");
     let outputs = vec![
-        ArgentGenesisOutput::new(0, 2_000, "ReserveAsset", expanded_state(7)),
-        ArgentGenesisOutput::new(2, 3_000, "WalletAsset", expanded_state(-5)),
-        ArgentGenesisOutput::new(3, 2_000, "ReserveAsset", expanded_state(9)),
+        ArgentGenesisOutput::new(2, 2_000, "ReserveAsset", expanded_state(7)),
+        ArgentGenesisOutput::new(4, 3_000, "WalletAsset", expanded_state(-5)),
+        ArgentGenesisOutput::new(5, 2_000, "ReserveAsset", expanded_state(9)),
     ];
-    let proof = ArgentGenesisProof::compose(&bundle, outpoint(), outputs).expect("authored proof composes");
+    let funding_script = ScriptPublicKey::new(0, vec![OpTrue].into());
+    let context = TxContext::new()
+        .input(
+            TransactionOutpoint::new(Hash::from_bytes([0x62; 32]), 2),
+            UtxoEntry::new(6_000, funding_script.clone(), 0, false, None),
+            Vec::new(),
+            0,
+        )
+        .input(outpoint(), UtxoEntry::new(10_000, funding_script.clone(), 0, false, None), Vec::new(), 0)
+        .output(funding_script.clone(), None, 1_000)
+        // The same subgroup name on a different input is a different covenant.
+        .actor_genesis_output(0, "launch::asset", "WalletAsset", expanded_state(1), 1_000)
+        .actor_genesis_output(1, "launch::asset", "ReserveAsset", expanded_state(7), 2_000)
+        .genesis_output(1, "launch::other", funding_script, 500)
+        .actor_genesis_output(1, "launch::asset", ActorPath::qualified(bundle.primary_alias(), "WalletAsset"), expanded_state(-5), 3_000)
+        .actor_genesis_output(1, "launch::asset", "ReserveAsset", expanded_state(9), 2_000);
+    let bootstrap = ArgentCovenantBootstrap::from_context(&bundle, &context, 1, "launch::asset").expect("bootstrap exports");
+    assert_eq!(bootstrap.app, artifact.app);
+    assert_eq!(bootstrap.authorizing_outpoint, outpoint());
+    assert_eq!(bootstrap.outputs, outputs);
+    let json = silverscript_abi::to_pretty_json(&bootstrap).expect("bootstrap serializes");
+    let decoded: ArgentCovenantBootstrap = serde_json::from_str(&json).expect("bootstrap restores without a transaction context");
+    assert_eq!(decoded, bootstrap);
+    let proof = decoded.compose(&bundle).expect("authored proof composes");
     let sil = proof.sil_proof(&bundle).expect("physical proof materializes");
     assert_eq!(sil.abis, vec![artifact.sil_abi.clone()]);
     assert!(sil.outputs.iter().all(|output| output.abi_index == 0));
@@ -173,13 +199,6 @@ fn authored_proof_matches_genesis_transaction_with_routes_and_expansions() {
         assert_eq!(output.runtime_state["policy"], ArtifactValue::Bytes(digest));
     }
 
-    let funding_script = ScriptPublicKey::new(0, vec![OpTrue].into());
-    let context = TxContext::new()
-        .input(outpoint(), UtxoEntry::new(10_000, funding_script.clone(), 0, false, None), Vec::new(), 0)
-        .actor_genesis_output(0, "launch::asset", "ReserveAsset", expanded_state(7), 2_000)
-        .output(funding_script, None, 1_000)
-        .actor_genesis_output(0, "launch::asset", "WalletAsset", expanded_state(-5), 3_000)
-        .actor_genesis_output(0, "launch::asset", "ReserveAsset", expanded_state(9), 2_000);
     let transaction = builder.build(&context).expect("genesis transaction executes");
     let preimage = sil.consensus_proof().expect("consensus proof materializes");
     for (authored, indexed) in proof.outputs.iter().zip(&preimage.outputs) {
@@ -190,12 +209,98 @@ fn authored_proof_matches_genesis_transaction_with_routes_and_expansions() {
         assert_eq!(indexed.value, built.value);
         assert_eq!(indexed.script_public_key, built.script_public_key);
         assert_eq!(indexed.script_public_key, launched.script_public_key);
-        assert_eq!(launched.covenant, Some(CovenantBinding::new(0, proof.claimed_covenant_id)));
+        assert_eq!(launched.covenant, Some(CovenantBinding::new(1, proof.claimed_covenant_id)));
     }
-    assert!(transaction.outputs[1].covenant.is_none());
-    let launched_id = transaction.outputs[0].covenant.expect("genesis output is bound").covenant_id;
+    assert!(transaction.outputs[0].covenant.is_none());
+    let launched_id = transaction.outputs[2].covenant.expect("genesis output is bound").covenant_id;
+    assert_ne!(transaction.outputs[1].covenant.expect("other input's group is bound").covenant_id, launched_id);
+    assert_ne!(transaction.outputs[3].covenant.expect("other subgroup is bound").covenant_id, launched_id);
     proof.check_consistency(&bundle).expect("proof is consistent");
     proof.verify(&bundle, launched_id).expect("proof agrees with the launched covenant");
+    round_trip_package(&GenesisProofPackage::new(ArgentGenesisPackage::new(&bundle, proof)))
+        .verify_argent(launched_id)
+        .expect("portable package verifies the launched covenant");
+
+    // Spend a launched actor to prove its derived route context and expansion opening execute.
+    let wallet = &transaction.outputs[4];
+    let first_spend = TxContext::new()
+        .actor_input(
+            "WalletAsset",
+            expanded_state(-5),
+            "hold",
+            TransactionOutpoint::new(transaction.id(), 4),
+            UtxoEntry::new(wallet.value, wallet.script_public_key.clone(), 0, false, Some(launched_id)),
+            0,
+        )
+        .actor_output("WalletAsset", expanded_state(-5), CovenantBinding::new(0, launched_id), wallet.value);
+    builder.build(&first_spend).expect("the launched actor's first continuation executes");
+}
+
+#[test]
+fn context_bootstrap_export_rejects_missing_groups_and_unrepresentable_outputs() {
+    let artifact = capsule_route_context_artifact();
+    let bundle = ArtifactBundle::new(&artifact).expect("artifact forms a bundle");
+    let funding_script = ScriptPublicKey::new(0, vec![OpTrue].into());
+    let context = || TxContext::new().input(outpoint(), UtxoEntry::new(10_000, funding_script.clone(), 0, false, None), Vec::new(), 0);
+    assert!(matches!(
+        ArgentCovenantBootstrap::from_context(&bundle, &context(), 1, "launch::asset"),
+        Err(ArgentGenesisProofError::Context(source))
+            if matches!(*source, BuilderError::GenesisAuthorizingInputOutOfRange { authorizing_input: 1, .. })
+    ));
+    assert!(matches!(
+        ArgentCovenantBootstrap::from_context(&bundle, &context(), 0, "launch::asset"),
+        Err(ArgentGenesisProofError::MissingGenesisGroup { authorizing_input: 0, .. })
+    ));
+    let raw = context().actor_genesis_output(0, "launch::asset", "ReserveAsset", expanded_state(7), 1_000).genesis_output(
+        0,
+        "launch::asset",
+        funding_script.clone(),
+        500,
+    );
+    assert!(matches!(
+        ArgentCovenantBootstrap::from_context(&bundle, &raw, 0, "launch::asset"),
+        Err(ArgentGenesisProofError::ExportOutput { output_index: 1, .. })
+    ));
+    let foreign = context().actor_genesis_output(0, "launch::asset", "foreign_app::ReserveAsset", expanded_state(7), 1_000);
+    assert!(matches!(
+        ArgentCovenantBootstrap::from_context(&bundle, &foreign, 0, "launch::asset"),
+        Err(ArgentGenesisProofError::ExportOutput { output_index: 0, .. })
+    ));
+    let calls = Cell::new(0);
+    let mut deferred = context();
+    deferred.outputs.push(ContextOutput {
+        owner: OutputOwner::Actor {
+            actor: "ReserveAsset".into(),
+            state: state_with(|_| {
+                calls.set(calls.get() + 1);
+                expanded_state(7)
+            }),
+        },
+        covenant: OutputCovenant::Genesis { authorizing_input: 0, subgroup: "launch::asset".into() },
+        value: 1_000,
+    });
+    assert!(matches!(
+        ArgentCovenantBootstrap::from_context(&bundle, &deferred, 0, "launch::asset"),
+        Err(ArgentGenesisProofError::Context(source))
+            if matches!(*source, BuilderError::GenesisOutputStateCallback { output_index: 0, .. })
+    ));
+    assert_eq!(calls.get(), 0, "export never evaluates state callbacks");
+    deferred.outputs[0].covenant = OutputCovenant::Existing(CovenantBinding::new(0, Hash::from_bytes([0x71; 32])));
+    let unrelated_callback = deferred.actor_genesis_output(0, "launch::asset", "ReserveAsset", expanded_state(7), 1_000);
+    let exported = ArgentCovenantBootstrap::from_context(&bundle, &unrelated_callback, 0, "launch::asset")
+        .expect("unrelated deferred output does not prevent export");
+    assert_eq!(exported.outputs[0].index, 1);
+    assert_eq!(calls.get(), 0, "unrelated callbacks are not evaluated either");
+
+    let actor_authorizer = TxContext::new()
+        .actor_input("WalletAsset", expanded_state(1), "hold", outpoint(), UtxoEntry::new(1_000, funding_script, 0, false, None), 0)
+        .actor_genesis_output(0, "launch::asset", "ReserveAsset", expanded_state(7), 500);
+    assert_eq!(
+        ArgentCovenantBootstrap::from_context(&bundle, &actor_authorizer, 0, "launch::asset")
+            .expect("actor inputs can also authorize genesis groups")
+            .authorizing_outpoint,
+        outpoint(),
+    );
 }
 
 #[test]

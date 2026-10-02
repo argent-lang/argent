@@ -11,6 +11,23 @@ use thiserror::Error;
 
 use super::{ConsensusGenesisProof, GenesisProofError, IndexedGenesisOutput};
 
+/// Initial physical contract states, without an ABI bundle or covenant-ID claim.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SilCovenantBootstrap {
+    /// Previous outpoint of the input that authorizes this genesis group.
+    pub authorizing_outpoint: TransactionOutpoint,
+    /// Physical states in transaction-output order, each selecting an ABI by index.
+    pub outputs: Vec<SilGenesisOutput>,
+}
+
+impl SilCovenantBootstrap {
+    /// Compose a proof from ABI units in the bootstrap's ABI-index order.
+    pub fn compose(self, abis: Vec<SilAbiArtifact>) -> Result<SilGenesisProof, SilGenesisProofError> {
+        SilGenesisProof::compose(abis, self.authorizing_outpoint, self.outputs)
+    }
+}
+
 /// A self-contained Silverscript proof for one covenant genesis group.
 ///
 /// ABI compilation units remain separate, in caller-supplied order. Each
@@ -162,8 +179,18 @@ mod tests {
         template_hash,
     };
 
-    use super::{SilGenesisOutput, SilGenesisProof, SilGenesisProofError};
+    use super::{SilCovenantBootstrap, SilGenesisOutput, SilGenesisProof, SilGenesisProofError};
     use crate::GenesisProofError;
+
+    #[test]
+    fn bootstrap_round_trip_composes_the_same_independent_abi_proof() {
+        let proof = sil_proof();
+        let bootstrap = SilCovenantBootstrap { authorizing_outpoint: proof.authorizing_outpoint, outputs: proof.outputs.clone() };
+        let json = silverscript_abi::to_pretty_json(&bootstrap).expect("bootstrap serializes");
+        let decoded: SilCovenantBootstrap = serde_json::from_str(&json).expect("bootstrap deserializes");
+        assert_eq!(decoded, bootstrap);
+        assert_eq!(decoded.compose(proof.abis.clone()).expect("bootstrap composes"), proof);
+    }
 
     #[test]
     fn package_round_trip_keeps_independent_abis_unchanged() {

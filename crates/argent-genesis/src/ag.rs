@@ -2,13 +2,96 @@
 
 use std::collections::BTreeMap;
 
-use argent_runtime::{ArtifactBundle, BuilderError, TxBuilder};
+use argent_runtime::{ArtifactBundle, BuilderError, ContextInput, OutputCovenant, OutputOwner, OutputState, TxBuilder, TxContext};
 use kaspa_consensus_core::{Hash, tx::TransactionOutpoint};
 use serde::{Deserialize, Serialize};
 use silverscript_abi::ArtifactValue;
 use thiserror::Error;
 
 use super::{SilGenesisOutput, SilGenesisProof, SilGenesisProofError};
+
+/// Initial authored actor states for one app's covenant genesis group.
+///
+/// This data carries no covenant-ID claim. Composition derives the ID from
+/// the selected app's artifacts and these states.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArgentCovenantBootstrap {
+    /// Primary app containing every actor in the genesis group.
+    pub app: String,
+    /// Previous outpoint of the input that authorizes this genesis group.
+    pub authorizing_outpoint: TransactionOutpoint,
+    /// Authored actor states, in strictly increasing transaction-output order.
+    pub outputs: Vec<ArgentGenesisOutput>,
+}
+
+impl ArgentCovenantBootstrap {
+    /// Export one genesis group, preserving global output indices and authored states.
+    ///
+    /// The group is selected by both its authorizing input and subgroup name.
+    /// Selected outputs must be primary-app actors with static authored state;
+    /// raw scripts and deferred state cannot supply an authored bootstrap.
+    /// Unrelated outputs and callbacks are left untouched. This does not build
+    /// the transaction; composition checks the exported actor states.
+    pub fn from_context(
+        bundle: &ArtifactBundle<'_>,
+        context: &TxContext<'_>,
+        authorizing_input: u16,
+        subgroup: &str,
+    ) -> Result<Self, ArgentGenesisProofError> {
+        let input = context.inputs.get(usize::from(authorizing_input)).ok_or_else(|| {
+            ArgentGenesisProofError::Context(Box::new(BuilderError::GenesisAuthorizingInputOutOfRange {
+                authorizing_input,
+                input_count: context.inputs.len(),
+            }))
+        })?;
+        let authorizing_outpoint = match input {
+            ContextInput::Actor(input) => input.outpoint,
+            ContextInput::Ordinary(input) => input.outpoint,
+        };
+        let mut outputs = Vec::new();
+        for (output_index, output) in context.outputs.iter().enumerate() {
+            if !matches!(&output.covenant, OutputCovenant::Genesis { authorizing_input: input, subgroup: name }
+                if *input == authorizing_input && name == subgroup)
+            {
+                continue;
+            }
+            let OutputOwner::Actor { actor, state } = &output.owner else {
+                return Err(ArgentGenesisProofError::ExportOutput {
+                    output_index,
+                    reason: "raw-script output has no authored actor state".into(),
+                });
+            };
+            if actor.app.as_deref().is_some_and(|alias| alias != bundle.primary_alias()) {
+                return Err(ArgentGenesisProofError::ExportOutput {
+                    output_index,
+                    reason: format!("actor `{actor}` is not in primary app `{}`", bundle.primary().app),
+                });
+            }
+            let OutputState::Static(state) = state else {
+                return Err(ArgentGenesisProofError::Context(Box::new(BuilderError::GenesisOutputStateCallback {
+                    output_index,
+                    actor: actor.to_string(),
+                })));
+            };
+            let index = u32::try_from(output_index)
+                .map_err(|_| ArgentGenesisProofError::Context(Box::new(BuilderError::GenesisOutputIndexOverflow(output_index))))?;
+            outputs.push(ArgentGenesisOutput::new(index, output.value, &actor.actor, state.clone()));
+        }
+        if outputs.is_empty() {
+            return Err(ArgentGenesisProofError::MissingGenesisGroup { authorizing_input, subgroup: subgroup.to_string() });
+        }
+        Ok(Self { app: bundle.primary().app.clone(), authorizing_outpoint, outputs })
+    }
+
+    /// Check the app and compose a proof, deriving its covenant-ID claim.
+    pub fn compose(self, bundle: &ArtifactBundle<'_>) -> Result<ArgentGenesisProof, ArgentGenesisProofError> {
+        if self.app != bundle.primary().app {
+            return Err(ArgentGenesisProofError::AppMismatch { expected: bundle.primary().app.clone(), found: self.app });
+        }
+        ArgentGenesisProof::compose(bundle, self.authorizing_outpoint, self.outputs)
+    }
+}
 
 /// Owned genesis proof data using authored actor states from one app.
 ///
@@ -85,6 +168,14 @@ impl ArgentGenesisOutput {
 
 #[derive(Debug, Error)]
 pub enum ArgentGenesisProofError {
+    #[error("bootstrap app `{found}` does not match primary app `{expected}`")]
+    AppMismatch { expected: String, found: String },
+    #[error("genesis group `{subgroup}` authorized by input {authorizing_input} has no outputs")]
+    MissingGenesisGroup { authorizing_input: u16, subgroup: String },
+    #[error("cannot export genesis output {output_index}: {reason}")]
+    ExportOutput { output_index: usize, reason: String },
+    #[error("cannot export genesis bootstrap: {0}")]
+    Context(#[source] Box<BuilderError>),
     #[error("genesis artifact bundle is inconsistent: {0}")]
     Bundle(#[from] BuilderError),
     #[error("cannot materialize genesis output {output_index} for actor `{actor}`: {source}")]

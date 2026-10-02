@@ -8,7 +8,9 @@ use serde_json::json;
 use silverscript_abi::ArtifactValue;
 
 use super::{GenesisProofLayer, GenesisProofPackage, GenesisProofPackageError};
-use crate::{ArgentGenesisOutput, ConsensusGenesisProof, GenesisProofError, IndexedGenesisOutput};
+use crate::{
+    ArgentCovenantBootstrap, ArgentGenesisOutput, ConsensusGenesisProof, GenesisProofError, IndexedGenesisOutput, SilCovenantBootstrap,
+};
 
 fn package() -> GenesisProofPackage {
     let proof = ConsensusGenesisProof::compose(
@@ -122,4 +124,26 @@ fn authored_output_json_preserves_tagged_value_types() {
     );
     let json = silverscript_abi::to_pretty_json(&output).expect("output serializes");
     assert_eq!(serde_json::from_str::<ArgentGenesisOutput>(&json).expect("output deserializes"), output);
+}
+
+#[test]
+fn bootstraps_reject_unknown_fields_and_published_claims() {
+    let base = json!({
+        "authorizing_outpoint": TransactionOutpoint::new(Hash::from_bytes([0x11; 32]), 7),
+        "outputs": []
+    });
+    let mut authored = base.clone();
+    authored["app"] = json!("Example");
+    assert!(serde_json::from_value::<ArgentCovenantBootstrap>(authored.clone()).is_ok());
+    assert!(serde_json::from_value::<ArgentCovenantBootstrap>(base.clone()).is_err());
+    assert!(serde_json::from_value::<SilCovenantBootstrap>(base.clone()).is_ok());
+    assert!(serde_json::from_value::<SilCovenantBootstrap>(authored.clone()).is_err());
+    for field in ["claimed_covenant_id", "abis"] {
+        let mut sil = base.clone();
+        sil[field] = json!(null);
+        assert!(serde_json::from_value::<SilCovenantBootstrap>(sil).is_err());
+        let mut ag = authored.clone();
+        ag[field] = json!(null);
+        assert!(serde_json::from_value::<ArgentCovenantBootstrap>(ag).is_err());
+    }
 }

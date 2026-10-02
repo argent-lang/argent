@@ -9,9 +9,9 @@ mod package;
 mod preimage;
 mod sil;
 
-pub use ag::{ArgentGenesisOutput, ArgentGenesisProof, ArgentGenesisProofError};
+pub use ag::{ArgentCovenantBootstrap, ArgentGenesisOutput, ArgentGenesisProof, ArgentGenesisProofError};
 pub use package::{
     ArgentGenesisPackage, GENESIS_PROOF_SCHEMA_VERSION, GenesisProofLayer, GenesisProofPackage, GenesisProofPackageError,
 };
 pub use preimage::{ConsensusGenesisProof, GenesisProofError, IndexedGenesisOutput};
-pub use sil::{SilGenesisOutput, SilGenesisProof, SilGenesisProofError};
+pub use sil::{SilCovenantBootstrap, SilGenesisOutput, SilGenesisProof, SilGenesisProofError};

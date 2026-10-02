@@ -12,22 +12,22 @@ use argent::{
     artifact::Artifact,
     build_file_app_bundle, build_file_bundle,
     builder::ArtifactBundle,
-    genesis::{ArgentGenesisOutput, ArgentGenesisPackage, ArgentGenesisProof, GenesisProofLayer, GenesisProofPackage},
+    genesis::{ArgentCovenantBootstrap, ArgentGenesisPackage, GenesisProofLayer, GenesisProofPackage, SilCovenantBootstrap},
 };
 use clap::{ArgGroup, Args, Subcommand};
-use kaspa_consensus_core::{Hash, tx::TransactionOutpoint};
-use serde::{Deserialize, de::DeserializeOwned};
+use kaspa_consensus_core::Hash;
+use serde::de::DeserializeOwned;
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum GenesisCommand {
-    /// Compose an Argent proof from authored genesis states and source or artifacts.
+    /// Compose a proof from an Argent app or independent Silverscript ABI files.
     Compose(ComposeArgs),
     /// Verify a package against an independently obtained covenant ID.
     Verify(VerifyArgs),
 }
 
 #[derive(Debug, Args)]
-#[command(group(ArgGroup::new("input").required(true).args(["source", "artifact"])))]
+#[command(group(ArgGroup::new("input").required(true).args(["source", "artifact", "sil_abi"])))]
 pub(crate) struct ComposeArgs {
     /// Argent source file. Imports supply the complete dependency closure.
     #[arg(value_name = "APP.AG")]
@@ -36,12 +36,15 @@ pub(crate) struct ComposeArgs {
     #[arg(long, value_name = "ARTIFACT.JSON")]
     artifact: Option<PathBuf>,
     /// Select an app from the source file; otherwise it must declare exactly one.
-    #[arg(long, requires = "source", conflicts_with = "artifact", value_name = "NAME")]
+    #[arg(long, requires = "source", conflicts_with_all = ["artifact", "sil_abi"], value_name = "NAME")]
     app: Option<String>,
     /// Dependency artifact JSON file; repeat for the complete dependency closure.
-    #[arg(long, requires = "artifact", conflicts_with = "source", value_name = "ARTIFACT.JSON")]
+    #[arg(long, requires = "artifact", conflicts_with_all = ["source", "sil_abi"], value_name = "ARTIFACT.JSON")]
     dependency: Vec<PathBuf>,
-    /// Initial actors and authored states, authorizing outpoint, and ordered output metadata.
+    /// Independent Silverscript ABI file; repeat in bootstrap ABI-index order.
+    #[arg(long, value_name = "ABI.JSON")]
+    sil_abi: Vec<PathBuf>,
+    /// Initial actors or contracts and their states, authorizing outpoint, and ordered output metadata.
     #[arg(long, value_name = "GENESIS.JSON")]
     bootstrap: PathBuf,
     /// File for the self-contained proof package.
@@ -68,16 +71,6 @@ pub(crate) struct VerifyArgs {
     app: Option<String>,
 }
 
-/// Composition data carries no covenant-ID claim; composition derives it.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CovenantBootstrap {
-    /// Primary app containing every actor in the genesis group.
-    app: String,
-    authorizing_outpoint: TransactionOutpoint,
-    outputs: Vec<ArgentGenesisOutput>,
-}
-
 pub(crate) fn run(command: GenesisCommand) -> Result<()> {
     match command {
         GenesisCommand::Compose(args) => compose(args),
@@ -86,23 +79,31 @@ pub(crate) fn run(command: GenesisCommand) -> Result<()> {
 }
 
 fn compose(args: ComposeArgs) -> Result<()> {
-    let bootstrap: CovenantBootstrap = read_json(&args.bootstrap)?;
-    let authored = if let Some(source) = &args.source {
-        let compiled = compile_source(source, args.app.as_deref())?;
-        let bundle = compiled.runtime_bundle().map_err(|err| ArgentError::new(err.to_string()))?;
-        compose_package(&bundle, bootstrap)?
+    let (package, covenant_id) = if !args.sil_abi.is_empty() {
+        let bootstrap: SilCovenantBootstrap = read_json(&args.bootstrap)?;
+        let abis = args.sil_abi.iter().map(|path| read_json(path)).collect::<Result<Vec<_>>>()?;
+        let proof = bootstrap.compose(abis).map_err(|err| ArgentError::new(err.to_string()))?;
+        let covenant_id = proof.claimed_covenant_id;
+        (GenesisProofPackage::new(proof), covenant_id)
     } else {
-        let path = args.artifact.as_ref().expect("Clap requires source or artifact");
-        let primary: Artifact = read_json(path)?;
-        let dependencies = args.dependency.iter().map(|path| read_json::<Artifact>(path)).collect::<Result<Vec<_>>>()?;
-        let mut bundle = ArtifactBundle::new(&primary).map_err(|err| ArgentError::at(path, err.to_string()))?;
-        for dependency in &dependencies {
-            bundle = bundle.with_artifact(dependency).map_err(|err| ArgentError::new(err.to_string()))?;
-        }
-        compose_package(&bundle, bootstrap)?
+        let bootstrap: ArgentCovenantBootstrap = read_json(&args.bootstrap)?;
+        let authored = if let Some(source) = &args.source {
+            let compiled = compile_source(source, args.app.as_deref())?;
+            let bundle = compiled.runtime_bundle().map_err(|err| ArgentError::new(err.to_string()))?;
+            compose_package(&bundle, bootstrap)?
+        } else {
+            let path = args.artifact.as_ref().expect("Clap requires source, artifact, or Sil ABI files");
+            let primary: Artifact = read_json(path)?;
+            let dependencies = args.dependency.iter().map(|path| read_json::<Artifact>(path)).collect::<Result<Vec<_>>>()?;
+            let mut bundle = ArtifactBundle::new(&primary).map_err(|err| ArgentError::at(path, err.to_string()))?;
+            for dependency in &dependencies {
+                bundle = bundle.with_artifact(dependency).map_err(|err| ArgentError::new(err.to_string()))?;
+            }
+            compose_package(&bundle, bootstrap)?
+        };
+        let covenant_id = authored.proof.claimed_covenant_id;
+        (GenesisProofPackage::new(authored), covenant_id)
     };
-    let covenant_id = authored.proof.claimed_covenant_id;
-    let package = GenesisProofPackage::new(authored);
     let json = package.to_json().map_err(|err| ArgentError::new(err.to_string()))?;
     // Do not overwrite a package or another input file by accident.
     let mut output = fs::File::create_new(&args.out).map_err(|err| ArgentError::at(&args.out, err.to_string()))?;
@@ -112,16 +113,8 @@ fn compose(args: ComposeArgs) -> Result<()> {
     Ok(())
 }
 
-fn compose_package(bundle: &ArtifactBundle<'_>, bootstrap: CovenantBootstrap) -> Result<ArgentGenesisPackage> {
-    if bootstrap.app != bundle.primary().app {
-        return Err(ArgentError::new(format!(
-            "bootstrap app `{}` does not match primary app `{}`",
-            bootstrap.app,
-            bundle.primary().app,
-        )));
-    }
-    let proof = ArgentGenesisProof::compose(bundle, bootstrap.authorizing_outpoint, bootstrap.outputs)
-        .map_err(|err| ArgentError::new(err.to_string()))?;
+fn compose_package(bundle: &ArtifactBundle<'_>, bootstrap: ArgentCovenantBootstrap) -> Result<ArgentGenesisPackage> {
+    let proof = bootstrap.compose(bundle).map_err(|err| ArgentError::new(err.to_string()))?;
     Ok(ArgentGenesisPackage::new(bundle, proof))
 }
 

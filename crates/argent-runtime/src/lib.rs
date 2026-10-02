@@ -693,7 +693,8 @@ impl<'a> ArtifactBundle<'a> {
         self.apps.get(&self.primary_alias).copied().expect("bundle contains its primary app")
     }
 
-    fn primary_alias(&self) -> &str {
+    /// Return the canonical app alias used by qualified primary [`ActorPath`] values.
+    pub fn primary_alias(&self) -> &str {
         &self.primary_alias
     }
 

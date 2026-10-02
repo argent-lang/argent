@@ -4,7 +4,7 @@ use super::*;
 use crate::{Cli, Command};
 
 #[test]
-fn compose_parses_source_and_artifact_modes() {
+fn compose_parses_source_artifact_and_sil_abi_modes() {
     let cli = Cli::try_parse_from([
         "argentc",
         "genesis",
@@ -48,6 +48,26 @@ fn compose_parses_source_and_artifact_modes() {
     assert_eq!(args.artifact, Some(PathBuf::from("primary.json")));
     assert_eq!(args.dependency, [PathBuf::from("first.json"), PathBuf::from("second.json")]);
     assert!(args.source.is_none());
+
+    let cli = Cli::try_parse_from([
+        "argentc",
+        "genesis",
+        "compose",
+        "--sil-abi",
+        "mint.json",
+        "--sil-abi",
+        "ticket.json",
+        "--bootstrap",
+        "genesis.json",
+        "--out",
+        "proof.json",
+    ])
+    .expect("Sil ABI composition parses");
+    let Command::Genesis(GenesisCommand::Compose(args)) = cli.command else {
+        panic!("expected composition");
+    };
+    assert_eq!(args.sil_abi, [PathBuf::from("mint.json"), PathBuf::from("ticket.json")]);
+    assert!(args.source.is_none() && args.artifact.is_none());
 }
 
 #[test]
@@ -57,6 +77,10 @@ fn compose_rejects_ambiguous_or_incomplete_inputs() {
         vec!["app.ag", "--artifact", "artifact.json"],
         vec!["--artifact", "artifact.json", "--app", "Example"],
         vec!["app.ag", "--dependency", "dependency.json"],
+        vec!["app.ag", "--sil-abi", "abi.json"],
+        vec!["--artifact", "artifact.json", "--sil-abi", "abi.json"],
+        vec!["--sil-abi", "abi.json", "--app", "Example"],
+        vec!["--sil-abi", "abi.json", "--dependency", "dependency.json"],
     ] {
         let mut argv = vec!["argentc", "genesis", "compose"];
         argv.extend(mode);

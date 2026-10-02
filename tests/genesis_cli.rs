@@ -7,7 +7,8 @@ use std::{
 use argent::{
     build_file_bundle,
     genesis::{
-        ConsensusGenesisProof, GenesisProofLayer, GenesisProofPackage, IndexedGenesisOutput, SilGenesisOutput, SilGenesisProof,
+        ConsensusGenesisProof, GenesisProofLayer, GenesisProofPackage, IndexedGenesisOutput, SilCovenantBootstrap, SilGenesisOutput,
+        SilGenesisProof,
     },
 };
 use kaspa_consensus_core::{
@@ -156,7 +157,7 @@ fn verify_rejects_wrong_ids_changed_states_and_changed_claims() {
 }
 
 #[test]
-fn sil_only_verification_keeps_independent_abi_units_and_reports_its_scope() {
+fn sil_abi_composition_and_verification_keep_independent_units_and_report_scope() {
     let dir = tempfile::tempdir().expect("temporary directory");
     let compile = |threshold| {
         silverscript_lang::compiler::compile_to_sil_abi_artifact(
@@ -189,9 +190,27 @@ fn sil_only_verification_keeps_independent_abi_units_and_reports_its_scope() {
     )
     .expect("Sil proof composes");
     let id = proof.claimed_covenant_id;
+    let first_abi = dir.path().join("first.json");
+    let second_abi = dir.path().join("second.json");
+    write_json(&first_abi, &proof.abis[0]);
+    write_json(&second_abi, &proof.abis[1]);
+    let bootstrap = dir.path().join("genesis.json");
+    let mut bootstrap_data = SilCovenantBootstrap { authorizing_outpoint: proof.authorizing_outpoint, outputs: proof.outputs.clone() };
+    write_json(&bootstrap, &bootstrap_data);
     let package = GenesisProofPackage::new(proof);
     let path = dir.path().join("sil.json");
-    write_json(&path, &package);
+    succeeds(
+        cli()
+            .args(["genesis", "compose", "--sil-abi"])
+            .arg(&first_abi)
+            .arg("--sil-abi")
+            .arg(&second_abi)
+            .arg("--bootstrap")
+            .arg(&bootstrap)
+            .arg("--out")
+            .arg(&path),
+    );
+    assert_eq!(read_package(&path), package);
     let stdout = succeeds(cli().args(["genesis", "verify"]).arg(&path).args(["--covenant-id", &id.to_string()]));
     assert!(stdout.contains("checked: Silverscript ABIs, physical states, and derived scripts"));
     assert!(!stdout.contains("checked: Argent"));
@@ -213,6 +232,23 @@ fn sil_only_verification_keeps_independent_abi_units_and_reports_its_scope() {
     write_json(&path, &changed);
     let err = fails(cli().args(["genesis", "verify"]).arg(&path).args(["--covenant-id", &id.to_string()]));
     assert!(err.contains("unknown Sil ABI index 3"), "{err}");
+
+    bootstrap_data.outputs[1].abi_index = 3;
+    write_json(&bootstrap, &bootstrap_data);
+    let invalid = dir.path().join("not-published.json");
+    let err = fails(
+        cli()
+            .args(["genesis", "compose", "--sil-abi"])
+            .arg(&first_abi)
+            .arg("--sil-abi")
+            .arg(&second_abi)
+            .arg("--bootstrap")
+            .arg(&bootstrap)
+            .arg("--out")
+            .arg(&invalid),
+    );
+    assert!(err.contains("unknown Sil ABI index 3"), "{err}");
+    assert!(!invalid.exists());
 }
 
 #[test]
