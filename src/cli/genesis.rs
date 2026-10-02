@@ -72,6 +72,8 @@ pub(crate) struct VerifyArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CovenantBootstrap {
+    /// Primary app containing every actor in the genesis group.
+    app: String,
     authorizing_outpoint: TransactionOutpoint,
     outputs: Vec<ArgentGenesisOutput>,
 }
@@ -111,6 +113,13 @@ fn compose(args: ComposeArgs) -> Result<()> {
 }
 
 fn compose_package(bundle: &ArtifactBundle<'_>, bootstrap: CovenantBootstrap) -> Result<ArgentGenesisPackage> {
+    if bootstrap.app != bundle.primary().app {
+        return Err(ArgentError::new(format!(
+            "bootstrap app `{}` does not match primary app `{}`",
+            bootstrap.app,
+            bundle.primary().app,
+        )));
+    }
     let proof = ArgentGenesisProof::compose(bundle, bootstrap.authorizing_outpoint, bootstrap.outputs)
         .map_err(|err| ArgentError::new(err.to_string()))?;
     Ok(ArgentGenesisPackage::new(bundle, proof))

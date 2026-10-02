@@ -1,4 +1,5 @@
 {
+  "app": "Asset",
   "authorizing_outpoint": {
     "transactionId": "6161616161616161616161616161616161616161616161616161616161616161",
     "index": 4

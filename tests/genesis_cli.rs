@@ -242,6 +242,7 @@ fn dependency_closure_is_required_for_artifacts_and_compiled_for_sources() {
     write_json(
         &bootstrap,
         &json!({
+            "app": "LauncherApp",
             "authorizing_outpoint": TransactionOutpoint::new(Hash::from_bytes([0x61; 32]), 4),
             "outputs": [{"index": 0, "value": 1_000, "actor": "Launcher", "authored_state": {
                 "launches": {"kind": "int", "value": 0}
@@ -318,6 +319,38 @@ fn dependency_closure_is_required_for_artifacts_and_compiled_for_sources() {
             .arg(dir.path().join("mismatch.json")),
     );
     assert!(err.contains("requires dependency `ChildApp` artifact") && err.contains("found app `ChildApp` artifact"), "{err}");
+}
+
+#[test]
+fn composition_requires_bootstrap_app_to_match_primary_app() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    build_file_bundle(source(), dir.path().join("build")).expect("app builds");
+    let artifact = dir.path().join("build/artifact.json");
+    let bootstrap_path = dir.path().join("genesis.json");
+    let proof = dir.path().join("not-published.json");
+    for (app, expected) in
+        [(Some("OtherApp"), "bootstrap app `OtherApp` does not match primary app `Asset`"), (None, "missing field `app`")]
+    {
+        let mut value: Value = serde_json::from_str(&fs::read_to_string(bootstrap()).expect("bootstrap reads")).expect("JSON parses");
+        if let Some(app) = app {
+            value["app"] = json!(app);
+        } else {
+            value.as_object_mut().expect("bootstrap is an object").remove("app");
+        }
+        write_json(&bootstrap_path, &value);
+        for from_artifact in [false, true] {
+            let mut command = cli();
+            command.args(["genesis", "compose"]);
+            if from_artifact {
+                command.arg("--artifact").arg(&artifact);
+            } else {
+                command.arg(source());
+            }
+            let err = fails(command.arg("--bootstrap").arg(&bootstrap_path).arg("--out").arg(&proof));
+            assert!(err.contains(expected), "{err}");
+            assert!(!proof.exists());
+        }
+    }
 }
 
 #[test]

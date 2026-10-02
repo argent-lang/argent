@@ -274,6 +274,8 @@ is separate from this artifact package.
 
 A covenant bootstrap lists the initial actors and their states for one covenant
 instance. It also records the authorizing outpoint and output indices and values.
+Its required `app` field must match the bundle's primary app. All output actor
+names are local to that app.
 
 Compose an Argent package from source and a covenant bootstrap:
 
@@ -307,6 +309,7 @@ The bootstrap has no covenant-ID claim:
 
 ```rust
 struct CovenantBootstrap {
+    app: String,
     authorizing_outpoint: TransactionOutpoint,
     outputs: Vec<ArgentGenesisOutput>,
 }
@@ -318,6 +321,7 @@ increasing; the CLI does not sort them. Authored state uses the tagged
 
 ```json
 {
+  "app": "Counters",
   "authorizing_outpoint": {
     "transactionId": "6161616161616161616161616161616161616161616161616161616161616161",
     "index": 4
