@@ -12,6 +12,7 @@
 
 mod context;
 mod resolve;
+mod script;
 pub mod stdlib;
 
 use std::{collections::BTreeMap, error::Error, fmt};
@@ -21,6 +22,7 @@ pub use context::{
     ActorInput, ActorPath, ContextInput, ContextOutput, EntryArgs, EntryCall, InputSigScript, OrdinaryInput, OutputCovenant,
     OutputOwner, OutputState, StateContext, TxContext, state_with, try_state_with,
 };
+pub use script::materialize_redeem_script;
 pub use silverscript_abi::ArtifactValue;
 
 use argent_artifact::{
@@ -46,7 +48,7 @@ use kaspa_txscript::{
     script_builder::ScriptBuilderError,
 };
 use kaspa_txscript_errors::TxScriptError;
-use silverscript_abi::{CodecError, decode_hex, encode_runtime_state_script, encode_struct_payload};
+use silverscript_abi::{CodecError, decode_hex, encode_struct_payload};
 use thiserror::Error;
 
 pub type BuilderResult<T> = std::result::Result<T, BuilderError>;
@@ -643,6 +645,7 @@ struct HiddenArgContexts<'a> {
 }
 
 impl<'a> ArtifactBundle<'a> {
+    /// Check the primary artifact and create a bundle under its canonical app alias.
     pub fn new(primary: &'a Artifact) -> BuilderResult<Self> {
         let primary_alias = artifact_app_alias(&primary.app);
         Self::named(primary_alias, primary)
@@ -660,6 +663,7 @@ impl<'a> ArtifactBundle<'a> {
         Ok(Self { primary_alias: alias, apps })
     }
 
+    /// Check and attach an artifact under its canonical app alias.
     pub fn with_app(mut self, alias: impl Into<String>, artifact: &'a Artifact) -> BuilderResult<Self> {
         let alias = alias.into();
         let expected = artifact_app_alias(&artifact.app);
@@ -684,12 +688,21 @@ impl<'a> ArtifactBundle<'a> {
         self.apps.get(alias).copied().ok_or_else(|| BuilderError::UnknownAppAlias(alias.to_string()))
     }
 
-    fn primary(&self) -> &'a Artifact {
+    /// Return the primary app's checked artifact.
+    pub fn primary(&self) -> &'a Artifact {
         self.apps.get(&self.primary_alias).copied().expect("bundle contains its primary app")
     }
 
-    fn primary_alias(&self) -> &str {
+    /// Return the canonical app alias used by qualified primary [`ActorPath`] values.
+    pub fn primary_alias(&self) -> &str {
         &self.primary_alias
+    }
+
+    /// Return attached non-primary artifacts in canonical app-alias order.
+    ///
+    /// This includes every attached artifact, not only direct dependencies.
+    pub fn dependencies(&self) -> impl Iterator<Item = &'a Artifact> + '_ {
+        self.apps.iter().filter(|(alias, _)| alias.as_str() != self.primary_alias()).map(|(_, artifact)| *artifact)
     }
 }
 
@@ -699,6 +712,7 @@ impl<'a> TxBuilder<'a> {
         Self::from_bundle(&bundle)
     }
 
+    /// Create a builder after checking dependency identities and imported actor interfaces.
     pub fn from_bundle(bundle: &ArtifactBundle<'a>) -> BuilderResult<Self> {
         let builder = Self { bundle: bundle.clone() };
         builder.validate_bundle_dependencies()?;
@@ -741,20 +755,14 @@ impl<'a> TxBuilder<'a> {
         Ok(())
     }
 
+    /// Materialize authored state and insert it into the compiled contract frame.
     fn redeem_script_for_contract(
         &self,
         contract_ref: ContractRef<'a>,
         source_state: BTreeMap<String, ArtifactValue>,
     ) -> BuilderResult<Vec<u8>> {
         let state = self.runtime_state_values(contract_ref.artifact, contract_ref.name, contract_ref.contract, source_state)?;
-        let state_script = encode_runtime_state_script(&contract_ref.artifact.sil_abi, &contract_ref.contract.runtime_state, &state)?;
-        let compiled = &contract_ref.contract.compiled;
-        let (prefix, _, suffix) =
-            compiled.script_parts(&compiled.bytecode).expect("Sil ABI state span was verified when the artifact was attached");
-        let mut script = prefix.to_vec();
-        script.extend_from_slice(&state_script);
-        script.extend_from_slice(suffix);
-        Ok(script)
+        Ok(materialize_redeem_script(&contract_ref.artifact.sil_abi, contract_ref.contract, &state)?)
     }
 
     fn script_public_key_for_actor(
@@ -767,6 +775,20 @@ impl<'a> TxBuilder<'a> {
             None => self.contract_ref_in_artifact(self.bundle.primary(), &actor.actor)?,
         };
         Ok(pay_to_script_hash_script(&self.redeem_script_for_contract(contract_ref, source_state)?))
+    }
+
+    /// Derive physical state fields from authored state for an actor in the primary app.
+    ///
+    /// Hashes expansion preimages and derives compiler-owned route commitments,
+    /// rejecting caller-supplied generated fields. Actor names resolve only in
+    /// the primary artifact; this does not accept app-qualified paths.
+    pub fn materialize_actor_state(
+        &self,
+        actor_name: &str,
+        source_state: BTreeMap<String, ArtifactValue>,
+    ) -> BuilderResult<BTreeMap<String, ArtifactValue>> {
+        let contract_ref = self.contract_ref_in_artifact(self.bundle.primary(), actor_name)?;
+        self.runtime_state_values(contract_ref.artifact, contract_ref.name, contract_ref.contract, source_state)
     }
 
     /// Build an actor output before it has a covenant id.
@@ -1041,6 +1063,7 @@ impl<'a> TxBuilder<'a> {
         self.observed_contract_ref(primary_artifact, app, contract)
     }
 
+    /// Find a compiled contract by its exact name in this artifact only.
     fn contract_in_artifact(&self, artifact: &'a Artifact, name: &str) -> BuilderResult<&'a SilContractArtifact> {
         artifact.sil_abi.contract(name).ok_or_else(|| BuilderError::UnknownActor(name.to_string()))
     }
@@ -1430,6 +1453,7 @@ impl<'a> TxBuilder<'a> {
         }
     }
 
+    /// Convert authored state to physical fields, hashing expansions and deriving route commitments.
     fn runtime_state_values(
         &self,
         artifact: &'a Artifact,
