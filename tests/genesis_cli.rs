@@ -43,7 +43,7 @@ fn source() -> PathBuf {
     fixture("emit/capsule_route_context/app.ag")
 }
 
-fn definition() -> PathBuf {
+fn bootstrap() -> PathBuf {
     fixture("genesis_cli/expanded.json")
 }
 
@@ -58,7 +58,7 @@ fn read_package(path: &Path) -> GenesisProofPackage {
 fn compose_source(dir: &TempDir) -> (PathBuf, GenesisProofPackage, Hash) {
     let proof = dir.path().join("proof.json");
     let stdout =
-        succeeds(cli().args(["genesis", "compose"]).arg(source()).arg("--definition").arg(definition()).arg("--out").arg(&proof));
+        succeeds(cli().args(["genesis", "compose"]).arg(source()).arg("--bootstrap").arg(bootstrap()).arg("--out").arg(&proof));
     let package = read_package(&proof);
     let GenesisProofLayer::Argent(authored) = &package.proof else {
         panic!("Argent package expected");
@@ -108,8 +108,8 @@ fn artifact_composition_preserves_embedded_artifacts_and_matches_source_mode() {
         cli()
             .args(["genesis", "compose", "--artifact"])
             .arg(&artifact_path)
-            .arg("--definition")
-            .arg(definition())
+            .arg("--bootstrap")
+            .arg(bootstrap())
             .arg("--out")
             .arg(&path),
     );
@@ -126,8 +126,8 @@ fn artifact_composition_preserves_embedded_artifacts_and_matches_source_mode() {
         cli()
             .args(["genesis", "compose", "--artifact"])
             .arg(&artifact_path)
-            .arg("--definition")
-            .arg(definition())
+            .arg("--bootstrap")
+            .arg(bootstrap())
             .arg("--out")
             .arg(&source_path),
     );
@@ -238,9 +238,9 @@ fn dependency_closure_is_required_for_artifacts_and_compiled_for_sources() {
     let dir = tempfile::tempdir().expect("temporary directory");
     let source = fixture("runtime/context_static_linked_spawn/launcher.ag");
     let compiled = build_file_bundle(&source, dir.path().join("build")).expect("linked app builds");
-    let definition = dir.path().join("genesis.json");
+    let bootstrap = dir.path().join("genesis.json");
     write_json(
-        &definition,
+        &bootstrap,
         &json!({
             "authorizing_outpoint": TransactionOutpoint::new(Hash::from_bytes([0x61; 32]), 4),
             "outputs": [{"index": 0, "value": 1_000, "actor": "Launcher", "authored_state": {
@@ -255,8 +255,8 @@ fn dependency_closure_is_required_for_artifacts_and_compiled_for_sources() {
         cli()
             .args(["genesis", "compose", "--artifact"])
             .arg(&primary_path)
-            .arg("--definition")
-            .arg(&definition)
+            .arg("--bootstrap")
+            .arg(&bootstrap)
             .arg("--out")
             .arg(&proof),
     );
@@ -268,8 +268,8 @@ fn dependency_closure_is_required_for_artifacts_and_compiled_for_sources() {
             .arg(&primary_path)
             .arg("--dependency")
             .arg(&dependency_path)
-            .arg("--definition")
-            .arg(&definition)
+            .arg("--bootstrap")
+            .arg(&bootstrap)
             .arg("--out")
             .arg(&proof),
     );
@@ -283,7 +283,7 @@ fn dependency_closure_is_required_for_artifacts_and_compiled_for_sources() {
         succeeds(cli().args(["genesis", "verify"]).arg(&proof).args(["--covenant-id", &id.to_string(), "--source"]).arg(&source));
     assert!(stdout.contains("source correspondence matches"));
     let source_proof = dir.path().join("source.json");
-    succeeds(cli().args(["genesis", "compose"]).arg(&source).arg("--definition").arg(&definition).arg("--out").arg(&source_proof));
+    succeeds(cli().args(["genesis", "compose"]).arg(&source).arg("--bootstrap").arg(&bootstrap).arg("--out").arg(&source_proof));
     assert_eq!(read_package(&source_proof), package);
 
     // A consistent package can attach unused artifacts, but source comparison
@@ -312,8 +312,8 @@ fn dependency_closure_is_required_for_artifacts_and_compiled_for_sources() {
             .arg(&primary_path)
             .arg("--dependency")
             .arg(&dependency_path)
-            .arg("--definition")
-            .arg(&definition)
+            .arg("--bootstrap")
+            .arg(&bootstrap)
             .arg("--out")
             .arg(dir.path().join("mismatch.json")),
     );
@@ -330,13 +330,12 @@ fn composition_rejects_invalid_output_order_actors_and_authored_fields() {
         |value: &mut Value| value["outputs"][0]["authored_state"]["balance"] = json!({"kind": "bool", "value": true}),
         |value: &mut Value| value["claimed_covenant_id"] = json!(Hash::from_bytes([0; 32])),
     ] {
-        let mut value: Value =
-            serde_json::from_str(&fs::read_to_string(definition()).expect("definition reads")).expect("JSON parses");
+        let mut value: Value = serde_json::from_str(&fs::read_to_string(bootstrap()).expect("bootstrap reads")).expect("JSON parses");
         change(&mut value);
-        let definition = dir.path().join("invalid.json");
+        let bootstrap = dir.path().join("invalid.json");
         let proof = dir.path().join("not-published.json");
-        write_json(&definition, &value);
-        fails(cli().args(["genesis", "compose"]).arg(source()).arg("--definition").arg(&definition).arg("--out").arg(&proof));
+        write_json(&bootstrap, &value);
+        fails(cli().args(["genesis", "compose"]).arg(source()).arg("--bootstrap").arg(&bootstrap).arg("--out").arg(&proof));
         assert!(!proof.exists());
     }
 }
@@ -351,16 +350,15 @@ fn source_with_multiple_apps_requires_selection() {
     )
     .expect("source writes");
     let proof = dir.path().join("proof.json");
-    let err =
-        fails(cli().args(["genesis", "compose"]).arg(&source_path).arg("--definition").arg(definition()).arg("--out").arg(&proof));
+    let err = fails(cli().args(["genesis", "compose"]).arg(&source_path).arg("--bootstrap").arg(bootstrap()).arg("--out").arg(&proof));
     assert!(err.contains("select an app with --app"), "{err}");
     succeeds(
         cli()
             .args(["genesis", "compose"])
             .arg(&source_path)
             .args(["--app", "Asset"])
-            .arg("--definition")
-            .arg(definition())
+            .arg("--bootstrap")
+            .arg(bootstrap())
             .arg("--out")
             .arg(&proof),
     );

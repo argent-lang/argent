@@ -272,13 +272,16 @@ is separate from this artifact package.
 
 ## Command-line tools
 
-Compose an Argent package from source and an authored genesis definition:
+A covenant bootstrap lists the initial actors and their states for one covenant
+instance. It also records the authorizing outpoint and output indices and values.
+
+Compose an Argent package from source and a covenant bootstrap:
 
 ```text
 argentc genesis compose \
   app.ag \
   --app Tickets \
-  --definition genesis.json \
+  --bootstrap genesis.json \
   --out genesis-proof.json
 ```
 
@@ -292,7 +295,7 @@ Existing artifacts can supply the same compilation result:
 argentc genesis compose \
   --artifact build/launcher/artifact.json \
   --dependency build/launcher/apps/ChildApp/artifact.json \
-  --definition genesis.json \
+  --bootstrap genesis.json \
   --out genesis-proof.json
 ```
 
@@ -300,10 +303,10 @@ Source and artifact inputs are mutually exclusive. Repeat `--dependency` for
 all dependency artifacts. The runtime checks their app names and artifact IDs;
 the CLI does not accept aliases or fetch missing artifacts.
 
-The definition has no covenant-ID claim:
+The bootstrap has no covenant-ID claim:
 
 ```rust
-struct ArgentGenesisDefinition {
+struct CovenantBootstrap {
     authorizing_outpoint: TransactionOutpoint,
     outputs: Vec<ArgentGenesisOutput>,
 }
@@ -368,11 +371,11 @@ CLI composition from Silverscript source or ABI files, and comparison with
 Silverscript source, remain follow-up work. The Rust API already supports
 Silverscript composition. Portable source collection also remains separate.
 
-The CLI tests use a complete definition with expanded state and route fields:
+The CLI tests use a complete bootstrap with expanded state and route fields:
 
 ```text
 cargo run -- genesis compose tests/fixtures/emit/capsule_route_context/app.ag \
-  --definition tests/fixtures/genesis_cli/expanded.json \
+  --bootstrap tests/fixtures/genesis_cli/expanded.json \
   --out asset-genesis-proof.json
 ```
 

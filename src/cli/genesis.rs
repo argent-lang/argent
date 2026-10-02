@@ -41,9 +41,9 @@ pub(crate) struct ComposeArgs {
     /// Dependency artifact JSON file; repeat for the complete dependency closure.
     #[arg(long, requires = "artifact", conflicts_with = "source", value_name = "ARTIFACT.JSON")]
     dependency: Vec<PathBuf>,
-    /// Authorizing outpoint and ordered authored genesis outputs.
+    /// Initial actors and authored states, authorizing outpoint, and ordered output metadata.
     #[arg(long, value_name = "GENESIS.JSON")]
-    definition: PathBuf,
+    bootstrap: PathBuf,
     /// File for the self-contained proof package.
     #[arg(long, value_name = "PROOF.JSON")]
     out: PathBuf,
@@ -71,7 +71,7 @@ pub(crate) struct VerifyArgs {
 /// Composition data carries no covenant-ID claim; composition derives it.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ArgentGenesisDefinition {
+struct CovenantBootstrap {
     authorizing_outpoint: TransactionOutpoint,
     outputs: Vec<ArgentGenesisOutput>,
 }
@@ -84,11 +84,11 @@ pub(crate) fn run(command: GenesisCommand) -> Result<()> {
 }
 
 fn compose(args: ComposeArgs) -> Result<()> {
-    let definition: ArgentGenesisDefinition = read_json(&args.definition)?;
+    let bootstrap: CovenantBootstrap = read_json(&args.bootstrap)?;
     let authored = if let Some(source) = &args.source {
         let compiled = compile_source(source, args.app.as_deref())?;
         let bundle = compiled.runtime_bundle().map_err(|err| ArgentError::new(err.to_string()))?;
-        compose_package(&bundle, definition)?
+        compose_package(&bundle, bootstrap)?
     } else {
         let path = args.artifact.as_ref().expect("Clap requires source or artifact");
         let primary: Artifact = read_json(path)?;
@@ -97,7 +97,7 @@ fn compose(args: ComposeArgs) -> Result<()> {
         for dependency in &dependencies {
             bundle = bundle.with_artifact(dependency).map_err(|err| ArgentError::new(err.to_string()))?;
         }
-        compose_package(&bundle, definition)?
+        compose_package(&bundle, bootstrap)?
     };
     let covenant_id = authored.proof.claimed_covenant_id;
     let package = GenesisProofPackage::new(authored);
@@ -110,8 +110,8 @@ fn compose(args: ComposeArgs) -> Result<()> {
     Ok(())
 }
 
-fn compose_package(bundle: &ArtifactBundle<'_>, definition: ArgentGenesisDefinition) -> Result<ArgentGenesisPackage> {
-    let proof = ArgentGenesisProof::compose(bundle, definition.authorizing_outpoint, definition.outputs)
+fn compose_package(bundle: &ArtifactBundle<'_>, bootstrap: CovenantBootstrap) -> Result<ArgentGenesisPackage> {
+    let proof = ArgentGenesisProof::compose(bundle, bootstrap.authorizing_outpoint, bootstrap.outputs)
         .map_err(|err| ArgentError::new(err.to_string()))?;
     Ok(ArgentGenesisPackage::new(bundle, proof))
 }

@@ -12,7 +12,7 @@ fn compose_parses_source_and_artifact_modes() {
         "app.ag",
         "--app",
         "Example",
-        "--definition",
+        "--bootstrap",
         "genesis.json",
         "--out",
         "proof.json",
@@ -23,6 +23,7 @@ fn compose_parses_source_and_artifact_modes() {
     };
     assert_eq!(args.source, Some(PathBuf::from("app.ag")));
     assert_eq!(args.app.as_deref(), Some("Example"));
+    assert_eq!(args.bootstrap, PathBuf::from("genesis.json"));
     assert!(args.artifact.is_none());
 
     let cli = Cli::try_parse_from([
@@ -35,7 +36,7 @@ fn compose_parses_source_and_artifact_modes() {
         "first.json",
         "--dependency",
         "second.json",
-        "--definition",
+        "--bootstrap",
         "genesis.json",
         "--out",
         "proof.json",
@@ -59,13 +60,13 @@ fn compose_rejects_ambiguous_or_incomplete_inputs() {
     ] {
         let mut argv = vec!["argentc", "genesis", "compose"];
         argv.extend(mode);
-        argv.extend(["--definition", "genesis.json", "--out", "proof.json"]);
+        argv.extend(["--bootstrap", "genesis.json", "--out", "proof.json"]);
         assert_eq!(Cli::try_parse_from(argv).expect_err("invalid mode is rejected").exit_code(), 2);
     }
-    for missing in ["--definition", "--out"] {
+    for missing in ["--bootstrap", "--out"] {
         let mut argv = vec!["argentc", "genesis", "compose", "app.ag"];
-        if missing != "--definition" {
-            argv.extend(["--definition", "genesis.json"]);
+        if missing != "--bootstrap" {
+            argv.extend(["--bootstrap", "genesis.json"]);
         }
         if missing != "--out" {
             argv.extend(["--out", "proof.json"]);
