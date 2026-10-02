@@ -119,13 +119,13 @@ fn check_output_order(outputs: &[IndexedGenesisOutput]) -> Result<(), GenesisPro
 
 #[cfg(test)]
 mod tests {
+    use argent_runtime::TxBuilder;
     use kaspa_consensus_core::{
         Hash,
         tx::{GenesisCovenantGroup, ScriptPublicKey, TransactionOutpoint, TransactionOutput},
     };
 
     use super::{ConsensusGenesisProof, GenesisProofError, IndexedGenesisOutput};
-    use crate::TxBuilder;
 
     fn outpoint(byte: u8, index: u32) -> TransactionOutpoint {
         TransactionOutpoint::new(Hash::from_bytes([byte; 32]), index)

@@ -17,6 +17,7 @@ pub mod error;
 pub mod inspect;
 pub mod routing;
 
+pub use argent_genesis as genesis;
 pub use error::{ArgentError, Result};
 
 /// Artifacts compiled together from one source-app dependency graph.

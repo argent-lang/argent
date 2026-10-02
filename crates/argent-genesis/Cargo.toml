@@ -1,5 +1,5 @@
 [package]
-name = "argent-runtime"
+name = "argent-genesis"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,10 +9,10 @@ repository.workspace = true
 
 [dependencies]
 argent-artifact = { workspace = true }
-blake2b_simd = { workspace = true }
-blake3 = { workspace = true }
+argent-runtime = { workspace = true }
 kaspa-consensus-core = { workspace = true }
 kaspa-txscript = { workspace = true }
-kaspa-txscript-errors = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 silverscript-abi = { workspace = true }
 thiserror = { workspace = true }

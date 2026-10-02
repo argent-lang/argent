@@ -1,5 +1,7 @@
 //! Owned, versioned genesis proof packages without filesystem or compiler access.
 
+use argent_artifact::Artifact;
+use argent_runtime::ArtifactBundle;
 use kaspa_consensus_core::Hash;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -7,7 +9,6 @@ use thiserror::Error;
 use super::{
     ArgentGenesisProof, ArgentGenesisProofError, ConsensusGenesisProof, GenesisProofError, SilGenesisProof, SilGenesisProofError,
 };
-use crate::{Artifact, ArtifactBundle};
 
 pub const GENESIS_PROOF_SCHEMA_VERSION: u32 = 1;
 
@@ -143,12 +144,7 @@ impl ArgentGenesisPackage {
     ///
     /// This stores the verification context; it does not verify the proof.
     pub fn new(bundle: &ArtifactBundle<'_>, proof: ArgentGenesisProof) -> Self {
-        let dependencies = bundle
-            .apps
-            .iter()
-            .filter(|(alias, _)| alias.as_str() != bundle.primary_alias())
-            .map(|(_, artifact)| (**artifact).clone())
-            .collect();
+        let dependencies = bundle.dependencies().cloned().collect();
         Self { primary: bundle.primary().clone(), dependencies, proof }
     }
 

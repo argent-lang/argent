@@ -2,13 +2,13 @@
 
 use std::collections::BTreeMap;
 
+use argent_runtime::{ArtifactBundle, BuilderError, TxBuilder};
 use kaspa_consensus_core::{Hash, tx::TransactionOutpoint};
 use serde::{Deserialize, Serialize};
 use silverscript_abi::ArtifactValue;
 use thiserror::Error;
 
 use super::{SilGenesisOutput, SilGenesisProof, SilGenesisProofError};
-use crate::{ArtifactBundle, BuilderError, TxBuilder};
 
 /// Owned genesis proof data using authored actor states from one app.
 ///
@@ -103,18 +103,16 @@ fn materialize_outputs(
     outputs: &[ArgentGenesisOutput],
 ) -> Result<Vec<SilGenesisOutput>, ArgentGenesisProofError> {
     let builder = TxBuilder::from_bundle(bundle)?;
-    let artifact = bundle.primary();
     outputs
         .iter()
         .map(|output| {
-            let runtime_state = builder
-                .contract_in_artifact(artifact, &output.actor)
-                .and_then(|contract| builder.runtime_state_values(artifact, &output.actor, contract, output.authored_state.clone()))
-                .map_err(|source| ArgentGenesisProofError::OutputState {
+            let runtime_state = builder.materialize_actor_state(&output.actor, output.authored_state.clone()).map_err(|source| {
+                ArgentGenesisProofError::OutputState {
                     output_index: output.index,
                     actor: output.actor.clone(),
                     source: Box::new(source),
-                })?;
+                }
+            })?;
             Ok(SilGenesisOutput::new(output.index, output.value, 0, &output.actor, runtime_state))
         })
         .collect()

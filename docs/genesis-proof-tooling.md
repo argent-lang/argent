@@ -305,6 +305,16 @@ argentc genesis verify \
 Node access remains outside the first implementation. The caller supplies the
 covenant ID obtained from the selected UTXO.
 
+## Crate boundaries
+
+`argent-genesis` owns the proof APIs and portable packages. It depends on
+`argent-runtime` for artifact bundles, authored-state materialization, and
+redeem-script construction. Runtime does not depend on the proof crate.
+
+The compiler crate reexports the proof API as `argent::genesis`. Consumers
+that do not need compilation can use `argent-genesis` directly. File loading,
+source compilation, and node access stay outside both runtime crates.
+
 ## Implementation sequence
 
 1. Add the consensus proof types and covenant-ID verification.
@@ -322,7 +332,7 @@ mismatch.
 
 ## First implementation leg
 
-The first commit adds only the consensus layer to `argent-runtime`.
+The consensus layer lives in `crates/argent-genesis/src/preimage.rs`.
 
 It should:
 
@@ -346,7 +356,7 @@ any decision about the portable package format.
 
 ## Second implementation leg
 
-The second commit adds `genesis_proof/sil.rs`.
+The Silverscript layer lives in `crates/argent-genesis/src/sil.rs`.
 
 It should:
 
@@ -368,7 +378,7 @@ external covenant-ID mismatch.
 
 ## Third implementation leg
 
-The third commit adds `genesis_proof/ag.rs`.
+The Argent layer lives in `crates/argent-genesis/src/ag.rs`.
 
 It should:
 
@@ -402,6 +412,7 @@ This leg has two review units:
   round-trips, unchanged embedded artifacts, retained claims, changed proof
   data, missing or mismatched dependencies, and unsupported versions.
 - **4b: Command-line tools.** Compose and verify these packages through
-  `argentc`. Keep file loading and compilation outside `argent-runtime`.
+  `argentc`. Keep file loading and compilation outside `argent-genesis` and
+  `argent-runtime`.
   Require an independent covenant ID for verification. Leave source-package
   collection and node access for later work.

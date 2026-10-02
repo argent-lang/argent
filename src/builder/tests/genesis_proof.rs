@@ -1,4 +1,8 @@
 use super::*;
+use crate::genesis::{
+    ArgentGenesisOutput, ArgentGenesisPackage, ArgentGenesisProof, ArgentGenesisProofError, GenesisProofError, GenesisProofLayer,
+    GenesisProofPackage, GenesisProofPackageError, SilGenesisProofError,
+};
 
 fn outpoint() -> TransactionOutpoint {
     TransactionOutpoint::new(Hash::from_bytes([0x61; 32]), 4)

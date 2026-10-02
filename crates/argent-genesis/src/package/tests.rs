@@ -5,9 +5,10 @@ use kaspa_consensus_core::{
     tx::{ScriptPublicKey, TransactionOutpoint},
 };
 use serde_json::json;
+use silverscript_abi::ArtifactValue;
 
 use super::{GenesisProofLayer, GenesisProofPackage, GenesisProofPackageError};
-use crate::{ArgentGenesisOutput, ArtifactValue, ConsensusGenesisProof, GenesisProofError, IndexedGenesisOutput};
+use crate::{ArgentGenesisOutput, ConsensusGenesisProof, GenesisProofError, IndexedGenesisOutput};
 
 fn package() -> GenesisProofPackage {
     let proof = ConsensusGenesisProof::compose(

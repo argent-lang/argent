@@ -11,8 +11,8 @@
 //! split out later if the artifact model becomes generic enough.
 
 mod context;
-mod genesis_proof;
 mod resolve;
+mod script;
 pub mod stdlib;
 
 use std::{collections::BTreeMap, error::Error, fmt};
@@ -22,11 +22,7 @@ pub use context::{
     ActorInput, ActorPath, ContextInput, ContextOutput, EntryArgs, EntryCall, InputSigScript, OrdinaryInput, OutputCovenant,
     OutputOwner, OutputState, StateContext, TxContext, state_with, try_state_with,
 };
-pub use genesis_proof::{
-    ArgentGenesisOutput, ArgentGenesisPackage, ArgentGenesisProof, ArgentGenesisProofError, ConsensusGenesisProof,
-    GENESIS_PROOF_SCHEMA_VERSION, GenesisProofError, GenesisProofLayer, GenesisProofPackage, GenesisProofPackageError,
-    IndexedGenesisOutput, SilGenesisOutput, SilGenesisProof, SilGenesisProofError,
-};
+pub use script::materialize_redeem_script;
 pub use silverscript_abi::ArtifactValue;
 
 use argent_artifact::{
@@ -693,12 +689,19 @@ impl<'a> ArtifactBundle<'a> {
     }
 
     /// Return the primary app's checked artifact.
-    fn primary(&self) -> &'a Artifact {
+    pub fn primary(&self) -> &'a Artifact {
         self.apps.get(&self.primary_alias).copied().expect("bundle contains its primary app")
     }
 
     fn primary_alias(&self) -> &str {
         &self.primary_alias
+    }
+
+    /// Return attached non-primary artifacts in canonical app-alias order.
+    ///
+    /// This includes every attached artifact, not only direct dependencies.
+    pub fn dependencies(&self) -> impl Iterator<Item = &'a Artifact> + '_ {
+        self.apps.iter().filter(|(alias, _)| alias.as_str() != self.primary_alias()).map(|(_, artifact)| *artifact)
     }
 }
 
@@ -758,7 +761,7 @@ impl<'a> TxBuilder<'a> {
         source_state: BTreeMap<String, ArtifactValue>,
     ) -> BuilderResult<Vec<u8>> {
         let state = self.runtime_state_values(contract_ref.artifact, contract_ref.name, contract_ref.contract, source_state)?;
-        Ok(genesis_proof::materialize_redeem_script(&contract_ref.artifact.sil_abi, contract_ref.contract, &state)?)
+        Ok(materialize_redeem_script(&contract_ref.artifact.sil_abi, contract_ref.contract, &state)?)
     }
 
     fn script_public_key_for_actor(
@@ -771,6 +774,20 @@ impl<'a> TxBuilder<'a> {
             None => self.contract_ref_in_artifact(self.bundle.primary(), &actor.actor)?,
         };
         Ok(pay_to_script_hash_script(&self.redeem_script_for_contract(contract_ref, source_state)?))
+    }
+
+    /// Derive physical state fields from authored state for an actor in the primary app.
+    ///
+    /// Hashes expansion preimages and derives compiler-owned route commitments,
+    /// rejecting caller-supplied generated fields. Actor names resolve only in
+    /// the primary artifact; this does not accept app-qualified paths.
+    pub fn materialize_actor_state(
+        &self,
+        actor_name: &str,
+        source_state: BTreeMap<String, ArtifactValue>,
+    ) -> BuilderResult<BTreeMap<String, ArtifactValue>> {
+        let contract_ref = self.contract_ref_in_artifact(self.bundle.primary(), actor_name)?;
+        self.runtime_state_values(contract_ref.artifact, contract_ref.name, contract_ref.contract, source_state)
     }
 
     /// Build an actor output before it has a covenant id.

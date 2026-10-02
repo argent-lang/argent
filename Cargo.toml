@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/argent-artifact", "crates/argent-runtime"]
+members = [".", "crates/argent-artifact", "crates/argent-genesis", "crates/argent-runtime"]
 resolver = "3"
 
 [workspace.package]
@@ -12,6 +12,7 @@ repository = "https://github.com/argent-lang/argent"
 
 [workspace.dependencies]
 argent-artifact = { path = "crates/argent-artifact" }
+argent-genesis = { path = "crates/argent-genesis" }
 argent-runtime = { path = "crates/argent-runtime" }
 blake2b_simd = "1.0.2"
 blake3 = "1.8.5"
@@ -48,6 +49,7 @@ path = "src/main.rs"
 
 [dependencies]
 argent-artifact = { workspace = true }
+argent-genesis = { workspace = true }
 argent-runtime = { workspace = true }
 blake2b_simd = { workspace = true }
 colored = { workspace = true }

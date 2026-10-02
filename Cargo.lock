@@ -115,6 +115,7 @@ name = "argent"
 version = "0.1.0"
 dependencies = [
  "argent-artifact",
+ "argent-genesis",
  "argent-runtime",
  "blake2b_simd",
  "blake3",
@@ -144,6 +145,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "argent-genesis"
+version = "0.1.0"
+dependencies = [
+ "argent-artifact",
+ "argent-runtime",
+ "kaspa-consensus-core",
+ "kaspa-txscript",
+ "serde",
+ "serde_json",
+ "silverscript-abi",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "argent-runtime"
 version = "0.1.0"
 dependencies = [
@@ -153,8 +168,6 @@ dependencies = [
  "kaspa-consensus-core",
  "kaspa-txscript",
  "kaspa-txscript-errors",
- "serde",
- "serde_json",
  "silverscript-abi",
  "thiserror 2.0.18",
 ]

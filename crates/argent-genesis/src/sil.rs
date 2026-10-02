@@ -2,12 +2,11 @@
 
 use std::collections::BTreeMap;
 
+use argent_runtime::materialize_redeem_script;
 use kaspa_consensus_core::{Hash, tx::TransactionOutpoint};
 use kaspa_txscript::pay_to_script_hash_script;
 use serde::{Deserialize, Serialize};
-use silverscript_abi::{
-    ArtifactValue, CodecError, SilAbiArtifact, SilAbiVerificationError, SilContractArtifact, encode_runtime_state_script,
-};
+use silverscript_abi::{ArtifactValue, CodecError, SilAbiArtifact, SilAbiVerificationError};
 use thiserror::Error;
 
 use super::{ConsensusGenesisProof, GenesisProofError, IndexedGenesisOutput};
@@ -149,21 +148,6 @@ fn materialize_outputs(
             Ok(IndexedGenesisOutput::new(output.index, output.value, pay_to_script_hash_script(&redeem_script)))
         })
         .collect()
-}
-
-/// Insert physical runtime state into a checked Sil contract frame.
-///
-/// The ABI must have passed [`SilAbiArtifact::check_consistency`].
-pub(crate) fn materialize_redeem_script(
-    abi: &SilAbiArtifact,
-    contract: &SilContractArtifact,
-    runtime_state: &BTreeMap<String, ArtifactValue>,
-) -> Result<Vec<u8>, CodecError> {
-    let state_script = encode_runtime_state_script(abi, &contract.runtime_state, runtime_state)?;
-    let compiled = &contract.compiled;
-    let (prefix, _, suffix) =
-        compiled.script_parts(&compiled.bytecode).expect("Sil ABI state span was checked before runtime-state materialization");
-    Ok(prefix.iter().chain(&state_script).chain(suffix).copied().collect())
 }
 
 #[cfg(test)]
