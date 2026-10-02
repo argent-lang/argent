@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use kaspa_consensus_core::{Hash, tx::TransactionOutpoint};
 use kaspa_txscript::pay_to_script_hash_script;
+use serde::{Deserialize, Serialize};
 use silverscript_abi::{
     ArtifactValue, CodecError, SilAbiArtifact, SilAbiVerificationError, SilContractArtifact, encode_runtime_state_script,
 };
@@ -15,7 +16,7 @@ use super::{ConsensusGenesisProof, GenesisProofError, IndexedGenesisOutput};
 ///
 /// ABI compilation units remain separate, in caller-supplied order. Each
 /// output selects its ABI by index.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SilGenesisProof {
     /// Independent Sil ABI compilation units used by the proof outputs.
     pub abis: Vec<SilAbiArtifact>,
@@ -65,7 +66,7 @@ impl SilGenesisProof {
 }
 
 /// One physical Silverscript contract state in a covenant genesis group.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SilGenesisOutput {
     /// Position of this output in the launch transaction.
     pub index: u32,
@@ -179,6 +180,36 @@ mod tests {
 
     use super::{SilGenesisOutput, SilGenesisProof, SilGenesisProofError};
     use crate::GenesisProofError;
+
+    #[test]
+    fn package_round_trip_keeps_independent_abis_unchanged() {
+        use crate::{GenesisProofLayer, GenesisProofPackage, GenesisProofPackageError};
+
+        let proof = sil_proof();
+        let expected = proof.claimed_covenant_id;
+        let package = GenesisProofPackage::new(proof.clone());
+        let json = package.to_json().expect("package serializes");
+        let decoded = GenesisProofPackage::from_json(&json).expect("package deserializes");
+        assert_eq!(decoded, package);
+        let GenesisProofLayer::Sil(decoded_proof) = &decoded.proof else {
+            panic!("Sil layer is retained");
+        };
+        assert_eq!(decoded_proof.abis, proof.abis);
+        decoded.verify(expected).expect("independent namespaces still verify");
+        assert!(matches!(decoded.verify_argent(expected), Err(GenesisProofPackageError::ArgentLayerRequired { found: "sil" })));
+
+        let mut changed = decoded;
+        let GenesisProofLayer::Sil(changed_proof) = &mut changed.proof else {
+            panic!("Sil layer is retained");
+        };
+        changed_proof.outputs[0].runtime_state = struct_value(ArtifactValue::Byte(9));
+        let changed = GenesisProofPackage::from_json(&changed.to_json().expect("changed package serializes"))
+            .expect("changed package is structurally valid");
+        assert!(matches!(
+            changed.verify(expected),
+            Err(GenesisProofPackageError::Sil(SilGenesisProofError::Preimage(GenesisProofError::ClaimedCovenantIdMismatch { .. })))
+        ));
+    }
 
     fn outpoint() -> TransactionOutpoint {
         TransactionOutpoint::new(Hash::from_bytes([0x31; 32]), 4)

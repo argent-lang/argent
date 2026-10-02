@@ -3,21 +3,20 @@
 use std::collections::BTreeMap;
 
 use kaspa_consensus_core::{Hash, tx::TransactionOutpoint};
+use serde::{Deserialize, Serialize};
 use silverscript_abi::ArtifactValue;
 use thiserror::Error;
 
 use super::{SilGenesisOutput, SilGenesisProof, SilGenesisProofError};
 use crate::{ArtifactBundle, BuilderError, TxBuilder};
 
-/// A genesis proof using authored states from the bundle's primary app.
+/// Owned genesis proof data using authored actor states from one app.
 ///
-/// Dependency artifacts supply checked templates and interfaces. They cannot
-/// contribute actors to this covenant's genesis group. This proof borrows its
-/// artifacts; portable package ownership and serialization are separate.
-#[derive(Clone, Debug)]
-pub struct ArgentGenesisProof<'a> {
-    /// Primary app and its complete artifact dependency closure.
-    pub bundle: ArtifactBundle<'a>,
+/// Composition, lowering, and verification receive an artifact bundle as their
+/// context. Dependency artifacts supply checked templates and interfaces, but
+/// cannot contribute actors to this covenant's genesis group.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArgentGenesisProof {
     /// Previous outpoint of the input that authorized this genesis group.
     pub authorizing_outpoint: TransactionOutpoint,
     /// Covenant ID claimed by the proof publisher.
@@ -26,26 +25,26 @@ pub struct ArgentGenesisProof<'a> {
     pub outputs: Vec<ArgentGenesisOutput>,
 }
 
-impl<'a> ArgentGenesisProof<'a> {
+impl ArgentGenesisProof {
     /// Compose a proof and derive its covenant ID from authored actor states.
     pub fn compose(
-        bundle: &ArtifactBundle<'a>,
+        bundle: &ArtifactBundle<'_>,
         authorizing_outpoint: TransactionOutpoint,
         outputs: Vec<ArgentGenesisOutput>,
     ) -> Result<Self, ArgentGenesisProofError> {
         let sil_outputs = materialize_outputs(bundle, &outputs)?;
         let sil_proof = SilGenesisProof::compose(vec![bundle.primary().sil_abi.clone()], authorizing_outpoint, sil_outputs)?;
-        Ok(Self { bundle: bundle.clone(), authorizing_outpoint, claimed_covenant_id: sil_proof.claimed_covenant_id, outputs })
+        Ok(Self { authorizing_outpoint, claimed_covenant_id: sil_proof.claimed_covenant_id, outputs })
     }
 
     /// Derive physical state from the artifact plans and authored values.
     ///
     /// The result retains the published claim; it does not replace it with a
     /// newly calculated covenant ID.
-    pub fn sil_proof(&self) -> Result<SilGenesisProof, ArgentGenesisProofError> {
-        let outputs = materialize_outputs(&self.bundle, &self.outputs)?;
+    pub fn sil_proof(&self, bundle: &ArtifactBundle<'_>) -> Result<SilGenesisProof, ArgentGenesisProofError> {
+        let outputs = materialize_outputs(bundle, &self.outputs)?;
         Ok(SilGenesisProof {
-            abis: vec![self.bundle.primary().sil_abi.clone()],
+            abis: vec![bundle.primary().sil_abi.clone()],
             authorizing_outpoint: self.authorizing_outpoint,
             claimed_covenant_id: self.claimed_covenant_id,
             outputs,
@@ -53,20 +52,20 @@ impl<'a> ArgentGenesisProof<'a> {
     }
 
     /// Check dependencies, authored states, and the claimed covenant ID.
-    pub fn check_consistency(&self) -> Result<(), ArgentGenesisProofError> {
-        self.sil_proof()?.check_consistency()?;
+    pub fn check_consistency(&self, bundle: &ArtifactBundle<'_>) -> Result<(), ArgentGenesisProofError> {
+        self.sil_proof(bundle)?.check_consistency()?;
         Ok(())
     }
 
     /// Verify the proof against a covenant ID from an independent source.
-    pub fn verify(&self, expected: Hash) -> Result<(), ArgentGenesisProofError> {
-        self.sil_proof()?.verify(expected)?;
+    pub fn verify(&self, bundle: &ArtifactBundle<'_>, expected: Hash) -> Result<(), ArgentGenesisProofError> {
+        self.sil_proof(bundle)?.verify(expected)?;
         Ok(())
     }
 }
 
 /// One authored actor state in an Argent covenant genesis group.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArgentGenesisOutput {
     /// Position of this output in the launch transaction.
     pub index: u32,

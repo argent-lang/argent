@@ -9,6 +9,7 @@ use kaspa_consensus_core::{
     hashing::covenant_id::covenant_id,
     tx::{ScriptPublicKey, TransactionOutpoint, TransactionOutput},
 };
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// One output in a covenant genesis group.
@@ -16,7 +17,7 @@ use thiserror::Error;
 /// `index` is the output's index in the launch transaction. The covenant
 /// binding is absent because consensus excludes it from the covenant-ID
 /// preimage.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedGenesisOutput {
     /// Position of this output in the launch transaction.
     pub index: u32,
@@ -37,7 +38,7 @@ impl IndexedGenesisOutput {
 }
 
 /// The exact consensus preimage of one covenant genesis group.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsensusGenesisProof {
     /// Previous outpoint of the input that authorized this genesis group.
     pub authorizing_outpoint: TransactionOutpoint,

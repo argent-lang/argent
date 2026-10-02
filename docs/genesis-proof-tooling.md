@@ -123,7 +123,6 @@ An Argent proof starts from actor names and authored state:
 
 ```rust
 struct ArgentGenesisProof {
-    bundle: ArtifactBundle,
     authorizing_outpoint: TransactionOutpoint,
     claimed_covenant_id: Hash,
     outputs: Vec<ArgentGenesisOutput>,
@@ -137,8 +136,11 @@ struct ArgentGenesisOutput {
 }
 ```
 
-The runtime API uses the existing `ArtifactBundle`. It borrows the artifacts,
-as `TxBuilder` does. An owned portable package is a later layer.
+The proof owns only its outpoint, claim, and authored outputs. Composition,
+lowering, and verification receive the existing `ArtifactBundle` as context.
+The bundle borrows artifacts, as `TxBuilder` does. The portable package owns
+both the artifacts and this same proof data; it need not reconstruct or copy
+the proof to verify it.
 
 One proof describes one genesis group from the bundle's primary app. Actor
 names resolve only in that app, and outputs may repeat an actor. Dependency
@@ -162,9 +164,9 @@ The proof uses the same authored-to-physical state materializer as
 create a second route-state encoder.
 
 An Argent verifier must derive all compiler-owned values itself. It must not
-accept route values from the proof as authoritative. If the serialized package
-also contains the derived Sil proof, verification regenerates it and requires
-an exact match.
+accept route values from the proof as authoritative. The portable package
+contains authored states, not cached physical route values or lower-layer
+proofs.
 
 ## Source verification and dependencies
 
@@ -194,7 +196,7 @@ and module loading belong in a higher orchestration layer:
 ```rust
 let bundle = compiled.runtime_bundle()?;
 let proof = ArgentGenesisProof::compose(&bundle, authorizing_outpoint, outputs)?;
-proof.verify(node_covenant_id)?;
+proof.verify(&bundle, node_covenant_id)?;
 ```
 
 Compiler callers can obtain this runtime view with
@@ -206,23 +208,69 @@ artifacts, or a lower-level Silverscript ABI.
 
 ## Portable package
 
-The portable package should contain the highest verification layer that the
-publisher wants to support:
+`GenesisProofPackage` contains one selected `GenesisProofLayer`:
 
 - a consensus proof explains only the covenant-ID preimage;
 - a Silverscript proof also explains each contract script and physical state;
-- an Argent proof also explains each actor and authored state;
-- an Argent source package also supports reproducible compilation.
+- an Argent proof also explains each actor and authored state.
 
-A package may cache lower-layer data for inspection. Each verifier must
-regenerate that data from the higher layer and compare it exactly. Cached data
-is evidence, not authority.
+The versioned JSON envelope has this shape:
 
-The source package is useful for human review, but verified artifacts are the
-stable execution evidence. Source verification also depends on exact compiler
-versions and the complete dependency closure.
+```json
+{
+  "schema_version": 1,
+  "proof": {
+    "kind": "argent",
+    "value": {}
+  }
+}
+```
 
-## Command-line shape
+`kind` is `consensus`, `sil`, or `argent`. `value` contains the complete data for
+that layer. Consensus and Silverscript proofs serialize directly. An Argent
+package contains the artifacts and the owned proof:
+
+```rust
+struct ArgentGenesisPackage {
+    primary: Artifact,
+    dependencies: Vec<Artifact>,
+    proof: ArgentGenesisProof,
+}
+```
+
+Embedded artifacts remain unchanged.
+
+An Argent package builds a borrowed `ArtifactBundle` from its owned artifacts
+for consistency checking or verification. It uses the stored proof and retains
+the published claim. Verification derives the lower layers through the
+existing proof APIs.
+
+```rust
+let package = GenesisProofPackage::new(ArgentGenesisPackage::new(&bundle, proof));
+let json = package.to_json()?;
+let loaded = GenesisProofPackage::from_json(&json)?;
+loaded.verify_argent(node_covenant_id)?;
+```
+
+`from_json` checks the JSON structure and package version, not proof contents.
+`check_consistency` checks the selected layer and its claim. `verify` also
+compares with the independent covenant ID, but checks only the selected layer.
+Callers that require authored-state and route-plan checks use `verify_argent`.
+It rejects consensus and Silverscript packages even if they produce the same
+ID. All checked operations reject unsupported package versions.
+
+Each higher layer derives and checks the lower layers. None proves that the
+artifacts match source code or that the application logic is correct.
+
+State maps use the existing tagged `ArtifactValue` JSON format. Package output
+uses Silverscript's pretty JSON formatter. The JSON text is not hashed; the
+covenant ID still comes from the consensus output preimage.
+
+A later source package can support reproducible compilation. It requires exact
+compiler versions and the complete source and dependency closure. That format
+is separate from this artifact package.
+
+## Planned command-line shape
 
 The command-line interface can expose the same layers:
 
@@ -263,7 +311,7 @@ covenant ID obtained from the selected UTXO.
 2. Add the self-contained Silverscript proof and lower it to a consensus proof.
 3. Add the Argent artifact proof and lower authored actor states to the
    Silverscript proof.
-4. Add JSON package encoding and command-line composition and verification.
+4. Add JSON package encoding, then command-line composition and verification.
 5. Add a source-package format with the complete dependency closure.
 
 Every step must produce and verify the lower-layer representation. Tests must
@@ -324,7 +372,8 @@ The third commit adds `genesis_proof/ag.rs`.
 
 It should:
 
-- use the existing runtime `ArtifactBundle` and check its dependency closure;
+- use the existing runtime `ArtifactBundle` as context and check its dependency
+  closure;
 - keep every genesis actor within the primary app;
 - accept authored state maps, including nested expansion preimages;
 - derive generated route fields and expansion digests through the existing
@@ -332,8 +381,8 @@ It should:
 - produce one `SilGenesisProof` using the primary app's embedded ABI;
 - retain the published covenant-ID claim when lowering, and compare it with
   an independently supplied ID during verification;
-- leave portable package ownership, serialization, source loading, and
-  command-line work for later legs.
+- keep proof data separate from the bundle; leave package ownership,
+  serialization, source loading, and command-line work for later legs.
 
 Compiled-app tests should compare the proof with an executed genesis
 transaction and with `TxBuilder::genesis_output`. They must cover repeated
@@ -341,3 +390,18 @@ actors, non-contiguous output indices, generated route context, expansion
 digests, changed authored states and actors, malformed states, rejected
 caller-supplied route fields, missing or mismatched dependencies, and a
 foreign actor in the genesis group.
+
+## Fourth implementation leg
+
+This leg has two review units:
+
+- **4a: Package API.** Add Serde support to the owned consensus and Silverscript
+  proofs and to the Argent proof data. Add an owned Argent package and a
+  versioned envelope with an explicit verification layer. Keep parsing separate
+  from consistency checking and external-ID verification. Test JSON
+  round-trips, unchanged embedded artifacts, retained claims, changed proof
+  data, missing or mismatched dependencies, and unsupported versions.
+- **4b: Command-line tools.** Compose and verify these packages through
+  `argentc`. Keep file loading and compilation outside `argent-runtime`.
+  Require an independent covenant ID for verification. Leave source-package
+  collection and node access for later work.

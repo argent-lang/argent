@@ -13,6 +13,125 @@ fn expanded_state(nonce: i64) -> BTreeMap<String, ArtifactValue> {
     }
 }
 
+fn round_trip_package(package: &GenesisProofPackage) -> GenesisProofPackage {
+    let json = package.to_json().expect("package serializes");
+    let decoded = GenesisProofPackage::from_json(&json).expect("package deserializes");
+    assert_eq!(&decoded, package);
+    decoded
+}
+
+#[test]
+fn authored_proof_data_outlives_its_bundle_and_round_trips_without_artifacts() {
+    let (artifact, proof) = {
+        let artifact = capsule_route_context_artifact();
+        let bundle = ArtifactBundle::new(&artifact).expect("artifact forms a bundle");
+        let proof = ArgentGenesisProof::compose(
+            &bundle,
+            outpoint(),
+            vec![ArgentGenesisOutput::new(0, 1_000, "ReserveAsset", expanded_state(7))],
+        )
+        .expect("proof composes");
+        (artifact, proof)
+    };
+    let json = serde_json::to_string(&proof).expect("proof data serializes without artifacts");
+    let decoded: ArgentGenesisProof = serde_json::from_str(&json).expect("proof data deserializes without a bundle");
+    assert_eq!(decoded, proof);
+    let bundle = ArtifactBundle::new(&artifact).expect("artifact context is supplied separately");
+    decoded.verify(&bundle, proof.claimed_covenant_id).expect("restored proof verifies with its context");
+}
+
+#[test]
+fn authored_package_retains_artifacts_and_rechecks_serialized_claims() {
+    let artifact = capsule_route_context_artifact();
+    let bundle = ArtifactBundle::new(&artifact).expect("artifact forms a bundle");
+    let proof =
+        ArgentGenesisProof::compose(&bundle, outpoint(), vec![ArgentGenesisOutput::new(0, 1_000, "ReserveAsset", expanded_state(7))])
+            .expect("proof composes");
+    let package = GenesisProofPackage::new(ArgentGenesisPackage::new(&bundle, proof.clone()));
+    let decoded = round_trip_package(&package);
+    let GenesisProofLayer::Argent(authored) = &decoded.proof else {
+        panic!("Argent layer is retained");
+    };
+    assert_eq!(authored.primary, artifact);
+    assert!(authored.dependencies.is_empty());
+    assert_eq!(authored.proof, proof);
+    let restored_bundle = authored.runtime_bundle().expect("runtime context restores");
+    assert_eq!(
+        authored.proof.sil_proof(&restored_bundle).expect("state materializes"),
+        proof.sil_proof(&bundle).expect("original state materializes")
+    );
+    decoded.verify(proof.claimed_covenant_id).expect("loaded authored proof verifies");
+    decoded.verify_argent(proof.claimed_covenant_id).expect("Argent verification checks authored state and context");
+    assert!(matches!(
+        decoded.verify_argent(Hash::from_bytes([0x99; 32])),
+        Err(GenesisProofPackageError::Argent(ArgentGenesisProofError::Sil(SilGenesisProofError::Preimage(
+            GenesisProofError::ExpectedCovenantIdMismatch { .. }
+        ))))
+    ));
+
+    let changes: [fn(&mut ArgentGenesisProof); 7] = [
+        |proof| {
+            proof.outputs[0].authored_state.insert("balance".to_string(), ArtifactValue::Int(101));
+        },
+        |proof| {
+            proof.outputs[0].authored_state.insert("policy".to_string(), ArtifactValue::Object(state! { nonce: 8 }));
+        },
+        |proof| {
+            proof.outputs[0].actor = "WalletAsset".to_string();
+        },
+        |proof| {
+            proof.outputs[0].value += 1;
+        },
+        |proof| {
+            proof.outputs[0].index += 1;
+        },
+        |proof| {
+            proof.authorizing_outpoint.index += 1;
+        },
+        |proof| {
+            proof.claimed_covenant_id = Hash::from_bytes([0xee; 32]);
+        },
+    ];
+    for change in changes {
+        let mut changed = package.clone();
+        let GenesisProofLayer::Argent(authored) = &mut changed.proof else {
+            panic!("Argent layer is retained");
+        };
+        change(&mut authored.proof);
+        let expected_claim = authored.proof.claimed_covenant_id;
+        let decoded = round_trip_package(&changed);
+        let GenesisProofLayer::Argent(authored) = &decoded.proof else {
+            panic!("Argent layer is retained");
+        };
+        assert_eq!(authored.proof.claimed_covenant_id, expected_claim);
+        assert!(matches!(
+            decoded.verify_argent(proof.claimed_covenant_id),
+            Err(GenesisProofPackageError::Argent(ArgentGenesisProofError::Sil(SilGenesisProofError::Preimage(
+                GenesisProofError::ClaimedCovenantIdMismatch { .. }
+            ))))
+        ));
+    }
+
+    let mut injected = decoded;
+    let GenesisProofLayer::Argent(authored) = &mut injected.proof else {
+        panic!("Argent layer is retained");
+    };
+    let role = &artifact
+        .argent
+        .template_plan
+        .runtime_states
+        .iter()
+        .find(|plan| plan.contract == "ReserveAsset")
+        .expect("route context exists")
+        .field_roles[0];
+    authored.proof.outputs[0].authored_state.insert(role.name.clone(), ArtifactValue::Bytes(vec![0xee; 32]));
+    assert!(matches!(
+        round_trip_package(&injected).verify_argent(proof.claimed_covenant_id),
+        Err(GenesisProofPackageError::Argent(ArgentGenesisProofError::OutputState { source, .. }))
+            if matches!(*source, BuilderError::HiddenRuntimeFieldProvided { .. })
+    ));
+}
+
 #[test]
 fn authored_proof_matches_genesis_transaction_with_routes_and_expansions() {
     let artifact = capsule_route_context_artifact();
@@ -24,7 +143,7 @@ fn authored_proof_matches_genesis_transaction_with_routes_and_expansions() {
         ArgentGenesisOutput::new(3, 2_000, "ReserveAsset", expanded_state(9)),
     ];
     let proof = ArgentGenesisProof::compose(&bundle, outpoint(), outputs).expect("authored proof composes");
-    let sil = proof.sil_proof().expect("physical proof materializes");
+    let sil = proof.sil_proof(&bundle).expect("physical proof materializes");
     assert_eq!(sil.abis, vec![artifact.sil_abi.clone()]);
     assert!(sil.outputs.iter().all(|output| output.abi_index == 0));
     assert_eq!(sil.outputs[1].contract, "WalletAsset");
@@ -71,8 +190,8 @@ fn authored_proof_matches_genesis_transaction_with_routes_and_expansions() {
     }
     assert!(transaction.outputs[1].covenant.is_none());
     let launched_id = transaction.outputs[0].covenant.expect("genesis output is bound").covenant_id;
-    proof.check_consistency().expect("proof is consistent");
-    proof.verify(launched_id).expect("proof agrees with the launched covenant");
+    proof.check_consistency(&bundle).expect("proof is consistent");
+    proof.verify(&bundle, launched_id).expect("proof agrees with the launched covenant");
 }
 
 #[test]
@@ -137,19 +256,19 @@ fn authored_proof_preserves_the_claim_and_checks_an_independent_id() {
             .expect("proof composes");
     let mut changed = proof.clone();
     changed.outputs[0].authored_state.insert("balance".to_string(), ArtifactValue::Int(101));
-    assert_eq!(changed.sil_proof().expect("changed state materializes").claimed_covenant_id, proof.claimed_covenant_id);
+    assert_eq!(changed.sil_proof(&bundle).expect("changed state materializes").claimed_covenant_id, proof.claimed_covenant_id);
     assert!(matches!(
-        changed.check_consistency(),
+        changed.check_consistency(&bundle),
         Err(ArgentGenesisProofError::Sil(SilGenesisProofError::Preimage(GenesisProofError::ClaimedCovenantIdMismatch { .. })))
     ));
     let mut changed_actor = proof.clone();
     changed_actor.outputs[0].actor = "WalletAsset".to_string();
     assert!(matches!(
-        changed_actor.verify(proof.claimed_covenant_id),
+        changed_actor.verify(&bundle, proof.claimed_covenant_id),
         Err(ArgentGenesisProofError::Sil(SilGenesisProofError::Preimage(GenesisProofError::ClaimedCovenantIdMismatch { .. })))
     ));
     assert!(matches!(
-        proof.verify(Hash::from_bytes([0x99; 32])),
+        proof.verify(&bundle, Hash::from_bytes([0x99; 32])),
         Err(ArgentGenesisProofError::Sil(SilGenesisProofError::Preimage(GenesisProofError::ExpectedCovenantIdMismatch { .. })))
     ));
 }
@@ -168,11 +287,51 @@ fn authored_proof_requires_the_dependency_closure_but_keeps_one_app_per_group() 
     let bundle = compiled.runtime_bundle().expect("artifacts form a runtime bundle");
     let output = ArgentGenesisOutput::new(0, 1_000, "Ctrl", state! { n: 7 });
     let proof = ArgentGenesisProof::compose(&bundle, outpoint(), vec![output.clone()]).expect("complete bundle composes");
-    let sil = proof.sil_proof().expect("physical proof materializes");
+    let sil = proof.sil_proof(&bundle).expect("physical proof materializes");
     assert_eq!(sil.abis.len(), 1);
     assert!(sil.abis[0].contract("Ctrl").is_some());
     assert!(sil.abis[0].contract("Asset").is_none());
-    proof.verify(proof.claimed_covenant_id).expect("dependency templates and primary state agree");
+    proof.verify(&bundle, proof.claimed_covenant_id).expect("dependency templates and primary state agree");
+
+    let package = GenesisProofPackage::new(ArgentGenesisPackage::new(&bundle, proof.clone()));
+    let decoded = round_trip_package(&package);
+    let GenesisProofLayer::Argent(authored) = &decoded.proof else {
+        panic!("Argent layer is retained");
+    };
+    assert_eq!(authored.dependencies, vec![compiled.app("AssetApp").expect("dependency exists").clone()]);
+    decoded.verify(proof.claimed_covenant_id).expect("loaded package restores the dependency closure");
+
+    let mut missing_dependency = package.clone();
+    let GenesisProofLayer::Argent(authored) = &mut missing_dependency.proof else {
+        panic!("Argent layer is retained");
+    };
+    authored.dependencies.clear();
+    assert!(matches!(
+        round_trip_package(&missing_dependency).check_consistency(),
+        Err(GenesisProofPackageError::Argent(ArgentGenesisProofError::Bundle(BuilderError::MissingDependencyArtifact { .. })))
+    ));
+
+    let mut mismatched_dependency = package.clone();
+    let GenesisProofLayer::Argent(authored) = &mut mismatched_dependency.proof else {
+        panic!("Argent layer is retained");
+    };
+    let dependency = &mut authored.dependencies[0];
+    dependency.generator.version.push_str("-different");
+    dependency.id = dependency.computed_id_hex().expect("changed artifact ID computes");
+    assert!(matches!(
+        round_trip_package(&mismatched_dependency).verify(proof.claimed_covenant_id),
+        Err(GenesisProofPackageError::Argent(ArgentGenesisProofError::Bundle(BuilderError::DependencyArtifactMismatch { .. })))
+    ));
+
+    let mut duplicate_dependency = package;
+    let GenesisProofLayer::Argent(authored) = &mut duplicate_dependency.proof else {
+        panic!("Argent layer is retained");
+    };
+    authored.dependencies.push(authored.dependencies[0].clone());
+    assert!(matches!(
+        round_trip_package(&duplicate_dependency).check_consistency(),
+        Err(GenesisProofPackageError::Argent(ArgentGenesisProofError::Bundle(BuilderError::DuplicateAppAlias(_))))
+    ));
 
     // Proof actor names resolve only in the primary app; app qualifiers are not paths.
     for actor_name in ["Asset", "asset_app::Asset", "ctrl_app::Ctrl"] {
@@ -188,6 +347,10 @@ fn authored_proof_requires_the_dependency_closure_but_keeps_one_app_per_group() 
         ArgentGenesisProof::compose(&missing, outpoint(), vec![output.clone()]),
         Err(ArgentGenesisProofError::Bundle(BuilderError::MissingDependencyArtifact { .. }))
     ));
+    assert!(matches!(
+        proof.check_consistency(&missing),
+        Err(ArgentGenesisProofError::Bundle(BuilderError::MissingDependencyArtifact { .. }))
+    ));
 
     let mut different_dependency = compiled.app("AssetApp").expect("dependency exists").clone();
     different_dependency.generator.version.push_str("-different");
@@ -195,6 +358,10 @@ fn authored_proof_requires_the_dependency_closure_but_keeps_one_app_per_group() 
     let mismatched = missing.with_artifact(&different_dependency).expect("individually consistent dependency attaches");
     assert!(matches!(
         ArgentGenesisProof::compose(&mismatched, outpoint(), vec![output]),
+        Err(ArgentGenesisProofError::Bundle(BuilderError::DependencyArtifactMismatch { .. }))
+    ));
+    assert!(matches!(
+        proof.verify(&mismatched, proof.claimed_covenant_id),
         Err(ArgentGenesisProofError::Bundle(BuilderError::DependencyArtifactMismatch { .. }))
     ));
 }

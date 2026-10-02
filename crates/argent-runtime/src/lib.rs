@@ -23,8 +23,9 @@ pub use context::{
     OutputOwner, OutputState, StateContext, TxContext, state_with, try_state_with,
 };
 pub use genesis_proof::{
-    ArgentGenesisOutput, ArgentGenesisProof, ArgentGenesisProofError, ConsensusGenesisProof, GenesisProofError, IndexedGenesisOutput,
-    SilGenesisOutput, SilGenesisProof, SilGenesisProofError,
+    ArgentGenesisOutput, ArgentGenesisPackage, ArgentGenesisProof, ArgentGenesisProofError, ConsensusGenesisProof,
+    GENESIS_PROOF_SCHEMA_VERSION, GenesisProofError, GenesisProofLayer, GenesisProofPackage, GenesisProofPackageError,
+    IndexedGenesisOutput, SilGenesisOutput, SilGenesisProof, SilGenesisProofError,
 };
 pub use silverscript_abi::ArtifactValue;
 
