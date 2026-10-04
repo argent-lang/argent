@@ -1,16 +1,24 @@
 # Genesis proof tooling
 
-This document plans tools that explain how an existing covenant ID was
-created. A verifier starts with a covenant ID obtained from a node and checks
-the launch data against it.
+Genesis proof tools explain how an existing covenant ID was created. A
+covenant ID commits to the authorizing input's previous outpoint (ensuring
+global uniqueness) and the complete genesis output group.
+Each output commitment includes its transaction index, value, and script
+public key. For a contract output, the script fixes the initial contract and
+its state.
+
+Checking this preimage establishes which contracts and initial states started
+the covenant. The continuation contracts then govern what can follow. A
+verifier starts with a covenant ID obtained independently, normally from a
+node-provided UTXO, and checks the supplied bootstrap against it.
 
 The proof follows the same lowering path as contract construction:
 
 ```text
-Argent source package + dependency closure
+Argent source + dependency closure
                     |
                     v
-          verified Argent artifacts
+          compiled Argent artifacts
                     |
          authored state -> physical state
                     v
@@ -24,9 +32,9 @@ Argent source package + dependency closure
               covenant ID
 ```
 
-Each layer proves one relation and delegates the next relation to the layer
-below it. The implementation must not duplicate state encoding, script
-construction, or covenant-ID hashing.
+Each layer checks one relation and delegates the next relation to the layer
+below it. The tools reuse runtime state encoding and script construction, and
+the consensus covenant-ID hash function.
 
 ## Consensus preimage
 
@@ -36,9 +44,6 @@ Consensus derives a covenant ID from:
 - the number of outputs in the genesis group;
 - each output's transaction index, value, script version, and script bytes, in
   group order.
-
-The output value and transaction index are therefore part of a proof. Initial
-actor states and the authorizing outpoint alone are not sufficient.
 
 The lowest layer contains no Argent or Silverscript concepts:
 
@@ -58,11 +63,7 @@ struct IndexedGenesisOutput {
 
 The output indices must be unique and strictly increasing. They do not need to
 be contiguous. A proof computes the ID with Kaspa's consensus `covenant_id`
-function and compares it with both `claimed_covenant_id` and the independently
-trusted ID supplied by the verifier.
-
-The independently trusted ID is normally read from a live UTXO. It is not
-taken from the proof package.
+function and checks that it matches `claimed_covenant_id`.
 
 ## Silverscript proof
 
@@ -88,10 +89,8 @@ struct SilGenesisOutput {
 ABI units retain caller-supplied order. Each output selects one unit by its
 zero-based `abi_index` within the proof.
 
-The proof preserves each original ABI compilation unit. It never merges their
-global struct tables. This permits independent ABI units to use the same
-contract or struct names and avoids changing the meaning of contract-local
-`State` references.
+Each ABI unit is retained unchanged and has its own contract and struct
+namespaces. Names may repeat across units.
 
 Verification performs these steps for each output:
 
@@ -108,18 +107,15 @@ The Silverscript proof is self-contained. Cross-app template constants are
 already present in the compiled contracts. The proof supplies complete
 physical runtime state, including route values.
 
-This layer checks that the runtime state matches the Silverscript ABI. It does
-not prove that a route value expresses the intended Argent route plan. A user
-of the lower-level API must verify such application-specific values separately.
-
-The initial format can require every proof output to name a compiled contract.
-If genesis groups later need opaque, non-contract outputs, the output recipe
-can gain an explicit script-public-key variant. Such an output would contribute
-to the covenant ID but would carry no contract-state claim.
+Every Silverscript proof output names a compiled contract. Use the consensus
+layer for groups that contain raw script outputs without a contract-state
+claim.
 
 ## Argent artifact proof
 
-An Argent proof starts from actor names and authored state:
+An Argent proof describes the initial actors and authored states of one
+covenant. The app's artifact and dependency artifacts supply the information
+needed to derive their physical contract states.
 
 ```rust
 struct ArgentGenesisProof {
@@ -136,15 +132,9 @@ struct ArgentGenesisOutput {
 }
 ```
 
-The proof owns only its outpoint, claim, and authored outputs. Composition,
-lowering, and verification receive the existing `ArtifactBundle` as context.
-The bundle borrows artifacts, as `TxBuilder` does. The portable package owns
-both the artifacts and this same proof data; it need not reconstruct or copy
-the proof to verify it.
-
-One proof describes one genesis group from the bundle's primary app. Actor
-names resolve only in that app, and outputs may repeat an actor. Dependency
-actors cannot join this group. Dependencies supply the checked templates and
+One proof describes one genesis group from the primary app. Actor names
+resolve only in that app, and outputs may repeat an actor. Dependency actors
+cannot join this group. Dependencies supply the checked templates and
 interfaces needed by the primary app.
 
 Verification performs these steps:
@@ -152,69 +142,37 @@ Verification performs these steps:
 1. Check the primary artifact and its dependency artifacts.
 2. Resolve each actor in the primary app.
 3. Validate and encode its authored state.
-4. Derive expansion digests and compiler-owned route state.
+4. Derive expansion digests and compiler-owned state fields.
 5. Produce the corresponding `SilGenesisOutput`.
 6. Delegate script construction and covenant-ID calculation to the lower
    layers.
 
-`ArtifactBundle` checks artifact consistency when each artifact is attached.
-`TxBuilder::from_bundle` checks the dependency IDs and imported interfaces.
-The proof uses the same authored-to-physical state materializer as
-`TxBuilder::genesis_output`, then delegates to `SilGenesisProof`. It does not
-create a second route-state encoder.
-
-An Argent verifier must derive all compiler-owned values itself. It must not
-accept route values from the proof as authoritative. The portable package
-contains authored states, not cached physical route values or lower-layer
-proofs.
+Argent can add state fields that commit to the templates of actors a contract
+may later become. The proof derives these fields from the app's artifact,
+rather than accepting caller-supplied values. This checks that the genesis
+states contain the app's template commitments, in addition to the
+Silverscript layer's script and state checks.
 
 ## Source verification and dependencies
 
-Argent source verification needs the complete compilation input, not only the
-file that declares the selected app. Imports and observed or spawned foreign
-actors can affect generated template constants and route plans.
+Source verification connects the proof's artifacts to the app code being
+reviewed. It recompiles the selected app and its dependencies, then compares
+their artifact IDs with those used by the proof.
 
-A portable source package must therefore identify:
+Compilation needs the root module and all imported source modules. Foreign
+apps used by observes or spawns can contribute templates to the generated
+contracts, so their dependencies are part of this check too.
 
-- the root module and selected app;
-- every source module in the compilation closure;
-- linked application artifacts, unless their complete source closures are
-  included instead;
-- the Argent compiler version.
-
-The selected Argent compiler determines its Silverscript dependency. The
-generated Sil ABI records the Silverscript compiler version, so the source
-package does not need to declare it separately.
-
-Source verification compiles this closed input and compares the produced
-artifact identities with the artifacts used by the Argent proof. Repository
-paths or network lookups must not silently supply missing dependencies.
-
-The core Rust proof API accepts a compiled artifact bundle. Source collection
-and module loading belong in a higher orchestration layer:
-
-```rust
-let bundle = compiled.runtime_bundle()?;
-let proof = ArgentGenesisProof::compose(&bundle, authorizing_outpoint, outputs)?;
-proof.verify(&bundle, node_covenant_id)?;
-```
-
-Compiler callers can obtain this runtime view with
-`CompiledAppBundle::runtime_bundle()`. The proof layer itself has no compiler
-dependency.
-
-This separation lets callers verify the same genesis through source, Argent
-artifacts, or a lower-level Silverscript ABI.
+The verifier supplies the source tree separately from the proof package.
+Use an Argent compiler version that reproduces the artifacts. That compiler
+determines its Silverscript dependency; the generated ABI records the
+Silverscript compiler version.
 
 ## Portable package
 
-`GenesisProofPackage` contains one selected `GenesisProofLayer`:
-
-- a consensus proof explains only the covenant-ID preimage;
-- a Silverscript proof also explains each contract script and physical state;
-- an Argent proof also explains each actor and authored state.
-
-The versioned JSON envelope has this shape:
+`GenesisProofPackage` carries the data needed to verify one proof at its
+selected layer. Its JSON envelope identifies that layer; the proof data is
+omitted here:
 
 ```json
 {
@@ -226,9 +184,8 @@ The versioned JSON envelope has this shape:
 }
 ```
 
-`kind` is `consensus`, `sil`, or `argent`. `value` contains the complete data for
-that layer. Consensus and Silverscript proofs serialize directly. An Argent
-package contains the artifacts and the owned proof:
+`kind` is `consensus`, `sil`, or `argent`. `value` contains the corresponding
+proof data. An Argent package also contains the app and dependency artifacts:
 
 ```rust
 struct ArgentGenesisPackage {
@@ -240,11 +197,6 @@ struct ArgentGenesisPackage {
 
 Embedded artifacts remain unchanged.
 
-An Argent package builds a borrowed `ArtifactBundle` from its owned artifacts
-for consistency checking or verification. It uses the stored proof and retains
-the published claim. Verification derives the lower layers through the
-existing proof APIs.
-
 ```rust
 let package = GenesisProofPackage::new(ArgentGenesisPackage::new(&bundle, proof));
 let json = package.to_json()?;
@@ -252,60 +204,51 @@ let loaded = GenesisProofPackage::from_json(&json)?;
 loaded.verify_argent(node_covenant_id)?;
 ```
 
-`from_json` checks the JSON structure and package version, not proof contents.
-`check_consistency` checks the selected layer and its claim. `verify` also
-compares with the independent covenant ID, but checks only the selected layer.
-Callers that require authored-state and route-plan checks use `verify_argent`.
-It rejects consensus and Silverscript packages even if they produce the same
-ID. All checked operations reject unsupported package versions.
+| Operation | What it does |
+| --- | --- |
+| `from_json` | Parse JSON and check the package version. |
+| `check_consistency` | Check the selected layer's data and its covenant-ID claim. |
+| `verify(expected)` | Also compare with the independently supplied covenant ID. |
+| `verify_argent(expected)` | Require an Argent-layer package and verify it. |
 
-Each higher layer derives and checks the lower layers. None proves that the
-artifacts match source code or that the application logic is correct.
+Use the covenant ID from a node-provided UTXO as `expected`. Unsupported
+package versions are rejected by these operations.
 
-State maps use the existing tagged `ArtifactValue` JSON format. Package output
-uses Silverscript's pretty JSON formatter. The JSON text is not hashed; the
-covenant ID still comes from the consensus output preimage.
-
-A later source package can support reproducible compilation. It requires exact
-compiler versions and the complete source and dependency closure. That format
-is separate from this artifact package.
+State maps use the tagged `ArtifactValue` JSON format. Package output uses
+Silverscript's pretty JSON formatter.
 
 ## Command-line tools
+
+Compose from Argent source, Argent artifacts, or Silverscript ABI files.
+Choose one input mode per command.
+
+### Argent composition
 
 A covenant bootstrap lists the initial actors and their states for one covenant
 instance. It also records the authorizing outpoint and output indices and values.
 Its required `app` field must match the bundle's primary app. All output actor
 names are local to that app.
 
-Compose an Argent package from source and a covenant bootstrap:
+For example, save this app as `app.ag`:
 
-```text
-argentc genesis compose \
-  app.ag \
-  --app Tickets \
-  --bootstrap genesis.json \
-  --out genesis-proof.json
+```rust
+state CounterState {
+    int count;
+}
+
+actor Counter owns CounterState {
+    entry hold() emits next: Counter {
+        unrestricted(next.value);
+        become next <- self;
+    }
+}
+
+app Counters {
+    actor Counter;
+}
 ```
 
-The source file must declare exactly one app unless `--app` selects it. Imports
-supply the complete source dependency closure. Compilation uses a temporary
-build directory; it does not write build files into the source tree.
-
-Existing artifacts can supply the same compilation result:
-
-```text
-argentc genesis compose \
-  --artifact build/launcher/artifact.json \
-  --dependency build/launcher/apps/ChildApp/artifact.json \
-  --bootstrap genesis.json \
-  --out genesis-proof.json
-```
-
-Source and artifact inputs are mutually exclusive. Repeat `--dependency` for
-all dependency artifacts. The runtime checks their app names and artifact IDs;
-the CLI does not accept aliases or fetch missing artifacts.
-
-The bootstrap has no covenant-ID claim:
+The bootstrap data has this form:
 
 ```rust
 struct ArgentCovenantBootstrap {
@@ -315,9 +258,8 @@ struct ArgentCovenantBootstrap {
 }
 ```
 
-Output values are KAS values in sompi units. Output indices must be strictly
-increasing; the CLI does not sort them. Authored state uses the tagged
-`ArtifactValue` JSON format. For example:
+Save this bootstrap as `genesis.json`. Values are in sompi units; indices are
+positions in the full launch transaction:
 
 ```json
 {
@@ -339,24 +281,46 @@ increasing; the CLI does not sort them. Authored state uses the tagged
 }
 ```
 
-Composition derives the ID, prints it, and writes a self-contained Argent
-package with unchanged embedded artifacts. `--out` must name a new file; an
-existing file is not overwritten.
+Replace the example outpoint with the real authorizing input's previous
+outpoint.
 
-Independent Silverscript ABI files can supply contracts without an Argent app:
+Compose the package from source:
 
 ```text
 argentc genesis compose \
-  --sil-abi mint.json \
-  --sil-abi ticket.json \
+  app.ag \
+  --app Counters \
   --bootstrap genesis.json \
   --out genesis-proof.json
 ```
 
-ABI files remain separate and unchanged, in command-line order. Each output
-selects one by `abi_index`, starting at zero. This mode cannot be combined with
-Argent source, `--artifact`, `--app`, or `--dependency`. It accepts a
-`SilCovenantBootstrap`, with physical state rather than authored actor state:
+`--app` is optional when the source file declares exactly one app. Imports
+supply its source dependencies.
+
+Alternatively, compose from existing artifacts:
+
+```text
+argentc build app.ag --app Counters --out build/counters
+
+argentc genesis compose \
+  --artifact build/counters/artifact.json \
+  --bootstrap genesis.json \
+  --out artifact-genesis-proof.json
+```
+
+For apps with dependencies, add `--dependency dependency.json` once per
+dependency artifact, including transitive dependencies. Their app names and
+artifact IDs must match the dependency records.
+
+Composition prints the calculated ID and writes the proof package. `--out`
+must name a new file. For verification, obtain the covenant ID independently;
+do not use the printed ID as the reference.
+
+### Silverscript composition
+
+Supply ABI files produced by Silverscript and the complete physical runtime
+states required by their contracts. The bootstrap uses `SilGenesisOutput`
+instead of authored actor states:
 
 ```rust
 struct SilCovenantBootstrap {
@@ -365,7 +329,9 @@ struct SilCovenantBootstrap {
 }
 ```
 
-For example, one output using the first ABI file has this form:
+For this example, `mint.json` contains a `Mint` contract with an integer
+`amount` field, and `ticket.json` contains a `Ticket` contract with an integer
+`number` field. Save their bootstrap as `sil-genesis.json`:
 
 ```json
 {
@@ -375,21 +341,38 @@ For example, one output using the first ABI file has this form:
   },
   "outputs": [
     {
-      "index": 2,
+      "index": 0,
       "value": 1000,
       "abi_index": 0,
       "contract": "Mint",
       "runtime_state": {
         "amount": { "kind": "int", "value": 7 }
       }
+    },
+    {
+      "index": 2,
+      "value": 2000,
+      "abi_index": 1,
+      "contract": "Ticket",
+      "runtime_state": {
+        "number": { "kind": "int", "value": 7 }
+      }
     }
   ]
 }
 ```
 
-This mode checks the ABI and complete physical state. It does not derive
-Argent route commitments or expansion digests. Direct `.sil` compilation is
-not part of this command; supply ABI files produced by Silverscript instead.
+```text
+argentc genesis compose \
+  --sil-abi mint.json \
+  --sil-abi ticket.json \
+  --bootstrap sil-genesis.json \
+  --out sil-genesis-proof.json
+```
+
+`abi_index` follows the order of the `--sil-abi` arguments, starting at zero.
+
+### Verification
 
 Verify any supported package against an independent covenant ID:
 
@@ -400,9 +383,8 @@ argentc genesis verify \
 ```
 
 This command accepts Argent, Silverscript, and consensus packages. It checks
-the selected format and reports which data it checked. A Silverscript package
-needs no Argent app or metadata; its independent ABI units remain separate.
-Use `--require-argent` when authored-state and route-plan checks are required.
+the package's layer and reports what it checked. Add `--require-argent` to
+require the authored-state and generated-field checks of an Argent proof.
 
 Source comparison is an additional Argent check:
 
@@ -410,19 +392,14 @@ Source comparison is an additional Argent check:
 argentc genesis verify genesis-proof.json \
   --covenant-id <node-provided-id> \
   --source app.ag \
-  --app Tickets
+  --app Counters
 ```
 
-It verifies the stored claim, recompiles the source and dependencies, and
-compares the primary and dependency artifact IDs with the package. It never
-replaces the claim with a new ID. Without `--source`, the command states that
-source correspondence was not checked. Neither mode proves application logic
-correct.
+`--source` recompiles the app and dependencies and compares their artifact IDs
+with the package. Without it, verification uses the packaged artifacts.
 
-Comparison with Silverscript source remains follow-up work. Portable source
-collection also remains separate.
-
-The CLI tests use a complete bootstrap with expanded state and route fields:
+For a complete example with expanded state and generated route fields, run
+this command from the repository root:
 
 ```text
 cargo run -- genesis compose tests/fixtures/emit/capsule_route_context/app.ag \
@@ -430,15 +407,11 @@ cargo run -- genesis compose tests/fixtures/emit/capsule_route_context/app.ag \
   --out asset-genesis-proof.json
 ```
 
-Node access remains outside the first implementation. The caller supplies the
-covenant ID obtained from the selected UTXO.
-
 ## Bootstrap export API
 
 Both bootstrap types support Serde serialization and deserialization. They
-carry no artifacts or covenant-ID claim. Their `compose` methods check the
-supplied artifacts or ABI units and derive a proof; JSON parsing alone does
-not perform those checks.
+carry the launch data. Call `compose(&bundle)` for an Argent bootstrap or
+`compose(abis)` for a Silverscript bootstrap to produce a proof.
 
 An Argent caller can export the authored bootstrap from the same `TxContext`
 used to build a launch transaction:
@@ -452,24 +425,35 @@ let proof = bootstrap.compose(&bundle)?;
 let package = GenesisProofPackage::new(ArgentGenesisPackage::new(&bundle, proof));
 ```
 
-The exporter selects the group by both authorizing input and subgroup name.
-It records that input's previous outpoint and preserves each selected output's
-global transaction index and value. Primary-app actor paths become local actor
-names under the top-level `app` field. Authored state keeps expansion preimages;
-composition derives their digests and compiler-owned route fields.
+The exporter selects one group by its authorizing input index and subgroup
+name. It preserves the authorizing outpoint, global output indices, values,
+and authored states, including expansion preimages. The bootstrap records
+the primary app name and local actor names.
 
-The selected group must be nonempty and contain only primary-app actors with
-static authored states. Raw-script outputs, foreign-app actors, and deferred
-states are rejected, not omitted. The exporter does not build the transaction
-or evaluate callbacks. Unrelated outputs are not part of the exported group.
-After launch, verify the resulting package against the covenant ID from a
-node-provided UTXO, as with any other proof.
+Exporting does not build the transaction. The selected group must be nonempty
+and contain static authored states for primary-app actors. Raw-script
+outputs, foreign-app actors, and deferred state callbacks are rejected.
 
-## Crate boundaries
+## Rust API and crate boundaries
 
 `argent-genesis` owns the proof APIs and portable packages. It depends on
 `argent-runtime` for artifact bundles, authored-state materialization, and
 redeem-script construction. Runtime does not depend on the proof crate.
+
+The proof APIs accept compiled artifacts. A compiler caller obtains the
+runtime bundle with `CompiledAppBundle::runtime_bundle()`:
+
+```rust
+let bundle = compiled.runtime_bundle()?;
+let proof = ArgentGenesisProof::compose(&bundle, authorizing_outpoint, outputs)?;
+proof.verify(&bundle, node_covenant_id)?;
+```
+
+`ArtifactBundle` checks artifact consistency when each artifact is attached.
+`TxBuilder::from_bundle` checks dependency IDs and imported interfaces.
+The Argent proof uses `TxBuilder::materialize_actor_state`, which shares the
+state conversion used by `TxBuilder::genesis_output`. The Silverscript proof
+uses `argent_runtime::materialize_redeem_script` for script construction.
 
 The compiler crate reexports the proof API as `argent::genesis`. Consumers
 that do not need compilation can use `argent-genesis` directly. File loading,

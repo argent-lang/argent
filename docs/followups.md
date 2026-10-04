@@ -154,15 +154,6 @@ Validate the actor, entry, state layout, and value types against the artifact.
 Add a test in which an actor rename changes generated ABI names. The observer
 must continue to work without a code change.
 
-## Launch proofs
-
-**Area:** `argent-rt`, launch APIs, and audit tools.
-
-**Follow-up:** Implement the layered composition and verification plan in
-[Genesis proof tooling](genesis-proof-tooling.md). It covers the consensus
-preimage, Silverscript contracts and physical state, Argent actors and authored
-state, and the source dependency closure.
-
 ## KCC20 bootstrap with `spawns`
 
 **Area:** ICC examples, ICC documentation, and `argent-rt` runtime tests.
