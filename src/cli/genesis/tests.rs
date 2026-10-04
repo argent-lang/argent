@@ -128,12 +128,64 @@ fn verify_requires_an_independent_valid_id() {
     };
     assert_eq!(args.covenant_id, id);
     assert!(args.require_argent);
+    assert_eq!(args.proof, Some(PathBuf::from("proof.json")));
+    assert!(args.bootstrap.is_none());
     assert_eq!(args.source, Some(PathBuf::from("app.ag")));
 
     assert!(
         Cli::try_parse_from(["argentc", "genesis", "verify", "proof.json", "--covenant-id", &id.to_string(), "--app", "Example",])
             .is_err()
     );
+}
+
+#[test]
+fn verify_parses_source_bootstrap_without_a_package() {
+    let id = Hash::from_bytes([0x61; 32]);
+    let cli = Cli::try_parse_from([
+        "argentc",
+        "genesis",
+        "verify",
+        "--source",
+        "app.ag",
+        "--bootstrap",
+        "genesis.json",
+        "--covenant-id",
+        &id.to_string(),
+        "--app",
+        "Example",
+    ])
+    .expect("direct bootstrap verification parses");
+    let Command::Genesis(GenesisCommand::Verify(args)) = cli.command else {
+        panic!("expected verification");
+    };
+    assert!(args.proof.is_none());
+    assert_eq!(args.bootstrap, Some(PathBuf::from("genesis.json")));
+    assert_eq!(args.source, Some(PathBuf::from("app.ag")));
+    assert_eq!(args.app.as_deref(), Some("Example"));
+    assert_eq!(args.covenant_id, id);
+}
+
+#[test]
+fn verify_rejects_ambiguous_or_incomplete_inputs() {
+    let id = Hash::from_bytes([0x61; 32]).to_string();
+    for mode in [
+        vec![],
+        vec!["--source", "app.ag"],
+        vec!["--bootstrap", "genesis.json"],
+        vec!["proof.json", "--bootstrap", "genesis.json", "--source", "app.ag"],
+    ] {
+        let mut argv = vec!["argentc", "genesis", "verify"];
+        argv.extend(mode);
+        argv.extend(["--covenant-id", &id]);
+        assert_eq!(Cli::try_parse_from(argv).expect_err("invalid verification mode is rejected").exit_code(), 2);
+    }
+    for id in [None, Some("invalid")] {
+        let mut argv = vec!["argentc", "genesis", "verify", "--source", "app.ag", "--bootstrap", "genesis.json"];
+        if let Some(id) = id {
+            argv.extend(["--covenant-id", id]);
+        }
+        assert_eq!(Cli::try_parse_from(argv).expect_err("direct verification requires a valid independent ID").exit_code(), 2);
+    }
 }
 
 #[test]

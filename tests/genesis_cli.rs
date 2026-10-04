@@ -7,8 +7,8 @@ use std::{
 use argent::{
     build_file_bundle,
     genesis::{
-        ConsensusGenesisProof, GenesisProofLayer, GenesisProofPackage, IndexedGenesisOutput, SilCovenantBootstrap, SilGenesisOutput,
-        SilGenesisProof,
+        ArgentCovenantBootstrap, ConsensusGenesisProof, GenesisProofLayer, GenesisProofPackage, IndexedGenesisOutput,
+        SilCovenantBootstrap, SilGenesisOutput, SilGenesisProof,
     },
 };
 use kaspa_consensus_core::{
@@ -96,6 +96,86 @@ fn source_composition_verifies_expansions_routes_and_source_correspondence() {
     let err =
         fails(cli().args(["genesis", "verify"]).arg(&path).args(["--covenant-id", &id.to_string(), "--source"]).arg(&copied_source));
     assert!(err.contains("source primary artifact does not match proof package"), "{err}");
+}
+
+#[test]
+fn source_bootstrap_verification_checks_routes_and_expansions_without_writing_a_package() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let compiled = build_file_bundle(source(), dir.path().join("reference-build")).expect("reference app builds");
+    let bundle = compiled.runtime_bundle().expect("reference bundle checks");
+    let data: ArgentCovenantBootstrap =
+        serde_json::from_str(&fs::read_to_string(bootstrap()).expect("bootstrap reads")).expect("bootstrap parses");
+    let id = data.compose(&bundle).expect("reference proof composes").claimed_covenant_id;
+    let run_dir = dir.path().join("verify");
+    fs::create_dir(&run_dir).expect("empty working directory");
+
+    let stdout = succeeds(
+        cli()
+            .current_dir(&run_dir)
+            .args(["genesis", "verify", "--source"])
+            .arg(source())
+            .arg("--bootstrap")
+            .arg(bootstrap())
+            .args(["--covenant-id", &id.to_string()]),
+    );
+    assert!(stdout.contains(&format!("covenant ID matches: {id}")));
+    assert!(stdout.contains("checked: Argent source, authored states, and derived runtime state"));
+    assert!(!stdout.contains("source correspondence matches"));
+
+    let err = fails(
+        cli()
+            .current_dir(&run_dir)
+            .args(["genesis", "verify", "--source"])
+            .arg(source())
+            .arg("--bootstrap")
+            .arg(bootstrap())
+            .args(["--covenant-id", &Hash::from_bytes([0xee; 32]).to_string()]),
+    );
+    assert!(err.contains("proof produces covenant ID"), "{err}");
+    assert_eq!(fs::read_dir(&run_dir).expect("working directory reads").count(), 0);
+}
+
+#[test]
+fn source_bootstrap_verification_rejects_changed_bootstraps_and_source() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let (_, _, id) = compose_source(&dir);
+    let data: Value = serde_json::from_str(&fs::read_to_string(bootstrap()).expect("bootstrap reads")).expect("bootstrap parses");
+    let bootstrap_path = dir.path().join("changed-bootstrap.json");
+    let mut changed_balance = data.clone();
+    changed_balance["outputs"][0]["authored_state"]["balance"]["value"] = json!(101);
+    let mut changed_preimage = data.clone();
+    changed_preimage["outputs"][0]["authored_state"]["policy"]["value"]["nonce"]["value"] = json!(9);
+    let mut changed_app = data;
+    changed_app["app"] = json!("OtherApp");
+    for (changed, expected) in [
+        (changed_balance, "proof produces covenant ID"),
+        (changed_preimage, "proof produces covenant ID"),
+        (changed_app, "bootstrap app `OtherApp` does not match primary app `Asset`"),
+    ] {
+        write_json(&bootstrap_path, &changed);
+        let err = fails(
+            cli()
+                .args(["genesis", "verify", "--source"])
+                .arg(source())
+                .arg("--bootstrap")
+                .arg(&bootstrap_path)
+                .args(["--covenant-id", &id.to_string()]),
+        );
+        assert!(err.contains(expected), "{err}");
+    }
+
+    let changed_source = dir.path().join("changed.ag");
+    let changed = fs::read_to_string(source()).expect("source reads").replace("policy.nonce + 1", "policy.nonce + 2");
+    fs::write(&changed_source, changed).expect("changed source writes");
+    let err = fails(
+        cli()
+            .args(["genesis", "verify", "--source"])
+            .arg(&changed_source)
+            .arg("--bootstrap")
+            .arg(bootstrap())
+            .args(["--covenant-id", &id.to_string()]),
+    );
+    assert!(err.contains("proof produces covenant ID"), "{err}");
 }
 
 #[test]
@@ -316,6 +396,12 @@ fn dependency_closure_is_required_for_artifacts_and_compiled_for_sources() {
     };
     assert_eq!(authored.dependencies, vec![compiled.app("ChildApp").expect("child app exists").clone()]);
     let id = authored.proof.claimed_covenant_id;
+    let stdout = succeeds(cli().args(["genesis", "verify", "--source"]).arg(&source).arg("--bootstrap").arg(&bootstrap).args([
+        "--covenant-id",
+        &id.to_string(),
+        "--require-argent",
+    ]));
+    assert!(stdout.contains("checked: Argent source, authored states, and derived runtime state"));
     let stdout =
         succeeds(cli().args(["genesis", "verify"]).arg(&proof).args(["--covenant-id", &id.to_string(), "--source"]).arg(&source));
     assert!(stdout.contains("source correspondence matches"));
@@ -430,6 +516,28 @@ fn source_with_multiple_apps_requires_selection() {
             .arg(bootstrap())
             .arg("--out")
             .arg(&proof),
+    );
+    let GenesisProofLayer::Argent(package) = read_package(&proof).proof else {
+        panic!("Argent package expected");
+    };
+    let id = package.proof.claimed_covenant_id;
+    let err = fails(
+        cli()
+            .args(["genesis", "verify", "--source"])
+            .arg(&source_path)
+            .arg("--bootstrap")
+            .arg(bootstrap())
+            .args(["--covenant-id", &id.to_string()]),
+    );
+    assert!(err.contains("select an app with --app"), "{err}");
+    succeeds(
+        cli()
+            .args(["genesis", "verify", "--source"])
+            .arg(&source_path)
+            .args(["--app", "Asset"])
+            .arg("--bootstrap")
+            .arg(bootstrap())
+            .args(["--covenant-id", &id.to_string()]),
     );
 }
 

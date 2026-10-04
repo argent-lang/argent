@@ -289,6 +289,25 @@ Silverscript ABI and artifact boundaries are split into small crates so they can
 be kept portable. Multi-app ICC uses `ArtifactBundle`; the transaction context
 is otherwise the same for single- and multi-app transactions.
 
+## Genesis proofs
+
+A covenant ID commits to the authorizing outpoint and initial output group.
+Genesis proofs let a verifier check which app and actor states started a
+covenant, using its ID from a node-provided UTXO.
+
+Verify an app and its bootstrap data against the on-chain ID:
+
+```text
+cargo run -- genesis verify --source app.ag \
+  --bootstrap genesis.json --covenant-id <node-provided-id>
+```
+
+Portable proof packages can also be composed from source, compiled Argent
+artifacts, or independent Silverscript ABI files. The `argent-genesis` crate
+provides the Rust APIs, including bootstrap export from a launch `TxContext`.
+See [Genesis proof tooling](docs/genesis-proof-tooling.md)
+for bootstrap formats, examples, and the proof layers.
+
 ## Why Argent
 
 Kaspa covenants make it possible to build applications from several stateful

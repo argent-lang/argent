@@ -1,4 +1,4 @@
-//! Filesystem and compiler orchestration for portable genesis proof packages.
+//! Filesystem and compiler orchestration for genesis proofs and bootstraps.
 
 use std::{
     collections::BTreeMap,
@@ -22,7 +22,7 @@ use serde::de::DeserializeOwned;
 pub(crate) enum GenesisCommand {
     /// Compose a proof from an Argent app or independent Silverscript ABI files.
     Compose(ComposeArgs),
-    /// Verify a package against an independently obtained covenant ID.
+    /// Verify a package or source bootstrap against an independently obtained covenant ID.
     Verify(VerifyArgs),
 }
 
@@ -53,17 +53,21 @@ pub(crate) struct ComposeArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(group(ArgGroup::new("input").required(true).args(["proof", "bootstrap"])))]
 pub(crate) struct VerifyArgs {
     /// Self-contained Argent, Silverscript, or consensus proof package.
     #[arg(value_name = "PROOF.JSON")]
-    proof: PathBuf,
-    /// Covenant ID from a node or another independent source, not from this package.
+    proof: Option<PathBuf>,
+    /// Argent bootstrap to verify directly with --source, instead of a proof package.
+    #[arg(long, requires = "source", value_name = "GENESIS.JSON")]
+    bootstrap: Option<PathBuf>,
+    /// Covenant ID from a node or another independent source.
     #[arg(long, value_name = "ID")]
     covenant_id: Hash,
     /// Reject lower-level packages that do not check authored state and route context.
     #[arg(long)]
     require_argent: bool,
-    /// Also recompile this Argent source and compare all artifact identities.
+    /// Compile this app to verify a bootstrap or compare a package's artifact identities.
     #[arg(long, value_name = "APP.AG")]
     source: Option<PathBuf>,
     /// Select an app from --source; otherwise it must declare exactly one.
@@ -119,14 +123,31 @@ fn compose_package(bundle: &ArtifactBundle<'_>, bootstrap: ArgentCovenantBootstr
 }
 
 fn verify(args: VerifyArgs) -> Result<()> {
-    let json = read_text(&args.proof)?;
-    let package = GenesisProofPackage::from_json(&json).map_err(|err| ArgentError::at(&args.proof, err.to_string()))?;
+    // Mode 1: source + bootstrap, without a proof package.
+    // Compile the app and verify the bootstrap against the supplied covenant ID.
+    if let Some(path) = &args.bootstrap {
+        let bootstrap: ArgentCovenantBootstrap = read_json(path)?;
+        let source = args.source.as_ref().expect("Clap requires source for bootstrap verification");
+        let compiled = compile_source(source, args.app.as_deref())?;
+        let bundle = compiled.runtime_bundle().map_err(|err| ArgentError::new(err.to_string()))?;
+        let proof = bootstrap.compose(&bundle).map_err(|err| ArgentError::at(path, err.to_string()))?;
+        proof.verify(&bundle, args.covenant_id).map_err(|err| ArgentError::at(path, err.to_string()))?;
+        println!("covenant ID matches: {}", args.covenant_id);
+        println!("checked: Argent source, authored states, and derived runtime state");
+        return Ok(());
+    }
+
+    // Mode 2: verify a proof package against the supplied covenant ID.
+    // Optional --source also checks that its artifacts match the source.
+    let path = args.proof.as_ref().expect("Clap requires a proof package or bootstrap");
+    let json = read_text(path)?;
+    let package = GenesisProofPackage::from_json(&json).map_err(|err| ArgentError::at(path, err.to_string()))?;
     if args.require_argent || args.source.is_some() {
         package.verify_argent(args.covenant_id)
     } else {
         package.verify(args.covenant_id)
     }
-    .map_err(|err| ArgentError::at(&args.proof, err.to_string()))?;
+    .map_err(|err| ArgentError::at(path, err.to_string()))?;
 
     if let Some(source) = &args.source {
         let GenesisProofLayer::Argent(authored) = &package.proof else {

@@ -374,6 +374,19 @@ argentc genesis compose \
 
 ### Verification
 
+Verify directly from source and bootstrap data, without a proof package:
+
+```text
+argentc genesis verify \
+  --source app.ag \
+  --bootstrap genesis.json \
+  --covenant-id <node-provided-id>
+```
+
+This compiles the app and its dependencies, derives the genesis scripts, and
+checks the resulting covenant ID. Use `--app` when the source declares more
+than one app. No proof package is written.
+
 Verify any supported package against an independent covenant ID:
 
 ```text

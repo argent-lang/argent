@@ -28,7 +28,7 @@ enum Command {
     Build(BuildArgs),
     /// Inspect a build directory or artifact JSON file.
     Inspect(InspectArgs),
-    /// Compose or verify a covenant genesis proof package.
+    /// Compose or verify a covenant genesis proof.
     #[command(subcommand)]
     Genesis(cli::genesis::GenesisCommand),
 }
