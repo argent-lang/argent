@@ -53,7 +53,7 @@ contract ReserveAsset(
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
         // :: co-spent with owner_id
-        require(OpCovInputCount(owner_id) > 0);
+        require((OpCovInputCount(owner_id) > 0));
         ReserveAssetState next_asset = ReserveAssetState {
             // :: user declared fields
             owner_kind: owner_kind,
@@ -95,7 +95,7 @@ contract ReserveAsset(
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
 
         // :: co-spent with owner_id
-        require(OpCovInputCount(owner_id) > 0);
+        require((OpCovInputCount(owner_id) > 0));
         ReserveAssetState next_asset = ReserveAssetState {
             // :: user declared fields
             owner_kind: owner_kind,

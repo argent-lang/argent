@@ -44,7 +44,7 @@ contract MinterProxy(
         int gen__recipient_output_idx = OpAuthOutputIdx(this.activeInputIndex, 1);
 
         // :: co-spent with controller_id
-        require(OpCovInputCount(controller_id) > 0);
+        require((OpCovInputCount(controller_id) > 0));
         require(next_proxy.controller_id == controller_id);
         State gen__state_proxy_state = State {
             // :: generated fields

@@ -5068,7 +5068,7 @@ fn icc_asset_lowers_cov_id_co_spend_and_else_if() {
     assert!(kcc20_sil.contains("} else if (identifier_type == IDENTIFIER_COVENANT_ID) {"), "{kcc20_sil}");
     assert!(kcc20_sil.contains("require(checkSig(owner_sig, pubkey(owner_identifier)));"), "{kcc20_sil}");
     assert!(kcc20_sil.contains("// :: co-spent with owner_identifier"), "{kcc20_sil}");
-    assert!(kcc20_sil.contains("require(OpCovInputCount(owner_identifier) > 0);"), "{kcc20_sil}");
+    assert!(kcc20_sil.contains("require((OpCovInputCount(owner_identifier) > 0));"), "{kcc20_sil}");
     assert!(!kcc20_sil.contains("KCC20State"), "{kcc20_sil}");
     assert!(kcc20_sil.contains("State next_state = State {"), "{kcc20_sil}");
     assert!(kcc20_sil.contains("validateOutputState(gen__next_output_idx, next_state);"), "{kcc20_sil}");
@@ -5079,7 +5079,7 @@ fn icc_asset_lowers_cov_id_co_spend_and_else_if() {
     assert!(proxy_sil.contains("gen__kcc20_template: gen__kcc20_template"), "{proxy_sil}");
     assert!(proxy_sil.contains("controller_id: next_proxy.controller_id"), "{proxy_sil}");
     assert!(proxy_sil.contains("// :: co-spent with controller_id"), "{proxy_sil}");
-    assert!(proxy_sil.contains("require(OpCovInputCount(controller_id) > 0);"), "{proxy_sil}");
+    assert!(proxy_sil.contains("require((OpCovInputCount(controller_id) > 0));"), "{proxy_sil}");
 
     let artifact_json = fs::read_to_string(out_dir.join("artifact.json")).expect("artifact json exists");
     let artifact: Artifact = serde_json::from_str(&artifact_json).expect("artifact deserializes");
@@ -5115,7 +5115,52 @@ fn lowers_co_spend_and_output_value_in_the_same_expression() {
     let model = Model::from_source(&program_source).expect("model validates");
     let sil = emit_actor(model.actor("Counter").expect("actor exists"), &model).expect("actor emits");
 
-    assert!(sil.contains("require(OpCovInputCount(guard) > 0 && tx.outputs[gen__next_output_idx].value >= 0);"), "{sil}");
+    assert!(sil.contains("require((OpCovInputCount(guard) > 0) && tx.outputs[gen__next_output_idx].value >= 0);"), "{sil}");
+}
+
+#[test]
+fn co_spent_preserves_boolean_precedence() {
+    let (actor_sil, _) = inline_actor_sil_and_artifact(
+        "co-spent-precedence",
+        r#"
+            state GateState {
+                cov_id guard;
+            }
+
+            fn identity(bool value) -> bool {
+                return value;
+            }
+
+            actor Gate owns GateState {
+                entry check(bool expected, byte[32] raw_guard) emits next: Gate {
+                    bool missing = !guard.co_spent();
+                    bool raw_missing = !cov_id(raw_guard).co_spent();
+                    require(missing == raw_missing);
+                    require(guard.co_spent() == expected);
+                    require(guard.co_spent() != !expected);
+                    require(identity(!guard.co_spent()) == !expected);
+                    if (!guard.co_spent() && !cov_id(raw_guard).co_spent()) {
+                        require(!expected);
+                    }
+                    require(next.value == self.value);
+                    become next <- self;
+                }
+            }
+
+            app Test { actor Gate; }
+        "#,
+    );
+    let sil = &actor_sil["Gate"];
+    for expected in [
+        "bool missing = !(OpCovInputCount(guard) > 0);",
+        "bool raw_missing = !(OpCovInputCount(raw_guard) > 0);",
+        "require((OpCovInputCount(guard) > 0) == expected);",
+        "require((OpCovInputCount(guard) > 0) != !expected);",
+        "require(identity(!(OpCovInputCount(guard) > 0)) == !expected);",
+        "if (!(OpCovInputCount(guard) > 0) && !(OpCovInputCount(raw_guard) > 0)) {",
+    ] {
+        assert!(sil.contains(expected), "missing `{expected}` in:\n{sil}");
+    }
 }
 
 #[test]

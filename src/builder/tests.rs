@@ -3830,6 +3830,65 @@ fn open_icc_baseline_spends_core_and_agent_covenants() {
 }
 
 #[test]
+fn negated_co_spent_executes_for_present_and_absent_covenants() {
+    let artifact = inline_artifact(
+        "negated-co-spent",
+        r#"
+            state GateState {
+                cov_id guard;
+            }
+
+            fn identity(bool value) -> bool {
+                return value;
+            }
+
+            actor Gate owns GateState {
+                entry check(bool absent, byte[32] raw_guard) emits next: Gate {
+                    require(!guard.co_spent() == absent);
+                    require(!cov_id(raw_guard).co_spent() == absent);
+                    require(guard.co_spent() == !absent);
+                    require(guard.co_spent() != absent);
+                    require(identity(!guard.co_spent()) == absent);
+                    require(next.value == self.value);
+                    become next <- self;
+                }
+            }
+
+            app Test { actor Gate; }
+        "#,
+    );
+    let builder = TxBuilder::new(&artifact).expect("builder accepts co-spend fixture");
+    let covenant_id = Hash::from_bytes([0x71; 32]);
+    let absent_id = Hash::from_bytes([0x72; 32]);
+
+    for (present, expected_absent) in [(false, true), (true, false), (false, false), (true, true)] {
+        let guard = if present { covenant_id } else { absent_id };
+        let initial_state = state! { guard: guard };
+        let utxo = builder.covenant_utxo("Gate", initial_state.clone(), 1_000, 0, false, Some(covenant_id)).expect("Gate UTXO builds");
+        let context = TxContext::new()
+            .actor_input(
+                "Gate",
+                initial_state.clone(),
+                EntryCall::new("check").args(args![expected_absent, guard.as_bytes().to_vec()]),
+                TransactionOutpoint::new(TransactionId::from_bytes([0x73; 32]), 0),
+                utxo,
+                0,
+            )
+            .actor_output("Gate", initial_state, CovenantBinding::new(0, covenant_id), 1_000);
+
+        let result = builder.build(&context);
+        if expected_absent != present {
+            result.expect("correct co-spend expectation executes");
+        } else {
+            assert!(
+                matches!(result, Err(BuilderError::InputScript { input_index: 0, .. })),
+                "incorrect co-spend expectation must fail at Gate, present={present}: {result:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn anonymous_open_binding_fills_template_hash_and_executes() {
     let core_artifact = example_artifact("tests/fixtures/emit/open_observed_actor_binding/app.ag", "anonymous-open-binding-core");
     let agent_artifact = inline_artifact(

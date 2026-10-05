@@ -2656,7 +2656,8 @@ fn lower_co_spent_calls(expr: &str, bindings: &BodyBindings) -> Result<String> {
     while pos < tokens.len() {
         if let Some((replacement_start, replacement_end, next_pos, covenant_id)) = parse_co_spent_call(expr, &tokens, pos, bindings)? {
             out.push_str(&expr[cursor..replacement_start]);
-            out.push_str(&format!("OpCovInputCount({}) > 0", covenant_id.trim()));
+            // Parenthesize the comparison to preserve operator precedence, e.g. when negated with `!`.
+            out.push_str(&format!("(OpCovInputCount({}) > 0)", covenant_id.trim()));
             cursor = replacement_end;
             pos = next_pos;
             continue;
