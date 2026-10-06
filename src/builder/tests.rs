@@ -1028,6 +1028,80 @@ fn context_executes_single_actor_self_consume_without_template_witnesses() {
 }
 
 #[test]
+fn context_executes_same_actor_ranges_without_length_witnesses() {
+    let artifact = inline_artifact(
+        "current-template-lengths",
+        r#"
+            state TokenState { int amount; }
+            actor Token owns TokenState {
+                entry transfer(TokenState[] next_states, byte[] witness)
+                consumes { delegates: Token[0..=2], }
+                emits { next: Token[1..=3], } {
+                    require(witness.length == 0);
+                    int total = amount;
+                    for (i, 0, delegates.length, 2) {
+                        total = total + delegates[i].amount;
+                    }
+                    require(next_states.length == 1);
+                    require(next_states[0].amount == total);
+                    unrestricted(next[0].value);
+                    become next <- Token[](next_states);
+                }
+                delegate transfer_delegator(byte[] witness)
+                consumes { leader: Token, } {
+                    require(witness.length == 0);
+                    require(leader.amount >= 0);
+                }
+            }
+            actor Guard owns TokenState {
+                entry hold() emits none { require(amount >= 0); }
+            }
+            app Test { actor Token; actor Guard; }
+        "#,
+    );
+    let contract = artifact.sil_abi.contract("Token").expect("Token contract exists");
+    assert!(contract.runtime_state.fields.iter().any(|field| field.name == "gen__token_template"));
+    for (entry, params) in [("transfer", vec!["next_states", "witness"]), ("transfer_delegator", vec!["witness"])] {
+        assert!(entry_artifact(&artifact, "Token", entry).hidden_params.is_empty());
+        assert!(entry_artifact(&artifact, "Token", entry).route_plan.witness_recipe_ids.is_empty());
+        assert_eq!(contract.entries[entry].params.iter().map(|param| param.name.as_str()).collect::<Vec<_>>(), params);
+    }
+    let builder = TxBuilder::new(&artifact).expect("builder accepts embedded lengths");
+    let covenant_id = Hash::from_bytes([0x4a; 32]);
+    for delegate_count in 0..=2 {
+        let context_for = |wrong_amount: bool| {
+            let amount = 7 + 5 * delegate_count as i64 + i64::from(wrong_amount);
+            let initial = state! { amount: 7 };
+            let utxo = builder.covenant_utxo("Token", initial.clone(), 1_000, 0, false, Some(covenant_id)).unwrap();
+            let mut context = TxContext::new().actor_input(
+                "Token",
+                initial,
+                EntryCall::new("transfer").args(args![vec![state! { amount: amount }], Vec::<u8>::new()]),
+                TransactionOutpoint::new(TransactionId::from_bytes([0x4b; 32]), 0),
+                utxo,
+                0,
+            );
+            for index in 0..delegate_count {
+                let state = state! { amount: 5 };
+                let utxo = builder.covenant_utxo("Token", state.clone(), 1_000, 0, false, Some(covenant_id)).unwrap();
+                context = context.actor_input(
+                    "Token",
+                    state,
+                    EntryCall::new("transfer_delegator").args(args![Vec::<u8>::new()]),
+                    TransactionOutpoint::new(TransactionId::from_bytes([0x4c; 32]), index as u32),
+                    utxo,
+                    0,
+                );
+            }
+            context.actor_output("Token", state! { amount: amount }, CovenantBinding::new(0, covenant_id), 1_000)
+        };
+        builder.build(&context_for(false)).expect("same-actor transfer and delegates execute without length arguments");
+        let error = builder.build(&context_for(true)).expect_err("incorrect successor amount must fail");
+        assert!(matches!(error, BuilderError::InputScript { input_index: 0, .. }), "{error}");
+    }
+}
+
+#[test]
 fn context_executes_ranged_consume_and_emit_over_route_bearing_states() {
     let artifact = inline_artifact(
         "context-ranged-transition",
@@ -2526,8 +2600,6 @@ fn route_plan_builds_stones_start_game_and_rejects_bad_routes() {
             .map(|witness| (witness.param.as_str(), subject_label(&witness.subject), witness.purpose))
             .collect::<Vec<_>>(),
         vec![
-            ("gen__player_prefix_len", "Player", HiddenParamPurposeArtifact::TemplatePrefixLen),
-            ("gen__player_suffix_len", "Player", HiddenParamPurposeArtifact::TemplateSuffixLen),
             ("gen__stones_game_prefix", "StonesGame", HiddenParamPurposeArtifact::TemplatePrefixBytes),
             ("gen__stones_game_suffix", "StonesGame", HiddenParamPurposeArtifact::TemplateSuffixBytes),
         ]
@@ -2538,17 +2610,7 @@ fn route_plan_builds_stones_start_game_and_rejects_bad_routes() {
     );
 
     let accept_start = entry_artifact(&artifact, "Player", "accept_start");
-    assert_eq!(
-        accept_start
-            .hidden_params
-            .iter()
-            .map(|param| (param.name.as_str(), subject_label(&param.subject), param.purpose))
-            .collect::<Vec<_>>(),
-        vec![
-            ("gen__player_prefix_len", "Player", HiddenParamPurposeArtifact::TemplatePrefixLen),
-            ("gen__player_suffix_len", "Player", HiddenParamPurposeArtifact::TemplateSuffixLen),
-        ]
-    );
+    assert!(accept_start.hidden_params.is_empty());
 
     let owner_a = keypair_from_byte(3);
     let owner_b = keypair_from_byte(4);
@@ -2621,39 +2683,23 @@ fn route_plan_builds_stones_start_game_and_rejects_bad_routes() {
 
     let player_contract = artifact.sil_abi.contract("Player").expect("Player contract exists");
     let player_template = sil_template(player_contract);
-    let wrong_delegate_sigscript = {
-        let populated = MutableTransaction::with_entries(tx.clone(), entries.clone());
-        let delegate_sig = sign_mutable_input(&populated, 1, &owner_b);
-        let prefix_len = player_template.prefix.len() as i64;
-        let suffix_len = player_template.suffix.len() as i64;
-        let accept_entry = player_contract.entry("accept_start").expect("accept_start exists");
-        let sigscript = encode_entry_sig_script(
-            &artifact.sil_abi,
-            "Player",
-            player_contract,
-            "accept_start",
-            accept_entry,
-            &[
-                ArtifactValue::Bytes(delegate_sig),
-                ArtifactValue::Bytes(owner_b_pk.clone()),
-                ArtifactValue::Int(prefix_len + 1),
-                ArtifactValue::Int(suffix_len),
-            ],
-        )
-        .expect("bad delegate sigscript encodes");
-        pay_to_script_hash_signature_script_with_flags(
-            p2sh_redeem_script(&tx.inputs[1].signature_script),
-            sigscript,
-            covenant_engine_flags(),
-        )
-        .expect("bad delegate p2sh sigscript builds")
-    };
-    let mut wrong_length_tx = tx.clone();
-    wrong_length_tx.inputs[1].signature_script = wrong_delegate_sigscript;
-    assert!(
-        execute_input_with_covenants(&wrong_length_tx, entries.clone(), 1).is_err(),
-        "delegate input must reject a wrong read-only template prefix length"
-    );
+    // Current-template lengths are constants, not caller-supplied arguments.
+    let populated = MutableTransaction::with_entries(tx.clone(), entries.clone());
+    let error = encode_entry_sig_script(
+        &artifact.sil_abi,
+        "Player",
+        player_contract,
+        "accept_start",
+        player_contract.entry("accept_start").expect("accept_start exists"),
+        &[
+            ArtifactValue::Bytes(sign_mutable_input(&populated, 1, &owner_b)),
+            ArtifactValue::Bytes(owner_b_pk.clone()),
+            ArtifactValue::Int(player_template.prefix.len() as i64 + 1),
+            ArtifactValue::Int(player_template.suffix.len() as i64),
+        ],
+    )
+    .expect_err("callers cannot override embedded lengths");
+    assert!(matches!(error, CodecError::WrongArgumentCount { expected: 2, actual: 4, .. }));
 
     let swapped_outputs = TxContext::new()
         .actor_input(

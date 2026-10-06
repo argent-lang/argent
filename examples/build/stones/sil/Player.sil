@@ -20,6 +20,10 @@ contract Player(
     int constant A_WIN = 1;
     int constant B_WIN = 2;
 
+    // :: current template lengths
+    byte[4] constant gen__const_player_prefix_len = byte[4](0x01000000);
+    byte[4] constant gen__const_player_suffix_len = byte[4](0xef090000);
+
     // :: state layouts
     struct LeagueState {
         // :: user declared fields
@@ -133,11 +137,13 @@ contract Player(
         int first_turn,
         int pile,
         int max_take,
-        int gen__player_prefix_len,
-        int gen__player_suffix_len,
         byte[] gen__stones_game_prefix,
         byte[] gen__stones_game_suffix
     ) {
+        // :: current template lengths
+        int gen__player_prefix_len = int(gen__const_player_prefix_len);
+        int gen__player_suffix_len = int(gen__const_player_suffix_len);
+
         // :: cov inputs
         byte[32] gen__cov_id = OpInputCovenantId(this.activeInputIndex);
         require(OpCovInputCount(gen__cov_id) == 2);
@@ -251,12 +257,11 @@ contract Player(
     }
 
     // :: delegate entry
-    entry accept_start(
-        sig owner_sig,
-        pubkey owner_pk,
-        int gen__player_prefix_len,
-        int gen__player_suffix_len
-    ) {
+    entry accept_start(sig owner_sig, pubkey owner_pk) {
+        // :: current template lengths
+        int gen__player_prefix_len = int(gen__const_player_prefix_len);
+        int gen__player_suffix_len = int(gen__const_player_suffix_len);
+
         // :: cov inputs
         byte[32] gen__cov_id = OpInputCovenantId(this.activeInputIndex);
         require(OpCovInputCount(gen__cov_id) >= 2);

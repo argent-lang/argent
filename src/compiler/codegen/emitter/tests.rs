@@ -5646,6 +5646,32 @@ fn singleton_input_can_authenticate_a_template_also_used_by_an_optional_range() 
 }
 
 #[test]
+fn current_template_length_literals_have_fixed_compiled_width() {
+    let mut expected_size = None;
+    for len in [0, 1, 16, 17, 127, 128, 255, 256, 32_767, 32_768, i32::MAX as usize] {
+        let constants = current_template_length_constants("Counter", len, len).expect("length fits byte[4]");
+        let sil = format!(
+            r#"
+                contract Counter(int initial) {{
+                    {constants}
+                    int count = initial;
+                    entry read(int input_index, byte[32] template_hash) {{
+                        int gen__counter_prefix_len = int(gen__const_counter_prefix_len);
+                        int gen__counter_suffix_len = int(gen__const_counter_suffix_len);
+                        State peer = readInputStateWithTemplate(
+                            input_index, gen__counter_prefix_len, gen__counter_suffix_len, template_hash
+                        );
+                        require(peer.count >= 0);
+                    }}
+                }}
+            "#
+        );
+        let compiled = compile_contract(&sil, &[SilExpr::int(0)], CompileOptions::default()).expect("fixed-width lengths compile");
+        assert_eq!(*expected_size.get_or_insert(compiled.bytecode.len()), compiled.bytecode.len(), "length {len}");
+    }
+}
+
+#[test]
 fn selected_app_actor_count_controls_self_consume_template_authentication() {
     let path = PathBuf::from("multi_actor_self_consume.ag");
     let program = crate::compiler::loader::load_inline_program(
@@ -5660,6 +5686,12 @@ fn selected_app_actor_count_controls_self_consume_template_authentication() {
             }
 
             actor Counter owns CounterState {
+                entry inspect(cov_id remote_id)
+                observes remote by remote_id { inputs { peer: Counter, } }
+                emits none {
+                    require(remote.inputs.peer.count >= 0);
+                }
+
                 entry merge()
                 consumes {
                     other: Counter,
@@ -5703,14 +5735,20 @@ fn selected_app_actor_count_controls_self_consume_template_authentication() {
     assert!(!sil.contains("// :: direct input state"), "{sil}");
     let counter = artifact.argent.actors.iter().find(|actor| actor.name == "Counter").expect("Counter actor exists");
     let merge = counter.entries.iter().find(|entry| entry.name == "merge").expect("merge entry exists");
-    assert_eq!(
-        merge.hidden_params.iter().map(|param| param.name.as_str()).collect::<Vec<_>>(),
-        vec!["gen__counter_prefix_len", "gen__counter_suffix_len"]
-    );
-    assert_eq!(
-        merge.route_plan.witness_recipe_ids.iter().map(String::as_str).collect::<Vec<_>>(),
-        vec!["witness/counter/template_prefix_len", "witness/counter/template_suffix_len"]
-    );
+    assert!(merge.hidden_params.is_empty());
+    assert!(merge.route_plan.witness_recipe_ids.is_empty());
+    assert!(sil.contains("entry merge()"), "{sil}");
+    let compiled = &artifact.sil_abi.contract("Counter").expect("Counter compiles").compiled;
+    let (prefix, _, suffix) = compiled.script_parts(&compiled.bytecode).expect("state cut is valid");
+    assert!(sil.contains(&current_template_length_constants("Counter", prefix.len(), suffix.len()).unwrap()), "{sil}");
+    assert_eq!(sil.matches("int gen__counter_prefix_len = int(gen__const_counter_prefix_len);").count(), 2, "{sil}");
+    assert_eq!(sil.matches("int gen__counter_suffix_len = int(gen__const_counter_suffix_len);").count(), 2, "{sil}");
+    assert_eq!(sil.matches("int(gen__const_counter_prefix_len)").count(), 2, "{sil}");
+    assert_eq!(sil.matches("int(gen__const_counter_suffix_len)").count(), 2, "{sil}");
+    let inspect = counter.entries.iter().find(|entry| entry.name == "inspect").expect("inspect entry exists");
+    assert!(inspect.hidden_params.is_empty());
+    assert!(sil.contains("entry inspect(byte[32] remote_id)"), "{sil}");
+    assert!(sil.contains("State gen__remote_peer_state = readInputStateWithTemplate("), "{sil}");
     assert!(runtime_state_plan(&artifact, "Counter").is_some());
 
     let program_source = crate::compiler::model::ModelSource::new(&program, Some("Single")).expect("model source adapts");
@@ -5722,6 +5760,7 @@ fn selected_app_actor_count_controls_self_consume_template_authentication() {
 
     assert!(sil.contains("State gen__other_state = readInputState(gen__other_input_idx);"), "{sil}");
     assert!(!sil.contains("readInputStateWithTemplate"), "{sil}");
+    assert!(!sil.contains("gen__const_counter_prefix_len"), "{sil}");
     assert!(runtime_state_plan(&artifact, "Counter").is_none());
 }
 
@@ -6019,7 +6058,7 @@ fn rejects_observed_output_become_actor_mismatch() {
 }
 
 #[test]
-fn stones_delegate_reads_use_length_only_template_witnesses() {
+fn stones_embeds_current_lengths_and_keeps_foreign_template_witnesses() {
     let out_dir = std::env::temp_dir().join(format!("argent-stones-length-witness-test-{}", std::process::id()));
     let _ = fs::remove_dir_all(&out_dir);
 
@@ -6030,14 +6069,13 @@ fn stones_delegate_reads_use_length_only_template_witnesses() {
     let artifact_json = fs::read_to_string(out_dir.join("artifact.json")).expect("artifact json exists");
     let artifact: Artifact = serde_json::from_str(&artifact_json).expect("artifact deserializes");
 
-    assert!(player_sil.contains("entry accept_start(\n"), "{player_sil}");
-    assert!(player_sil.contains("sig owner_sig,"), "{player_sil}");
-    assert!(player_sil.contains("pubkey owner_pk,"), "{player_sil}");
-    assert!(player_sil.contains("int gen__player_prefix_len,"), "{player_sil}");
-    assert!(player_sil.contains("int gen__player_suffix_len"), "{player_sil}");
+    assert!(player_sil.contains("entry accept_start(sig owner_sig, pubkey owner_pk)"), "{player_sil}");
+    assert!(player_sil.contains("byte[4] constant gen__const_player_prefix_len"), "{player_sil}");
+    assert!(player_sil.contains("byte[4] constant gen__const_player_suffix_len"), "{player_sil}");
+    assert_eq!(player_sil.matches("int gen__player_prefix_len = int(gen__const_player_prefix_len);").count(), 2, "{player_sil}");
+    assert_eq!(player_sil.matches("int gen__player_suffix_len = int(gen__const_player_suffix_len);").count(), 2, "{player_sil}");
     assert!(!player_sil.contains("entry accept_start(sig owner_sig, pubkey owner_pk, byte[]"), "{player_sil}");
     assert!(player_sil.contains("entry start_game(\n"), "{player_sil}");
-    assert!(player_sil.contains("int gen__player_prefix_len,"), "{player_sil}");
     assert!(player_sil.contains("byte[] gen__stones_game_prefix,"), "{player_sil}");
     assert!(player_sil.contains("byte[] gen__stones_game_suffix"), "{player_sil}");
     assert!(!player_sil.contains("byte[] gen__player_prefix"), "{player_sil}");
@@ -6075,15 +6113,8 @@ fn stones_delegate_reads_use_length_only_template_witnesses() {
 
     let player_actor = artifact.argent.actors.iter().find(|actor| actor.name == "Player").expect("Player actor exists");
     let accept_start = player_actor.entries.iter().find(|entry| entry.name == "accept_start").expect("accept_start ABI exists");
-    assert_eq!(accept_start.hidden_params.len(), 2);
-    assert_eq!(accept_start.hidden_params[0].name, "gen__player_prefix_len");
-    assert_eq!(accept_start.hidden_params[0].ty, TypeArtifact::Int);
-    assert_eq!(subject_label(&accept_start.hidden_params[0].subject), "Player");
-    assert_eq!(accept_start.hidden_params[0].purpose, HiddenParamPurposeArtifact::TemplatePrefixLen);
-    assert_eq!(accept_start.hidden_params[1].name, "gen__player_suffix_len");
-    assert_eq!(accept_start.hidden_params[1].ty, TypeArtifact::Int);
-    assert_eq!(subject_label(&accept_start.hidden_params[1].subject), "Player");
-    assert_eq!(accept_start.hidden_params[1].purpose, HiddenParamPurposeArtifact::TemplateSuffixLen);
+    assert!(accept_start.hidden_params.is_empty());
+    assert!(accept_start.route_plan.witness_recipe_ids.is_empty());
 
     let start_game = player_actor.entries.iter().find(|entry| entry.name == "start_game").expect("start_game ABI exists");
     assert_eq!(
@@ -6093,8 +6124,6 @@ fn stones_delegate_reads_use_length_only_template_witnesses() {
             .map(|param| (param.name.as_str(), param.ty.clone(), subject_label(&param.subject), param.purpose))
             .collect::<Vec<_>>(),
         vec![
-            ("gen__player_prefix_len", TypeArtifact::Int, "Player", HiddenParamPurposeArtifact::TemplatePrefixLen),
-            ("gen__player_suffix_len", TypeArtifact::Int, "Player", HiddenParamPurposeArtifact::TemplateSuffixLen),
             ("gen__stones_game_prefix", TypeArtifact::Bytes, "StonesGame", HiddenParamPurposeArtifact::TemplatePrefixBytes),
             ("gen__stones_game_suffix", TypeArtifact::Bytes, "StonesGame", HiddenParamPurposeArtifact::TemplateSuffixBytes),
         ]
@@ -6114,12 +6143,7 @@ fn stones_delegate_reads_use_length_only_template_witnesses() {
     let sil_accept_start = player_contract.entry("accept_start").expect("accept_start Sil ABI entry exists");
     assert_eq!(
         sil_accept_start.params.iter().map(|param| (param.name.as_str(), param.ty.clone())).collect::<Vec<_>>(),
-        vec![
-            ("owner_sig", TypeArtifact::Sig),
-            ("owner_pk", TypeArtifact::Pubkey),
-            ("gen__player_prefix_len", TypeArtifact::Int),
-            ("gen__player_suffix_len", TypeArtifact::Int),
-        ]
+        vec![("owner_sig", TypeArtifact::Sig), ("owner_pk", TypeArtifact::Pubkey)]
     );
 
     let league_actor = artifact.argent.actors.iter().find(|actor| actor.name == "League").expect("League actor exists");

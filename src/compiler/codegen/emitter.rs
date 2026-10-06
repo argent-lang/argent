@@ -123,6 +123,20 @@ fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
 
     emit_shared_constants(&mut out, model, &state_values)?;
     emit_imported_template_constants(&mut out, &imported_template_specs_for_actor(actor, model));
+    let mut embeds_current_lengths = false;
+    for entry in &actor.entries {
+        embeds_current_lengths |= model.entry_template_uses(actor, entry)?.reads.contains(&actor.name);
+    }
+    let length_constants_range = if embeds_current_lengths {
+        emit_section_header(&mut out, "Current template lengths");
+        let start = out.len();
+        out.push_str(&current_template_length_constants(&actor.name, 0, 0)?);
+        let range = start..out.len();
+        out.push('\n');
+        Some(range)
+    } else {
+        None
+    };
     let omitted_authored_structs = emit_state_layouts(&mut out, actor, model, &input_reference_plans, &state_values)?;
     emit_global_functions(&mut out, model, &state_values)?;
     emit_actor_functions(&mut out, actor, model, &state_values)?;
@@ -147,6 +161,33 @@ fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
 
     out.push_str("}\n");
     audit_omitted_equivalent_state_structs(&out, &omitted_authored_structs, &state_values)?;
+    if let Some(range) = length_constants_range {
+        let args = constructor_args_for_actor(actor, model)?;
+        let compiled = compile_contract(&out, &args, CompileOptions::default())
+            .map_err(|err| ArgentError::new(format!("generated Silverscript for actor `{}` failed to compile: {err}", actor.name)))?;
+        let prefix_len = compiled.state_layout.start;
+        let suffix_len = compiled.bytecode.len() - prefix_len - compiled.state_layout.len;
+        // Replace only this generated section. Literal byte[4] pushes keep its
+        // compiled width unchanged, so one fill-in pass suffices.
+        out.replace_range(range, &current_template_length_constants(&actor.name, prefix_len, suffix_len)?);
+        let compiled = compile_contract(&out, &args, CompileOptions::default())
+            .map_err(|err| ArgentError::new(format!("generated Silverscript for actor `{}` failed to compile: {err}", actor.name)))?;
+        if compiled.state_layout.start != prefix_len
+            || compiled.bytecode.len() - compiled.state_layout.start - compiled.state_layout.len != suffix_len
+        {
+            return Err(ArgentError::new(format!("embedded template lengths changed the script layout for actor `{}`", actor.name)));
+        }
+    }
+    Ok(out)
+}
+
+fn current_template_length_constants(actor: &str, prefix_len: usize, suffix_len: usize) -> Result<String> {
+    let mut out = String::new();
+    for (part, len) in [("prefix", prefix_len), ("suffix", suffix_len)] {
+        let name = current_template_length_const_name(actor, part);
+        let len = i32::try_from(len).map_err(|_| ArgentError::new(format!("template length for actor `{actor}` exceeds byte[4]")))?;
+        out.push_str(&format!("    byte[4] constant {name} = byte[4](0x{});\n", encode_hex(&len.to_le_bytes())));
+    }
     Ok(out)
 }
 
@@ -496,7 +537,7 @@ fn emit_entry(
     validate_entry_cardinality_support(actor, entry, entry_model)?;
     let lowered_body = lower_entry_body(actor, entry, model, input_references, state_values)?;
     let witness_specs = entry_witness_specs(actor, entry, model)?;
-    let sil_params = lower_entry_params(entry, &witness_specs, model, state_values);
+    let sil_params = lower_entry_params(actor, entry, &witness_specs, model, state_values);
     match entry.kind {
         EntryKind::Leader => {
             let shape = if entry.consumes.is_empty() { "1:N" } else { "M:N" };
@@ -506,6 +547,16 @@ fn emit_entry(
     }
     push_entry_signature(out, &entry.name, &sil_params);
 
+    if witness_specs.templates.iter().any(|spec| spec.actor == actor.name) {
+        out.push_str("        // :: current template lengths\n");
+        for (part, local) in
+            [("prefix", hidden_witness_prefix_len_name(&actor.name)), ("suffix", hidden_witness_suffix_len_name(&actor.name))]
+        {
+            let constant = current_template_length_const_name(&actor.name, part);
+            out.push_str(&format!("        int {local} = int({constant});\n"));
+        }
+        out.push('\n');
+    }
     let emitted_imported_templates = emit_entry_imported_template_locals(out, &imported_template_specs_for_entry(actor, entry, model));
     let emitted_route_templates = emit_entry_template_locals(out, actor, &witness_specs, model);
     if emitted_imported_templates || emitted_route_templates {
@@ -1222,6 +1273,7 @@ struct EntryWitnessSpecs {
 }
 
 fn lower_entry_params(
+    actor: &ActorDecl,
     entry: &EntryDecl,
     witness_specs: &EntryWitnessSpecs,
     model: &Model<'_>,
@@ -1232,7 +1284,7 @@ fn lower_entry_params(
         let ty = state_values.sil_type_for_type_ref(&param.ty).unwrap_or_else(|| lower_type_ref(&param.ty, model));
         out.push(format!("{ty} {}", param.name));
     }
-    for spec in &witness_specs.templates {
+    for spec in witness_specs.templates.iter().filter(|spec| spec.actor != actor.name) {
         match spec.form {
             TemplateWitnessForm::Bytes => {
                 out.push(format!("byte[] {}", hidden_witness_prefix_name(&spec.actor)));
@@ -2751,7 +2803,7 @@ fn runtime_state_plan_artifact(actor: &ActorDecl, model: &Model<'_>) -> Result<O
 fn hidden_params_for_entry(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Vec<HiddenParamArtifact> {
     let witness_specs = entry_witness_specs(actor, entry, model).expect("entry clause references validated before artifact emission");
     let mut hidden_params = Vec::new();
-    for spec in &witness_specs.templates {
+    for spec in witness_specs.templates.iter().filter(|spec| spec.actor != actor.name) {
         let subject = HiddenParamSubjectArtifact::Actor { actor: spec.actor.clone() };
         match spec.form {
             TemplateWitnessForm::Bytes => {
@@ -3550,6 +3602,10 @@ pub(super) fn hidden_witness_prefix_name(actor: &str) -> String {
 
 pub(super) fn hidden_witness_suffix_name(actor: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{}_suffix", hidden_actor_suffix(actor))
+}
+
+fn current_template_length_const_name(actor: &str, part: &str) -> String {
+    format!("{RESERVED_GENERATED_PREFIX}const_{}_{part}_len", hidden_actor_suffix(actor))
 }
 
 pub(super) fn hidden_witness_prefix_len_name(actor: &str) -> String {
