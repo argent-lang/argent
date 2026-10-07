@@ -265,6 +265,25 @@ Each builtin receives a complete physical state value. The target layout plan
 selects its physical type. The proof plan selects the builtin and its template
 arguments. Neither decision implies the other.
 
+#### Current-actor template witnesses
+
+A static target that names the executing actor needs no prefix/suffix entry
+witnesses. Outputs reuse the executing template. Input reads still authenticate
+that template when required, but its prefix and suffix lengths are known at
+compile time. Argent embeds them as `byte[4]` constants and reads them into
+integer locals once per entry. The fixed width permits one fill-in pass without
+changing the compiled layout.
+
+This better matches single-entity specs in general. Their entries operate on
+instances of one entity type, whose contract is already fixed, so callers should
+not need extra arguments to describe its template. KCC20 transfers and delegates
+are one example. The rule also applies when that actor belongs to a multi-actor
+app.
+
+Foreign targets, selectors, and open `actor_type` targets retain their planned
+template witnesses. Other hidden arguments, such as spawn output indices, are
+unchanged.
+
 ### Compiler ownership
 
 The implementation divides this work across these modules:

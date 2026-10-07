@@ -5672,6 +5672,122 @@ fn current_template_length_literals_have_fixed_compiled_width() {
 }
 
 #[test]
+fn static_current_actor_targets_do_not_request_template_witnesses() {
+    let inputs = [
+        ("none", "", ""),
+        ("consumed", "consumes { peer: Counter, }", ""),
+        ("ranged", "consumes { peers: Counter[1..=2], }", ""),
+        ("optional", "consumes { peers: Counter[0..=2], }", ""),
+        ("observed", "", "inputs { peer: Counter, }"),
+    ];
+    let outputs = [
+        ("none", "emits none", "", "", ""),
+        ("emitted", "emits next: Counter", "", "", "unrestricted(next.value); become next <- Counter(next_state);"),
+        (
+            "ranged",
+            "emits next: Counter[1..=2]",
+            "",
+            "",
+            r#"
+                CounterState[] states = CounterState[]{ next_state };
+                unrestricted(next[0].value);
+                become next <- Counter[](states);
+            "#,
+        ),
+        ("exact", "emits next: Counter", "", "", "unrestricted(next.value); become next <- self;"),
+        ("observed", "emits none", "outputs { dst: Counter, }", "", "require remote.outputs become { dst <- Counter(next_state), };"),
+        (
+            "spawned",
+            "emits none",
+            "",
+            "spawns children by child_id { outputs { child: Counter, } }",
+            "unrestricted(children.outputs.child.value); require children.outputs become { child <- Counter(next_state), };",
+        ),
+    ];
+    let witness_names = [
+        hidden_witness_prefix_name("Counter"),
+        hidden_witness_suffix_name("Counter"),
+        hidden_witness_prefix_len_name("Counter"),
+        hidden_witness_suffix_len_name("Counter"),
+    ];
+    let template_purposes = [
+        HiddenParamPurposeArtifact::TemplatePrefixBytes,
+        HiddenParamPurposeArtifact::TemplateSuffixBytes,
+        HiddenParamPurposeArtifact::TemplatePrefixLen,
+        HiddenParamPurposeArtifact::TemplateSuffixLen,
+    ];
+    let witness_ids = template_purposes.map(|purpose| template_witness_recipe_id("Counter", purpose));
+
+    for (input_name, consumes, observed_input) in inputs {
+        for (output_name, emits, observed_output, spawns, body) in outputs {
+            let case = format!("{input_name}_{output_name}");
+            let observes = if observed_input.is_empty() && observed_output.is_empty() {
+                String::new()
+            } else {
+                format!("observes remote by remote_id {{ {observed_input} {observed_output} }}")
+            };
+            // Keep a second actor in the app: current-actor reads must still
+            // authenticate their template, rather than take the singleton shortcut.
+            let source = format!(
+                r#"
+                    state CounterState {{ int count; }}
+                    state GuardState {{ int marker; }}
+                    actor Counter owns CounterState {{
+                        entry check(cov_id remote_id) {consumes} {observes} {spawns} {emits} {{
+                            require(count >= 0);
+                            CounterState next_state = CounterState {{ count: count + 1, }};
+                            {body}
+                        }}
+                    }}
+                    actor Guard owns GuardState {{
+                        entry hold() emits none {{ require(marker == 123); }}
+                    }}
+                    app Test {{ actor Counter; actor Guard; }}
+                "#
+            );
+            let program = crate::compiler::loader::load_inline_program(PathBuf::from(format!("{case}.ag")), source)
+                .unwrap_or_else(|err| panic!("{case}: {err}"));
+            let program_source = crate::compiler::model::ModelSource::new(&program, None).expect("model source adapts");
+            let model = Model::from_source(&program_source).unwrap_or_else(|err| panic!("{case}: {err}"));
+            let actor = model.actor("Counter").expect("Counter actor exists");
+            let entry = &actor.entries[0];
+            let uses = model.entry_template_uses(actor, entry).expect("template uses resolve");
+            let reads_current = input_name != "none";
+            assert_eq!(uses.reads.contains("Counter"), reads_current, "{case}");
+            assert!(!uses.writes.contains("Counter"), "{case}: current outputs must not request template bytes");
+            let specs = entry_witness_specs(actor, entry, &model).expect("witness specs resolve");
+            assert_eq!(
+                specs.templates.iter().find(|spec| spec.actor == "Counter").map(|spec| spec.form),
+                reads_current.then_some(TemplateWitnessForm::Len),
+                "{case}: current-actor specs must be absent or Len, never Bytes"
+            );
+
+            let actor_sil = actor_sil_for_model(&model);
+            let sil = &actor_sil["Counter"];
+            assert!(!sil.contains("validateOutputStateWithTemplate("), "{case}: {sil}");
+            assert_eq!(sil.contains("readInputStateWithTemplate("), reads_current, "{case}: {sil}");
+            for part in ["prefix", "suffix"] {
+                let constant = current_template_length_const_name("Counter", part);
+                assert_eq!(sil.matches(&format!("int({constant})")).count(), usize::from(reads_current), "{case}: {sil}");
+            }
+            let artifact = emit_artifact(&program, &model, &actor_sil).unwrap_or_else(|err| panic!("{case}: {err}"));
+            let counter = artifact.argent.actors.iter().find(|actor| actor.name == "Counter").expect("Counter artifact exists");
+            let entry = &counter.entries[0];
+            let sil_entry = artifact.sil_abi.contract("Counter").unwrap().entry("check").unwrap();
+            assert!(sil_entry.params.iter().all(|param| !witness_names.contains(&param.name)), "{case}");
+            assert!(entry.hidden_params.iter().all(|param| !template_purposes.contains(&param.purpose)), "{case}");
+            assert!(entry.witnesses.iter().all(|witness| !template_purposes.contains(&witness.purpose)), "{case}");
+            assert!(entry.route_plan.witness_recipe_ids.iter().all(|id| !witness_ids.contains(id)), "{case}");
+            assert!(
+                artifact.argent.template_plan.witness_recipes.iter().all(|recipe| !template_purposes.contains(&recipe.purpose)),
+                "{case}"
+            );
+            artifact.check_consistency().unwrap_or_else(|err| panic!("{case}: {err}"));
+        }
+    }
+}
+
+#[test]
 fn selected_app_actor_count_controls_self_consume_template_authentication() {
     let path = PathBuf::from("multi_actor_self_consume.ag");
     let program = crate::compiler::loader::load_inline_program(
@@ -7773,6 +7889,24 @@ fn selector_can_include_its_source_actor() {
             "#,
     );
 
+    // A selector remains dynamic even when its domain contains the current actor.
+    // Its prefix/suffix bytes are not static current-actor length witnesses.
+    let choose = artifact
+        .argent
+        .actors
+        .iter()
+        .find(|actor| actor.name == "Challenge")
+        .unwrap()
+        .entries
+        .iter()
+        .find(|entry| entry.name == "choose")
+        .unwrap();
+    for purpose in [HiddenParamPurposeArtifact::TemplatePrefixBytes, HiddenParamPurposeArtifact::TemplateSuffixBytes] {
+        assert!(choose.hidden_params.iter().any(|param| {
+            param.purpose == purpose
+                && param.subject == HiddenParamSubjectArtifact::TemplateSelector { selector: "target".to_string() }
+        }));
+    }
     artifact.check_template_plan_consistency().expect("self selector variant has a valid identity cut transition");
 }
 

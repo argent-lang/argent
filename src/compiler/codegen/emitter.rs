@@ -1284,6 +1284,9 @@ fn lower_entry_params(
         let ty = state_values.sil_type_for_type_ref(&param.ty).unwrap_or_else(|| lower_type_ref(&param.ty, model));
         out.push(format!("{ty} {}", param.name));
     }
+    // Same-actor outputs reuse the executing template, so they need no prefix/suffix
+    // bytes. For reads, we embed the lengths and bind them to entry locals instead
+    // of asking the caller for witnesses.
     for spec in witness_specs.templates.iter().filter(|spec| spec.actor != actor.name) {
         match spec.form {
             TemplateWitnessForm::Bytes => {
@@ -2803,6 +2806,9 @@ fn runtime_state_plan_artifact(actor: &ActorDecl, model: &Model<'_>) -> Result<O
 fn hidden_params_for_entry(actor: &ActorDecl, entry: &EntryDecl, model: &Model<'_>) -> Vec<HiddenParamArtifact> {
     let witness_specs = entry_witness_specs(actor, entry, model).expect("entry clause references validated before artifact emission");
     let mut hidden_params = Vec::new();
+    // Same-actor outputs reuse the executing template, so they need no prefix/suffix
+    // bytes. For reads, we embed the lengths and bind them to entry locals instead
+    // of asking the caller for witnesses.
     for spec in witness_specs.templates.iter().filter(|spec| spec.actor != actor.name) {
         let subject = HiddenParamSubjectArtifact::Actor { actor: spec.actor.clone() };
         match spec.form {
