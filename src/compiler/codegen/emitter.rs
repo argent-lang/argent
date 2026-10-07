@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::ops::Range;
 use std::path::Path;
 
 use crate::artifact::*;
@@ -162,23 +163,28 @@ fn emit_actor(actor: &ActorDecl, model: &Model<'_>) -> Result<String> {
     out.push_str("}\n");
     audit_omitted_equivalent_state_structs(&out, &omitted_authored_structs, &state_values)?;
     if let Some(range) = length_constants_range {
-        let args = constructor_args_for_actor(actor, model)?;
-        let compiled = compile_contract(&out, &args, CompileOptions::default())
-            .map_err(|err| ArgentError::new(format!("generated Silverscript for actor `{}` failed to compile: {err}", actor.name)))?;
-        let prefix_len = compiled.state_layout.start;
-        let suffix_len = compiled.bytecode.len() - prefix_len - compiled.state_layout.len;
-        // Replace only this generated section. Literal byte[4] pushes keep its
-        // compiled width unchanged, so one fill-in pass suffices.
-        out.replace_range(range, &current_template_length_constants(&actor.name, prefix_len, suffix_len)?);
-        let compiled = compile_contract(&out, &args, CompileOptions::default())
-            .map_err(|err| ArgentError::new(format!("generated Silverscript for actor `{}` failed to compile: {err}", actor.name)))?;
-        if compiled.state_layout.start != prefix_len
-            || compiled.bytecode.len() - compiled.state_layout.start - compiled.state_layout.len != suffix_len
-        {
-            return Err(ArgentError::new(format!("embedded template lengths changed the script layout for actor `{}`", actor.name)));
-        }
+        resolve_current_template_lengths(&mut out, range, actor, model)?;
     }
     Ok(out)
+}
+
+fn resolve_current_template_lengths(out: &mut String, range: Range<usize>, actor: &ActorDecl, model: &Model<'_>) -> Result<()> {
+    let args = constructor_args_for_actor(actor, model)?;
+    let compiled = compile_contract(out, &args, CompileOptions::default())
+        .map_err(|err| ArgentError::new(format!("generated Silverscript for actor `{}` failed to compile: {err}", actor.name)))?;
+    let prefix_len = compiled.state_layout.start;
+    let suffix_len = compiled.bytecode.len() - prefix_len - compiled.state_layout.len;
+    // Replace only this generated section. Literal byte[4] pushes keep its
+    // compiled width unchanged, so one fill-in pass suffices.
+    out.replace_range(range, &current_template_length_constants(&actor.name, prefix_len, suffix_len)?);
+    let compiled = compile_contract(out, &args, CompileOptions::default())
+        .map_err(|err| ArgentError::new(format!("generated Silverscript for actor `{}` failed to compile: {err}", actor.name)))?;
+    if compiled.state_layout.start != prefix_len
+        || compiled.bytecode.len() - compiled.state_layout.start - compiled.state_layout.len != suffix_len
+    {
+        return Err(ArgentError::new(format!("embedded template lengths changed the script layout for actor `{}`", actor.name)));
+    }
+    Ok(())
 }
 
 fn current_template_length_constants(actor: &str, prefix_len: usize, suffix_len: usize) -> Result<String> {
