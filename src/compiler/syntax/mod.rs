@@ -12,7 +12,7 @@ pub mod lexer;
 pub mod parser;
 pub(crate) mod word;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Module {
     pub path: PathBuf,
     pub imports: Vec<Import>,
@@ -23,12 +23,15 @@ pub struct Module {
     pub actors: Vec<ActorDecl>,
     pub actor_enums: Vec<ActorEnumDecl>,
     pub apps: Vec<AppDecl>,
+    /// The published app artifact behind a pinned artifact import.
+    pub artifact: Option<crate::artifact::Artifact>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Import {
     pub path: String,
     pub alias: Option<String>,
+    pub id: Option<String>,
 }
 
 #[derive(Debug, Clone)]

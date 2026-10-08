@@ -416,6 +416,11 @@ impl ResolvedModules {
     pub(crate) fn root_module(&self) -> &Module {
         &self.source_modules[self.root.index()]
     }
+
+    /// The same modules rooted at `app`'s module when that module is a pinned artifact import.
+    pub(super) fn artifact_program(&self, app: DeclId) -> Option<Self> {
+        self.source_modules[app.module.index()].artifact.is_some().then(|| Self { root: app.module, ..self.clone() })
+    }
 }
 
 impl SymbolKind {

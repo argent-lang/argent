@@ -150,6 +150,13 @@ fn build_app_graph(
     let mut artifacts = BTreeMap::<String, artifact::Artifact>::new();
     let mut origins = BTreeMap::new();
     for (index, (source_app, dependencies, program)) in apps.iter().enumerate() {
+        if let Some(artifact) = &program.root_module().artifact {
+            // The loader checked this artifact against its pinned id; link it as published.
+            let source = compiler::model::ModelSource::new(program, Some(&source_app.app))?;
+            origins.insert(source_app.app.clone(), source.declaration_origins());
+            artifacts.insert(source_app.app.clone(), artifact.clone());
+            continue;
+        }
         let linked = dependencies
             .iter()
             .map(|dependency| {

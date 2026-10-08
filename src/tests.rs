@@ -1493,3 +1493,27 @@ fn aliased_actor_enum_variant_compiles() {
     build_file(temp.join("root.ag"), temp.join("out")).expect("the qualified enum variant resolves through its alias");
     std::fs::remove_dir_all(temp).unwrap();
 }
+
+#[test]
+fn pinned_artifact_import_links_like_a_source_import() {
+    let temp = std::env::temp_dir().join(format!("argent-artifact-import-{}", std::process::id()));
+    std::fs::create_dir_all(&temp).unwrap();
+    let asset = "state S { int amount; } actor A owns S { entry hold() emits none {} } app AssetApp { actor A; }";
+    std::fs::write(temp.join("asset.ag"), asset).unwrap();
+    let published = build_file(temp.join("asset.ag"), temp.join("asset")).unwrap();
+    let build = |import: &str| {
+        let root = r#"state R { int nonce; } app Test { actor Root; }
+            actor Root owns R { entry check(cov_id id) observes source by id { inputs { a: asset::AssetApp::A, } }
+                emits none { require(state(source.inputs.a).amount >= 0); } }"#;
+        std::fs::write(temp.join("root.ag"), format!("import {import}; {root}")).unwrap();
+        build_file(temp.join("root.ag"), temp.join("out")).map_err(|err| err.to_string())
+    };
+    let pinned = format!(r#""./asset/artifact.json" as asset id "{}""#, published.id);
+    assert_eq!(build(&pinned).unwrap().id, build(r#""./asset.ag" as asset"#).unwrap().id);
+    assert!(build(r#""./asset/artifact.json" as asset"#).unwrap_err().contains("has no pinned id"));
+    assert!(build(r#""./asset/artifact.json" as asset id "00""#).unwrap_err().contains("the import pins 00"));
+    let path = temp.join("asset/artifact.json");
+    std::fs::write(&path, std::fs::read_to_string(&path).unwrap().replacen("\"amount\"", "\"total\"", 1)).unwrap();
+    assert!(build(&pinned).unwrap_err().contains("invalid app artifact"));
+    std::fs::remove_dir_all(temp).unwrap();
+}

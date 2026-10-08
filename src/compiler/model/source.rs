@@ -92,7 +92,7 @@ impl<'a> ModelSource<'a> {
     }
 
     /// Declaration identity survives module loading order and compatibility renaming.
-    pub(super) fn declaration_origins(&self) -> BTreeMap<String, DeclarationOrigin> {
+    pub(crate) fn declaration_origins(&self) -> BTreeMap<String, DeclarationOrigin> {
         self.names
             .iter()
             .map(|(id, name)| {

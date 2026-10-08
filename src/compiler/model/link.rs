@@ -270,7 +270,7 @@ impl LinkedContext {
     }
 }
 
-fn linked_field_decl(field: &ArgentFieldArtifact) -> Result<FieldDecl> {
+pub(crate) fn linked_field_decl(field: &ArgentFieldArtifact) -> Result<FieldDecl> {
     Ok(FieldDecl { ty: linked_field_type(field)?, name: field.name.clone(), virtual_slot: field.virtual_slot })
 }
 
