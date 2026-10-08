@@ -36,6 +36,7 @@ impl Parser {
             actors: Vec::new(),
             actor_enums: Vec::new(),
             apps: Vec::new(),
+            artifact: None,
         };
 
         while !self.is_eof() {
@@ -67,8 +68,9 @@ impl Parser {
         self.expect_ident(word::IMPORT)?;
         let path = self.expect_string()?;
         let alias = if self.consume_ident(word::AS) { Some(self.expect_any_ident()?) } else { None };
+        let id = if self.consume_ident(word::ID) { Some(self.expect_string()?) } else { None };
         self.expect_symbol(';')?;
-        Ok(Import { path, alias })
+        Ok(Import { path, alias, id })
     }
 
     fn parse_const(&mut self) -> Result<ConstDecl> {

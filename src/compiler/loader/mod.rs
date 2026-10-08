@@ -6,8 +6,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::compiler::syntax::Import;
+use crate::artifact::Artifact;
+use crate::compiler::model::link::linked_field_decl;
 use crate::compiler::syntax::parser::parse_module;
+use crate::compiler::syntax::*;
 use crate::error::{ArgentError, Result};
 
 use self::resolve::ResolvedImport;
@@ -69,6 +71,9 @@ struct Loader {
 
 impl Loader {
     fn load_module(&mut self, path: &Path) -> Result<ModuleId> {
+        if path.extension().is_some_and(|extension| extension == "json") {
+            return Err(ArgentError::at(path, "artifact import has no pinned id"));
+        }
         let canonical = fs::canonicalize(path).map_err(|err| ArgentError::at(path, err.to_string()))?;
         if let Some(module) = self.module_ids.get(&canonical).copied() {
             return Ok(module);
@@ -81,7 +86,10 @@ impl Loader {
         let module = self.insert_module(module);
 
         for import in imports {
-            let target = self.load_import(&base, &import.path)?;
+            let target = match &import.id {
+                Some(id) => self.load_artifact(&base.join(&import.path), id)?,
+                None => self.load_import(&base, &import.path)?,
+            };
             self.imports[module.index()].push(ResolvedImport { target, alias: import.alias });
         }
 
@@ -89,7 +97,7 @@ impl Loader {
     }
 
     fn load_inline_imports(&mut self, module: ModuleId, imports: Vec<Import>) -> Result<()> {
-        for Import { path, alias } in imports {
+        for Import { path, alias, .. } in imports {
             if is_standard_module(&path) {
                 let target = self.load_standard_module(&path)?;
                 self.imports[module.index()].push(ResolvedImport { target, alias });
@@ -105,6 +113,44 @@ impl Loader {
 
     fn load_import(&mut self, base: &Path, path: &str) -> Result<ModuleId> {
         if is_standard_module(path) { self.load_standard_module(path) } else { self.load_module(&base.join(path)) }
+    }
+
+    /// Loads a published app artifact with the pinned id as a module of its declarations. It is linked, never compiled.
+    fn load_artifact(&mut self, path: &Path, id: &str) -> Result<ModuleId> {
+        let canonical = fs::canonicalize(path).map_err(|err| ArgentError::at(path, err.to_string()))?;
+        let invalid = |err: String| ArgentError::at(&canonical, format!("invalid app artifact: {err}"));
+        let artifact: Artifact = serde_json::from_slice(&fs::read(&canonical)?).map_err(|err| invalid(err.to_string()))?;
+        artifact.check_consistency().map_err(|err| invalid(err.to_string()))?;
+        if artifact.id != id {
+            return Err(ArgentError::at(&canonical, format!("artifact has id {}, the import pins {id}", artifact.id)));
+        }
+        if let Some(module) = self.module_ids.get(&canonical).copied() {
+            return Ok(module);
+        }
+        let argent = &artifact.argent;
+        let app = AppDecl { name: artifact.app.clone(), actors: argent.actors.iter().map(|actor| actor.name.clone()).collect() };
+        let mut module = Module { path: canonical, apps: vec![app], ..Default::default() };
+        for state in &argent.states {
+            let expansion = argent.state_expansions.iter().find(|item| item.state == state.name).map(|item| StateExpansionDecl {
+                base: item.base.clone(),
+                digests: item
+                    .digests
+                    .iter()
+                    .map(|digest| StateDigestExpansionDecl { field: digest.field.clone(), state: digest.state.clone() })
+                    .collect(),
+            });
+            let fields =
+                if expansion.is_some() { vec![] } else { state.fields.iter().map(linked_field_decl).collect::<Result<_>>()? };
+            module.states.push(StateDecl { name: state.name.clone(), fields, expansion });
+        }
+        for actor in &argent.actors {
+            module.actors.push(ActorDecl { name: actor.name.clone(), state: actor.state.clone(), functions: vec![], entries: vec![] });
+        }
+        for item in &argent.actor_enums {
+            module.actor_enums.push(ActorEnumDecl { name: item.name.clone(), variants: item.variants.clone() });
+        }
+        module.artifact = Some(artifact);
+        Ok(self.insert_module(module))
     }
 
     fn load_standard_module(&mut self, path: &str) -> Result<ModuleId> {
@@ -195,6 +241,9 @@ impl AppGraphPlanner {
             .into_iter()
             .map(|member| {
                 let (source, app) = program.app_source(member.app);
+                if let Some(artifact_program) = program.artifact_program(member.app) {
+                    self.programs.entry(source.to_path_buf()).or_insert(artifact_program);
+                }
                 SourceApp { source: source.to_path_buf(), app: app.name.clone() }
             })
             .collect::<BTreeSet<_>>();
