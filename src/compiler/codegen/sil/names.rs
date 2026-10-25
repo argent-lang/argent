@@ -99,6 +99,7 @@ pub(in crate::compiler::codegen) struct SilNames<'m, 'src> {
     model: &'m AppCompilationContext<'src>,
     sites: BTreeMap<(usize, usize), Binding>,
     type_sites: BTreeMap<usize, DeclId>,
+    actor_handle_type_sites: BTreeSet<usize>,
     dimension_types: BTreeMap<usize, SilTypeRef>,
     co_spent_sites: BTreeSet<(usize, usize)>,
     digest_operands: BTreeMap<(usize, usize), PlannedStateValue>,
@@ -142,6 +143,21 @@ impl<'m, 'src> SilNames<'m, 'src> {
             })
             .collect();
         let mut dimension_types = BTreeMap::new();
+        let actor_handle_type_sites = model
+            .types
+            .actor_handle_type_uses
+            .keys()
+            .filter_map(|site| {
+                let node = model.resolution.nodes().node(*site);
+                if node.address.owner != owner || node.address.root != root {
+                    return None;
+                }
+                match node.origin {
+                    Origin::Authored { start, .. } => Some(start),
+                    Origin::Generated { .. } => None,
+                }
+            })
+            .collect();
         for ((site, index), constant) in &bindings.dimension_constants {
             let Origin::Authored { start, .. } = model.resolution.nodes().node(*site).origin else {
                 unreachable!("bound array dimensions belong to authored type sites");
@@ -289,6 +305,7 @@ impl<'m, 'src> SilNames<'m, 'src> {
             model,
             sites,
             type_sites,
+            actor_handle_type_sites,
             dimension_types,
             co_spent_sites,
             digest_operands,
@@ -348,6 +365,10 @@ impl<'m, 'src> SilNames<'m, 'src> {
 
     pub(super) fn type_target(&self, span: Span<'_>) -> Option<DeclId> {
         self.type_sites.get(&span.start()).copied()
+    }
+
+    pub(super) fn is_actor_handle_type(&self, span: Span<'_>) -> bool {
+        self.actor_handle_type_sites.contains(&span.start())
     }
 
     pub(super) fn co_spent_approved(&self, span: Span<'_>) -> bool {

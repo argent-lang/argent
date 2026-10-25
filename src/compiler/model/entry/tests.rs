@@ -478,6 +478,45 @@ fn retained_selector_initializer_uses_bound_ast_expression() {
 }
 
 #[test]
+fn explicitly_enum_typed_copies_remain_selectors_and_compile() {
+    let source = r#"
+        state Game { int n; }
+        actor A owns Game { entry hold() emits none { require(n >= 0); } }
+        actor B owns Game { entry hold() emits none { require(n > 1); } }
+        actor enum Move { A; B; }
+        actor Mux owns Game {
+            entry choose() emits next: Move {
+                Move original = Move::B;
+                Move copied = original;
+                Game next_state = { n: n + 1 };
+                unrestricted(next.value);
+                become next <- copied(next_state);
+            }
+        }
+        app Test { actor A; actor B; actor Mux; }
+    "#;
+    SourceSet::discover_inline(std::path::PathBuf::from("enum-selector-copy.ag"), source.to_string())
+        .unwrap()
+        .with_resolved(|program| {
+            let model = AppCompilationContext::from_resolved(
+                &program,
+                None,
+                &std::collections::BTreeMap::new(),
+                &crate::compiler::model::default_route_planner,
+            )?;
+            let entry =
+                model.entry_model_by_id(crate::compiler::syntax::node::EntryId { actor: model.types.names["Mux"], index: 0 })?;
+            assert!(entry.handle_value_initializers().is_empty(), "enum locals are not ordinary handle value declarations");
+            assert!(entry.template_selectors().contains_key("original"));
+            assert!(entry.template_selectors().contains_key("copied"));
+            Ok(())
+        })
+        .expect("enum-typed copy retains its existing selector classification");
+    let output = tempfile::tempdir().expect("enum copy output directory created");
+    crate::build_inline("enum-selector-copy.ag", source, output.path()).expect("enum-typed selector copy compiles through Sil");
+}
+
+#[test]
 fn selector_initializer_uses_bound_enum_value_of_an_earlier_local() {
     let valid = r#"
         state Game { int n; }
