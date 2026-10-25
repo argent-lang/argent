@@ -103,6 +103,7 @@ pub(in crate::compiler::codegen) struct SilNames<'m, 'src> {
     co_spent_sites: BTreeSet<(usize, usize)>,
     digest_operands: BTreeMap<(usize, usize), PlannedStateValue>,
     actor_field_uses: BTreeMap<(usize, usize), SourceFieldId>,
+    linked_actor_values: BTreeMap<(usize, usize), String>,
     local_names: BTreeMap<LocalId, String>,
     parameter_ids: BTreeMap<usize, LocalId>,
     generated_fields: BTreeMap<GeneratedFieldId, String>,
@@ -195,6 +196,24 @@ impl<'m, 'src> SilNames<'m, 'src> {
                 }
             })
             .collect();
+        let linked_actor_values = model
+            .linked_actor_values
+            .expressions
+            .iter()
+            .filter_map(|(site, linked)| {
+                let node = model.resolution.nodes().node(*site);
+                if node.address.owner != owner || node.address.root != root {
+                    return None;
+                }
+                match node.origin {
+                    Origin::Authored { start, end, .. } => Some((
+                        (start, end),
+                        hidden_imported_template_const_name(&ImportedTemplateSpec::from_linked(&model.linked_actors[linked])),
+                    )),
+                    Origin::Generated { .. } => None,
+                }
+            })
+            .collect();
         let generated_fields = if owner.kind() == SymbolKind::Actor {
             model
                 .state_lowering_by_actor
@@ -274,6 +293,7 @@ impl<'m, 'src> SilNames<'m, 'src> {
             co_spent_sites,
             digest_operands,
             actor_field_uses,
+            linked_actor_values,
             local_names,
             parameter_ids,
             generated_fields,
@@ -295,7 +315,11 @@ impl<'m, 'src> SilNames<'m, 'src> {
     pub(super) fn name(&self, source: &str, _kind: NameKind, span: Span<'_>) -> String {
         match self.sites.get(&(span.start(), span.end())) {
             Some(Binding::Source(ResolvedName::Declaration(id))) => self.model.types.display_names[id].clone(),
-            Some(Binding::Source(ResolvedName::AppMember(member))) => self.model.types.app_member_display_names[member].clone(),
+            Some(Binding::Source(ResolvedName::AppMember(member))) => self
+                .linked_actor_values
+                .get(&(span.start(), span.end()))
+                .cloned()
+                .unwrap_or_else(|| self.model.types.app_member_display_names[member].clone()),
             Some(Binding::Local(id)) => self.local_names.get(id).cloned().unwrap_or_else(|| source.to_string()),
             _ => source.to_string(),
         }

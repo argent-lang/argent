@@ -11,8 +11,8 @@ use crate::error::{ArgentError, Result};
 use super::link::{LinkedContext, LinkedDependency};
 use super::{
     ActorEnumInfo, ActorModel, ActorOutputPlan, ActorValuePlan, AppActors, AppCompilationContext, CompilerRoutePlan,
-    CompilerRoutePlanner, ConstResolver, EntryInputPlan, EntryOutputPlan, StateExpansionWitnessSpec, StaticActorId, TypeTable,
-    WitnessPlan, build_contract_state_lowerings, infer_direct_routes,
+    CompilerRoutePlanner, ConstResolver, EntryInputPlan, EntryOutputPlan, LinkedActorValuePlan, StateExpansionWitnessSpec,
+    StaticActorId, TypeTable, WitnessPlan, build_contract_state_lowerings, infer_direct_routes,
 };
 
 fn compute_leader_for(
@@ -168,6 +168,7 @@ impl<'a> AppCompilationContext<'a> {
             linked_field_sources,
             actors_by_name: all_actors,
             linked_actors,
+            linked_actor_values: LinkedActorValuePlan::default(),
             linked_actor_names,
             actor_enums,
             actor_models,
@@ -202,6 +203,7 @@ impl<'a> AppCompilationContext<'a> {
                 return Err(ArgentError::new(format!("state `{source}` has conflicting storage source identities")));
             }
         }
+        model.linked_actor_values = LinkedActorValuePlan::new(&model)?;
         model.validate_pre_layout()?;
         model.state_lowering_by_actor = build_contract_state_lowerings(&model)?;
         model.actor_value_plans = model

@@ -297,6 +297,138 @@ fn unused_import_does_not_change_linked_app_artifacts() {
 }
 
 #[test]
+fn static_cross_app_actor_values_use_shared_expression_lowering() {
+    let temp = tempfile::tempdir().expect("test directory created");
+    std::fs::write(
+        temp.path().join("foreign.ag"),
+        r#"
+        state ForeignState { int n; }
+        actor Foreign owns ForeignState {
+            entry check() emits none { require(n >= 0); }
+        }
+        app RemoteApp { actor Foreign; }
+    "#,
+    )
+    .unwrap();
+    let cases = [
+        ("entry", "", "", "remote::RemoteApp::Foreign"),
+        (
+            "global-helper",
+            "fn expected() -> actor_type<remote::ForeignState> { return remote::RemoteApp::Foreign; }",
+            "",
+            "expected()",
+        ),
+        ("actor-helper", "", "fn expected() -> actor_type<remote::ForeignState> { return remote::RemoteApp::Foreign; }", "expected()"),
+        (
+            "helper-local",
+            "fn expected() -> actor_type<remote::ForeignState> { actor_type<remote::ForeignState> result = remote::RemoteApp::Foreign; return result; }",
+            "",
+            "expected()",
+        ),
+        ("constant", "const actor_type<remote::ForeignState> EXPECTED = remote::RemoteApp::Foreign;", "", "EXPECTED"),
+    ];
+    for (name, globals, helpers, expected) in cases {
+        std::fs::write(
+            temp.path().join("host.ag"),
+            format!(
+                r#"
+                import "./foreign.ag" as remote;
+                {globals}
+                state HostState {{ actor_type<remote::ForeignState> token_type; }}
+                actor Host owns HostState {{
+                    {helpers}
+                    entry check() emits none {{ require(token_type == {expected}); }}
+                }}
+                state OtherState {{ int n; }}
+                actor Other owns OtherState {{ entry check() emits none {{}} }}
+                app HostApp {{ actor Host; actor Other; }}
+            "#
+            ),
+        )
+        .unwrap();
+        let output = temp.path().join(name);
+        let bundle = build_file_bundle(temp.path().join("host.ag"), &output)
+            .unwrap_or_else(|error| panic!("static actor value in {name} compiles: {error}"));
+        let artifact = bundle.primary();
+        assert_eq!(bundle.apps().map(|(app, _)| app).collect::<Vec<_>>(), ["HostApp", "RemoteApp"]);
+        assert_eq!(artifact.argent.interfaces.imports.len(), 1);
+        assert_eq!(artifact.argent.interfaces.imports[0].app, "RemoteApp");
+        assert_eq!(artifact.argent.interfaces.imports[0].actor, "Foreign");
+        let exported = &bundle.app("RemoteApp").unwrap().argent.template_plan.templates[0].actor_type_handle.template.hash;
+        let contract = artifact.sil_abi.contract("Host").unwrap();
+        assert!(byte_occurrences(&contract.compiled.bytecode, exported) > 0);
+        assert!(contract.entry("check").unwrap().params.is_empty(), "value-only imports add no witness parameters");
+        assert_eq!(contract.runtime_state.fields.len(), 1, "value-only imports add no route fields");
+        assert_eq!(artifact.argent.actors.len(), 2, "linked actors do not enter the app actor domain");
+
+        let host_sil = std::fs::read_to_string(output.join("sil/Host.sil")).unwrap();
+        let other_sil = std::fs::read_to_string(output.join("sil/Other.sil")).unwrap();
+        let constant = "gen__remote_app__foreign_template_const";
+        assert!(host_sil.contains(constant), "{name}: {host_sil}");
+        assert_eq!(
+            other_sil.contains(constant),
+            matches!(name, "global-helper" | "helper-local" | "constant"),
+            "only globally emitted uses require constants in unrelated actors: {name}"
+        );
+    }
+    for statement in ["remote::RemoteApp::Foreign();", "remote::RemoteApp::Foreign invalid;"] {
+        std::fs::write(
+            temp.path().join("misuse.ag"),
+            format!(
+                r#"
+                import "./foreign.ag" as remote;
+                state HostState {{}}
+                actor Host owns HostState {{ entry check() emits none {{ {statement} }} }}
+                app HostApp {{ actor Host; }}
+            "#
+            ),
+        )
+        .unwrap();
+        build_file(temp.path().join("misuse.ag"), temp.path().join("invalid"))
+            .expect_err("an actor value is not a function or a state type");
+    }
+}
+
+#[test]
+fn static_cross_app_actor_values_distinguish_same_named_exports() {
+    let temp = tempfile::tempdir().unwrap();
+    for (file, app, condition) in [("first.ag", "FirstApp", "n >= 0"), ("second.ag", "SecondApp", "n > 0")] {
+        std::fs::write(
+            temp.path().join(file),
+            format!(
+                "state ForeignState {{ int n; }} actor Foreign owns ForeignState {{ entry check() emits none {{ require({condition}); }} }} app {app} {{ actor Foreign; }}"
+            ),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        temp.path().join("host.ag"),
+        r#"
+        import "./first.ag" as first;
+        import "./second.ag" as second;
+        state HostState {}
+        actor Host owns HostState {
+            entry check() emits none {
+                require(first::FirstApp::Foreign != second::SecondApp::Foreign);
+            }
+        }
+        app HostApp { actor Host; }
+    "#,
+    )
+    .unwrap();
+    let bundle = build_file_bundle(temp.path().join("host.ag"), temp.path().join("out")).expect("distinct exports compile");
+    let artifact = bundle.primary();
+    assert_eq!(artifact.argent.interfaces.imports.len(), 2);
+    assert_eq!(artifact.dependencies.len(), 2);
+    let first = &bundle.app("FirstApp").unwrap().argent.template_plan.templates[0].actor_type_handle.template.hash;
+    let second = &bundle.app("SecondApp").unwrap().argent.template_plan.templates[0].actor_type_handle.template.hash;
+    assert_ne!(first, second);
+    let bytecode = &artifact.sil_abi.contract("Host").unwrap().compiled.bytecode;
+    assert!(byte_occurrences(bytecode, first) > 0);
+    assert!(byte_occurrences(bytecode, second) > 0);
+}
+
+#[test]
 fn compile_inline_supports_helpers_without_return_types() {
     let source = r#"
         fn authorize(int value) {
