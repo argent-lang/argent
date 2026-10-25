@@ -914,8 +914,6 @@ struct BodyLowerer<'a, 'm, 'p> {
     state_values: &'p StateValueTypes<'m>,
     bindings: BodyBindings,
     output_plan: &'m EntryOutputPlan,
-    /// Entry-wide candidates; the current binding decides selector visibility.
-    selector_catalog: &'m BTreeMap<String, TemplateSelector>,
     output_values: BTreeMap<InteractionId, String>,
     observed_output_fields: Vec<ObservedOutputFieldWitnessSpec>,
     // Expression lowering records contract-level helpers without making the
@@ -1499,7 +1497,6 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let entry_model = model.entry_model_by_id(entry_id)?;
         let input_plan = model.input_plan_by_id(entry_id)?;
         let output_plan = model.entry_output_plan_by_id(entry_id)?;
-        let selector_catalog = entry_model.template_selectors();
         let active_reference = input_references.active().clone();
         let mut bindings = BodyBindings::new();
         let declaration_bindings = model.resolution.bindings(entry_model.id.actor);
@@ -1576,7 +1573,6 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             state_values,
             bindings,
             output_plan,
-            selector_catalog,
             output_values,
             observed_output_fields,
             digest_helpers: RefCell::new(BTreeSet::new()),
@@ -1637,26 +1633,6 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let mut result = Vec::with_capacity(statements.len());
         for (index, statement) in statements.iter().enumerate() {
             let statement_cursor = if indexed { cursor.child(ChildEdge::Statement(index)) } else { cursor.clone() };
-            if let AuthoredEntryStatement::Sil(declaration) = statement
-                && let SilStatement::VariableDefinition { expr, .. } = declaration.as_ref()
-                && let Some(type_site) = self.model.resolution.nodes().find(&statement_cursor.child(ChildEdge::TypeUse).address)
-                && self.model.types.actor_handle_type_uses.contains_key(&type_site)
-                && let Some(site) = self.model.resolution.nodes().find(&statement_cursor.child(ChildEdge::BindingName).address)
-                && let Some(Binding::Local(local)) = self.model.resolution.bindings(statement_cursor.address.owner).sites.get(&site)
-                && let Some(selector) = self.selector_catalog.values().find(|selector| selector.binding == Some(*local))
-            {
-                let initializer = expr.as_ref()?;
-                let index = if let Some(fixed_index) = selector.fixed_index {
-                    SilExpr::int(fixed_index as i64)
-                } else if let SilExprKind::ArrayIndex { index, .. } = &initializer.kind {
-                    (**index).clone()
-                } else {
-                    initializer.clone()
-                };
-                result.extend(self.selector_template_ast(selector, index)?);
-                materialized_selectors.insert(selector.name.clone());
-                continue;
-            }
             if let AuthoredEntryStatement::ForeignBecome { routes, .. } = statement {
                 let entry_model = self.model.entry_model_by_id(self.entry_id).ok()?;
                 let group_site = self.model.resolution.nodes().find(&statement_cursor.child(ChildEdge::ForeignGroup).address)?;

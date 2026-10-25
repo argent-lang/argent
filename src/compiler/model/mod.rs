@@ -11,6 +11,7 @@ use crate::error::{ArgentError, Result};
 use self::link::{LinkedActor, LinkedActorId};
 
 mod actor;
+mod actor_value_policy;
 mod actor_values;
 mod build;
 mod consts;

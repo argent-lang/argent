@@ -271,6 +271,11 @@ Open ICC rules:
 - the compiler must not silently replace an open actor handle with a concrete
   closed artifact dependency
 
+In-app selection uses explicit actor-enum types, such as
+`Move target = Move::Knight;`. `actor_type<State>` is an external actor handle,
+not an enum selector. In-app actors can be used as values only through an actor
+enum group, not by their bare actor names.
+
 This is different from ordinary dynamic dispatch in one important way: the
 observer does not execute the implementation body. The observed implementation
 is a covenant input in the same transaction and validates itself. The observer

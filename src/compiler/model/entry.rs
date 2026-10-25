@@ -135,8 +135,7 @@ impl<'a> EntryModel<'a> {
             else {
                 continue;
             };
-            let mut selector =
-                self.bound_selector(&param.name, *enumeration, None, ResolvedTypeBase::ActorEnum(*enumeration), types, actor_ids)?;
+            let mut selector = self.bound_selector(&param.name, *enumeration, None, *enumeration, types, actor_ids)?;
             selector.binding = bindings.parameter_ids.get(&(RootSlot::Entry(self.id.index), index)).copied();
             if let Some(local) = selector.binding {
                 enum_values.insert(local, *enumeration);
@@ -230,6 +229,12 @@ impl<'a> EntryModel<'a> {
                 self.handle_value_initializers.insert(local, value_site.expect("ordinary handle initializer has a bound value site"));
                 continue;
             }
+            if expected_state.is_some() {
+                return Err(ArgentError::new(format!(
+                    "entry `{}::{}` declares actor handle `{name}` without a linked actor or a typed external handle initializer",
+                    authored_actor.name, authored_entry.name
+                )));
+            }
             let (enumeration, fixed_actor) = match &expr.kind {
                 SilExprKind::Identifier(_) => match bindings.sites.get(&expression_site) {
                     Some(Binding::EnumVariant { enumeration, actor }) => (*enumeration, Some(*actor)),
@@ -271,18 +276,9 @@ impl<'a> EntryModel<'a> {
                     )));
                 }
             };
-            let declared = match (expected_state, expected_actor_enum) {
-                (Some(state), None) => ResolvedTypeBase::ActorHandle(state),
-                (None, Some(enumeration)) => ResolvedTypeBase::ActorEnum(enumeration),
-                _ => {
-                    return Err(ArgentError::new(format!(
-                        "entry `{}` has an ambiguous actor selector type for `{name}`",
-                        self.source.name
-                    )));
-                }
-            };
+            let declared = expected_actor_enum.expect("selector declarations have an explicit actor-enum type");
             // A reassigned enum local routes through its current value, not its initializer.
-            let fixed_actor = if expected_actor_enum.is_some() && assigned_locals.contains(&local) { None } else { fixed_actor };
+            let fixed_actor = if assigned_locals.contains(&local) { None } else { fixed_actor };
             let mut selector = self.bound_selector(&name, enumeration, fixed_actor, declared, types, actor_ids)?;
             selector.binding = Some(local);
             enum_values.insert(local, enumeration);
@@ -319,7 +315,7 @@ impl<'a> EntryModel<'a> {
         name: &str,
         enumeration: DeclId,
         fixed_actor: Option<DeclId>,
-        declared: ResolvedTypeBase,
+        declared: DeclId,
         types: &TypeTable,
         actor_ids: &BTreeMap<String, StaticActorId>,
     ) -> Result<TemplateSelector> {
@@ -328,10 +324,8 @@ impl<'a> EntryModel<'a> {
             .display_names
             .get(&enumeration)
             .ok_or_else(|| ArgentError::new(format!("entry `{actor}::{}` has an unknown actor enum identity", self.source.name)))?;
-        if let ResolvedTypeBase::ActorEnum(expected) = declared
-            && expected != enumeration
-        {
-            let expected = &types.display_names[&expected];
+        if declared != enumeration {
+            let expected = &types.display_names[&declared];
             return Err(ArgentError::new(format!(
                 "entry `{actor}::{}` declares actor enum value `{name}` as `{expected}`, but initializes it from `{actor_enum}`",
                 self.source.name
@@ -352,16 +346,6 @@ impl<'a> EntryModel<'a> {
             return Err(ArgentError::new(format!("actor enum `{actor_enum}` variants do not share one state identity")));
         }
         let state_name = &types.display_names[state];
-        if let ResolvedTypeBase::ActorHandle(expected) = declared
-            && expected != *state
-        {
-            let expected = &types.display_names[&expected];
-            return Err(ArgentError::new(format!(
-                "entry `{actor}::{}` declares actor handle `{name}` as {actor_type}<{expected}>, but `{actor_enum}` contains {actor_type}<{state_name}>",
-                self.source.name,
-                actor_type = word::ACTOR_TYPE,
-            )));
-        }
         if types.actor_states.get(&self.id.actor) != Some(state) {
             let owned = &types.display_names[&types.actor_states[&self.id.actor]];
             return Err(ArgentError::new(format!(

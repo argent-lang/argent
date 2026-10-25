@@ -257,7 +257,7 @@ fn bound_local_selector_identity_controls_route_expansion() {
             entry choose_b() emits next: Move {
                 unrestricted(next.value);
                 Game next_state = { n: n + 1 };
-                actor_type<Game> target = Move::B;
+                Move target = Move::B;
                 become next <- target(next_state);
             }
         }
@@ -436,7 +436,7 @@ fn retained_selector_initializer_uses_bound_ast_expression() {
         actor enum Move { A; B; }
         actor Mux owns Game {
             entry choose(int choice) emits next: Move {
-                actor_type<Game> target = (Move[choice]);
+                Move target = (Move[choice]);
                 unrestricted(next.value);
                 Game next_state = { n: n + 1 };
                 become next <- target(next_state);
@@ -602,23 +602,27 @@ fn bound_selector_rejects_distinct_declarations_with_the_same_display_label() {
         .expect("entry model");
 
     let wrong_enum = entry_model
-        .bound_selector("target", other_enum, None, ResolvedTypeBase::ActorEnum(move_id), &model.types, &BTreeMap::new())
+        .bound_selector("target", other_enum, None, move_id, &model.types, &BTreeMap::new())
         .expect_err("equal display labels cannot make distinct actor enums interchangeable");
     assert!(wrong_enum.to_string().contains("declares actor enum value"), "{wrong_enum}");
 
-    let wrong_state = entry_model
-        .bound_selector("target", move_id, None, ResolvedTypeBase::ActorHandle(other_state), &model.types, &BTreeMap::new())
-        .expect_err("equal display labels cannot make distinct states interchangeable");
-    assert!(wrong_state.to_string().contains("declares actor handle"), "{wrong_state}");
-
     let actor_ids = model.app_actors.iter().map(|name| (name.clone(), StaticActorId::InApp(model.types.names[name]))).collect();
     let selector = entry_model
-        .bound_selector("target", move_id, None, ResolvedTypeBase::ActorEnum(move_id), &model.types, &actor_ids)
+        .bound_selector("target", move_id, None, move_id, &model.types, &actor_ids)
         .expect("display alias does not change bound selector targets");
     assert_eq!(
         selector.route_actor_ids().expect("bound actor domain"),
         &[StaticActorId::InApp(model.types.names["A"]), StaticActorId::InApp(model.types.names["B"])]
     );
+    for name in ["A", "B"] {
+        model.types.actor_states.insert(model.types.names[name], other_state);
+    }
+    let entry_model =
+        model.entry_model_by_id(crate::compiler::syntax::node::EntryId { actor: model.types.names["Mux"], index: 0 }).unwrap();
+    let wrong_state = entry_model
+        .bound_selector("target", move_id, None, move_id, &model.types, &BTreeMap::new())
+        .expect_err("equal display labels cannot make an enum's state interchangeable with the entry's state");
+    assert!(wrong_state.to_string().contains("selector values currently require the same state"), "{wrong_state}");
 }
 
 #[test]
@@ -633,7 +637,7 @@ fn local_shadow_cannot_impersonate_actor_enum_selector() {
         actor Mux owns Game {
             entry choose(int choice) emits next: Move {
                 int Move = 0;
-                actor_type<Game> target = Move[choice];
+                Move target = Move[choice];
                 unrestricted(next.value);
                 Game next_state = { n: n + 1 };
                 become next <- target(next_state);

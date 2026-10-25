@@ -57,6 +57,7 @@ impl<'a> AppCompilationContext<'a> {
         resolution.validate_actor_captures(&actor_ids)?;
         resolution.validate_authored_state_operations(&declaration_names, &actor_ids)?;
         let types = TypeTable::new(resolution, &declaration_names)?;
+        super::actor_value_policy::validate_actor_value_policy(resolution, &types, &actor_ids)?;
         let mut consts = Vec::new();
         let mut functions = Vec::new();
         let mut states = BTreeMap::new();
