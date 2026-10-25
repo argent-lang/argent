@@ -1,0 +1,392 @@
+{
+  "schema_version": 1,
+  "id": "b90d80fe4bd356fafda0829f035649bd0ffc560a707533e0b0d93995de9aba4c",
+  "generator": {
+    "name": "argentc",
+    "version": "0.1.0"
+  },
+  "app": "LauncherApp",
+  "dependencies": [
+    {
+      "app": "ForeignApp",
+      "artifact_id": "ddf7caa9ac8c41d0d3a24b41a4fc91414065acaa743bda38d41be983e99b6607"
+    }
+  ],
+  "root": "tests/fixtures/runtime/context_static_actor_values/launcher.ag",
+  "modules": [
+    "tests/fixtures/runtime/context_static_actor_values/launcher.ag",
+    "tests/fixtures/runtime/context_static_actor_values/foreign.ag"
+  ],
+  "argent": {
+    "templates": [
+      {
+        "id": "template/launcher",
+        "actor": "Launcher",
+        "symbol": "gen__launcher_template"
+      }
+    ],
+    "template_plan": {
+      "templates": [
+        {
+          "id": "template/launcher",
+          "actor": "Launcher",
+          "contract": "Launcher",
+          "symbol": "gen__launcher_template",
+          "sil_template_hash": [41, 16, 43, 64, 248, 54, 161, 47, 55, 48, 244, 166, 212, 91, 100, 73, 247, 202, 7, 217, 22, 152, 82, 149, 129, 241, 17, 199, 176, 22, 125, 122],
+          "actor_type_handle": {
+            "state": "LauncherState",
+            "context_fields": [],
+            "template": {
+              "prefix": [107],
+              "suffix": [
+                108, 118, 4, 153, 242, 16, 159, 135, 99, 117, 84, 121, 130, 89, 159, 105, 117, 83, 121, 130, 81, 151, 0, 157, 117, 82, 121, 130, 81, 151, 0, 157, 117, 120, 130, 89, 159, 105, 117, 32, 30, 68, 244, 53, 182, 160, 111, 145, 193, 25, 236, 98, 204, 214, 77, 200, 61, 145, 72, 0, 94, 90, 32, 243,
+                27, 222, 193, 75, 94, 85, 244, 142, 185, 203, 0, 156, 105, 185, 186, 185, 187, 88, 205, 0, 84, 127, 126, 81, 88, 205, 126, 83, 121, 88, 205, 0, 84, 127, 126, 83, 121, 194, 88, 205, 126, 2, 0, 0, 126, 1, 35, 88, 205, 126, 83, 121, 82, 1, 37, 200, 126, 118, 10, 67, 111, 118, 101, 110,
+                97, 110, 116, 73, 68, 167, 84, 121, 213, 120, 135, 105, 83, 121, 32, 30, 68, 244, 53, 182, 160, 111, 145, 193, 25, 236, 98, 204, 214, 77, 200, 61, 145, 72, 0, 94, 90, 32, 243, 27, 222, 193, 75, 94, 85, 244, 142, 135, 105, 32, 30, 68, 244, 53, 182, 160, 111, 145, 193, 25, 236, 98, 204, 214,
+                77, 200, 61, 145, 72, 0, 94, 90, 32, 243, 27, 222, 193, 75, 94, 85, 244, 142, 118, 85, 121, 135, 105, 88, 121, 84, 121, 89, 121, 130, 124, 117, 81, 150, 88, 205, 90, 121, 126, 89, 121, 130, 124, 117, 81, 150, 88, 205, 90, 121, 126, 126, 217, 136, 1, 8, 120, 88, 205, 126, 89, 121, 124, 126,
+                88, 121, 126, 170, 2, 0, 0, 1, 170, 126, 1, 32, 126, 124, 126, 1, 135, 126, 87, 121, 195, 136, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117, 81, 103, 106, 104
+              ],
+              "hash": [41, 16, 43, 64, 248, 54, 161, 47, 55, 48, 244, 166, 212, 91, 100, 73, 247, 202, 7, 217, 22, 152, 82, 149, 129, 241, 17, 199, 176, 22, 125, 122]
+            }
+          }
+        }
+      ],
+      "runtime_states": [],
+      "route_tables": [],
+      "route_proofs": [],
+      "route_families": [],
+      "witness_recipes": [
+        {
+          "id": "witness/foreign_app__foreign/template_prefix_bytes",
+          "subject": {
+            "kind": "actor",
+            "actor": "ForeignApp::Foreign"
+          },
+          "param": "gen__foreign_app__foreign_prefix",
+          "purpose": {
+            "kind": "template_prefix_bytes"
+          }
+        },
+        {
+          "id": "witness/foreign_app__foreign/template_suffix_bytes",
+          "subject": {
+            "kind": "actor",
+            "actor": "ForeignApp::Foreign"
+          },
+          "param": "gen__foreign_app__foreign_suffix",
+          "purpose": {
+            "kind": "template_suffix_bytes"
+          }
+        },
+        {
+          "id": "witness/Launcher/launch/spawn/children/child/spawn_output_index",
+          "subject": {
+            "kind": "spawn_actor",
+            "spawn": "children",
+            "handle": "child",
+            "actor": "ForeignApp::Foreign"
+          },
+          "param": "gen__children_child_output_idx",
+          "purpose": {
+            "kind": "spawn_output_index"
+          }
+        }
+      ]
+    },
+    "interfaces": {
+      "exports": [
+        {
+          "id": "interface/actor/Launcher",
+          "app": "LauncherApp",
+          "actor": "Launcher",
+          "state": "LauncherState",
+          "fingerprint_hex": "e851cd2d8b4d3e222a737fe82c49bc5a2fde23ddf4e304c433a70907aea57f10"
+        }
+      ],
+      "imports": [
+        {
+          "id": "interface/actor/Foreign",
+          "app": "ForeignApp",
+          "actor": "Foreign",
+          "state": "ForeignState",
+          "fingerprint_hex": "1cf16f0a96ffe621ac6f0c35635bd049fcc0a3f1cd21fa5202a5959c19cded2f"
+        }
+      ]
+    },
+    "states": [
+      {
+        "name": "ForeignState",
+        "fields": [
+          {
+            "name": "amount",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      },
+      {
+        "name": "LauncherState",
+        "fields": [
+          {
+            "name": "expected",
+            "type": {
+              "kind": "fixed_bytes",
+              "len": 32
+            },
+            "source_type": {
+              "name": "actor_type",
+              "actor_state": "ForeignState"
+            }
+          }
+        ]
+      },
+      {
+        "name": "ArchiveState",
+        "fields": [
+          {
+            "name": "amount",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      }
+    ],
+    "actor_enums": [],
+    "actors": [
+      {
+        "name": "Launcher",
+        "state": "LauncherState",
+        "abi": {
+          "contract": "Launcher"
+        },
+        "entries": [
+          {
+            "name": "launch",
+            "kind": "leader",
+            "abi": {
+              "contract": "Launcher",
+              "entry": "launch"
+            },
+            "route_plan": {
+              "active_input": {
+                "name": "self",
+                "actor": "Launcher",
+                "cov_index": 0
+              },
+              "leader_input": {
+                "name": "self",
+                "actor": "Launcher",
+                "cov_index": 0
+              },
+              "consumes": [],
+              "outputs": [],
+              "witness_recipe_ids": [
+                "witness/foreign_app__foreign/template_prefix_bytes",
+                "witness/foreign_app__foreign/template_suffix_bytes",
+                "witness/Launcher/launch/spawn/children/child/spawn_output_index"
+              ]
+            },
+            "hidden_params": [
+              {
+                "recipe_id": "witness/foreign_app__foreign/template_prefix_bytes",
+                "name": "gen__foreign_app__foreign_prefix",
+                "type": {
+                  "kind": "bytes"
+                },
+                "subject": {
+                  "kind": "actor",
+                  "actor": "ForeignApp::Foreign"
+                },
+                "purpose": {
+                  "kind": "template_prefix_bytes"
+                }
+              },
+              {
+                "recipe_id": "witness/foreign_app__foreign/template_suffix_bytes",
+                "name": "gen__foreign_app__foreign_suffix",
+                "type": {
+                  "kind": "bytes"
+                },
+                "subject": {
+                  "kind": "actor",
+                  "actor": "ForeignApp::Foreign"
+                },
+                "purpose": {
+                  "kind": "template_suffix_bytes"
+                }
+              },
+              {
+                "recipe_id": "witness/Launcher/launch/spawn/children/child/spawn_output_index",
+                "name": "gen__children_child_output_idx",
+                "type": {
+                  "kind": "int"
+                },
+                "subject": {
+                  "kind": "spawn_actor",
+                  "spawn": "children",
+                  "handle": "child",
+                  "actor": "ForeignApp::Foreign"
+                },
+                "purpose": {
+                  "kind": "spawn_output_index"
+                }
+              }
+            ],
+            "template_selectors": [],
+            "spawns": [
+              {
+                "name": "children",
+                "covenant": "child_id",
+                "outputs": [
+                  {
+                    "name": "child",
+                    "actor": "ForeignApp::Foreign",
+                    "state": "ForeignState",
+                    "group_index": 0,
+                    "target": {
+                      "kind": "static_actor",
+                      "app": "ForeignApp",
+                      "actor": "Foreign"
+                    }
+                  }
+                ]
+              }
+            ],
+            "witnesses": [
+              {
+                "recipe_id": "witness/foreign_app__foreign/template_prefix_bytes",
+                "param": "gen__foreign_app__foreign_prefix",
+                "subject": {
+                  "kind": "actor",
+                  "actor": "ForeignApp::Foreign"
+                },
+                "purpose": {
+                  "kind": "template_prefix_bytes"
+                }
+              },
+              {
+                "recipe_id": "witness/foreign_app__foreign/template_suffix_bytes",
+                "param": "gen__foreign_app__foreign_suffix",
+                "subject": {
+                  "kind": "actor",
+                  "actor": "ForeignApp::Foreign"
+                },
+                "purpose": {
+                  "kind": "template_suffix_bytes"
+                }
+              },
+              {
+                "recipe_id": "witness/Launcher/launch/spawn/children/child/spawn_output_index",
+                "param": "gen__children_child_output_idx",
+                "subject": {
+                  "kind": "spawn_actor",
+                  "spawn": "children",
+                  "handle": "child",
+                  "actor": "ForeignApp::Foreign"
+                },
+                "purpose": {
+                  "kind": "spawn_output_index"
+                }
+              }
+            ],
+            "consumes": [],
+            "emits": {
+              "kind": "none"
+            },
+            "routes": []
+          }
+        ]
+      }
+    ]
+  },
+  "sil_abi": {
+    "schema_version": 1,
+    "compiler_version": "0.1.0",
+    "structs": {
+      "ArchiveState": {
+        "fields": [
+          {
+            "name": "amount",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      },
+      "ForeignState": {
+        "fields": [
+          {
+            "name": "amount",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      }
+    },
+    "contracts": {
+      "Launcher": {
+        "source_path": "sil/Launcher.sil",
+        "runtime_state": {
+          "source": "State",
+          "fields": [
+            {
+              "name": "expected",
+              "type": {
+                "kind": "fixed_bytes",
+                "len": 32
+              }
+            }
+          ]
+        },
+        "entries": {
+          "launch": {
+            "dispatch_tag": "99f2109f",
+            "params": [
+              {
+                "name": "amount",
+                "type": {
+                  "kind": "int"
+                }
+              },
+              {
+                "name": "gen__foreign_app__foreign_prefix",
+                "type": {
+                  "kind": "bytes"
+                }
+              },
+              {
+                "name": "gen__foreign_app__foreign_suffix",
+                "type": {
+                  "kind": "bytes"
+                }
+              },
+              {
+                "name": "gen__children_child_output_idx",
+                "type": {
+                  "kind": "int"
+                }
+              }
+            ]
+          }
+        },
+        "compiled": {
+          "bytecode": [
+            107, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 108, 118, 4, 153, 242, 16, 159, 135, 99, 117, 84, 121, 130, 89, 159, 105, 117, 83, 121, 130, 81, 151, 0, 157, 117, 82, 121, 130, 81, 151,
+            0, 157, 117, 120, 130, 89, 159, 105, 117, 32, 30, 68, 244, 53, 182, 160, 111, 145, 193, 25, 236, 98, 204, 214, 77, 200, 61, 145, 72, 0, 94, 90, 32, 243, 27, 222, 193, 75, 94, 85, 244, 142, 185, 203, 0, 156, 105, 185, 186, 185, 187, 88, 205, 0, 84, 127, 126, 81, 88, 205, 126, 83, 121, 88,
+            205, 0, 84, 127, 126, 83, 121, 194, 88, 205, 126, 2, 0, 0, 126, 1, 35, 88, 205, 126, 83, 121, 82, 1, 37, 200, 126, 118, 10, 67, 111, 118, 101, 110, 97, 110, 116, 73, 68, 167, 84, 121, 213, 120, 135, 105, 83, 121, 32, 30, 68, 244, 53, 182, 160, 111, 145, 193, 25, 236, 98, 204, 214, 77,
+            200, 61, 145, 72, 0, 94, 90, 32, 243, 27, 222, 193, 75, 94, 85, 244, 142, 135, 105, 32, 30, 68, 244, 53, 182, 160, 111, 145, 193, 25, 236, 98, 204, 214, 77, 200, 61, 145, 72, 0, 94, 90, 32, 243, 27, 222, 193, 75, 94, 85, 244, 142, 118, 85, 121, 135, 105, 88, 121, 84, 121, 89, 121, 130,
+            124, 117, 81, 150, 88, 205, 90, 121, 126, 89, 121, 130, 124, 117, 81, 150, 88, 205, 90, 121, 126, 126, 217, 136, 1, 8, 120, 88, 205, 126, 89, 121, 124, 126, 88, 121, 126, 170, 2, 0, 0, 1, 170, 126, 1, 32, 126, 124, 126, 1, 135, 126, 87, 121, 195, 136, 117, 117, 117, 117, 117, 117, 117, 117,
+            117, 117, 81, 103, 106, 104
+          ],
+          "template_hash": [41, 16, 43, 64, 248, 54, 161, 47, 55, 48, 244, 166, 212, 91, 100, 73, 247, 202, 7, 217, 22, 152, 82, 149, 129, 241, 17, 199, 176, 22, 125, 122],
+          "state_span": {
+            "offset": 1,
+            "len": 33
+          }
+        }
+      }
+    }
+  }
+}

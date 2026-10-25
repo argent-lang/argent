@@ -1,0 +1,28 @@
+pragma silverscript ^0.1.0;
+
+contract Launcher(byte[32] init_expected) {
+    struct ForeignState {
+        int amount;
+    }
+
+    struct ArchiveState {
+        int amount;
+    }
+
+    byte[32] expected = init_expected;
+
+    byte[32] constant gen__foreign_app__foreign_template_const = byte[32](0x1e44f435b6a06f91c119ec62ccd64dc83d9148005e5a20f31bdec14b5e55f48e);
+
+    entry launch(int amount, byte[] gen__foreign_app__foreign_prefix, byte[] gen__foreign_app__foreign_suffix, int gen__children_child_output_idx) {
+        byte[32] gen__foreign_app__foreign_template = gen__foreign_app__foreign_template_const;
+        require(OpAuthOutputCount(this.activeInputIndex) == 0);
+        byte[] gen__children_genesis_preimage = OpOutpointTxId(this.activeInputIndex) + OpOutpointIndex(this.activeInputIndex) as byte[8].slice(0, 4) + 1 as byte[8] + gen__children_child_output_idx as byte[8].slice(0, 4) + tx.outputs[gen__children_child_output_idx].value as byte[8] + byte[2](0x0000) + 35 as byte[8] + OpTxOutputSpkSubstr(gen__children_child_output_idx, 2, 37);
+        byte[32] child_id = blake2bWithKey(gen__children_genesis_preimage, byte[]("CovenantID"));
+        require(OpOutputCovenantId(gen__children_child_output_idx) == child_id);
+        require(expected == gen__foreign_app__foreign_template_const);
+        byte[32] target = gen__foreign_app__foreign_template_const;
+        require(target == expected);
+        ForeignState child_state = ForeignState {amount: amount};
+        validateOutputStateWithTemplate(gen__children_child_output_idx, child_state, gen__foreign_app__foreign_prefix, gen__foreign_app__foreign_suffix, gen__foreign_app__foreign_template);
+    }
+}

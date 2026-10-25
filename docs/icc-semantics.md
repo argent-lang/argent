@@ -283,6 +283,19 @@ only constrains the parts of that transition it cares about.
 
 ## Source-state actor handles
 
+An app-qualified actor such as `tokens::TokenApp::Token` is a static handle
+value. It can be compared with a stored `actor_type<tokens::TokenState>` or
+used in a typed handle declaration, helper, or constant. Argent embeds the
+linked actor's exported `actor_type_handle`, not its canonical Sil template hash.
+
+Value references create app dependencies and interface imports even without
+an `observes` or `spawns` clause. Within each generated contract, repeated
+references share one imported constant; the value itself adds no transaction
+witnesses or route-state fields.
+It does not grant current-covenant routing to a foreign actor. In-app selection
+still uses explicit actor-enum types; same-app static handle literals are not
+supported.
+
 Each actor exports one `actor_type_handle`. The handle uses the physical source
 state that an external app can provide. If the actor state expands another
 state, the handle uses that base state.
