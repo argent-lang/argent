@@ -506,7 +506,6 @@ fn explicitly_enum_typed_copies_remain_selectors_and_compile() {
             )?;
             let entry =
                 model.entry_model_by_id(crate::compiler::syntax::node::EntryId { actor: model.types.names["Mux"], index: 0 })?;
-            assert!(entry.handle_value_initializers().is_empty(), "enum locals are not ordinary handle value declarations");
             assert!(entry.template_selectors().contains_key("original"));
             assert!(entry.template_selectors().contains_key("copied"));
             Ok(())

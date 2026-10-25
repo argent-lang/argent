@@ -48,49 +48,7 @@ impl LinkedActorValuePlan {
             imports.extend(uses_by_owner.remove(&actor).into_iter().flatten());
             plan.imports_by_actor.insert(actor, imports);
         }
-        Self::validate_local_handles(model)?;
         Ok(plan)
-    }
-
-    fn validate_local_handles(model: &AppCompilationContext<'_>) -> Result<()> {
-        for (actor, entry) in model.entries_in_app_order() {
-            let bindings = model.resolution.bindings(entry.id.actor);
-            for (local, initializer) in entry.handle_value_initializers() {
-                let expected = model.source_state_id_by_decl(model.types.local_actor_handle_states[local])?;
-                let (actual, base) = match &bindings.sites[initializer] {
-                    Binding::Source(ResolvedName::AppMember(member)) => {
-                        let linked = &model.linked_actors[&LinkedActorId::from_member(*member, model.resolution)];
-                        let source = model.source_state_id(&linked.state)?;
-                        let base = model.storage_source_id(&source).clone();
-                        (source, Some(base))
-                    }
-                    binding => {
-                        let state = model
-                            .types
-                            .scalar_actor_handle_state(entry.id.actor, binding)
-                            .expect("ordinary actor handle initializer has a declared scalar handle type");
-                        (model.source_state_id_by_decl(state)?, None)
-                    }
-                };
-                // A linked actor supports its own authored state view and, when
-                // expanded, its base. An unrelated expansion of that base is not
-                // the same nominal state. Copies retain their declared identity.
-                if expected != actual && base.as_ref() != Some(&expected) {
-                    return Err(ArgentError::at(
-                        model.resolution.declaration_path(entry.id.actor),
-                        format!(
-                            "entry `{}::{}` declares actor handle `{}` as actor_type<{}>, but its initializer has actor_type<{}>",
-                            actor.name,
-                            entry.source().name,
-                            bindings.local_names[local],
-                            expected.as_str(),
-                            actual.as_str(),
-                        ),
-                    ));
-                }
-            }
-        }
-        Ok(())
     }
 
     pub(super) fn imports(&self, actor: DeclId) -> impl Iterator<Item = &LinkedActorId> {

@@ -30,7 +30,6 @@ pub(crate) struct EntryModel<'a> {
     source: &'a EntryDecl,
     groups: Vec<CovenantGroup<'a>>,
     template_selectors: BTreeMap<String, TemplateSelector>,
-    handle_value_initializers: BTreeMap<LocalId, NodeId>,
     routes: Vec<ResolvedRoute>,
     route_indexes: BTreeMap<RouteId, usize>,
     foreign_groups: BTreeMap<NodeId, CovenantGroupId>,
@@ -119,17 +118,7 @@ impl<'a> EntryModel<'a> {
 
         let mut selectors = BTreeMap::new();
         let mut enum_values = BTreeMap::new();
-        let mut handle_values = BTreeSet::new();
         for (index, param) in authored_entry.params.iter().enumerate() {
-            if matches!(
-                types.entry_params.get(&(self.id.actor, self.id.index, index)),
-                Some(ResolvedType { base: ResolvedTypeBase::ActorHandle(_), array: None })
-            ) {
-                if let Some(local) = bindings.parameter_ids.get(&(RootSlot::Entry(self.id.index), index)) {
-                    handle_values.insert(*local);
-                }
-                continue;
-            }
             let Some(ResolvedType { base: ResolvedTypeBase::ActorEnum(enumeration), array: None }) =
                 types.entry_params.get(&(self.id.actor, self.id.index, index))
             else {
@@ -174,7 +163,11 @@ impl<'a> EntryModel<'a> {
             }
             address.children.push(ChildEdge::TypeUse);
             let type_site = resolution.nodes().find(&address).ok_or_else(|| ArgentError::new("actor selector has no type site"))?;
-            let expected_state = types.actor_handle_type_uses.get(&type_site).copied();
+            // External handles are ordinary source values. Their nominal types
+            // are checked by the shared value resolver, not selector inference.
+            if types.actor_handle_type_uses.contains_key(&type_site) {
+                continue;
+            }
             let expected_actor_enum = match bindings.sites.get(&type_site) {
                 Some(Binding::Source(ResolvedName::Declaration(id)))
                     if id.kind() == crate::compiler::syntax::node::SymbolKind::ActorEnum =>
@@ -186,7 +179,7 @@ impl<'a> EntryModel<'a> {
                 }
                 _ => None,
             };
-            if expected_state.is_none() && expected_actor_enum.is_none() {
+            if expected_actor_enum.is_none() {
                 continue;
             }
             address.children.pop();
@@ -196,45 +189,6 @@ impl<'a> EntryModel<'a> {
                 .nodes()
                 .find(&expr_cursor.address)
                 .ok_or_else(|| ArgentError::new("actor selector has no indexed initializer"))?;
-            let value_site = match &expr.kind {
-                SilExprKind::Identifier(_) => Some(expression_site),
-                SilExprKind::Call { .. } => resolution.nodes().find(&expr_cursor.child(ChildEdge::CallTarget).address),
-                _ => None,
-            };
-            if expected_state.is_some()
-                && match (&expr.kind, value_site.and_then(|site| bindings.sites.get(&site))) {
-                    (SilExprKind::Identifier(_), Some(Binding::Source(ResolvedName::AppMember(member)))) => {
-                        member.actor.kind() == crate::compiler::syntax::node::SymbolKind::Actor
-                    }
-                    (SilExprKind::Identifier(_), Some(Binding::Local(source))) => handle_values.contains(source),
-                    (SilExprKind::Identifier(_), Some(binding @ Binding::Source(ResolvedName::Declaration(id))))
-                        if id.kind() == crate::compiler::syntax::node::SymbolKind::Const =>
-                    {
-                        types.scalar_actor_handle_state(self.id.actor, binding).is_some()
-                    }
-                    (SilExprKind::Call { .. }, Some(binding @ Binding::Source(ResolvedName::Declaration(id))))
-                        if id.kind() == crate::compiler::syntax::node::SymbolKind::Function =>
-                    {
-                        types.scalar_actor_handle_state(self.id.actor, binding).is_some()
-                    }
-                    (SilExprKind::Call { .. }, Some(binding @ Binding::ActorHelper(_))) => {
-                        types.scalar_actor_handle_state(self.id.actor, binding).is_some()
-                    }
-                    _ => false,
-                }
-            {
-                // Handle bytes are ordinary local values, not enum ordinals or
-                // permission to route outside this application's actor domain.
-                handle_values.insert(local);
-                self.handle_value_initializers.insert(local, value_site.expect("ordinary handle initializer has a bound value site"));
-                continue;
-            }
-            if expected_state.is_some() {
-                return Err(ArgentError::new(format!(
-                    "entry `{}::{}` declares actor handle `{name}` without a linked actor or a typed external handle initializer",
-                    authored_actor.name, authored_entry.name
-                )));
-            }
             let (enumeration, fixed_actor) = match &expr.kind {
                 SilExprKind::Identifier(_) => match bindings.sites.get(&expression_site) {
                     Some(Binding::EnumVariant { enumeration, actor }) => (*enumeration, Some(*actor)),
@@ -787,7 +741,6 @@ impl<'a> EntryModel<'a> {
             source: entry,
             groups,
             template_selectors,
-            handle_value_initializers: BTreeMap::new(),
             routes,
             route_indexes,
             foreign_groups: BTreeMap::new(),
@@ -859,11 +812,6 @@ impl<'a> EntryModel<'a> {
     /// Resolve a selector by the bound local that carries its actor choice.
     pub(crate) fn selector_for_local(&self, local: LocalId) -> Option<&TemplateSelector> {
         self.template_selectors.values().find(|selector| selector.binding == Some(local))
-    }
-
-    /// Ordinary handle declarations retain their binding and initializer identities.
-    pub(super) fn handle_value_initializers(&self) -> &BTreeMap<LocalId, NodeId> {
-        &self.handle_value_initializers
     }
 
     /// Return resolved routes in terminal source order.

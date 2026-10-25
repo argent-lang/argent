@@ -21,6 +21,7 @@ mod layout;
 pub(crate) mod link;
 mod outputs;
 mod routes;
+mod source_values;
 mod types;
 mod validate;
 mod witnesses;

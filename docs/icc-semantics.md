@@ -296,6 +296,12 @@ It does not grant current-covenant routing to a foreign actor. In-app selection
 still uses explicit actor-enum types; same-app static handle literals are not
 supported.
 
+Handle transfers keep their declared source-state identity through locals,
+fields, calls, and local-array operations. Direct actor literals support their
+authored and expansion-base views; copying a typed value keeps its declared
+view. Handle arrays currently belong only in body-local declarations, not entry
+or helper signatures, state fields, or constants.
+
 Each actor exports one `actor_type_handle`. The handle uses the physical source
 state that an external app can provide. If the actor state expands another
 state, the handle uses that base state.

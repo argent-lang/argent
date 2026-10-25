@@ -729,25 +729,6 @@ impl<'src> AstVisitorMut<'src> for ExpressionTypePlanner<'_, '_> {
 }
 
 impl TypeTable {
-    /// Read the declared scalar handle type of a bound value producer.
-    pub(super) fn scalar_actor_handle_state(&self, owner: DeclId, binding: &Binding) -> Option<DeclId> {
-        let ty = match binding {
-            Binding::Local(local) => return self.local_actor_handle_states.get(local).copied(),
-            Binding::Source(ResolvedName::Declaration(id)) if id.kind() == SymbolKind::Const => self.constants.get(id),
-            Binding::Source(ResolvedName::Declaration(id)) if id.kind() == SymbolKind::Function => {
-                self.callables.get(&CallableId { owner: *id, member: None }).and_then(|signature| signature.result.as_ref())
-            }
-            Binding::ActorHelper(index) => {
-                self.callables.get(&CallableId { owner, member: Some(*index) }).and_then(|signature| signature.result.as_ref())
-            }
-            _ => None,
-        }?;
-        match ty {
-            ResolvedType { base: ResolvedTypeBase::ActorHandle(state), array: None } => Some(*state),
-            _ => None,
-        }
-    }
-
     pub(crate) fn plan_expression_sites(&self, model: &AppCompilationContext<'_>) -> Result<ExpressionSitePlans> {
         let mut accepted = BTreeSet::new();
         let mut digest_operands = BTreeMap::new();
@@ -1032,7 +1013,7 @@ impl TypeTable {
         }
     }
 
-    fn resolve_type(program: &ResolvedModules<'_>, owner: DeclId, ty: &TypeRef) -> Result<ResolvedType> {
+    pub(super) fn resolve_type(program: &ResolvedModules<'_>, owner: DeclId, ty: &TypeRef) -> Result<ResolvedType> {
         let base = if let Some(state) = &ty.actor_state {
             ResolvedTypeBase::ActorHandle(Self::bound_decl(program, owner, state, SymbolKind::State)?)
         } else if ty.is_builtin() {
