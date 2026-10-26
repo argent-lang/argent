@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use crate::artifact::Artifact;
 use crate::compiler::syntax::lexer::RESERVED_GENERATED_MODULE_NAME_PREFIX;
 use crate::compiler::syntax::node::{
     ChildEdge, DeclId, EntryId, ModuleId, NodeId, RootSlot, SourceNodeCursor, SourceNodeIndex, SymbolKind,
@@ -88,6 +89,8 @@ pub(crate) struct ResolvedModules<'src> {
     exports: Arc<NamespaceTable>,
     /// What references inside each declaration refer to.
     bindings: Arc<BTreeMap<DeclId, DeclarationBindings>>,
+    /// Published app artifacts behind artifact-backed modules (`import "./app/artifact.json" id "...";`).
+    artifacts: Arc<BTreeMap<ModuleId, Artifact>>,
 }
 
 #[derive(Debug, Clone)]
@@ -97,7 +100,12 @@ struct ModuleView {
 }
 
 impl<'src> ResolvedModules<'src> {
-    pub(super) fn from_program(program: &'src Program<'src>, root: ModuleId, imports: Vec<Vec<ResolvedImport>>) -> Result<Self> {
+    pub(super) fn from_program(
+        program: &'src Program<'src>,
+        root: ModuleId,
+        imports: Vec<Vec<ResolvedImport>>,
+        artifacts: BTreeMap<ModuleId, Artifact>,
+    ) -> Result<Self> {
         let storage = SourceStorage { program };
         if storage.module_count() != imports.len() || root.index() >= storage.module_count() {
             return Err(ArgentError::new("invalid loaded module graph"));
@@ -110,6 +118,7 @@ impl<'src> ResolvedModules<'src> {
             view: ModuleView { root, reachable: Vec::new() },
             exports: Arc::new(exports),
             bindings: Arc::new(BTreeMap::new()),
+            artifacts: Arc::new(artifacts),
         };
         resolved.view = resolved.module_view(root);
         for module_index in 0..resolved.storage.module_count() {
@@ -454,6 +463,11 @@ impl<'src> ResolvedModules<'src> {
 
     pub(crate) fn root_module(&self) -> &Module {
         self.storage.module(self.view.root)
+    }
+
+    /// The published artifact behind `module`, when it was loaded from a pinned artifact import.
+    pub(crate) fn artifact(&self, module: ModuleId) -> Option<&Artifact> {
+        self.artifacts.get(&module)
     }
 }
 

@@ -40,11 +40,18 @@ type, invalid exported fingerprint, missing dependency, and wrong dependency.
 compiles each source app and passes its artifact to dependent apps. A project
 can also depend on a published app without its source code.
 
-**Follow-up:** Let project configuration map an app import to source code or an
-artifact. Compile a source dependency. Load an artifact dependency without
-compilation. Pass the resulting artifact to the importing app in both cases.
+**Status:** A module import of a `.json` path loads a published app artifact
+without compilation (`import "./asset/artifact.json" id "<artifact id>";`, see
+`docs/icc-semantics.md`, "Published app artifacts"). The import must pin the
+artifact id; the artifact must be self-consistent and have that id. Its
+declarations become a declaration-only module, and the bundle builder passes the
+artifact itself to the importing app.
 
-Apply all linked actor receipt checks to an artifact dependency.
+**Follow-up:** Let project configuration map an app import to source code or an
+artifact, so that one source can build against either.
+
+Apply all linked actor receipt checks to an artifact dependency. An artifact
+dependency is linked as a leaf: its own app dependencies are not loaded.
 
 ## Reject runtime app-name collisions
 

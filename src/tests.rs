@@ -1913,3 +1913,262 @@ fn aliased_actor_enum_variant_compiles() {
     build_file(temp.join("root.ag"), temp.join("out")).expect("the qualified enum variant resolves through its alias");
     std::fs::remove_dir_all(temp).unwrap();
 }
+
+const PUBLISHED_ASSET_APP: &str = r#"
+state AssetState {
+    byte tag;
+    int amount;
+}
+
+actor Asset owns AssetState {
+    entry keep() emits next: Asset {
+        unrestricted(next.value);
+        require(self.amount >= 0);
+        become next <- self;
+    }
+}
+
+app AssetApp {
+    actor Asset;
+}
+"#;
+
+fn published_asset_controller(import: &str) -> String {
+    format!(
+        r#"
+{import}
+
+state ControllerState {{
+    cov_id asset_id;
+}}
+
+actor Controller owns ControllerState {{
+    entry update()
+    observes asset by self.asset_id {{
+        inputs {{
+            src: AssetApp::Asset,
+        }}
+        outputs {{
+            asset_next: AssetApp::Asset,
+        }}
+    }}
+    emits next: Controller {{
+        unrestricted(next.value);
+        AssetState current = state(asset.inputs.src);
+        require(current.tag == 0x01);
+        require asset.outputs become {{
+            asset_next <- AssetApp::Asset(current),
+        }};
+        become next <- self;
+    }}
+}}
+
+app ControllerApp {{
+    actor Controller;
+}}
+"#
+    )
+}
+
+fn published_asset_dir(name: &str) -> std::path::PathBuf {
+    let temp = std::env::temp_dir().join(format!("argent-artifact-import-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp);
+    std::fs::create_dir_all(&temp).expect("temp dir created");
+    temp
+}
+
+#[test]
+fn artifact_backed_import_links_a_published_app_without_its_source() {
+    let temp = published_asset_dir("links");
+    std::fs::write(temp.join("asset.ag"), PUBLISHED_ASSET_APP).expect("asset source written");
+    std::fs::write(temp.join("source_controller.ag"), published_asset_controller(r#"import "./asset.ag";"#))
+        .expect("source controller written");
+    let source_backed = build_file_app_bundle(temp.join("source_controller.ag"), "ControllerApp", temp.join("source_build"))
+        .expect("source-backed import compiles");
+    let published = build_file(temp.join("asset.ag"), temp.join("asset")).expect("asset app compiles");
+
+    // From here on, the asset app exists only as its published artifact.
+    std::fs::remove_file(temp.join("asset.ag")).expect("asset source removed");
+    std::fs::remove_dir_all(temp.join("asset/sil")).expect("asset Sil removed");
+    let import = format!(r#"import "./asset/artifact.json" id "{}";"#, published.id);
+    std::fs::write(temp.join("controller.ag"), published_asset_controller(&import)).expect("controller written");
+    let out_dir = temp.join("build");
+    let compiled =
+        build_file_app_bundle(temp.join("controller.ag"), "ControllerApp", &out_dir).expect("artifact-backed import compiles");
+
+    assert_eq!(compiled.apps().map(|(app, _)| app).collect::<Vec<_>>(), ["AssetApp", "ControllerApp"]);
+    assert_eq!(compiled.app("AssetApp").expect("linked asset artifact").id, published.id);
+    assert_eq!(
+        compiled.primary().dependencies,
+        [artifact::AppDependencyArtifact { app: "AssetApp".to_string(), artifact_id: published.id.clone() }]
+    );
+    assert!(out_dir.join("apps/AssetApp/artifact.json").is_file());
+    assert!(!out_dir.join("apps/AssetApp/sil").exists(), "a published dependency is not compiled again");
+    // Linking the published artifact gives the same contracts and the same app artifact as linking the source.
+    assert_eq!(compiled.primary().sil_abi, source_backed.primary().sil_abi);
+    assert_eq!(compiled.primary().id, source_backed.primary().id);
+    compiled.runtime_bundle().expect("the linked bundle is a runtime bundle");
+
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn artifact_backed_import_requires_the_pinned_artifact_id() {
+    let temp = published_asset_dir("pin");
+    std::fs::write(temp.join("asset.ag"), PUBLISHED_ASSET_APP).expect("asset source written");
+    let published = build_file(temp.join("asset.ag"), temp.join("asset")).expect("asset app compiles");
+    // Same app name, state and entries, other template: a self-consistent artifact with another id.
+    std::fs::write(temp.join("other.ag"), PUBLISHED_ASSET_APP.replace("require(self.amount >= 0);", "require(self.amount >= 1);"))
+        .expect("other asset source written");
+    let other = build_file(temp.join("other.ag"), temp.join("other")).expect("other asset app compiles");
+    assert_ne!(other.id, published.id);
+
+    let build = |name: &str, import: &str| {
+        let source = temp.join(format!("{name}.ag"));
+        std::fs::write(&source, published_asset_controller(import)).expect("controller written");
+        build_file_app_bundle(&source, "ControllerApp", temp.join(format!("{name}_build")))
+    };
+
+    let err = build("forged", &format!(r#"import "./other/artifact.json" id "{}";"#, published.id))
+        .expect_err("an artifact with another id is rejected");
+    assert!(err.to_string().contains(&format!("has id {}, the import pins {}", other.id, published.id)), "unexpected error: {err}");
+
+    let err = build("unpinned", r#"import "./asset/artifact.json";"#).expect_err("an unpinned artifact import is rejected");
+    assert!(err.to_string().contains("has no pinned id"), "unexpected error: {err}");
+    assert!(err.to_string().contains(&published.id), "the error names the artifact id to review: {err}");
+
+    let err = build("source_pin", &format!(r#"import "./asset.ag" id "{}";"#, published.id))
+        .expect_err("an id pin on a source import is rejected");
+    assert!(err.to_string().contains("applies only to a published app artifact"), "unexpected error: {err}");
+
+    let err = build("std_pin", r#"import "std::core" id "00";"#).expect_err("an id pin on a standard module is rejected");
+    assert!(err.to_string().contains("applies only to a published app artifact"), "unexpected error: {err}");
+
+    let artifact_json = std::fs::read_to_string(temp.join("asset/artifact.json")).expect("artifact read");
+    let tampered = artifact_json.replacen("\"Asset\"", "\"Assets\"", 1);
+    assert_ne!(tampered, artifact_json);
+    std::fs::create_dir_all(temp.join("tampered")).expect("tampered dir created");
+    std::fs::write(temp.join("tampered/artifact.json"), tampered).expect("tampered artifact written");
+    let err = build("tampered", &format!(r#"import "./tampered/artifact.json" id "{}";"#, published.id))
+        .expect_err("an inconsistent artifact is rejected");
+    assert!(err.to_string().contains("invalid app artifact"), "unexpected error: {err}");
+
+    let err = build_file(temp.join("asset/artifact.json"), temp.join("root_build")).expect_err("an artifact is not a root source");
+    assert!(err.to_string().contains("is not Argent source"), "unexpected error: {err}");
+
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn artifact_backed_import_declares_expansions_virtual_fields_and_actor_enums() {
+    let temp = published_asset_dir("declarations");
+    std::fs::write(
+        temp.join("child.ag"),
+        r#"
+state ChildStorage {
+    int amount;
+    virtual detail;
+    byte[32] owner;
+}
+
+state ChildDetail {
+    int count;
+}
+
+state ChildState expands ChildStorage {
+    detail: ChildDetail;
+}
+
+actor Child owns ChildState {
+    entry hold() emits none {
+        require(amount >= 0);
+    }
+}
+
+actor Sibling owns ChildState {
+    entry hold() emits none {
+        require(amount >= 1);
+    }
+}
+
+actor enum ChildKind { Child; Sibling; }
+
+app ChildApp {
+    actor Child;
+    actor Sibling;
+}
+"#,
+    )
+    .expect("child source written");
+    let published = build_file(temp.join("child.ag"), temp.join("child")).expect("child app compiles");
+    let controller = |import: &str| {
+        format!(
+            r#"
+{import}
+
+state ControllerState {{
+    cov_id child_id;
+}}
+
+actor Controller owns ControllerState {{
+    entry update(ChildState scalar)
+    observes child by self.child_id {{
+        inputs {{
+            src: ChildApp::Sibling,
+        }}
+    }}
+    emits next: Controller {{
+        unrestricted(next.value);
+        require(scalar.amount >= 0);
+        become next <- self;
+    }}
+}}
+
+app ControllerApp {{
+    actor Controller;
+}}
+"#
+        )
+    };
+    let build = |name: &str, import: &str| {
+        let source = temp.join(format!("{name}.ag"));
+        std::fs::write(&source, controller(import)).expect("controller written");
+        build_file_app_bundle(&source, "ControllerApp", temp.join(format!("{name}_build")))
+    };
+    let from_source = build("from_source", r#"import "./child.ag";"#).expect("source-backed import compiles");
+    let from_artifact = build("from_artifact", &format!(r#"import "./child/artifact.json" id "{}";"#, published.id))
+        .expect("artifact-backed import compiles");
+
+    assert_eq!(from_artifact.primary().id, from_source.primary().id);
+    assert_eq!(from_artifact.primary().sil_abi, from_source.primary().sil_abi);
+    assert_eq!(from_artifact.app("ChildApp").expect("linked child artifact").id, published.id);
+    assert!(!temp.join("from_artifact_build/apps/ChildApp/sil").exists(), "a published dependency is not compiled again");
+
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn artifact_backed_import_is_loaded_once_and_each_import_pins_it() {
+    let temp = published_asset_dir("shared");
+    std::fs::write(temp.join("asset.ag"), PUBLISHED_ASSET_APP).expect("asset source written");
+    let published = build_file(temp.join("asset.ag"), temp.join("asset")).expect("asset app compiles");
+    std::fs::remove_file(temp.join("asset.ag")).expect("asset source removed");
+    let pinned = format!(r#"import "./asset/artifact.json" id "{}";"#, published.id);
+    std::fs::write(temp.join("left.ag"), format!("{pinned}\nconst int LEFT = 1;")).expect("left written");
+    let root = |right_import: &str| {
+        std::fs::write(temp.join("right.ag"), format!("{right_import}\nconst int RIGHT = 1;")).expect("right written");
+        std::fs::write(
+            temp.join("root.ag"),
+            format!("import \"./left.ag\";\nimport \"./right.ag\";\n{}", published_asset_controller("")),
+        )
+        .expect("root written");
+        build_file_app_bundle(temp.join("root.ag"), "ControllerApp", temp.join("build"))
+    };
+    let bundle = root(&pinned).expect("two imports of one artifact link it once");
+    assert_eq!(bundle.apps().map(|(app, _)| app).collect::<Vec<_>>(), ["AssetApp", "ControllerApp"]);
+
+    let err = root(r#"import "./asset/artifact.json";"#).expect_err("every import of an artifact pins its id");
+    assert!(err.to_string().contains("has no pinned id"), "unexpected error: {err}");
+
+    let _ = std::fs::remove_dir_all(temp);
+}

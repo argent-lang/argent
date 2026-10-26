@@ -24,5 +24,6 @@ fn parse_program(sources: SourceSet) -> Result<ResolvedModules<'static>> {
     let program = sources.parse_modules()?;
     let root = ModuleId::new(sources.root.expect("source discovery sets a root").0);
     let program = Box::leak(Box::new(program));
-    ResolvedModules::from_program(program, root, sources.edges.clone())
+    let artifacts = sources.artifacts.iter().map(|(id, artifact)| (ModuleId::new(id.0), artifact.clone())).collect();
+    ResolvedModules::from_program(program, root, sources.edges.clone(), artifacts)
 }

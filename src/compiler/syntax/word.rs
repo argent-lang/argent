@@ -19,6 +19,7 @@ pub const ENTRY: &str = "entry";
 pub const ENUM: &str = "enum";
 pub const EXPANDS: &str = "expands";
 pub const FN: &str = "fn";
+pub const ID: &str = "id";
 pub const IF: &str = "if";
 pub const IMPORT: &str = "import";
 pub const INPUTS: &str = "inputs";
