@@ -1,0 +1,22 @@
+pragma silverscript ^0.1.0;
+
+contract Foreign(byte[32] gen__init_archive_template, int init_amount) {
+    struct ForeignState {
+        int amount;
+    }
+
+    struct ArchiveState {
+        int amount;
+    }
+
+    byte[32] gen__archive_template = gen__init_archive_template;
+
+    int amount = init_amount;
+
+    entry archive(byte[] gen__archive_prefix, byte[] gen__archive_suffix) {
+        require(OpAuthOutputCount(this.activeInputIndex) == 1);
+        int gen__saved_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        ArchiveState saved_state = ArchiveState {amount: amount};
+        validateOutputStateWithTemplate(gen__saved_output_idx, saved_state, gen__archive_prefix, gen__archive_suffix, gen__archive_template);
+    }
+}

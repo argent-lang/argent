@@ -47,19 +47,16 @@ impl<'m, 'src> ContractLowerer<'m, 'src> {
             .collect::<Result<Vec<_>>>()?;
         let digest_helpers = entries.iter().flat_map(|entry| entry.digest_helpers.iter().cloned()).collect::<BTreeSet<_>>();
         let imported_templates = self
-            .actor
-            .entries
+            .model
+            .contract_imported_templates(self.actor_id)
             .iter()
-            .enumerate()
-            .map(|(index, _)| {
-                ImportedTemplateSpec::from_witness_plan(
-                    self.model.witness_plan_by_id(EntryId { actor: self.actor_id, index })?,
-                    self.model,
-                )
+            .map(|reference| {
+                self.model.linked_actors.get(reference).map(ImportedTemplateSpec::from_linked).ok_or_else(|| {
+                    ArgentError::new(format!("planned imported template `{}::{}` has no linked actor", reference.app, reference.actor))
+                })
             })
             .collect::<Result<Vec<_>>>()?
             .into_iter()
-            .flatten()
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();

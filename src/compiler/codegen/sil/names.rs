@@ -99,10 +99,12 @@ pub(in crate::compiler::codegen) struct SilNames<'m, 'src> {
     model: &'m AppCompilationContext<'src>,
     sites: BTreeMap<(usize, usize), Binding>,
     type_sites: BTreeMap<usize, DeclId>,
+    actor_handle_type_sites: BTreeSet<usize>,
     dimension_types: BTreeMap<usize, SilTypeRef>,
     co_spent_sites: BTreeSet<(usize, usize)>,
     digest_operands: BTreeMap<(usize, usize), PlannedStateValue>,
     actor_field_uses: BTreeMap<(usize, usize), SourceFieldId>,
+    linked_actor_values: BTreeMap<(usize, usize), String>,
     local_names: BTreeMap<LocalId, String>,
     parameter_ids: BTreeMap<usize, LocalId>,
     generated_fields: BTreeMap<GeneratedFieldId, String>,
@@ -141,6 +143,21 @@ impl<'m, 'src> SilNames<'m, 'src> {
             })
             .collect();
         let mut dimension_types = BTreeMap::new();
+        let actor_handle_type_sites = model
+            .types
+            .actor_handle_type_uses
+            .keys()
+            .filter_map(|site| {
+                let node = model.resolution.nodes().node(*site);
+                if node.address.owner != owner || node.address.root != root {
+                    return None;
+                }
+                match node.origin {
+                    Origin::Authored { start, .. } => Some(start),
+                    Origin::Generated { .. } => None,
+                }
+            })
+            .collect();
         for ((site, index), constant) in &bindings.dimension_constants {
             let Origin::Authored { start, .. } = model.resolution.nodes().node(*site).origin else {
                 unreachable!("bound array dimensions belong to authored type sites");
@@ -191,6 +208,24 @@ impl<'m, 'src> SilNames<'m, 'src> {
                 }
                 match node.origin {
                     Origin::Authored { start, end, .. } => Some(((start, end), field.clone())),
+                    Origin::Generated { .. } => None,
+                }
+            })
+            .collect();
+        let linked_actor_values = model
+            .linked_actor_values
+            .expressions
+            .iter()
+            .filter_map(|(site, linked)| {
+                let node = model.resolution.nodes().node(*site);
+                if node.address.owner != owner || node.address.root != root {
+                    return None;
+                }
+                match node.origin {
+                    Origin::Authored { start, end, .. } => Some((
+                        (start, end),
+                        hidden_imported_template_const_name(&ImportedTemplateSpec::from_linked(&model.linked_actors[linked])),
+                    )),
                     Origin::Generated { .. } => None,
                 }
             })
@@ -270,10 +305,12 @@ impl<'m, 'src> SilNames<'m, 'src> {
             model,
             sites,
             type_sites,
+            actor_handle_type_sites,
             dimension_types,
             co_spent_sites,
             digest_operands,
             actor_field_uses,
+            linked_actor_values,
             local_names,
             parameter_ids,
             generated_fields,
@@ -295,7 +332,11 @@ impl<'m, 'src> SilNames<'m, 'src> {
     pub(super) fn name(&self, source: &str, _kind: NameKind, span: Span<'_>) -> String {
         match self.sites.get(&(span.start(), span.end())) {
             Some(Binding::Source(ResolvedName::Declaration(id))) => self.model.types.display_names[id].clone(),
-            Some(Binding::Source(ResolvedName::AppMember(member))) => self.model.types.app_member_display_names[member].clone(),
+            Some(Binding::Source(ResolvedName::AppMember(member))) => self
+                .linked_actor_values
+                .get(&(span.start(), span.end()))
+                .cloned()
+                .unwrap_or_else(|| self.model.types.app_member_display_names[member].clone()),
             Some(Binding::Local(id)) => self.local_names.get(id).cloned().unwrap_or_else(|| source.to_string()),
             _ => source.to_string(),
         }
@@ -324,6 +365,10 @@ impl<'m, 'src> SilNames<'m, 'src> {
 
     pub(super) fn type_target(&self, span: Span<'_>) -> Option<DeclId> {
         self.type_sites.get(&span.start()).copied()
+    }
+
+    pub(super) fn is_actor_handle_type(&self, span: Span<'_>) -> bool {
+        self.actor_handle_type_sites.contains(&span.start())
     }
 
     pub(super) fn co_spent_approved(&self, span: Span<'_>) -> bool {
