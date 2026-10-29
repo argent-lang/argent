@@ -33,7 +33,7 @@ contract Lobby(byte[32] gen__init_archive_template, byte[32] gen__init_mux_templ
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
         BoardState next_board = BoardState {ply: nonce};
-        Gen__MuxState gen__state_next_gen__mux_state = Gen__MuxState {gen__archive_template: gen__archive_template, gen__mux_template: gen__mux_template, gen__mux_routes: gen__mux_routes, ply: next_board.ply};
-        validateOutputStateWithTemplate(gen__next_output_idx, gen__state_next_gen__mux_state, gen__mux_prefix, gen__mux_suffix, gen__mux_template);
+        Gen__MuxState gen__0_route_physical_next = Gen__MuxState {gen__archive_template: gen__archive_template, gen__mux_template: gen__mux_template, gen__mux_routes: gen__mux_routes, ply: next_board.ply};
+        validateOutputStateWithTemplate(gen__next_output_idx, gen__0_route_physical_next, gen__mux_prefix, gen__mux_suffix, gen__mux_template);
     }
 }

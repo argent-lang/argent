@@ -15,6 +15,7 @@ use crate::compiler::model::{
 };
 use crate::compiler::naming::{is_identifier, to_snake};
 use crate::compiler::resolve::{Binding, LocalId, ResolvedName};
+use crate::compiler::syntax::body::RouteId;
 use crate::compiler::syntax::lexer::{RESERVED_GENERATED_PREFIX, RESERVED_GENERATED_TYPE_PREFIX};
 use crate::compiler::syntax::node::{DeclId, ReferenceRole, RootSlot, SymbolKind};
 use crate::compiler::syntax::source::Origin;
@@ -73,6 +74,20 @@ pub(in crate::compiler::codegen) fn witness_role_name(plan: &WitnessPlan, role: 
 
 pub(in crate::compiler::codegen) fn hidden_checked_range_index_name() -> String {
     format!("{RESERVED_GENERATED_PREFIX}checked_range_index")
+}
+
+pub(super) enum OutputTemporaryRole {
+    Source,
+    Physical,
+}
+
+pub(super) fn hidden_output_temporary_name(route: RouteId, output: &str, role: OutputTemporaryRole) -> String {
+    let role = match role {
+        OutputTemporaryRole::Source => "source",
+        OutputTemporaryRole::Physical => "physical",
+    };
+    // route id first for uniqueness. authored label is useless from compiler, but useful to readers
+    format!("{RESERVED_GENERATED_PREFIX}{}_route_{role}_{}", route.0, to_snake(output))
 }
 
 pub(in crate::compiler::codegen) fn hidden_physical_field_init_name(field: &str) -> String {

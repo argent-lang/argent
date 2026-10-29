@@ -25,8 +25,8 @@ contract MinterProxy(byte[32] gen__init_kcc20_template, byte[32] init_controller
         int gen__recipient_output_idx = OpAuthOutputIdx(this.activeInputIndex, 1);
         require(OpCovInputCount(controller_id) > 0);
         require(next_proxy.controller_id == controller_id);
-        State gen__state_proxy_state = State {gen__kcc20_template: gen__kcc20_template, controller_id: next_proxy.controller_id};
-        validateOutputState(gen__proxy_output_idx, gen__state_proxy_state);
+        State gen__0_route_physical_proxy = State {gen__kcc20_template: gen__kcc20_template, controller_id: next_proxy.controller_id};
+        validateOutputState(gen__proxy_output_idx, gen__0_route_physical_proxy);
         validateOutputStateWithTemplate(gen__recipient_output_idx, recipient_state, gen__kcc20_prefix, gen__kcc20_suffix, gen__kcc20_template);
     }
 }

@@ -812,6 +812,154 @@ fn generated_entries_reject_mismatched_dynamic_struct_array_leaf_counts() {
 }
 
 #[test]
+fn context_executes_expansion_witness_with_unqualified_states() {
+    check_expansion_witness(
+        "unqualified",
+        None,
+        r#"
+            state Capsule { virtual detail; }
+            state Details { int count; }
+            state Expanded expands Capsule { detail: Details; }
+
+            actor Counter owns Expanded {
+                entry inspect() emits none { require(detail.count >= 0); }
+            }
+
+            app Example { actor Counter; }
+        "#,
+    );
+}
+
+#[test]
+fn context_executes_expansion_witness_with_qualified_payload() {
+    check_expansion_witness(
+        "qualified-payload",
+        Some("state Details { int count; }"),
+        r#"
+            import "./lib.ag" as lib;
+
+            state Capsule { virtual detail; }
+            state Expanded expands Capsule { detail: lib::Details; }
+
+            actor Counter owns Expanded {
+                entry inspect() emits none { require(detail.count >= 0); }
+            }
+
+            app Example { actor Counter; }
+        "#,
+    );
+}
+
+#[test]
+fn context_executes_expansion_witness_with_qualified_owner() {
+    check_expansion_witness(
+        "qualified-owner",
+        Some(
+            r#"
+                state Capsule { virtual detail; }
+                state Details { int count; }
+                state Expanded expands Capsule { detail: Details; }
+            "#,
+        ),
+        r#"
+            import "./lib.ag" as lib;
+
+            actor Counter owns lib::Expanded {
+                entry inspect() emits none { require(detail.count >= 0); }
+            }
+
+            app Example { actor Counter; }
+        "#,
+    );
+}
+
+#[test]
+fn context_executes_expansion_witness_with_imported_payload_conflicting_with_root_state() {
+    let memory_state = check_expansion_witness(
+        "conflicting-root-payload",
+        Some(
+            r#"
+                state Capsule { virtual detail; }
+                state Details { int count; }
+                state Expanded expands Capsule { detail: Details; }
+
+                actor Counter owns Expanded {
+                    entry inspect() emits none { require(detail.count >= 0); }
+                }
+            "#,
+        ),
+        r#"
+            import "./lib.ag" as lib;
+
+            state Details { bool marker; }
+
+            app Example { actor lib::Counter; }
+        "#,
+    );
+    assert_ne!(memory_state, "Details", "imported payload must not select root Details");
+}
+
+/// Check artifact references, source/AST agreement, execution, and preimage authentication.
+/// Return the canonical payload name for case-specific assertions.
+fn check_expansion_witness(case: &str, library: Option<&str>, source: &str) -> String {
+    let dir = tempfile::tempdir().expect("expansion sources directory exists");
+    if let Some(library) = library {
+        fs::write(dir.path().join("lib.ag"), library).expect("expansion library is written");
+    }
+    let input = dir.path().join("app.ag");
+    fs::write(&input, source).expect("expansion app is written");
+    let out = dir.path().join("build");
+    let artifact = crate::build_file(&input, &out).unwrap_or_else(|err| panic!("{case} expansion builds: {err}"));
+    let actor = artifact.argent.actors.iter().find(|actor| actor.name == "Counter").expect("Counter exists");
+    let expansion = artifact.argent.state_expansions.iter().find(|expansion| expansion.state == actor.state).expect("owner expands");
+    let memory_state = &expansion.digests[0].state;
+    let witness = actor.entries[0]
+        .hidden_params
+        .iter()
+        .find(|param| param.purpose == HiddenParamPurposeArtifact::StateExpansionPreimage)
+        .expect("expansion preimage witness exists");
+    assert_eq!(
+        witness.subject,
+        HiddenParamSubjectArtifact::StateExpansion {
+            state: actor.state.clone(),
+            field: "detail".to_string(),
+            memory_state: memory_state.clone(),
+        },
+        "{case} witness references the same declarations as the artifact",
+    );
+
+    let sil = fs::read_to_string(out.join("sil/Counter.sil")).expect("Counter Sil exists");
+    parse_contract_ast(&sil).unwrap_or_else(|err| panic!("{case} formatted expansion Sil parses: {err}"));
+    let args = [silverscript_lang::ast::Expr::bytes(vec![0; 32])];
+    let sil_reparsed = silverscript_lang::compiler::compile_contract(&sil, &args, Default::default())
+        .unwrap_or_else(|err| panic!("{case} formatted expansion Sil compiles: {err}"));
+    let contract = artifact.sil_abi.contract("Counter").expect("Counter ABI exists");
+    let compiled = &contract.compiled;
+    assert_eq!(sil_reparsed.bytecode, compiled.bytecode, "{case} source and AST bytecode agree");
+    assert_eq!(sil_reparsed.template_hash(), compiled.template_hash, "{case} source and AST templates agree");
+    assert_eq!(sil_reparsed.state_layout.start, compiled.state_span.offset, "{case} state cut agrees");
+    assert_eq!(sil_reparsed.state_layout.len, compiled.state_span.len, "{case} state length agrees");
+    let source_abi =
+        silverscript_lang::compiler::sil_abi_artifact_from_compiled(&sil_reparsed, &args).expect("formatted expansion ABI builds");
+    assert_eq!(source_abi.contract("Counter").expect("source ABI exists").entries, contract.entries, "{case} entry ABIs agree");
+
+    let builder = TxBuilder::new(&artifact).unwrap_or_else(|err| panic!("{case} builder accepts artifact: {err}"));
+    let covenant_id = Hash::from_bytes([0x4a; 32]);
+    let initial = state! { detail: state! { count: 7 } };
+    let utxo = builder
+        .covenant_utxo("Counter", initial.clone(), 1_000, 0, false, Some(covenant_id))
+        .unwrap_or_else(|err| panic!("{case} Counter UTXO builds: {err}"));
+    let outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0x4b; 32]), 0);
+    let context = TxContext::new().actor_input("Counter", initial, "inspect", outpoint, utxo.clone(), 0);
+    builder.build(&context).unwrap_or_else(|err| panic!("{case} expansion witness executes: {err}"));
+
+    let wrong_preimage = state! { detail: state! { count: 8 } };
+    let wrong = TxContext::new().actor_input("Counter", wrong_preimage, "inspect", outpoint, utxo, 0);
+    assert!(builder.build(&wrong).is_err(), "{case} rejects an incorrect expansion preimage");
+    memory_state.clone()
+}
+
+#[test]
 fn context_executes_expanded_state_arguments_from_authored_values() {
     let artifact = inline_artifact(
         "context-expanded-state-arguments",

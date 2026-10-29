@@ -29,12 +29,12 @@ contract Mux(byte[32] gen__init_mux_template, byte[64] gen__init_mux_routes, int
             require(selector >= 0);
         }
         BoardState next_board = BoardState {selector: selector, ply: ply + 1};
-        State gen__state_next_state = State {gen__mux_template: gen__mux_template, gen__mux_routes: gen__mux_routes, selector: next_board.selector, ply: next_board.ply};
+        State gen__0_route_physical_next = State {gen__mux_template: gen__mux_template, gen__mux_routes: gen__mux_routes, selector: next_board.selector, ply: next_board.ply};
         int gen__target_selector = target;
         require(gen__target_selector >= 0);
         require(gen__target_selector < 2);
         byte[32] gen__target_template = byte[32](gen__mux_routes.slice(gen__target_selector * 32, gen__target_selector * 32 + 32));
-        validateOutputStateWithTemplate(gen__next_output_idx, gen__state_next_state, gen__target_prefix, gen__target_suffix, gen__target_template);
+        validateOutputStateWithTemplate(gen__next_output_idx, gen__0_route_physical_next, gen__target_prefix, gen__target_suffix, gen__target_template);
     }
 
     entry choose_knight_const(byte[] gen__target_prefix, byte[] gen__target_suffix) {
@@ -45,8 +45,8 @@ contract Mux(byte[32] gen__init_mux_template, byte[64] gen__init_mux_routes, int
         require(gen__target_selector >= 0);
         require(gen__target_selector < 2);
         byte[32] gen__target_template = byte[32](gen__mux_routes.slice(gen__target_selector * 32, gen__target_selector * 32 + 32));
-        State gen__state_next_state = State {gen__mux_template: gen__mux_template, gen__mux_routes: gen__mux_routes, selector: next_board.selector, ply: next_board.ply};
-        validateOutputStateWithTemplate(gen__next_output_idx, gen__state_next_state, gen__target_prefix, gen__target_suffix, gen__target_template);
+        State gen__0_route_physical_next = State {gen__mux_template: gen__mux_template, gen__mux_routes: gen__mux_routes, selector: next_board.selector, ply: next_board.ply};
+        validateOutputStateWithTemplate(gen__next_output_idx, gen__0_route_physical_next, gen__target_prefix, gen__target_suffix, gen__target_template);
     }
 
     entry choose_pawn(byte[] gen__pawn_prefix, byte[] gen__pawn_suffix) {
@@ -54,8 +54,8 @@ contract Mux(byte[32] gen__init_mux_template, byte[64] gen__init_mux_routes, int
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
         BoardState next_board = BoardState {selector: selector, ply: ply + 1};
-        State gen__state_next_state = State {gen__mux_template: gen__mux_template, gen__mux_routes: gen__mux_routes, selector: next_board.selector, ply: next_board.ply};
-        validateOutputStateWithTemplate(gen__next_output_idx, gen__state_next_state, gen__pawn_prefix, gen__pawn_suffix, gen__pawn_template);
+        State gen__0_route_physical_next = State {gen__mux_template: gen__mux_template, gen__mux_routes: gen__mux_routes, selector: next_board.selector, ply: next_board.ply};
+        validateOutputStateWithTemplate(gen__next_output_idx, gen__0_route_physical_next, gen__pawn_prefix, gen__pawn_suffix, gen__pawn_template);
     }
 
     entry choose_knight(byte[] gen__knight_prefix, byte[] gen__knight_suffix) {
@@ -63,7 +63,7 @@ contract Mux(byte[32] gen__init_mux_template, byte[64] gen__init_mux_routes, int
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
         BoardState next_board = BoardState {selector: selector, ply: ply + 1};
-        State gen__state_next_state = State {gen__mux_template: gen__mux_template, gen__mux_routes: gen__mux_routes, selector: next_board.selector, ply: next_board.ply};
-        validateOutputStateWithTemplate(gen__next_output_idx, gen__state_next_state, gen__knight_prefix, gen__knight_suffix, gen__knight_template);
+        State gen__0_route_physical_next = State {gen__mux_template: gen__mux_template, gen__mux_routes: gen__mux_routes, selector: next_board.selector, ply: next_board.ply};
+        validateOutputStateWithTemplate(gen__next_output_idx, gen__0_route_physical_next, gen__knight_prefix, gen__knight_suffix, gen__knight_template);
     }
 }

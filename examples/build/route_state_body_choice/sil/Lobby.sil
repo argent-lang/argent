@@ -31,8 +31,8 @@ contract Lobby(byte[32] gen__init_mux_template, byte[32] gen__init_spectator_tem
         if (watch) {
             validateOutputStateWithTemplate(gen__next_output_idx, next_board, gen__spectator_prefix, gen__spectator_suffix, gen__spectator_template);
         } else {
-            Gen__MuxState gen__state_next_gen__mux_state = Gen__MuxState {gen__mux_template: gen__mux_template, gen__mux_routes: gen__mux_routes, ply: next_board.ply};
-            validateOutputStateWithTemplate(gen__next_output_idx, gen__state_next_gen__mux_state, gen__mux_prefix, gen__mux_suffix, gen__mux_template);
+            Gen__MuxState gen__1_route_physical_next = Gen__MuxState {gen__mux_template: gen__mux_template, gen__mux_routes: gen__mux_routes, ply: next_board.ply};
+            validateOutputStateWithTemplate(gen__next_output_idx, gen__1_route_physical_next, gen__mux_prefix, gen__mux_suffix, gen__mux_template);
         }
     }
 }

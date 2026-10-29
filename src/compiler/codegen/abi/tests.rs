@@ -2,6 +2,138 @@ use super::*;
 use silverscript_lang::compiler::{CompileOptions, compile_contract, sil_abi_artifact_from_compiled};
 
 #[test]
+fn canonicalizes_imported_actor_state_references_with_different_layout_root_state() {
+    check_imported_state_abi(
+        r#"
+            state CounterState { int count; }
+            state Box { CounterState item; }
+            state Nested { Box inner; }
+
+            actor Counter owns CounterState {
+                entry check(Nested box) emits none {
+                    require(box.inner.item.count == count);
+                }
+            }
+        "#,
+        r#"
+            import "./counter.ag" as lib;
+
+            state CounterState { bool marker; }
+
+            app Example { actor lib::Counter; }
+        "#,
+        FieldArtifact { name: "marker".to_string(), ty: TypeArtifact::Bool },
+    );
+}
+
+#[test]
+fn canonicalizes_imported_actor_state_references_with_equal_layout_root_state() {
+    check_imported_state_abi(
+        r#"
+            state CounterState { int count; }
+            state Box { CounterState item; }
+            state Nested { Box inner; }
+
+            actor Counter owns CounterState {
+                entry check(Nested box) emits none {
+                    require(box.inner.item.count == count);
+                }
+            }
+        "#,
+        r#"
+            import "./counter.ag" as lib;
+
+            state CounterState { int count; }
+
+            app Example { actor lib::Counter; }
+        "#,
+        FieldArtifact { name: "count".to_string(), ty: TypeArtifact::Int },
+    );
+}
+
+#[test]
+fn canonicalizes_qualified_owner_state_references_with_different_layout_root_state() {
+    check_imported_state_abi(
+        r#"
+            state CounterState { int count; }
+            state Box { CounterState item; }
+            state Nested { Box inner; }
+        "#,
+        r#"
+            import "./counter.ag" as lib;
+
+            state CounterState { bool marker; }
+
+            actor Counter owns lib::CounterState {
+                entry check(lib::Nested box) emits none {
+                    require(box.inner.item.count == count);
+                }
+            }
+
+            app Example { actor Counter; }
+        "#,
+        FieldArtifact { name: "marker".to_string(), ty: TypeArtifact::Bool },
+    );
+}
+
+#[test]
+fn canonicalizes_qualified_owner_state_references_with_equal_layout_root_state() {
+    check_imported_state_abi(
+        r#"
+            state CounterState { int count; }
+            state Box { CounterState item; }
+            state Nested { Box inner; }
+        "#,
+        r#"
+            import "./counter.ag" as lib;
+
+            state CounterState { int count; }
+
+            actor Counter owns lib::CounterState {
+                entry check(lib::Nested box) emits none {
+                    require(box.inner.item.count == count);
+                }
+            }
+
+            app Example { actor Counter; }
+        "#,
+        FieldArtifact { name: "count".to_string(), ty: TypeArtifact::Int },
+    );
+}
+
+fn check_imported_state_abi(library: &str, source: &str, expected_root_field: FieldArtifact) {
+    let dir = tempfile::tempdir().expect("ABI source directory exists");
+    std::fs::write(dir.path().join("counter.ag"), library).expect("library is written");
+    let input = dir.path().join("app.ag");
+    std::fs::write(&input, source).expect("root is written");
+    let out = dir.path().join("build");
+    let artifact = crate::build_file(&input, &out).expect("imported state ABI builds");
+    let actor = artifact.argent.actors.iter().find(|actor| actor.name == "Counter").expect("Counter exists");
+    let canonical = &actor.state;
+    assert_ne!(canonical, "CounterState", "imported state must keep its own declaration identity");
+    let imported = &artifact.sil_abi.structs[canonical];
+    assert_eq!(imported.fields, vec![FieldArtifact { name: "count".to_string(), ty: TypeArtifact::Int }]);
+    let root = &artifact.sil_abi.structs["CounterState"];
+    assert_eq!(root.fields, vec![expected_root_field], "unrelated root declaration remains intact");
+    let boxed = &artifact.sil_abi.structs["Box"];
+    assert_eq!(boxed.fields[0].ty, TypeArtifact::Struct { name: canonical.clone() });
+    assert_eq!(artifact.sil_abi.structs["Nested"].fields[0].ty, TypeArtifact::Struct { name: "Box".to_string() });
+    assert!(!artifact.sil_abi.structs.values().any(struct_references_state));
+    assert!(!artifact.sil_abi.structs.keys().any(|name| name.contains("::")));
+
+    let sil = std::fs::read_to_string(out.join("sil/Counter.sil")).expect("emitted Counter Sil exists");
+    let args = [SilExpr::int(0)];
+    let reparsed = compile_contract(&sil, &args, CompileOptions::default()).expect("emitted Sil compiles");
+    let direct = artifact.sil_abi.contract("Counter").expect("Counter ABI exists");
+    assert_eq!(reparsed.bytecode, direct.compiled.bytecode);
+    assert_eq!(reparsed.template_hash(), direct.compiled.template_hash);
+    assert_eq!(reparsed.state_layout.start, direct.compiled.state_span.offset);
+    assert_eq!(reparsed.state_layout.len, direct.compiled.state_span.len);
+    let source_abi = sil_abi_artifact_from_compiled(&reparsed, &args).expect("source ABI exists");
+    assert_eq!(source_abi.contract("Counter").expect("source contract exists").entries, direct.entries);
+}
+
+#[test]
 fn canonicalizes_state_references_inside_array_types() {
     let mut fixed = TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Struct { name: "State".to_string() }), len: 2 };
     let mut dynamic = TypeArtifact::DynamicArray { item: Box::new(TypeArtifact::Struct { name: "State".to_string() }) };

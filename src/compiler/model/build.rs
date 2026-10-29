@@ -230,7 +230,7 @@ impl<'a> AppCompilationContext<'a> {
         model.state_expansion_witnesses_by_actor = model
             .app_actors
             .iter_with_ids()
-            .map(|(id, _)| Ok((id, StateExpansionWitnessSpec::for_actor(id, model.actor_by_decl(id)?, &model)?)))
+            .map(|(id, _)| Ok((id, StateExpansionWitnessSpec::for_actor(id, &model)?)))
             .collect::<Result<_>>()?;
         model.witness_plans = model
             .entries_in_app_order()

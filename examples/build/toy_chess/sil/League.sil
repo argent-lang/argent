@@ -32,7 +32,7 @@ contract League(byte[32] gen__init_mux_template, byte[32] gen__init_player_templ
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
         PlayerState next_player = PlayerState {nonce: nonce + 1};
-        Gen__PlayerState gen__state_next_gen__player_state = Gen__PlayerState {gen__mux_template: gen__mux_template, gen__mux_routes_digest: gen__mux_routes_digest, nonce: next_player.nonce};
-        validateOutputStateWithTemplate(gen__next_output_idx, gen__state_next_gen__player_state, gen__player_prefix, gen__player_suffix, gen__player_template);
+        Gen__PlayerState gen__0_route_physical_next = Gen__PlayerState {gen__mux_template: gen__mux_template, gen__mux_routes_digest: gen__mux_routes_digest, nonce: next_player.nonce};
+        validateOutputStateWithTemplate(gen__next_output_idx, gen__0_route_physical_next, gen__player_prefix, gen__player_suffix, gen__player_template);
     }
 }

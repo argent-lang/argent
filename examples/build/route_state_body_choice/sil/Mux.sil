@@ -19,11 +19,11 @@ contract Mux(byte[32] gen__init_mux_template, byte[64] gen__init_mux_routes, int
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
         BoardState next_board = BoardState {ply: ply + 1};
-        State gen__state_next_state = State {gen__mux_template: gen__mux_template, gen__mux_routes: gen__mux_routes, ply: next_board.ply};
+        State gen__0_route_physical_next = State {gen__mux_template: gen__mux_template, gen__mux_routes: gen__mux_routes, ply: next_board.ply};
         int gen__target_selector = target;
         require(gen__target_selector >= 0);
         require(gen__target_selector < 2);
         byte[32] gen__target_template = byte[32](gen__mux_routes.slice(gen__target_selector * 32, gen__target_selector * 32 + 32));
-        validateOutputStateWithTemplate(gen__next_output_idx, gen__state_next_state, gen__target_prefix, gen__target_suffix, gen__target_template);
+        validateOutputStateWithTemplate(gen__next_output_idx, gen__0_route_physical_next, gen__target_prefix, gen__target_suffix, gen__target_template);
     }
 }

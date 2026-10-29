@@ -34,7 +34,7 @@ contract Archive(byte[32] gen__init_archive_template, byte[32] gen__init_mux_tem
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
         BoardState next_board = BoardState {ply: final_ply + 1};
-        Gen__PawnState gen__state_next_gen__pawn_state = Gen__PawnState {gen__archive_template: gen__archive_template, gen__mux_template: gen__mux_template, gen__mux_routes: gen__mux_routes, ply: next_board.ply};
-        validateOutputStateWithTemplate(gen__next_output_idx, gen__state_next_gen__pawn_state, gen__pawn_prefix, gen__pawn_suffix, gen__pawn_template);
+        Gen__PawnState gen__0_route_physical_next = Gen__PawnState {gen__archive_template: gen__archive_template, gen__mux_template: gen__mux_template, gen__mux_routes: gen__mux_routes, ply: next_board.ply};
+        validateOutputStateWithTemplate(gen__next_output_idx, gen__0_route_physical_next, gen__pawn_prefix, gen__pawn_suffix, gen__pawn_template);
     }
 }

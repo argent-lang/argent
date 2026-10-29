@@ -23,15 +23,10 @@ fn expansion_witness_keeps_nominal_field_and_memory_sources() {
     let spec = &model.state_expansion_witnesses_by_id(model.types.names[&actor.name]).expect("expansion witnesses")[0];
     let state = model.source_state_id("ForagerState").expect("state identity");
     let memory = model.source_state_id("ForagerStrategy").expect("memory identity");
+    assert_eq!(spec.state, state.as_str());
+    assert_eq!(spec.memory_state, memory.as_str());
     assert_eq!(spec.field_id, SourceFieldId::new(state, "strategy"));
     assert_eq!(spec.memory_source, memory);
-
-    let mut display_copy = actor.clone();
-    display_copy.state = "UnrelatedDisplayName".to_string();
-    let actor_id = model.types.names["Forager"];
-    let rebound = StateExpansionWitnessSpec::for_actor(actor_id, &display_copy, &model).expect("bound expansion witnesses");
-    assert_eq!(rebound[0].field_id, spec.field_id);
-    assert_eq!(rebound[0].memory_source, spec.memory_source);
 }
 
 #[test]

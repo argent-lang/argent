@@ -49,8 +49,8 @@ contract Batch(byte[32] gen__init_account_template, int init_marker) {
         }
         require(next_states.length == gen__next_output_count);
         for (gen__next_output_position, 0, gen__next_output_count, 3) {
-            AccountState gen__source_next_account_state = next_states[gen__next_output_position];
-            validateOutputStateWithTemplate(OpAuthOutputIdx(this.activeInputIndex, gen__next_output_position), gen__source_next_account_state, gen__account_prefix, gen__account_suffix, gen__account_template);
+            AccountState gen__0_route_source_next = next_states[gen__next_output_position];
+            validateOutputStateWithTemplate(OpAuthOutputIdx(this.activeInputIndex, gen__next_output_position), gen__0_route_source_next, gen__account_prefix, gen__account_suffix, gen__account_template);
         }
     }
 }

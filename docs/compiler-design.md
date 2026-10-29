@@ -171,12 +171,10 @@ A projection does not construct fields that the expression does not use.
 Complete reconstruction excludes compiler-owned fields and preserves the
 nominal `SourceStateId`.
 
-`SourceStateId` identifies one unqualified state name within a compiled model.
-Equivalent local or linked declarations with the same name are aliases and
-share this identity. Conflicting same-name declarations are rejected. Different
-state names remain distinct even when their layouts are equal. Actor identity
-remains application-qualified because actors can have different templates and
-route context while owning the same source state.
+`SourceStateId` identifies a source state declaration. The compiler gives each
+selected declaration a unique name for generated code and artifacts. Expansion
+witnesses and ABI references use this name. Actor identity includes its
+application.
 
 An expanded source field requires a validated opening. A direct projection
 requires only the opening for that field. Complete reconstruction requires
@@ -325,7 +323,9 @@ The implementation divides this work across these modules:
 - `src/compiler/codegen/sil/state_types.rs` applies checked Silverscript AST
   edits to authored type and constructor positions.
 - `src/compiler/codegen/sil/body.rs` preserves source control-flow order and
-  requests typed boundary operations.
+  requests typed boundary operations. Generated locals holding authored successor
+  values or complete physical successors use route ids, value roles, and authored
+  output labels in their names.
 - `src/compiler/codegen/sil/contract.rs` constructs generated contract ASTs.
 - `src/compiler/codegen/compile.rs` retains final ASTs for base and context
   compilation and formatted Sil output.

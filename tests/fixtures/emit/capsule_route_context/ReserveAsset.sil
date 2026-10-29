@@ -38,8 +38,8 @@ contract ReserveAsset(byte[32] gen__init_reserve_asset_template, byte[32] gen__i
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
         require(OpCovInputCount(owner_id) > 0);
         ReserveAssetState next_asset = ReserveAssetState {owner_kind: owner_kind, owner_id: owner_id, policy: ReservePolicy {nonce: gen__policy_nonce + 1}, balance: next_balance};
-        State gen__state_next_state = State {gen__reserve_asset_template: gen__reserve_asset_template, gen__wallet_asset_template: gen__wallet_asset_template, owner_kind: next_asset.owner_kind, owner_id: next_asset.owner_id, policy: blake3(byte[](next_asset.policy.nonce as byte[8])), balance: next_asset.balance};
-        validateOutputState(gen__next_output_idx, gen__state_next_state);
+        State gen__0_route_physical_next = State {gen__reserve_asset_template: gen__reserve_asset_template, gen__wallet_asset_template: gen__wallet_asset_template, owner_kind: next_asset.owner_kind, owner_id: next_asset.owner_id, policy: blake3(byte[](next_asset.policy.nonce as byte[8])), balance: next_asset.balance};
+        validateOutputState(gen__next_output_idx, gen__0_route_physical_next);
     }
 
     entry withdraw(int next_balance, byte[] gen__wallet_asset_prefix, byte[] gen__wallet_asset_suffix, byte[8] gen__policy_reserve_policy_preimage) {
@@ -49,7 +49,7 @@ contract ReserveAsset(byte[32] gen__init_reserve_asset_template, byte[32] gen__i
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
         require(OpCovInputCount(owner_id) > 0);
         ReserveAssetState next_asset = ReserveAssetState {owner_kind: owner_kind, owner_id: owner_id, policy: ReservePolicy {nonce: gen__policy_nonce + 1}, balance: next_balance};
-        State gen__state_next_state = State {gen__reserve_asset_template: gen__reserve_asset_template, gen__wallet_asset_template: gen__wallet_asset_template, owner_kind: next_asset.owner_kind, owner_id: next_asset.owner_id, policy: blake3(byte[](next_asset.policy.nonce as byte[8])), balance: next_asset.balance};
-        validateOutputStateWithTemplate(gen__next_output_idx, gen__state_next_state, gen__wallet_asset_prefix, gen__wallet_asset_suffix, gen__wallet_asset_template);
+        State gen__0_route_physical_next = State {gen__reserve_asset_template: gen__reserve_asset_template, gen__wallet_asset_template: gen__wallet_asset_template, owner_kind: next_asset.owner_kind, owner_id: next_asset.owner_id, policy: blake3(byte[](next_asset.policy.nonce as byte[8])), balance: next_asset.balance};
+        validateOutputStateWithTemplate(gen__next_output_idx, gen__0_route_physical_next, gen__wallet_asset_prefix, gen__wallet_asset_suffix, gen__wallet_asset_template);
     }
 }

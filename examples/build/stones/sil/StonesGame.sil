@@ -117,12 +117,12 @@ contract StonesGame(byte[32] gen__init_player_template, byte[32] gen__init_stone
         require(tx.outputs[gen__next_output_idx].value == tx.inputs[this.activeInputIndex].value);
         if (next_pile == 0) {
             SettleState ticket = SettleState {player_a: player_a, player_b: player_b, status: win_status(turn)};
-            Gen__StonesSettleState gen__state_next_gen__stones_settle_state = Gen__StonesSettleState {gen__player_template: gen__player_template, gen__stones_game_template: gen__stones_game_template, gen__stones_settle_template: gen__stones_settle_template, player_a: ticket.player_a, player_b: ticket.player_b, status: ticket.status};
-            validateOutputStateWithTemplate(gen__next_output_idx, gen__state_next_gen__stones_settle_state, gen__stones_settle_prefix, gen__stones_settle_suffix, gen__stones_settle_template);
+            Gen__StonesSettleState gen__0_route_physical_next = Gen__StonesSettleState {gen__player_template: gen__player_template, gen__stones_game_template: gen__stones_game_template, gen__stones_settle_template: gen__stones_settle_template, player_a: ticket.player_a, player_b: ticket.player_b, status: ticket.status};
+            validateOutputStateWithTemplate(gen__next_output_idx, gen__0_route_physical_next, gen__stones_settle_prefix, gen__stones_settle_suffix, gen__stones_settle_template);
         } else {
             GameState next_game = GameState {player_a: player_a, player_b: player_b, pile: next_pile, max_take: max_take, turn: other_side(turn)};
-            State gen__state_next_state = State {gen__player_template: gen__player_template, gen__stones_game_template: gen__stones_game_template, gen__stones_settle_template: gen__stones_settle_template, player_a: next_game.player_a, player_b: next_game.player_b, pile: next_game.pile, max_take: next_game.max_take, turn: next_game.turn};
-            validateOutputState(gen__next_output_idx, gen__state_next_state);
+            State gen__1_route_physical_next = State {gen__player_template: gen__player_template, gen__stones_game_template: gen__stones_game_template, gen__stones_settle_template: gen__stones_settle_template, player_a: next_game.player_a, player_b: next_game.player_b, pile: next_game.pile, max_take: next_game.max_take, turn: next_game.turn};
+            validateOutputState(gen__next_output_idx, gen__1_route_physical_next);
         }
     }
 
@@ -136,7 +136,7 @@ contract StonesGame(byte[32] gen__init_player_template, byte[32] gen__init_stone
         require(tx.outputs[gen__settle_output_idx].value == tx.inputs[this.activeInputIndex].value);
         int winner = other_side(turn);
         SettleState ticket = SettleState {player_a: player_a, player_b: player_b, status: win_status(winner)};
-        Gen__StonesSettleState gen__state_settle_gen__stones_settle_state = Gen__StonesSettleState {gen__player_template: gen__player_template, gen__stones_game_template: gen__stones_game_template, gen__stones_settle_template: gen__stones_settle_template, player_a: ticket.player_a, player_b: ticket.player_b, status: ticket.status};
-        validateOutputStateWithTemplate(gen__settle_output_idx, gen__state_settle_gen__stones_settle_state, gen__stones_settle_prefix, gen__stones_settle_suffix, gen__stones_settle_template);
+        Gen__StonesSettleState gen__0_route_physical_settle = Gen__StonesSettleState {gen__player_template: gen__player_template, gen__stones_game_template: gen__stones_game_template, gen__stones_settle_template: gen__stones_settle_template, player_a: ticket.player_a, player_b: ticket.player_b, status: ticket.status};
+        validateOutputStateWithTemplate(gen__settle_output_idx, gen__0_route_physical_settle, gen__stones_settle_prefix, gen__stones_settle_suffix, gen__stones_settle_template);
     }
 }

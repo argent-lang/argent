@@ -82,7 +82,7 @@ contract Forager(byte[32] init_world_id, byte[32] init_agent_id, byte[32] init_s
         require(next_energy == energy - 1);
         require(next_energy >= 0);
         ForagerState next_agent = ForagerState {world_id: world_id, agent_id: agent_id, species_id: species_id, controller_id: controller_id, capabilities_digest: capabilities_digest, strategy: ForagerStrategy {hunger: gen__strategy_hunger + 1, mood: gen__strategy_mood, target_agent_id: gen__strategy_target_agent_id}, x: next_x, y: next_y, energy: next_energy, generation: generation};
-        State gen__state_agent_state = State {world_id: next_agent.world_id, agent_id: next_agent.agent_id, species_id: next_agent.species_id, controller_id: next_agent.controller_id, capabilities_digest: next_agent.capabilities_digest, strategy: blake3(byte[](next_agent.strategy.hunger as byte[8] + next_agent.strategy.mood as byte[8] + byte[](next_agent.strategy.target_agent_id))), x: next_agent.x, y: next_agent.y, energy: next_agent.energy, generation: next_agent.generation};
-        validateOutputState(gen__agent_output_idx, gen__state_agent_state);
+        State gen__0_route_physical_agent = State {world_id: next_agent.world_id, agent_id: next_agent.agent_id, species_id: next_agent.species_id, controller_id: next_agent.controller_id, capabilities_digest: next_agent.capabilities_digest, strategy: blake3(byte[](next_agent.strategy.hunger as byte[8] + next_agent.strategy.mood as byte[8] + byte[](next_agent.strategy.target_agent_id))), x: next_agent.x, y: next_agent.y, energy: next_agent.energy, generation: next_agent.generation};
+        validateOutputState(gen__agent_output_idx, gen__0_route_physical_agent);
     }
 }

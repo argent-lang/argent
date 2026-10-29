@@ -54,7 +54,7 @@ pub(super) fn sil_abi_artifact(model: &AppCompilationContext<'_>, compiled_actor
         };
         for (source, representation) in lowering.source_representations() {
             let name = match representation.sil_type() {
-                SilStateType::State => actor.state.clone(),
+                SilStateType::State => source.as_str().to_string(),
                 SilStateType::Source(planned) if planned == source => render_sil_state_type(representation.sil_type())?,
                 SilStateType::Source(_) | SilStateType::StoragePhysical(_) | SilStateType::TargetPhysical(_) => {
                     return Err(ArgentError::new(format!("state `{}` has an invalid source representation", source.as_str())));
@@ -129,19 +129,20 @@ fn canonicalize_sil_abi_struct_state_refs(
             .collect(),
     };
 
-    if let Some(existing) = artifact.structs.get(&actor.state)
+    let canonical_name = source.as_str();
+    if let Some(existing) = artifact.structs.get(canonical_name)
         && existing != &authored_state
     {
         return Err(ArgentError::new(format!(
             "cannot canonicalize Sil `State` as authored state `{}` for actor `{}`: their fields differ",
-            actor.state, actor.name
+            canonical_name, actor.name
         )));
     }
-    artifact.structs.insert(actor.state.clone(), authored_state);
+    artifact.structs.insert(canonical_name.to_string(), authored_state);
 
     for structure in artifact.structs.values_mut() {
         for field in &mut structure.fields {
-            replace_state_type_ref(&mut field.ty, &actor.state);
+            replace_state_type_ref(&mut field.ty, canonical_name);
         }
     }
     Ok(())

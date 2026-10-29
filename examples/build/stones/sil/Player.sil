@@ -146,12 +146,12 @@ contract Player(byte[32] gen__init_player_template, byte[32] gen__init_stones_ga
         require(tx.outputs[gen__self_out_output_idx].value == tx.inputs[this.activeInputIndex].value);
         require(tx.outputs[gen__opponent_out_output_idx].value == tx.inputs[gen__opponent_input_idx].value);
         require(tx.outputs[gen__game_output_idx].value > 0);
-        State gen__state_self_out_state = State {gen__player_template: gen__player_template, gen__stones_game_template: gen__stones_game_template, gen__stones_settle_template: gen__stones_settle_template, owner: next_self.owner, player_id: next_self.player_id, open_games: next_self.open_games, games: next_self.games, wins: next_self.wins, losses: next_self.losses};
-        validateOutputState(gen__self_out_output_idx, gen__state_self_out_state);
-        State gen__state_opponent_out_state = State {gen__player_template: gen__player_template, gen__stones_game_template: gen__stones_game_template, gen__stones_settle_template: gen__stones_settle_template, owner: next_opponent.owner, player_id: next_opponent.player_id, open_games: next_opponent.open_games, games: next_opponent.games, wins: next_opponent.wins, losses: next_opponent.losses};
-        validateOutputState(gen__opponent_out_output_idx, gen__state_opponent_out_state);
-        Gen__StonesGameState gen__state_game_gen__stones_game_state = Gen__StonesGameState {gen__player_template: gen__player_template, gen__stones_game_template: gen__stones_game_template, gen__stones_settle_template: gen__stones_settle_template, player_a: next_game.player_a, player_b: next_game.player_b, pile: next_game.pile, max_take: next_game.max_take, turn: next_game.turn};
-        validateOutputStateWithTemplate(gen__game_output_idx, gen__state_game_gen__stones_game_state, gen__stones_game_prefix, gen__stones_game_suffix, gen__stones_game_template);
+        State gen__0_route_physical_self_out = State {gen__player_template: gen__player_template, gen__stones_game_template: gen__stones_game_template, gen__stones_settle_template: gen__stones_settle_template, owner: next_self.owner, player_id: next_self.player_id, open_games: next_self.open_games, games: next_self.games, wins: next_self.wins, losses: next_self.losses};
+        validateOutputState(gen__self_out_output_idx, gen__0_route_physical_self_out);
+        State gen__1_route_physical_opponent_out = State {gen__player_template: gen__player_template, gen__stones_game_template: gen__stones_game_template, gen__stones_settle_template: gen__stones_settle_template, owner: next_opponent.owner, player_id: next_opponent.player_id, open_games: next_opponent.open_games, games: next_opponent.games, wins: next_opponent.wins, losses: next_opponent.losses};
+        validateOutputState(gen__opponent_out_output_idx, gen__1_route_physical_opponent_out);
+        Gen__StonesGameState gen__2_route_physical_game = Gen__StonesGameState {gen__player_template: gen__player_template, gen__stones_game_template: gen__stones_game_template, gen__stones_settle_template: gen__stones_settle_template, player_a: next_game.player_a, player_b: next_game.player_b, pile: next_game.pile, max_take: next_game.max_take, turn: next_game.turn};
+        validateOutputStateWithTemplate(gen__game_output_idx, gen__2_route_physical_game, gen__stones_game_prefix, gen__stones_game_suffix, gen__stones_game_template);
     }
 
     entry accept_start(sig owner_sig, pubkey owner_pk) {

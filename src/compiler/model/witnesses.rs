@@ -149,7 +149,7 @@ pub(crate) struct StateExpansionWitnessSpec {
 }
 
 impl StateExpansionWitnessSpec {
-    pub(crate) fn for_actor(actor_id: DeclId, actor: &ActorDecl, model: &AppCompilationContext<'_>) -> Result<Vec<Self>> {
+    pub(crate) fn for_actor(actor_id: DeclId, model: &AppCompilationContext<'_>) -> Result<Vec<Self>> {
         let state = *model.types.actor_states.get(&actor_id).ok_or_else(|| ArgentError::new("selected actor has no bound state"))?;
         let source = model.source_state_id_by_decl(state)?;
         model
@@ -170,9 +170,9 @@ impl StateExpansionWitnessSpec {
                             .iter()
                             .try_fold(0usize, |sum, field| packed_field_len(&field.ty).map(|len| sum + len))?;
                         Ok(Self {
-                            state: actor.state.clone(),
+                            state: source.as_str().to_string(),
                             field: digest.field.clone(),
-                            memory_state: digest.state.clone(),
+                            memory_state: memory_source.as_str().to_string(),
                             field_id: SourceFieldId::new(source.clone(), &digest.field),
                             memory_source,
                             packed_len,

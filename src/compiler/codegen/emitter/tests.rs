@@ -17,6 +17,9 @@ use crate::compiler::naming::to_snake;
 use crate::compiler::syntax::node::ModuleId;
 use crate::routing::{CommitmentNode, RouteGraph, SelectorRequirement};
 
+#[path = "output_naming_tests.rs"]
+mod output_naming;
+
 #[test]
 fn rejects_route_outside_named_output_union() {
     let program = crate::compiler::loader::load_inline_program(
@@ -1906,15 +1909,15 @@ fn output_template_proofs_are_independent_of_physical_state_type() {
         sil.split_once("entry handoff(").expect("handoff entry exists").1.split_once("entry choose(").expect("choose follows").0;
     let choose = sil.split_once("entry choose(").expect("choose entry exists").1;
 
-    assert!(hold.contains("State gen__state_next_state = State {"), "{hold}");
-    assert!(hold.contains("validateOutputState(gen__next_output_idx, gen__state_next_state);"), "{hold}");
+    assert!(hold.contains("State gen__0_route_physical_next = State {"), "{hold}");
+    assert!(hold.contains("validateOutputState(gen__next_output_idx, gen__0_route_physical_next);"), "{hold}");
 
-    assert!(handoff.contains("State gen__state_next_state = State {"), "{handoff}");
+    assert!(handoff.contains("State gen__0_route_physical_next = State {"), "{handoff}");
     assert!(handoff.contains("Gen__PawnState gen__prior_state = readInputStateWithTemplate("), "{handoff}");
     assert!(handoff.contains("validateOutputStateWithInputTemplate("), "{handoff}");
     assert!(handoff.contains("gen__prior_input_idx,"), "{handoff}");
 
-    assert!(choose.contains("State gen__state_next_state = State {"), "{choose}");
+    assert!(choose.contains("State gen__0_route_physical_next = State {"), "{choose}");
     assert!(choose.contains("validateOutputStateWithTemplate("), "{choose}");
     assert!(choose.contains("gen__target_template"), "{choose}");
 }
@@ -2214,8 +2217,8 @@ fn state_valued_functions_are_characterized_in_aligned_and_augmented_contexts() 
     assert_eq!(advance.matches("actor_identity(scalar)").count(), 1, "{advance}");
     assert!(!advance.contains("actor_identity(scalar).left"), "{advance}");
     assert!(!advance.contains("actor_identity(scalar).right"), "{advance}");
-    assert!(advance.contains("SharedState gen__source_next_shared_state = actor_identity(scalar);"), "{advance}");
-    assert!(advance.contains("validateOutputState(gen__next_output_idx, gen__state_next_state);"), "{advance}");
+    assert!(advance.contains("SharedState gen__0_route_source_next = actor_identity(scalar);"), "{advance}");
+    assert!(advance.contains("validateOutputState(gen__next_output_idx, gen__0_route_physical_next);"), "{advance}");
     assert!(routed_sil.contains("validateOutputStateWithTemplate("), "{routed_sil}");
 
     let inspect = reader_sil.split_once("entry inspect").map(|(_, body)| body).expect("Reader inspect entry is emitted");
@@ -2609,7 +2612,7 @@ fn observed_state_reference_can_supply_a_matching_route_state() {
         .and_then(|tail| tail.split_once("entry forward").map(|(body, _)| body))
         .expect("relay entry is delimited in the generated Sil");
     let authored = relay
-        .split_once("ForeignState gen__source_dst_foreign_state = ForeignState {")
+        .split_once("ForeignState gen__0_route_source_dst = ForeignState {")
         .map(|(_, tail)| tail)
         .and_then(|tail| tail.split_once("};").map(|(body, _)| body))
         .expect("relay reconstructs one authored ForeignState");
@@ -2623,7 +2626,7 @@ fn observed_state_reference_can_supply_a_matching_route_state() {
     assert!(relay.contains("gen__peer_template: gen__peer_template,"), "{relay}");
     assert!(!relay.contains("gen__asset_src_state.gen__foreign_template"), "{relay}");
     assert!(!relay.contains("gen__asset_src_state.gen__peer_template"), "{relay}");
-    assert!(relay.contains("validateOutputState(gen__asset_dst_output_idx, gen__state_dst_state);"), "{relay}");
+    assert!(relay.contains("validateOutputState(gen__asset_dst_output_idx, gen__0_route_physical_dst);"), "{relay}");
 }
 
 #[test]
@@ -3367,8 +3370,8 @@ fn routed_current_state_array_entry_param_uses_source_state_type() {
     assert!(sil.contains("struct NoteState"), "{sil}");
     assert!(sil.contains("entry choose(NoteState[2] notes)"), "{sil}");
     assert!(sil.contains("gen__archive_template: gen__archive_template"), "{sil}");
-    assert!(sil.contains("NoteState gen__source_next_note_state = notes[1];"), "{sil}");
-    assert!(sil.contains("nonce: gen__source_next_note_state.nonce"), "{sil}");
+    assert!(sil.contains("NoteState gen__0_route_source_next = notes[1];"), "{sil}");
+    assert!(sil.contains("nonce: gen__0_route_source_next.nonce"), "{sil}");
 
     let choose = artifact.sil_abi.contract("Note").expect("Note Sil ABI exists").entry("choose").expect("choose entry exists");
     assert_eq!(
@@ -3509,7 +3512,7 @@ fn active_expanded_field_projects_as_an_authored_value() {
     assert!(sil.contains("int self_opened = gen__detail_count;"), "{sil}");
     assert!(sil.contains("Details[1] copies = Details[1]{Details {"), "{sil}");
     assert!(sil.contains("read_detail(Details {"), "{sil}");
-    assert!(sil.contains("Details gen__source_next_details = Details {"), "{sil}");
+    assert!(sil.contains("Details gen__0_route_source_next = Details {"), "{sil}");
     assert_eq!(sil.matches("count: gen__detail_count}").count(), 4, "{sil}");
 
     let expanded = artifact.sil_abi.structs.get("Expanded").expect("Expanded ABI struct exists");
@@ -4020,7 +4023,7 @@ fn state_expansion_uses_base_storage_layout() {
     assert!(sil.contains("ForagerStrategy strategy;"), "{sil}");
     assert!(sil.contains("byte[32] strategy;"), "{sil}");
     assert!(sil.contains("ForagerState next_state = ForagerState {"), "{sil}");
-    assert!(sil.contains("validateOutputState(gen__next_output_idx, gen__state_next_state);"), "{sil}");
+    assert!(sil.contains("validateOutputState(gen__next_output_idx, gen__0_route_physical_next);"), "{sil}");
     assert!(!sil.contains("validateOutputStateWithTemplate"), "{sil}");
 
     let expansion = artifact.argent.state_expansions.first().expect("state expansion is recorded");
@@ -4148,7 +4151,7 @@ fn static_output_to_a_foreign_expanded_state_declares_the_planned_physical_type(
 
     assert!(source_sil.contains("struct Gen__PhysicalExpandedState {"), "{source_sil}");
     assert!(!source_sil.contains("struct Gen__TargetState {"), "{source_sil}");
-    assert!(source_sil.contains("Gen__PhysicalExpandedState gen__state_next_gen__physical_expanded_state"), "{source_sil}");
+    assert!(source_sil.contains("Gen__PhysicalExpandedState gen__0_route_physical_next"), "{source_sil}");
 }
 
 #[test]
@@ -4195,9 +4198,9 @@ fn expanded_output_payload_calls_are_evaluated_once_before_digest_lowering() {
     let sil = &actor_sil["Vault"];
 
     assert_eq!(sil.matches("detail: make_details()}").count(), 1, "{sil}");
-    assert!(sil.contains("Expanded gen__source_next_expanded = Expanded {"), "{sil}");
-    assert!(sil.contains("gen__source_next_expanded.detail.count"), "{sil}");
-    assert!(sil.contains("gen__source_next_expanded.detail.limit"), "{sil}");
+    assert!(sil.contains("Expanded gen__0_route_source_next = Expanded {"), "{sil}");
+    assert!(sil.contains("gen__0_route_source_next.detail.count"), "{sil}");
+    assert!(sil.contains("gen__0_route_source_next.detail.limit"), "{sil}");
     assert!(!sil.contains("make_details().count"), "{sil}");
     assert!(!sil.contains("make_details().limit"), "{sil}");
 }
@@ -4587,7 +4590,7 @@ fn non_active_selector_declares_and_uses_its_canonical_named_type() {
             let mux_sil = &actor_sil["Mux"];
             assert!(mux_sil.contains("struct Gen__AlphaState {"), "{mux_sil}");
             assert!(!mux_sil.contains("struct Gen__BetaState {"), "{mux_sil}");
-            assert!(mux_sil.contains("Gen__AlphaState gen__state_next_gen__alpha_state"), "{mux_sil}");
+            assert!(mux_sil.contains("Gen__AlphaState gen__0_route_physical_next"), "{mux_sil}");
             emit_artifact(&program, &model)?;
             Ok(())
         })
@@ -4603,7 +4606,7 @@ fn expanded_actor_records_sil_and_capsule_template_cuts() {
     assert_eq!(wallet_sil, include_str!("../../../../tests/fixtures/emit/capsule_route_context/WalletAsset.sil"));
     assert!(sil.contains("byte[32] gen__wallet_asset_template"), "{sil}");
     assert!(sil.contains("ReserveAssetState next_asset = ReserveAssetState {"), "{sil}");
-    assert!(sil.contains("validateOutputState(gen__next_output_idx, gen__state_next_state);"), "{sil}");
+    assert!(sil.contains("validateOutputState(gen__next_output_idx, gen__0_route_physical_next);"), "{sil}");
     assert!(sil.contains("validateOutputStateWithTemplate("), "{sil}");
 
     // Migration debt: exact continuation is still recognized from the
@@ -6473,8 +6476,11 @@ fn stones_embed_current_lengths_and_keep_foreign_template_witnesses() {
     );
     assert!(player_sil.contains("PlayerState next_self = PlayerState {"), "{player_sil}");
     assert!(player_sil.contains("PlayerState next_opponent = PlayerState {"), "{player_sil}");
-    assert!(player_sil.contains("validateOutputState(gen__self_out_output_idx, gen__state_self_out_state);"), "{player_sil}");
-    assert!(player_sil.contains("validateOutputState(gen__opponent_out_output_idx, gen__state_opponent_out_state);"), "{player_sil}");
+    assert!(player_sil.contains("validateOutputState(gen__self_out_output_idx, gen__0_route_physical_self_out);"), "{player_sil}");
+    assert!(
+        player_sil.contains("validateOutputState(gen__opponent_out_output_idx, gen__1_route_physical_opponent_out);"),
+        "{player_sil}"
+    );
     assert!(player_sil.contains("validateOutputStateWithTemplate(gen__game_output_idx,"), "{player_sil}");
     assert!(league_sil.contains("entry register_player("), "{league_sil}");
     assert!(league_sil.contains("byte[] gen__player_prefix,"), "{league_sil}");
@@ -6932,7 +6938,7 @@ fn foreign_routes_materialize_the_target_actors_cut() {
     assert!(actor_layout.contains("byte[32] gen__tail_a_template;"), "{source_sil}");
     assert!(!actor_layout.contains("gen__tail_b_template"), "{source_sil}");
     assert!(source_sil.contains("SharedState next_state = SharedState {"), "{source_sil}");
-    assert!(source_sil.contains("Gen__AState gen__state_next_gen__a_state = Gen__AState {"), "{source_sil}");
+    assert!(source_sil.contains("Gen__AState gen__0_route_physical_next = Gen__AState {"), "{source_sil}");
     assert!(source_sil.contains("amount: next_state.amount"), "{source_sil}");
     assert!(source_sil.contains("gen__tail_a_template: gen__tail_a_template"), "{source_sil}");
     assert!(!source_sil.contains("gen__tail_b_template:"), "{source_sil}");
@@ -7501,26 +7507,22 @@ fn route_neutral_state_locals_convert_at_actor_routes() {
 
     assert!(straight_sil["Lobby"].contains("struct BoardState {"), "{}", straight_sil["Lobby"]);
     assert!(straight_sil["Lobby"].contains("BoardState next_board = BoardState {"), "{}", straight_sil["Lobby"]);
+    assert!(straight_sil["Lobby"].contains("Gen__MuxState gen__0_route_physical_next = Gen__MuxState {"), "{}", straight_sil["Lobby"]);
     assert!(
-        straight_sil["Lobby"].contains("Gen__MuxState gen__state_next_gen__mux_state = Gen__MuxState {"),
-        "{}",
-        straight_sil["Lobby"]
-    );
-    assert!(
-        straight_sil["Lobby"].contains("validateOutputStateWithTemplate(gen__next_output_idx, gen__state_next_gen__mux_state,"),
+        straight_sil["Lobby"].contains("validateOutputStateWithTemplate(gen__next_output_idx, gen__0_route_physical_next,"),
         "{}",
         straight_sil["Lobby"]
     );
     assert!(straight_sil["Mux"].contains("struct ArchiveState {"), "{}", straight_sil["Mux"]);
     assert!(straight_sil["Mux"].contains("ArchiveState next_archive = ArchiveState {"), "{}", straight_sil["Mux"]);
     assert!(
-        straight_sil["Mux"].contains("Gen__ArchiveState gen__state_next_gen__archive_state = Gen__ArchiveState {"),
+        straight_sil["Mux"].contains("Gen__ArchiveState gen__0_route_physical_next = Gen__ArchiveState {"),
         "{}",
         straight_sil["Mux"]
     );
     assert!(straight_sil["Archive"].contains("BoardState next_board = BoardState {"), "{}", straight_sil["Archive"]);
     assert!(
-        straight_sil["Archive"].contains("Gen__PawnState gen__state_next_gen__pawn_state = Gen__PawnState {"),
+        straight_sil["Archive"].contains("Gen__PawnState gen__0_route_physical_next = Gen__PawnState {"),
         "{}",
         straight_sil["Archive"]
     );
@@ -7531,7 +7533,7 @@ fn route_neutral_state_locals_convert_at_actor_routes() {
 
     assert!(choice_sil.contains("struct BoardState {"), "{choice_sil}");
     assert!(choice_sil.contains("BoardState next_board = BoardState {"), "{choice_sil}");
-    assert!(choice_sil.contains("Gen__MuxState gen__state_next_gen__mux_state = Gen__MuxState {"), "{choice_sil}");
+    assert!(choice_sil.contains("Gen__MuxState gen__1_route_physical_next = Gen__MuxState {"), "{choice_sil}");
     assert!(choice_sil.contains("validateOutputStateWithTemplate(gen__next_output_idx, next_board,"), "{choice_sil}");
     assert!(choice_sil.contains("ply: next_board.ply"), "{choice_sil}");
 }
@@ -7706,7 +7708,7 @@ fn toy_chess_sil_uses_one_level_route_family_shape() {
     assert!(player_sil.contains("byte[64] gen__mux_routes"), "{player_sil}");
     assert!(player_sil.contains("require(blake3(byte[](gen__mux_routes)) == gen__mux_routes_digest);"), "{player_sil}");
     assert!(player_sil.contains("BoardState next_board = BoardState {"), "{player_sil}");
-    assert!(player_sil.contains("Gen__MuxState gen__state_next_gen__mux_state = Gen__MuxState {"), "{player_sil}");
+    assert!(player_sil.contains("Gen__MuxState gen__0_route_physical_next = Gen__MuxState {"), "{player_sil}");
     assert!(!player_sil.contains("gen__pawn_template"), "{player_sil}");
     assert!(!player_sil.contains("gen__knight_template"), "{player_sil}");
 

@@ -9,10 +9,8 @@ use crate::compiler::model::{
     ObservedOutputFieldWitnessSpec, ObservedTemplateSource, OutputProofRequirement, ResolvedSuccessor, SourceFieldId, SourceStateId,
     StaticActorId, TemplateSelector, TemplateWitnessSource, WitnessAbiType, WitnessPlan, observed_is_dynamic_binding,
 };
-use crate::compiler::naming::to_snake;
 use crate::compiler::resolve::{Binding, LocalId, ResolvedName};
 use crate::compiler::syntax::body::RouteArity;
-use crate::compiler::syntax::lexer::RESERVED_GENERATED_PREFIX;
 use crate::compiler::syntax::node::{ChildEdge, EntryId, RootSlot, SourceNodeCursor, SymbolKind};
 use crate::compiler::syntax::word;
 use crate::compiler::syntax::*;
@@ -1719,11 +1717,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                             message_span: None,
                         });
                         let position = hidden_output_position_name(&resolved.output);
-                        let source_name = format!(
-                            "{RESERVED_GENERATED_PREFIX}source_{}_{}",
-                            to_snake(&resolved.output),
-                            to_snake(target.source_identity())
-                        );
+                        let source_name = hidden_output_temporary_name(route.id, &resolved.output, OutputTemporaryRole::Source);
                         let item = SilExpr::new(
                             SilExprKind::ArrayIndex {
                                 source: Box::new((**state).clone()),
@@ -1767,11 +1761,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                             self.entry_id,
                             self.entry,
                             OutputValidationContext::Actor { target: target_id },
-                            format!(
-                                "{RESERVED_GENERATED_PREFIX}state_{}_{}",
-                                to_snake(&resolved.output),
-                                to_snake(target.physical_type())
-                            ),
+                            hidden_output_temporary_name(route.id, &resolved.output, OutputTemporaryRole::Physical),
                             self.model,
                         )
                         .ok()?;
@@ -1819,11 +1809,8 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                                 if let SilExprKind::StructLiteral { name, .. } = &mut value.kind {
                                     *name = target.authored_sil_type().to_string();
                                 }
-                                let source_name = format!(
-                                    "{RESERVED_GENERATED_PREFIX}source_{}_{}",
-                                    to_snake(&resolved.output),
-                                    to_snake(target.source_identity())
-                                );
+                                let source_name =
+                                    hidden_output_temporary_name(route.id, &resolved.output, OutputTemporaryRole::Source);
                                 result.push(SilStatement::VariableDefinition {
                                     type_ref: SilTypeRef {
                                         base: SilTypeBase::Custom(target.authored_sil_type().to_string()),
@@ -1853,11 +1840,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                             self.entry_id,
                             self.entry,
                             context,
-                            format!(
-                                "{RESERVED_GENERATED_PREFIX}state_{}_{}",
-                                to_snake(&resolved.output),
-                                to_snake(target.physical_type())
-                            ),
+                            hidden_output_temporary_name(route.id, &resolved.output, OutputTemporaryRole::Physical),
                             self.model,
                         )
                         .ok()?;
@@ -2068,11 +2051,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
                 if let SilExprKind::StructLiteral { name, .. } = &mut value.kind {
                     *name = target.authored_sil_type().to_string();
                 }
-                let source_name = format!(
-                    "{RESERVED_GENERATED_PREFIX}source_{}_{}",
-                    to_snake(context.output_name()),
-                    to_snake(target.source_identity())
-                );
+                let source_name = hidden_output_temporary_name(route.id, context.output_name(), OutputTemporaryRole::Source);
                 statements.push(SilStatement::VariableDefinition {
                     type_ref: SilTypeRef { base: SilTypeBase::Custom(target.authored_sil_type().to_string()), array_dims: Vec::new() },
                     modifiers: Vec::new(),
@@ -2160,7 +2139,7 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
             self.entry_id,
             self.entry,
             validation_context,
-            format!("{RESERVED_GENERATED_PREFIX}state_{}_{}", to_snake(context.output_name()), to_snake(target.physical_type())),
+            hidden_output_temporary_name(route.id, context.output_name(), OutputTemporaryRole::Physical),
             self.model,
         )
         .ok()?;

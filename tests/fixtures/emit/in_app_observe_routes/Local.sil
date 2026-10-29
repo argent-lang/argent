@@ -61,10 +61,10 @@ contract Local(byte[32] gen__init_foreign_template, byte[32] gen__init_target_te
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
         ForeignState next_foreign = foreign_identity(ForeignState {amount: gen__remote_src_state.amount});
-        Gen__ForeignState gen__state_remote_next_gen__foreign_state = Gen__ForeignState {gen__target_template: gen__target_template, amount: next_foreign.amount};
-        validateOutputStateWithInputTemplate(gen__remote_remote_next_output_idx, gen__state_remote_next_gen__foreign_state, gen__remote_src_input_idx, gen__foreign_prefix_len, gen__foreign_suffix_len, gen__foreign_template);
-        LocalState gen__source_next_local_state = next_state(0);
-        State gen__state_next_state = State {gen__foreign_template: gen__foreign_template, gen__target_template: gen__target_template, foreign_id: gen__source_next_local_state.foreign_id, steps: gen__source_next_local_state.steps};
-        validateOutputState(gen__next_output_idx, gen__state_next_state);
+        Gen__ForeignState gen__0_route_physical_remote_next = Gen__ForeignState {gen__target_template: gen__target_template, amount: next_foreign.amount};
+        validateOutputStateWithInputTemplate(gen__remote_remote_next_output_idx, gen__0_route_physical_remote_next, gen__remote_src_input_idx, gen__foreign_prefix_len, gen__foreign_suffix_len, gen__foreign_template);
+        LocalState gen__1_route_source_next = next_state(0);
+        State gen__1_route_physical_next = State {gen__foreign_template: gen__foreign_template, gen__target_template: gen__target_template, foreign_id: gen__1_route_source_next.foreign_id, steps: gen__1_route_source_next.steps};
+        validateOutputState(gen__next_output_idx, gen__1_route_physical_next);
     }
 }

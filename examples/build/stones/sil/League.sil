@@ -112,7 +112,7 @@ contract League(byte[32] gen__init_player_template, byte[32] gen__init_stones_ga
         require(tx.outputs[gen__league_output_idx].value == tx.inputs[this.activeInputIndex].value);
         require(tx.outputs[gen__player_output_idx].value > 0);
         require(tx.outputs[gen__league_output_idx].scriptPubKey == tx.inputs[this.activeInputIndex].scriptPubKey);
-        Gen__PlayerState gen__state_player_gen__player_state = Gen__PlayerState {gen__player_template: gen__player_template, gen__stones_game_template: gen__stones_game_template, gen__stones_settle_template: gen__stones_settle_template, owner: next_player.owner, player_id: next_player.player_id, open_games: next_player.open_games, games: next_player.games, wins: next_player.wins, losses: next_player.losses};
-        validateOutputStateWithTemplate(gen__player_output_idx, gen__state_player_gen__player_state, gen__player_prefix, gen__player_suffix, gen__player_template);
+        Gen__PlayerState gen__1_route_physical_player = Gen__PlayerState {gen__player_template: gen__player_template, gen__stones_game_template: gen__stones_game_template, gen__stones_settle_template: gen__stones_settle_template, owner: next_player.owner, player_id: next_player.player_id, open_games: next_player.open_games, games: next_player.games, wins: next_player.wins, losses: next_player.losses};
+        validateOutputStateWithTemplate(gen__player_output_idx, gen__1_route_physical_player, gen__player_prefix, gen__player_suffix, gen__player_template);
     }
 }

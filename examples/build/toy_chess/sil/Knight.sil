@@ -27,7 +27,7 @@ contract Knight(byte[32] gen__init_mux_template, byte[64] gen__init_mux_routes, 
         int gen__next_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
         require(selector >= 0);
         BoardState next_board = BoardState {selector: selector, ply: ply + 1};
-        State gen__state_next_state = State {gen__mux_template: gen__mux_template, gen__mux_routes: gen__mux_routes, selector: next_board.selector, ply: next_board.ply};
-        validateOutputStateWithTemplate(gen__next_output_idx, gen__state_next_state, gen__mux_prefix, gen__mux_suffix, gen__mux_template);
+        State gen__0_route_physical_next = State {gen__mux_template: gen__mux_template, gen__mux_routes: gen__mux_routes, selector: next_board.selector, ply: next_board.ply};
+        validateOutputStateWithTemplate(gen__next_output_idx, gen__0_route_physical_next, gen__mux_prefix, gen__mux_suffix, gen__mux_template);
     }
 }

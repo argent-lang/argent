@@ -176,10 +176,6 @@ impl OutputStateTarget {
         self.named_physical_layout.as_ref().map(|layout| (self.sil_type.as_str(), layout))
     }
 
-    pub(in crate::compiler::codegen) fn source_identity(&self) -> &str {
-        self.physical.source().as_str()
-    }
-
     pub(in crate::compiler::codegen) fn authored_sil_type(&self) -> &str {
         &self.authored_sil_type
     }
@@ -521,7 +517,7 @@ impl PlannedOutputValidation {
         let mut statements = Vec::new();
         let state = if !target.is_unwrapped_authored_value() {
             statements.push(SilStatement::VariableDefinition {
-                type_ref: SilTypeRef { base: SilTypeBase::Custom(target.sil_type.clone()), array_dims: Vec::new() },
+                type_ref: SilTypeRef { base: SilTypeBase::Custom(target.physical_type().to_string()), array_dims: Vec::new() },
                 modifiers: Vec::new(),
                 name: self.state_binding.clone(),
                 expr: Some(state),
