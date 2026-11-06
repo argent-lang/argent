@@ -297,6 +297,352 @@ fn unused_import_does_not_change_linked_app_artifacts() {
 }
 
 #[test]
+fn static_cross_app_actor_values_use_shared_expression_lowering() {
+    let temp = tempfile::tempdir().expect("test directory created");
+    std::fs::write(
+        temp.path().join("foreign.ag"),
+        r#"
+        state ForeignState { int n; }
+        actor Foreign owns ForeignState {
+            entry check() emits none { require(n >= 0); }
+        }
+        app RemoteApp { actor Foreign; }
+    "#,
+    )
+    .unwrap();
+    let cases = [
+        ("entry", "", "", "remote::RemoteApp::Foreign"),
+        (
+            "global-helper",
+            "fn expected() -> actor_type<remote::ForeignState> { return remote::RemoteApp::Foreign; }",
+            "",
+            "expected()",
+        ),
+        ("actor-helper", "", "fn expected() -> actor_type<remote::ForeignState> { return remote::RemoteApp::Foreign; }", "expected()"),
+        (
+            "helper-local",
+            "fn expected() -> actor_type<remote::ForeignState> { actor_type<remote::ForeignState> result = remote::RemoteApp::Foreign; return result; }",
+            "",
+            "expected()",
+        ),
+        ("constant", "const actor_type<remote::ForeignState> EXPECTED = remote::RemoteApp::Foreign;", "", "EXPECTED"),
+    ];
+    for (name, globals, helpers, expected) in cases {
+        std::fs::write(
+            temp.path().join("host.ag"),
+            format!(
+                r#"
+                import "./foreign.ag" as remote;
+                {globals}
+                state HostState {{ actor_type<remote::ForeignState> token_type; }}
+                actor Host owns HostState {{
+                    {helpers}
+                    entry check() emits none {{ require(token_type == {expected}); }}
+                }}
+                state OtherState {{ int n; }}
+                actor Other owns OtherState {{ entry check() emits none {{}} }}
+                app HostApp {{ actor Host; actor Other; }}
+            "#
+            ),
+        )
+        .unwrap();
+        let output = temp.path().join(name);
+        let bundle = build_file_bundle(temp.path().join("host.ag"), &output)
+            .unwrap_or_else(|error| panic!("static actor value in {name} compiles: {error}"));
+        let artifact = bundle.primary();
+        assert_eq!(bundle.apps().map(|(app, _)| app).collect::<Vec<_>>(), ["HostApp", "RemoteApp"]);
+        assert_eq!(artifact.argent.interfaces.imports.len(), 1);
+        assert_eq!(artifact.argent.interfaces.imports[0].app, "RemoteApp");
+        assert_eq!(artifact.argent.interfaces.imports[0].actor, "Foreign");
+        let exported = &bundle.app("RemoteApp").unwrap().argent.template_plan.templates[0].actor_type_handle.template.hash;
+        let contract = artifact.sil_abi.contract("Host").unwrap();
+        assert!(byte_occurrences(&contract.compiled.bytecode, exported) > 0);
+        assert!(contract.entry("check").unwrap().params.is_empty(), "value-only imports add no witness parameters");
+        assert_eq!(contract.runtime_state.fields.len(), 1, "value-only imports add no route fields");
+        assert_eq!(artifact.argent.actors.len(), 2, "linked actors do not enter the app actor domain");
+
+        let host_sil = std::fs::read_to_string(output.join("sil/Host.sil")).unwrap();
+        let other_sil = std::fs::read_to_string(output.join("sil/Other.sil")).unwrap();
+        let constant = "gen__remote_app__foreign_template_const";
+        assert!(host_sil.contains(constant), "{name}: {host_sil}");
+        assert_eq!(
+            other_sil.contains(constant),
+            matches!(name, "global-helper" | "helper-local" | "constant"),
+            "only globally emitted uses require constants in unrelated actors: {name}"
+        );
+    }
+    for statement in ["remote::RemoteApp::Foreign();", "remote::RemoteApp::Foreign invalid;"] {
+        std::fs::write(
+            temp.path().join("misuse.ag"),
+            format!(
+                r#"
+                import "./foreign.ag" as remote;
+                state HostState {{}}
+                actor Host owns HostState {{ entry check() emits none {{ {statement} }} }}
+                app HostApp {{ actor Host; }}
+            "#
+            ),
+        )
+        .unwrap();
+        build_file(temp.path().join("misuse.ag"), temp.path().join("invalid"))
+            .expect_err("an actor value is not a function or a state type");
+    }
+}
+
+#[test]
+fn static_cross_app_actor_values_distinguish_same_named_exports() {
+    let temp = tempfile::tempdir().unwrap();
+    for (file, app, condition) in [("first.ag", "FirstApp", "n >= 0"), ("second.ag", "SecondApp", "n > 0")] {
+        std::fs::write(
+            temp.path().join(file),
+            format!(
+                "state ForeignState {{ int n; }} actor Foreign owns ForeignState {{ entry check() emits none {{ require({condition}); }} }} app {app} {{ actor Foreign; }}"
+            ),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        temp.path().join("host.ag"),
+        r#"
+        import "./first.ag" as first;
+        import "./second.ag" as second;
+        state HostState {}
+        actor Host owns HostState {
+            entry check() emits none {
+                require(first::FirstApp::Foreign != second::SecondApp::Foreign);
+            }
+        }
+        app HostApp { actor Host; }
+    "#,
+    )
+    .unwrap();
+    let bundle = build_file_bundle(temp.path().join("host.ag"), temp.path().join("out")).expect("distinct exports compile");
+    let artifact = bundle.primary();
+    assert_eq!(artifact.argent.interfaces.imports.len(), 2);
+    assert_eq!(artifact.dependencies.len(), 2);
+    let first = &bundle.app("FirstApp").unwrap().argent.template_plan.templates[0].actor_type_handle.template.hash;
+    let second = &bundle.app("SecondApp").unwrap().argent.template_plan.templates[0].actor_type_handle.template.hash;
+    assert_ne!(first, second);
+    let bytecode = &artifact.sil_abi.contract("Host").unwrap().compiled.bytecode;
+    assert!(byte_occurrences(bytecode, first) > 0);
+    assert!(byte_occurrences(bytecode, second) > 0);
+}
+
+#[test]
+fn static_cross_app_actor_handle_locals_remain_ordinary_values() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("foreign.ag"),
+        r#"
+        state ForeignState { int n; }
+        actor Foreign owns ForeignState { entry check() emits none { require(n >= 0); } }
+        actor Other owns ForeignState { entry check() emits none { require(n > 0); } }
+        app RemoteApp { actor Foreign; actor Other; }
+    "#,
+    )
+    .unwrap();
+    let cases = [
+        (
+            "direct",
+            "",
+            "actor_type<remote::ForeignState> target = alias::RemoteApp::Foreign; require(target == remote::RemoteApp::Foreign);",
+        ),
+        (
+            "copy",
+            "",
+            "actor_type<remote::ForeignState> target = remote::RemoteApp::Foreign; actor_type<remote::ForeignState> copied = target; require(copied == remote::RemoteApp::Foreign);",
+        ),
+        (
+            "parameter-copy",
+            ", actor_type<remote::ForeignState> source",
+            "actor_type<remote::ForeignState> target = source; require(target == remote::RemoteApp::Foreign);",
+        ),
+        (
+            "scopes",
+            "",
+            "if (choose) { actor_type<remote::ForeignState> target = remote::RemoteApp::Foreign; require(target == remote::RemoteApp::Foreign); } else { actor_type<remote::ForeignState> target = remote::RemoteApp::Other; require(target == remote::RemoteApp::Other); } { actor_type<remote::ForeignState> target = remote::RemoteApp::Foreign; require(target == remote::RemoteApp::Foreign); }",
+        ),
+        (
+            "reassignment",
+            "",
+            "actor_type<remote::ForeignState> target = remote::RemoteApp::Foreign; if (choose) { target = remote::RemoteApp::Other; } require(target == remote::RemoteApp::Other);",
+        ),
+    ];
+    for (name, params, body) in cases {
+        std::fs::write(
+            temp.path().join("host.ag"),
+            format!(
+                r#"
+                import "./foreign.ag" as remote;
+                import "./foreign.ag" as alias;
+                state HostState {{ int n; }}
+                actor Host owns HostState {{
+                    entry check(bool choose{params}) emits none {{ {body} }}
+                }}
+                app HostApp {{ actor Host; }}
+            "#
+            ),
+        )
+        .unwrap();
+        let output = temp.path().join(name);
+        let artifact = build_file(temp.path().join("host.ag"), &output)
+            .unwrap_or_else(|error| panic!("ordinary handle local in {name} compiles: {error}"));
+        let contract = artifact.sil_abi.contract("Host").unwrap();
+        assert_eq!(contract.entry("check").unwrap().params.len(), if params.is_empty() { 1 } else { 2 });
+        assert_eq!(contract.runtime_state.fields.len(), 1);
+        assert!(artifact.argent.template_plan.route_families.is_empty());
+        let sil = std::fs::read_to_string(output.join("sil/Host.sil")).unwrap();
+        assert!(sil.contains("byte[32] target"), "handle locals are not enum ordinals: {sil}");
+        if name == "copy" {
+            assert!(sil.contains("byte[32] copied = target"), "copies read the current variable: {sil}");
+        }
+        if name == "reassignment" {
+            assert!(sil.contains("target = gen__remote_app__other_template_const"), "reassignment is retained: {sil}");
+            assert!(sil.contains("require(target == gen__remote_app__other_template_const)"), "reads are not propagated: {sil}");
+        }
+    }
+
+    for body in [
+        "actor_type<HostState> target = remote::RemoteApp::Foreign; require(target == remote::RemoteApp::Foreign);",
+        "actor_type<remote::ForeignState> source = remote::RemoteApp::Foreign; actor_type<HostState> target = source; require(target == remote::RemoteApp::Foreign);",
+    ] {
+        std::fs::write(
+            temp.path().join("invalid.ag"),
+            format!(
+                r#"
+                import "./foreign.ag" as remote;
+                state HostState {{ int n; }}
+                actor Host owns HostState {{ entry check() emits none {{ {body} }} }}
+                app HostApp {{ actor Host; }}
+            "#
+            ),
+        )
+        .unwrap();
+        let error = build_file(temp.path().join("invalid.ag"), temp.path().join("invalid"))
+            .expect_err("same-shaped unrelated states are not nominally compatible");
+        assert!(error.to_string().contains("declares actor handle `target` as actor_type<HostState>"), "{error}");
+        assert!(!error.to_string().contains("generated Silverscript"), "Argent rejects the mismatch: {error}");
+    }
+}
+
+#[test]
+fn static_cross_app_actor_handle_local_producers_use_declared_types() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("foreign.ag"),
+        "state ForeignState { int n; } actor Foreign owns ForeignState { entry check() emits none { require(n >= 0); } } app RemoteApp { actor Foreign; }",
+    )
+    .unwrap();
+    for (name, globals, helpers, initializer) in [
+        ("constant", "const actor_type<remote::ForeignState> EXPECTED = remote::RemoteApp::Foreign;", "", "EXPECTED"),
+        (
+            "global-helper",
+            "fn expected() -> actor_type<remote::ForeignState> { return remote::RemoteApp::Foreign; }",
+            "",
+            "expected()",
+        ),
+        ("actor-helper", "", "fn expected() -> actor_type<remote::ForeignState> { return remote::RemoteApp::Foreign; }", "expected()"),
+    ] {
+        for (state, accepted) in [("remote::ForeignState", true), ("HostState", false)] {
+            std::fs::write(
+                temp.path().join("host.ag"),
+                format!(
+                    r#"
+                    import "./foreign.ag" as remote;
+                    {globals}
+                    state HostState {{ int n; }}
+                    actor Host owns HostState {{
+                        {helpers}
+                        entry check() emits none {{
+                            actor_type<{state}> target = {initializer};
+                            require(target == remote::RemoteApp::Foreign);
+                        }}
+                    }}
+                    app HostApp {{ actor Host; }}
+                "#
+                ),
+            )
+            .unwrap();
+            let result = build_file(temp.path().join("host.ag"), temp.path().join(name));
+            if accepted {
+                let artifact = result.unwrap_or_else(|error| panic!("local initializer from {name} compiles: {error}"));
+                let contract = artifact.sil_abi.contract("Host").unwrap();
+                assert!(contract.entry("check").unwrap().params.is_empty());
+                assert_eq!(contract.runtime_state.fields.len(), 1);
+                assert!(artifact.argent.template_plan.route_families.is_empty());
+            } else {
+                let error = result.expect_err("typed producer retains its declared nominal state");
+                assert!(error.to_string().contains("declares actor handle `target` as actor_type<HostState>"), "{error}");
+                assert!(!error.to_string().contains("generated Silverscript"), "{error}");
+            }
+        }
+    }
+}
+
+#[test]
+fn static_cross_app_actor_handle_locals_preserve_expansion_views_and_route_boundaries() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("foreign.ag"),
+        r#"
+        state Storage { int n; virtual detail; }
+        state Detail { int value; }
+        state Expanded expands Storage { detail: Detail; }
+        state Sibling expands Storage { detail: Detail; }
+        actor Foreign owns Expanded { entry check() emits none { require(n >= 0); } }
+        app RemoteApp { actor Foreign; }
+    "#,
+    )
+    .unwrap();
+    for (view, accepted) in [("Expanded", true), ("Storage", true), ("Sibling", false)] {
+        std::fs::write(
+            temp.path().join("host.ag"),
+            format!(
+                r#"
+                import "./foreign.ag" as remote;
+                state HostState {{ int n; }}
+                actor Host owns HostState {{
+                    entry check() emits none {{
+                        actor_type<remote::{view}> target = remote::RemoteApp::Foreign;
+                        require(target == remote::RemoteApp::Foreign);
+                    }}
+                }}
+                app HostApp {{ actor Host; }}
+            "#
+            ),
+        )
+        .unwrap();
+        let result = build_file(temp.path().join("host.ag"), temp.path().join(view));
+        if accepted {
+            result.unwrap_or_else(|error| panic!("actor supports its {view} source-state view: {error}"));
+        } else {
+            let error = result.expect_err("a sibling expansion is not the actor's authored state view");
+            assert!(error.to_string().contains("declares actor handle `target`"), "{error}");
+        }
+    }
+
+    std::fs::write(
+        temp.path().join("route.ag"),
+        r#"
+        import "./foreign.ag" as remote;
+        state HostState { int n; }
+        actor Host owns HostState {
+            entry check(remote::Expanded next_state) emits next: Host {
+                actor_type<remote::Expanded> target = remote::RemoteApp::Foreign;
+                unrestricted(next.value);
+                become next <- target(next_state);
+            }
+        }
+        app HostApp { actor Host; }
+    "#,
+    )
+    .unwrap();
+    let error = build_file(temp.path().join("route.ag"), temp.path().join("route"))
+        .expect_err("an ordinary handle value does not create a current-covenant route selector");
+    assert!(error.to_string().contains("routes through a local without an actor selector"), "{error}");
+}
+
+#[test]
 fn compile_inline_supports_helpers_without_return_types() {
     let source = r#"
         fn authorize(int value) {

@@ -7877,7 +7877,7 @@ fn gate_less_family_appends_rep_after_selector_variants() {
                         ply: ply + 1,
                     };
 
-                    actor_type<BoardState> target = MoveActor::Knight;
+                    MoveActor target = MoveActor::Knight;
                     become next <- target(next_board);
                 }
             }
@@ -9916,7 +9916,7 @@ fn toy_chess_source() -> String {
                         ply: ply + 1,
                     };
 
-                    actor_type<BoardState> target = MoveActor::Knight;
+                    MoveActor target = MoveActor::Knight;
                     become next <- target(next_board);
                 }
 

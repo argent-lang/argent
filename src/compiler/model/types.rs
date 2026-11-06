@@ -928,6 +928,9 @@ impl TypeTable {
                             let ty = Self::resolve_type(program, id, &param.ty)?;
                             if let Some(local) = program.bindings(id).parameter_ids.get(&(RootSlot::Entry(entry_index), param_index)) {
                                 table.local_operands.insert(*local, OperandType::from_resolved(&ty));
+                                if let ResolvedType { base: ResolvedTypeBase::ActorHandle(state), array: None } = &ty {
+                                    table.local_actor_handle_states.insert(*local, *state);
+                                }
                             }
                             table.entry_params.insert((id, entry_index, param_index), ty);
                         }
@@ -1010,7 +1013,7 @@ impl TypeTable {
         }
     }
 
-    fn resolve_type(program: &ResolvedModules<'_>, owner: DeclId, ty: &TypeRef) -> Result<ResolvedType> {
+    pub(super) fn resolve_type(program: &ResolvedModules<'_>, owner: DeclId, ty: &TypeRef) -> Result<ResolvedType> {
         let base = if let Some(state) = &ty.actor_state {
             ResolvedTypeBase::ActorHandle(Self::bound_decl(program, owner, state, SymbolKind::State)?)
         } else if ty.is_builtin() {

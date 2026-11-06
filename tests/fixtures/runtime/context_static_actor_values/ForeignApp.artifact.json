@@ -1,0 +1,429 @@
+{
+  "schema_version": 1,
+  "id": "ddf7caa9ac8c41d0d3a24b41a4fc91414065acaa743bda38d41be983e99b6607",
+  "generator": {
+    "name": "argentc",
+    "version": "0.1.0"
+  },
+  "app": "ForeignApp",
+  "dependencies": [],
+  "root": "tests/fixtures/runtime/context_static_actor_values/foreign.ag",
+  "modules": [
+    "tests/fixtures/runtime/context_static_actor_values/foreign.ag"
+  ],
+  "argent": {
+    "templates": [
+      {
+        "id": "template/foreign",
+        "actor": "Foreign",
+        "symbol": "gen__foreign_template"
+      },
+      {
+        "id": "template/archive",
+        "actor": "Archive",
+        "symbol": "gen__archive_template"
+      }
+    ],
+    "template_plan": {
+      "templates": [
+        {
+          "id": "template/foreign",
+          "actor": "Foreign",
+          "contract": "Foreign",
+          "symbol": "gen__foreign_template",
+          "sil_template_hash": [222, 45, 245, 72, 135, 111, 133, 161, 144, 133, 47, 143, 20, 63, 197, 126, 104, 138, 76, 200, 105, 111, 34, 37, 241, 232, 210, 109, 66, 28, 29, 146],
+          "actor_type_handle": {
+            "state": "ForeignState",
+            "context_fields": [
+              "gen__archive_template"
+            ],
+            "template": {
+              "prefix": [107, 32, 124, 189, 194, 122, 79, 255, 186, 173, 101, 91, 205, 117, 101, 167, 216, 86, 130, 70, 146, 3, 219, 7, 210, 107, 149, 63, 102, 86, 64, 244, 39, 31],
+              "suffix": [
+                108, 118, 4, 237, 237, 146, 50, 135, 99, 117, 83, 121, 130, 81, 151, 0, 157, 117, 82, 121, 130, 81, 151, 0, 157, 117, 185, 203, 81, 156, 105, 185, 0, 204, 120, 83, 121, 86, 121, 130, 124, 117, 81, 150, 88, 205, 87, 121, 126, 86, 121, 130, 124, 117, 81, 150, 88, 205, 87, 121, 126, 126, 217, 136,
+                1, 8, 120, 88, 205, 126, 86, 121, 124, 126, 85, 121, 126, 170, 2, 0, 0, 1, 170, 126, 1, 32, 126, 124, 126, 1, 135, 126, 82, 121, 195, 136, 117, 117, 117, 117, 117, 117, 81, 103, 106, 104
+              ],
+              "hash": [30, 68, 244, 53, 182, 160, 111, 145, 193, 25, 236, 98, 204, 214, 77, 200, 61, 145, 72, 0, 94, 90, 32, 243, 27, 222, 193, 75, 94, 85, 244, 142]
+            }
+          }
+        },
+        {
+          "id": "template/archive",
+          "actor": "Archive",
+          "contract": "Archive",
+          "symbol": "gen__archive_template",
+          "sil_template_hash": [124, 189, 194, 122, 79, 255, 186, 173, 101, 91, 205, 117, 101, 167, 216, 86, 130, 70, 146, 3, 219, 7, 210, 107, 149, 63, 102, 86, 64, 244, 39, 31],
+          "actor_type_handle": {
+            "state": "ArchiveState",
+            "context_fields": [],
+            "template": {
+              "prefix": [107],
+              "suffix": [108, 118, 4, 197, 53, 10, 163, 135, 99, 117, 185, 203, 0, 156, 105, 118, 0, 162, 105, 117, 81, 103, 106, 104],
+              "hash": [124, 189, 194, 122, 79, 255, 186, 173, 101, 91, 205, 117, 101, 167, 216, 86, 130, 70, 146, 3, 219, 7, 210, 107, 149, 63, 102, 86, 64, 244, 39, 31]
+            }
+          }
+        }
+      ],
+      "runtime_states": [
+        {
+          "contract": "Foreign",
+          "source": "ForeignState",
+          "field_roles": [
+            {
+              "name": "gen__archive_template",
+              "role": {
+                "kind": "template",
+                "contract": "Archive"
+              }
+            }
+          ]
+        }
+      ],
+      "route_tables": [],
+      "route_proofs": [],
+      "route_families": [],
+      "witness_recipes": [
+        {
+          "id": "witness/archive/template_prefix_bytes",
+          "template_id": "template/archive",
+          "subject": {
+            "kind": "actor",
+            "actor": "Archive"
+          },
+          "param": "gen__archive_prefix",
+          "purpose": {
+            "kind": "template_prefix_bytes"
+          }
+        },
+        {
+          "id": "witness/archive/template_suffix_bytes",
+          "template_id": "template/archive",
+          "subject": {
+            "kind": "actor",
+            "actor": "Archive"
+          },
+          "param": "gen__archive_suffix",
+          "purpose": {
+            "kind": "template_suffix_bytes"
+          }
+        }
+      ]
+    },
+    "interfaces": {
+      "exports": [
+        {
+          "id": "interface/actor/Foreign",
+          "app": "ForeignApp",
+          "actor": "Foreign",
+          "state": "ForeignState",
+          "fingerprint_hex": "1cf16f0a96ffe621ac6f0c35635bd049fcc0a3f1cd21fa5202a5959c19cded2f"
+        },
+        {
+          "id": "interface/actor/Archive",
+          "app": "ForeignApp",
+          "actor": "Archive",
+          "state": "ArchiveState",
+          "fingerprint_hex": "34aa53642ca9f8ea038757ae44060663f8741adaf05d1f74e418527c0ddfa193"
+        }
+      ],
+      "imports": []
+    },
+    "states": [
+      {
+        "name": "ArchiveState",
+        "fields": [
+          {
+            "name": "amount",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      },
+      {
+        "name": "ForeignState",
+        "fields": [
+          {
+            "name": "amount",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      }
+    ],
+    "actor_enums": [],
+    "actors": [
+      {
+        "name": "Foreign",
+        "state": "ForeignState",
+        "abi": {
+          "contract": "Foreign"
+        },
+        "entries": [
+          {
+            "name": "archive",
+            "kind": "leader",
+            "abi": {
+              "contract": "Foreign",
+              "entry": "archive"
+            },
+            "route_plan": {
+              "active_input": {
+                "name": "self",
+                "actor": "Foreign",
+                "cov_index": 0
+              },
+              "leader_input": {
+                "name": "self",
+                "actor": "Foreign",
+                "cov_index": 0
+              },
+              "consumes": [],
+              "outputs": [
+                {
+                  "name": "saved",
+                  "auth_index": 0,
+                  "actors": [
+                    "Archive"
+                  ]
+                }
+              ],
+              "witness_recipe_ids": [
+                "witness/archive/template_prefix_bytes",
+                "witness/archive/template_suffix_bytes"
+              ]
+            },
+            "hidden_params": [
+              {
+                "recipe_id": "witness/archive/template_prefix_bytes",
+                "name": "gen__archive_prefix",
+                "type": {
+                  "kind": "bytes"
+                },
+                "subject": {
+                  "kind": "actor",
+                  "actor": "Archive"
+                },
+                "purpose": {
+                  "kind": "template_prefix_bytes"
+                }
+              },
+              {
+                "recipe_id": "witness/archive/template_suffix_bytes",
+                "name": "gen__archive_suffix",
+                "type": {
+                  "kind": "bytes"
+                },
+                "subject": {
+                  "kind": "actor",
+                  "actor": "Archive"
+                },
+                "purpose": {
+                  "kind": "template_suffix_bytes"
+                }
+              }
+            ],
+            "template_selectors": [],
+            "witnesses": [
+              {
+                "recipe_id": "witness/archive/template_prefix_bytes",
+                "param": "gen__archive_prefix",
+                "subject": {
+                  "kind": "actor",
+                  "actor": "Archive"
+                },
+                "purpose": {
+                  "kind": "template_prefix_bytes"
+                }
+              },
+              {
+                "recipe_id": "witness/archive/template_suffix_bytes",
+                "param": "gen__archive_suffix",
+                "subject": {
+                  "kind": "actor",
+                  "actor": "Archive"
+                },
+                "purpose": {
+                  "kind": "template_suffix_bytes"
+                }
+              }
+            ],
+            "consumes": [],
+            "emits": {
+              "kind": "outputs",
+              "outputs": [
+                {
+                  "name": "saved",
+                  "auth_index": 0,
+                  "actors": [
+                    "Archive"
+                  ]
+                }
+              ]
+            },
+            "routes": [
+              {
+                "output": "saved",
+                "successor": {
+                  "kind": "constructed",
+                  "actor": "Archive",
+                  "template_id": "template/archive",
+                  "state_expr": "saved_state"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Archive",
+        "state": "ArchiveState",
+        "abi": {
+          "contract": "Archive"
+        },
+        "entries": [
+          {
+            "name": "hold",
+            "kind": "leader",
+            "abi": {
+              "contract": "Archive",
+              "entry": "hold"
+            },
+            "route_plan": {
+              "active_input": {
+                "name": "self",
+                "actor": "Archive",
+                "cov_index": 0
+              },
+              "leader_input": {
+                "name": "self",
+                "actor": "Archive",
+                "cov_index": 0
+              },
+              "consumes": [],
+              "outputs": [],
+              "witness_recipe_ids": []
+            },
+            "hidden_params": [],
+            "template_selectors": [],
+            "witnesses": [],
+            "consumes": [],
+            "emits": {
+              "kind": "none"
+            },
+            "routes": []
+          }
+        ]
+      }
+    ]
+  },
+  "sil_abi": {
+    "schema_version": 1,
+    "compiler_version": "0.1.0",
+    "structs": {
+      "ArchiveState": {
+        "fields": [
+          {
+            "name": "amount",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      },
+      "ForeignState": {
+        "fields": [
+          {
+            "name": "amount",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      }
+    },
+    "contracts": {
+      "Archive": {
+        "source_path": "sil/Archive.sil",
+        "runtime_state": {
+          "source": "State",
+          "fields": [
+            {
+              "name": "amount",
+              "type": {
+                "kind": "int"
+              }
+            }
+          ]
+        },
+        "entries": {
+          "hold": {
+            "dispatch_tag": "c5350aa3",
+            "params": []
+          }
+        },
+        "compiled": {
+          "bytecode": [107, 8, 0, 0, 0, 0, 0, 0, 0, 0, 108, 118, 4, 197, 53, 10, 163, 135, 99, 117, 185, 203, 0, 156, 105, 118, 0, 162, 105, 117, 81, 103, 106, 104],
+          "template_hash": [124, 189, 194, 122, 79, 255, 186, 173, 101, 91, 205, 117, 101, 167, 216, 86, 130, 70, 146, 3, 219, 7, 210, 107, 149, 63, 102, 86, 64, 244, 39, 31],
+          "state_span": {
+            "offset": 1,
+            "len": 9
+          }
+        }
+      },
+      "Foreign": {
+        "source_path": "sil/Foreign.sil",
+        "runtime_state": {
+          "source": "State",
+          "fields": [
+            {
+              "name": "gen__archive_template",
+              "type": {
+                "kind": "fixed_bytes",
+                "len": 32
+              }
+            },
+            {
+              "name": "amount",
+              "type": {
+                "kind": "int"
+              }
+            }
+          ]
+        },
+        "entries": {
+          "archive": {
+            "dispatch_tag": "eded9232",
+            "params": [
+              {
+                "name": "gen__archive_prefix",
+                "type": {
+                  "kind": "bytes"
+                }
+              },
+              {
+                "name": "gen__archive_suffix",
+                "type": {
+                  "kind": "bytes"
+                }
+              }
+            ]
+          }
+        },
+        "compiled": {
+          "bytecode": [
+            107, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 108, 118, 4, 237, 237, 146, 50, 135, 99, 117, 83, 121, 130, 81, 151, 0, 157, 117, 82, 121, 130,
+            81, 151, 0, 157, 117, 185, 203, 81, 156, 105, 185, 0, 204, 120, 83, 121, 86, 121, 130, 124, 117, 81, 150, 88, 205, 87, 121, 126, 86, 121, 130, 124, 117, 81, 150, 88, 205, 87, 121, 126, 126, 217, 136, 1, 8, 120, 88, 205, 126, 86, 121, 124, 126, 85, 121, 126, 170, 2, 0, 0, 1, 170, 126, 1,
+            32, 126, 124, 126, 1, 135, 126, 82, 121, 195, 136, 117, 117, 117, 117, 117, 117, 81, 103, 106, 104
+          ],
+          "template_hash": [222, 45, 245, 72, 135, 111, 133, 161, 144, 133, 47, 143, 20, 63, 197, 126, 104, 138, 76, 200, 105, 111, 34, 37, 241, 232, 210, 109, 66, 28, 29, 146],
+          "state_span": {
+            "offset": 1,
+            "len": 42
+          }
+        }
+      }
+    }
+  }
+}

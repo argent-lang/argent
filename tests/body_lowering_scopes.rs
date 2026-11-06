@@ -341,7 +341,7 @@ fn selector_binding_does_not_escape_a_standalone_block() {
         "selector-standalone-block",
         r#"
         {
-            actor_type<BoardState> target = NextActor::Alpha;
+            NextActor target = NextActor::Alpha;
         }
         "#,
     );
@@ -353,7 +353,7 @@ fn selector_binding_does_not_escape_an_if_branch() {
         "selector-if-branch",
         r#"
         if (choose) {
-            actor_type<BoardState> target = NextActor::Alpha;
+            NextActor target = NextActor::Alpha;
         }
         "#,
     );
@@ -365,19 +365,19 @@ fn selector_binding_does_not_escape_a_for_body() {
         "selector-for-body",
         r#"
         for (i, 0, 1, 1) {
-            actor_type<BoardState> target = NextActor::Alpha;
+            NextActor target = NextActor::Alpha;
         }
         "#,
     );
 }
 
 #[test]
-fn nested_actor_type_cannot_shadow_a_same_named_integer_parameter() {
+fn nested_actor_enum_cannot_shadow_a_same_named_integer_parameter() {
     let source = SCOPED_SELECTOR_SOURCE.replace("entry choose(bool choose)", "entry choose(int target, bool choose)").replace(
         "__SELECTOR_SCOPE__",
         r#"
             if (choose) {
-                actor_type<BoardState> target = NextActor::Alpha;
+                NextActor target = NextActor::Alpha;
             }
             "#,
     );

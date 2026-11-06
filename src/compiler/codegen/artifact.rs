@@ -213,25 +213,11 @@ fn interface_set_artifact(model: &AppCompilationContext<'_>) -> Result<Interface
 
     let mut imports = BTreeMap::new();
     for (actor_id, _) in model.app_actors.iter_with_ids() {
-        let actor = model.actor_by_decl(actor_id)?;
-        for (index, entry) in actor.entries.iter().enumerate() {
-            let entry_id = EntryId { actor: actor_id, index };
-            for observe in &entry.observes {
-                for observed in observe.inputs.iter().chain(observe.outputs.iter()) {
-                    if let Some(StaticActorTarget::CrossApp(linked)) =
-                        model.static_observed_actor_target(entry_id, actor, entry, observe, observed)?
-                    {
-                        imports.entry((linked.app.clone(), linked.actor.clone())).or_insert_with(|| linked.interface.clone());
-                    }
-                }
-            }
-            for group in model.entry_model_by_id(entry_id)?.genesis_groups() {
-                for output in group.outputs() {
-                    if let Some(StaticActorTarget::CrossApp(linked)) = model.resolve_static_actor_target(output.target()) {
-                        imports.entry((linked.app.clone(), linked.actor.clone())).or_insert_with(|| linked.interface.clone());
-                    }
-                }
-            }
+        for id in model.contract_imported_templates(actor_id) {
+            let linked = model.linked_actors.get(&id).ok_or_else(|| {
+                ArgentError::new(format!("planned imported template `{}::{}` has no linked actor", id.app, id.actor))
+            })?;
+            imports.entry((linked.app.clone(), linked.actor.clone())).or_insert_with(|| linked.interface.clone());
         }
     }
 

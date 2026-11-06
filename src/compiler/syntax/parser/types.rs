@@ -10,6 +10,11 @@ impl<'src> Parser<'src> {
         let name = self.expect_any_qualified_ident()?;
         let (sil, actor_state) = self.parse_sil_type_tail(name.clone())?;
         let legacy = if let Some(state) = &actor_state {
+            if !sil.array_dims.is_empty() {
+                return Err(self.error(
+                    "actor_type arrays are supported only in local body declarations, not signatures, state fields, or constants",
+                ));
+            }
             TypeRef::actor_type(state.segments.join("::"))
         } else {
             match sil.array_dims.as_slice() {

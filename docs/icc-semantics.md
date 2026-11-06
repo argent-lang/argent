@@ -271,12 +271,36 @@ Open ICC rules:
 - the compiler must not silently replace an open actor handle with a concrete
   closed artifact dependency
 
+In-app selection uses explicit actor-enum types, such as
+`Move target = Move::Knight;`. `actor_type<State>` is an external actor handle,
+not an enum selector. In-app actors can be used as values only through an actor
+enum group, not by their bare actor names.
+
 This is different from ordinary dynamic dispatch in one important way: the
 observer does not execute the implementation body. The observed implementation
 is a covenant input in the same transaction and validates itself. The observer
 only constrains the parts of that transition it cares about.
 
 ## Source-state actor handles
+
+An app-qualified actor such as `tokens::TokenApp::Token` is a static handle
+value. It can be compared with a stored `actor_type<tokens::TokenState>` or
+used in a typed handle declaration, helper, or constant. Argent embeds the
+linked actor's exported `actor_type_handle`, not its canonical Sil template hash.
+
+Value references create app dependencies and interface imports even without
+an `observes` or `spawns` clause. Within each generated contract, repeated
+references share one imported constant; the value itself adds no transaction
+witnesses or route-state fields.
+It does not grant current-covenant routing to a foreign actor. In-app selection
+still uses explicit actor-enum types; same-app static handle literals are not
+supported.
+
+Handle transfers keep their declared source-state identity through locals,
+fields, calls, and local-array operations. Direct actor literals support their
+authored and expansion-base views; copying a typed value keeps its declared
+view. Handle arrays currently belong only in body-local declarations, not entry
+or helper signatures, state fields, or constants.
 
 Each actor exports one `actor_type_handle`. The handle uses the physical source
 state that an external app can provide. If the actor state expands another

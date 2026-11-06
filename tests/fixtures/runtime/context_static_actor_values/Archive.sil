@@ -1,0 +1,14 @@
+pragma silverscript ^0.1.0;
+
+contract Archive(int init_amount) {
+    struct ForeignState {
+        int amount;
+    }
+
+    int amount = init_amount;
+
+    entry hold() {
+        require(OpAuthOutputCount(this.activeInputIndex) == 0);
+        require(amount >= 0);
+    }
+}

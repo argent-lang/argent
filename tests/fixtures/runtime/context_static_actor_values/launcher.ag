@@ -1,0 +1,29 @@
+import "./foreign.ag" as foreign;
+
+state LauncherState {
+    actor_type<foreign::ForeignState> expected;
+}
+
+actor Launcher owns LauncherState {
+    entry launch(int amount)
+    spawns children by child_id {
+        outputs {
+            child: foreign::ForeignApp::Foreign,
+        }
+    }
+    emits none {
+        require(expected == foreign::ForeignApp::Foreign);
+        actor_type<foreign::ForeignState> target = foreign::ForeignApp::Foreign;
+        require(target == expected);
+
+        foreign::ForeignState child_state = { amount: amount };
+        unrestricted(children.outputs.child.value);
+        require children.outputs become {
+            child <- foreign::ForeignApp::Foreign(child_state),
+        };
+    }
+}
+
+app LauncherApp {
+    actor Launcher;
+}

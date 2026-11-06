@@ -1,0 +1,26 @@
+state ForeignState {
+    int amount;
+}
+
+state ArchiveState {
+    int amount;
+}
+
+actor Foreign owns ForeignState {
+    entry archive() emits saved: Archive {
+        ArchiveState saved_state = { amount: amount };
+        unrestricted(saved.value);
+        become saved <- Archive(saved_state);
+    }
+}
+
+actor Archive owns ArchiveState {
+    entry hold() emits none {
+        require(amount >= 0);
+    }
+}
+
+app ForeignApp {
+    actor Foreign;
+    actor Archive;
+}

@@ -197,6 +197,26 @@ impl<'src> ResolvedModules<'src> {
         &self.bindings[&id]
     }
 
+    /// Find an authored namespace path for diagnostics without using a Sil display name.
+    pub(crate) fn source_declaration_name(&self, from: ModuleId, declaration: DeclId) -> Option<String> {
+        let mut pending = std::collections::VecDeque::from([(from, String::new())]);
+        let mut visited = BTreeSet::new();
+        while let Some((module, prefix)) = pending.pop_front() {
+            if !visited.insert(module) {
+                continue;
+            }
+            for (name, target) in &self.exports.exports[module.index()] {
+                let name = if prefix.is_empty() { name.clone() } else { format!("{prefix}::{name}") };
+                match target {
+                    ResolvedName::Declaration(id) if *id == declaration => return Some(name),
+                    ResolvedName::Module(module) => pending.push_back((*module, name)),
+                    _ => {}
+                }
+            }
+        }
+        None
+    }
+
     pub(crate) fn declaration_path(&self, id: DeclId) -> &std::path::Path {
         self.storage.source_path(ModuleId::new(self.storage.nodes().source(id).0))
     }

@@ -11,6 +11,8 @@ use crate::error::{ArgentError, Result};
 use self::link::{LinkedActor, LinkedActorId};
 
 mod actor;
+mod actor_value_policy;
+mod actor_values;
 mod build;
 mod consts;
 mod entry;
@@ -19,11 +21,13 @@ mod layout;
 pub(crate) mod link;
 mod outputs;
 mod routes;
+mod source_values;
 mod types;
 mod validate;
 mod witnesses;
 
 pub(crate) use actor::ActorModel;
+pub(crate) use actor_values::LinkedActorValuePlan;
 pub(crate) use consts::{ConstIntError, ConstResolver};
 pub(crate) use entry::{
     ActorTarget, ActorTemplateUses, ClauseActorTypeRef, CovenantGroup, CovenantGroupId, CovenantIdSource, EntryInteraction,
@@ -77,6 +81,7 @@ pub(crate) struct AppCompilationContext<'a> {
     pub(crate) linked_field_sources: BTreeMap<SourceFieldId, SourceStateId>,
     pub(crate) actors_by_name: BTreeMap<String, &'a ActorDecl>,
     pub(crate) linked_actors: BTreeMap<LinkedActorId, LinkedActor>,
+    pub(crate) linked_actor_values: LinkedActorValuePlan,
     pub(crate) linked_actor_names: BTreeMap<String, LinkedActorId>,
     pub(crate) actor_enums: BTreeMap<String, ActorEnumInfo>,
     pub(crate) actor_models: BTreeMap<DeclId, ActorModel<'a>>,

@@ -2411,6 +2411,90 @@ fn context_spawns_a_static_actor_from_a_linked_app() {
 }
 
 #[test]
+fn static_cross_app_actor_values_bind_spawn_to_the_exported_handle() {
+    let fixture = "tests/fixtures/runtime/context_static_actor_values";
+    let output = tempfile::tempdir().expect("fixture output directory created");
+    let compiled = crate::build_file_app_bundle(format!("{fixture}/launcher.ag"), "LauncherApp", output.path())
+        .expect("static actor-value fixture builds with its dependency");
+    let launcher = compiled.primary();
+    let foreign = compiled.app("ForeignApp").expect("static values and spawn share one dependency");
+
+    for (generated, pinned) in [
+        ("sil/Launcher.sil", include_str!("../../tests/fixtures/runtime/context_static_actor_values/Launcher.sil")),
+        ("apps/ForeignApp/sil/Foreign.sil", include_str!("../../tests/fixtures/runtime/context_static_actor_values/Foreign.sil")),
+        ("apps/ForeignApp/sil/Archive.sil", include_str!("../../tests/fixtures/runtime/context_static_actor_values/Archive.sil")),
+        ("artifact.json", include_str!("../../tests/fixtures/runtime/context_static_actor_values/LauncherApp.artifact.json")),
+        (
+            "apps/ForeignApp/artifact.json",
+            include_str!("../../tests/fixtures/runtime/context_static_actor_values/ForeignApp.artifact.json"),
+        ),
+    ] {
+        assert_eq!(fs::read_to_string(output.path().join(generated)).unwrap(), pinned, "production output drift: {generated}");
+    }
+    assert_eq!(launcher.dependencies.len(), 1);
+    assert_eq!(launcher.dependencies[0].artifact_id, foreign.id);
+    assert_eq!(launcher.argent.interfaces.imports.len(), 1);
+    assert_eq!(
+        &launcher.argent.interfaces.imports[0],
+        foreign.argent.interfaces.exports.iter().find(|interface| interface.actor == "Foreign").unwrap()
+    );
+    let receipt = foreign.argent.template_plan.templates.iter().find(|template| template.actor == "Foreign").unwrap();
+    let exported = &receipt.actor_type_handle.template.hash;
+    assert!(!receipt.actor_type_handle.context_fields.is_empty(), "Foreign must carry generated routing context");
+    assert_ne!(exported, &receipt.sil_template_hash, "the fixture must distinguish exported handles from canonical templates");
+    let sil = fs::read_to_string(output.path().join("sil/Launcher.sil")).unwrap();
+    assert_eq!(sil.matches("byte[32] constant gen__foreign_app__foreign_template_const =").count(), 1);
+    assert!(byte_occurrences(&launcher.sil_abi.contract("Launcher").unwrap().compiled.bytecode, exported) > 0);
+    assert!(launcher.sil_abi.contract("Foreign").is_none(), "a static value does not add foreign actors to the local domain");
+    assert_eq!(launcher.sil_abi.contract("Launcher").unwrap().runtime_state.fields.len(), 1);
+    let entry = entry_artifact(launcher, "Launcher", "launch");
+    assert_eq!(
+        entry.hidden_params.iter().map(|param| param.name.as_str()).collect::<Vec<_>>(),
+        ["gen__foreign_app__foreign_prefix", "gen__foreign_app__foreign_suffix", "gen__children_child_output_idx"],
+        "static literals add no witnesses beyond the ordinary static-spawn witnesses"
+    );
+    assert_eq!(launcher.sil_abi.contract("Launcher").unwrap().entry("launch").unwrap().params.len(), 4);
+
+    let bundle = compiled.runtime_bundle().expect("pinned artifacts form one checked runtime bundle");
+    let builder = TxBuilder::from_bundle(&bundle).unwrap();
+    assert_eq!(builder.actor_type_handle("foreign_app::Foreign", "ForeignState").unwrap(), exported.as_slice());
+    let launcher_id = Hash::from_bytes([0x8a; 32]);
+    let outpoint = TransactionOutpoint::new(TransactionId::from_bytes([0x8b; 32]), 0);
+    let mut stale = *exported;
+    stale[0] ^= 1;
+    for (label, expected, accepted) in [
+        ("exported handle", *exported, true),
+        ("stale handle", stale, false),
+        ("canonical Sil template hash", receipt.sil_template_hash, false),
+    ] {
+        let state = state! { expected: expected.to_vec() };
+        let utxo = builder.covenant_utxo("Launcher", state.clone(), 5_000, 0, false, Some(launcher_id)).unwrap();
+        // The fixture covers direct-literal and typed-local comparisons. Only
+        // this stored value changes; every case spawns the same correct actor.
+        let context = TxContext::new()
+            .actor_input("Launcher", state, EntryCall::new("launch").args(args![42]), outpoint, utxo, 0)
+            .actor_genesis_output(0, "spawn::children", "foreign_app::Foreign", state! { amount: 42 }, 4_500);
+        let result = builder.build(&context);
+        if accepted {
+            let transaction = result.expect("the exported handle comparison and static spawn execute");
+            assert_eq!(transaction.outputs.len(), 1);
+            assert_eq!(
+                transaction.outputs[0].covenant,
+                Some(CovenantBinding::new(0, covenant_id(outpoint, [(0, &transaction.outputs[0])].into_iter())))
+            );
+            let spawned = CovenantOutput::from_tx(&transaction, 0).expect("spawned Foreign output is spendable");
+            let continuation = TxContext::new()
+                .actor_input("foreign_app::Foreign", state! { amount: 42 }, "archive", spawned.outpoint, spawned.utxo, 0)
+                .actor_output("foreign_app::Archive", state! { amount: 42 }, CovenantBinding::new(0, spawned.covenant_id), 4_000);
+            builder.build(&continuation).expect("the actual spawned Foreign UTXO retains usable compiler-owned route context");
+        } else {
+            let error = result.expect_err("a caller-supplied wrong handle fails on chain");
+            assert!(matches!(error, BuilderError::InputScript { input_index: 0, .. }), "{label}: {error}");
+        }
+    }
+}
+
+#[test]
 fn context_orders_multiple_spawn_groups_and_rejects_invalid_witnesses() {
     let source = "tests/fixtures/runtime/context_multiple_genesis_spawns/app.ag";
     let controller_artifact = selected_app_artifact(source, "ControllerApp", "context-multiple-spawns-controller");
