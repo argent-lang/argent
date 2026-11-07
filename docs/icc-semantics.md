@@ -152,6 +152,29 @@ members of the controller app.
 Closed ICC is the right model when the observer is intentionally composed with a
 specific known app or protocol.
 
+### Published app artifacts
+
+A closed ICC dependency does not need its source. An import of a published app
+artifact names the artifact and the artifact id the importer reviewed:
+
+```rust
+import "./kcc20_asset/artifact.json" id "<artifact id>";
+```
+
+The compiler loads the artifact, checks that it is self-consistent, and requires
+its id to be the pinned one. The artifact's states, actor enums, exported actors
+and app become a declaration-only module, so `KCC20Asset::KCC20` and the asset's
+state names resolve as for a source import. The bundle builder links the
+artifact as it is and never compiles the app again.
+
+The pin is required. Self-consistency only shows that the id is the hash of the
+artifact's content; anyone can publish a consistent artifact with the same app
+name, states and entries but other templates. With a source import the importer
+compiles the dependency and derives the actor handles itself; with an artifact
+import the handles come from the artifact, so the pinned id is what ties the
+importer to the reviewed templates. An `id` on a source import, an artifact
+import without `id`, and an artifact with another id are rejected.
+
 Closed ICC rules:
 
 - observed actor names refer to concrete actors from known artifacts
