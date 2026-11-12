@@ -1,19 +1,19 @@
 pragma silverscript ^0.1.0;
 
-contract Minter(pubkey init_owner, byte[32] init_kcc20_covid, int init_amount, bool init_initialized) {
-    struct KCC20State {
+contract Minter(pubkey init_owner, byte[32] init_token_covid, int init_amount, bool init_initialized) {
+    struct MinterProxyState {
+        byte[32] controller_id;
+    }
+
+    struct TokenState {
         byte[32] owner_identifier;
         byte identifier_type;
         int amount;
     }
 
-    struct MinterProxyState {
-        byte[32] controller_id;
-    }
-
     pubkey owner = init_owner;
 
-    byte[32] kcc20_covid = init_kcc20_covid;
+    byte[32] token_covid = init_token_covid;
 
     int amount = init_amount;
 
@@ -23,18 +23,18 @@ contract Minter(pubkey init_owner, byte[32] init_kcc20_covid, int init_amount, b
 
     byte constant IDENTIFIER_COVENANT_ID = 2;
 
-    byte[32] constant gen__kcc20_asset__kcc20_template_const = byte[32](0x2acc1d722544817061d8833bd251a9a1728ee987305630f4d9da12130aa1ce84);
+    byte[32] constant gen__token_asset__minter_proxy_template_const = byte[32](0x2de20206584a0b58d7d4b93aafe77414b1e9a72ff64e1c60fe8237f092312295);
 
-    byte[32] constant gen__kcc20_asset__minter_proxy_template_const = byte[32](0x2de20206584a0b58d7d4b93aafe77414b1e9a72ff64e1c60fe8237f092312295);
+    byte[32] constant gen__token_asset__token_template_const = byte[32](0x2acc1d722544817061d8833bd251a9a1728ee987305630f4d9da12130aa1ce84);
 
-    entry mint(sig owner_sig, byte[32] recipient_owner, int minted_amount, byte[] gen__kcc20_asset__kcc20_prefix, byte[] gen__kcc20_asset__kcc20_suffix, int gen__kcc20_asset__minter_proxy_prefix_len, int gen__kcc20_asset__minter_proxy_suffix_len) {
-        byte[32] gen__kcc20_asset__kcc20_template = gen__kcc20_asset__kcc20_template_const;
-        byte[32] gen__kcc20_asset__minter_proxy_template = gen__kcc20_asset__minter_proxy_template_const;
-        byte[32] gen__asset_cov_id = kcc20_covid;
+    entry mint(sig owner_sig, byte[32] recipient_owner, int minted_amount, int gen__token_asset__minter_proxy_prefix_len, int gen__token_asset__minter_proxy_suffix_len, byte[] gen__token_asset__token_prefix, byte[] gen__token_asset__token_suffix) {
+        byte[32] gen__token_asset__minter_proxy_template = gen__token_asset__minter_proxy_template_const;
+        byte[32] gen__token_asset__token_template = gen__token_asset__token_template_const;
+        byte[32] gen__asset_cov_id = token_covid;
         require(OpCovInputCount(gen__asset_cov_id) == 1);
         require(OpCovOutputCount(gen__asset_cov_id) == 2);
         int gen__asset_proxy_input_idx = OpCovInputIdx(gen__asset_cov_id, 0);
-        MinterProxyState gen__asset_proxy_state = readInputStateWithTemplate(gen__asset_proxy_input_idx, gen__kcc20_asset__minter_proxy_prefix_len, gen__kcc20_asset__minter_proxy_suffix_len, gen__kcc20_asset__minter_proxy_template);
+        MinterProxyState gen__asset_proxy_state = readInputStateWithTemplate(gen__asset_proxy_input_idx, gen__token_asset__minter_proxy_prefix_len, gen__token_asset__minter_proxy_suffix_len, gen__token_asset__minter_proxy_template);
         int gen__asset_proxy_output_idx = OpCovOutputIdx(gen__asset_cov_id, 0);
         int gen__asset_recipient_output_idx = OpCovOutputIdx(gen__asset_cov_id, 1);
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
@@ -45,10 +45,10 @@ contract Minter(pubkey init_owner, byte[32] init_kcc20_covid, int init_amount, b
         require(amount >= minted_amount);
         require(prev_proxy.controller_id == OpInputCovenantId(this.activeInputIndex));
         MinterProxyState next_proxy = MinterProxyState {controller_id: OpInputCovenantId(this.activeInputIndex)};
-        KCC20State next_recipient = KCC20State {owner_identifier: recipient_owner, identifier_type: IDENTIFIER_PUBKEY, amount: minted_amount};
-        validateOutputStateWithInputTemplate(gen__asset_proxy_output_idx, next_proxy, gen__asset_proxy_input_idx, gen__kcc20_asset__minter_proxy_prefix_len, gen__kcc20_asset__minter_proxy_suffix_len, gen__kcc20_asset__minter_proxy_template);
-        validateOutputStateWithTemplate(gen__asset_recipient_output_idx, next_recipient, gen__kcc20_asset__kcc20_prefix, gen__kcc20_asset__kcc20_suffix, gen__kcc20_asset__kcc20_template);
-        State next_controller = State {owner: owner, kcc20_covid: kcc20_covid, amount: amount - minted_amount, initialized: initialized};
+        TokenState next_recipient = TokenState {owner_identifier: recipient_owner, identifier_type: IDENTIFIER_PUBKEY, amount: minted_amount};
+        validateOutputStateWithInputTemplate(gen__asset_proxy_output_idx, next_proxy, gen__asset_proxy_input_idx, gen__token_asset__minter_proxy_prefix_len, gen__token_asset__minter_proxy_suffix_len, gen__token_asset__minter_proxy_template);
+        validateOutputStateWithTemplate(gen__asset_recipient_output_idx, next_recipient, gen__token_asset__token_prefix, gen__token_asset__token_suffix, gen__token_asset__token_template);
+        State next_controller = State {owner: owner, token_covid: token_covid, amount: amount - minted_amount, initialized: initialized};
         validateOutputState(gen__controller_output_idx, next_controller);
     }
 }

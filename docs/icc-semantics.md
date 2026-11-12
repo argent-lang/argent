@@ -63,7 +63,7 @@ observes asset by self.asset_covid {
 
     outputs {
         proxy: MinterProxy,
-        recipient: KCC20,
+        recipient: Token,
     }
 }
 ```
@@ -84,7 +84,7 @@ and can require named observed outputs to become specific actors:
 ```rust
 require asset.outputs become {
     proxy <- MinterProxy(next_proxy),
-    recipient <- KCC20(next_recipient),
+    recipient <- Token(next_recipient),
 };
 ```
 
@@ -120,22 +120,22 @@ make sure the present covenant is the right authority for the transition.
 
 Closed ICC observes concrete actors from a known app artifact.
 
-Example: a mint controller observes the concrete `MinterProxy` and `KCC20`
-actors from the KCC20 asset app.
+Example: a mint controller observes the concrete `MinterProxy` and `Token`
+actors from the Token asset app.
 
 ```rust
-import "./kcc20_asset.ag";
+import "./token_asset.ag";
 
 actor Minter owns MinterState {
     entry mint(...)
-    observes asset by self.kcc20_covid {
+    observes asset by self.token_covid {
         inputs {
-            proxy: KCC20Asset::MinterProxy,
+            proxy: TokenAsset::MinterProxy,
         }
 
         outputs {
-            proxy: KCC20Asset::MinterProxy,
-            recipient: KCC20Asset::KCC20,
+            proxy: TokenAsset::MinterProxy,
+            recipient: TokenAsset::Token,
         }
     }
     ...
@@ -143,8 +143,8 @@ actor Minter owns MinterState {
 ```
 
 In closed ICC, actor names inside `observes` are concrete.
-`KCC20Asset::MinterProxy` means the `MinterProxy` actor from the imported asset
-app. `KCC20Asset::KCC20` means the concrete `KCC20` actor from that same app.
+`TokenAsset::MinterProxy` means the `MinterProxy` actor from the imported asset
+app. `TokenAsset::Token` means the concrete `Token` actor from that same app.
 The controller compiles the asset app first. It then uses the exported actor
 interfaces and actor-type handles. It does not compile the asset actors as
 members of the controller app.
@@ -160,15 +160,15 @@ Closed ICC rules:
 - app dependencies should have stable identity and interface fingerprints
 - source code reads and writes observed state through the declared names
 
-The closed KCC mint shape is a typical example:
+The closed token mint shape is a typical example:
 
 ```text
 asset app:
     MinterProxy delegates mint authority to controller id
-    KCC20 represents the recipient asset state
+    Token represents the recipient asset state
 
 controller app:
-    Minter observes asset.MinterProxy and asset.KCC20
+    Minter observes asset.MinterProxy and asset.Token
     Minter enforces issuance policy
     Minter tells the asset-side proxy and recipient what states to become
 ```

@@ -9,7 +9,7 @@
             "outputs": [
               {
                 "actors": [
-                  "KCC20"
+                  "Token"
                 ],
                 "auth_index": 0,
                 "name": "next"
@@ -22,7 +22,7 @@
             {
               "output": "next",
               "successor": {
-                "actor": "KCC20",
+                "actor": "Token",
                 "kind": "constructed",
                 "state": "next_state"
               }
@@ -30,9 +30,9 @@
           ]
         }
       ],
-      "name": "KCC20",
-      "sil": "sil/KCC20.sil",
-      "state": "KCC20State"
+      "name": "Token",
+      "sil": "sil/Token.sil",
+      "state": "TokenState"
     },
     {
       "entries": [
@@ -50,7 +50,7 @@
               },
               {
                 "actors": [
-                  "KCC20"
+                  "Token"
                 ],
                 "auth_index": 1,
                 "name": "recipient"
@@ -71,7 +71,7 @@
             {
               "output": "recipient",
               "successor": {
-                "actor": "KCC20",
+                "actor": "Token",
                 "kind": "constructed",
                 "state": "recipient_state"
               }
@@ -84,16 +84,16 @@
       "state": "MinterProxyState"
     }
   ],
-  "app": "KCC20Asset",
+  "app": "TokenAsset",
   "modules": [
-    "examples/icc/kcc20_asset.ag"
+    "examples/icc/token_asset.ag"
   ],
-  "root": "examples/icc/kcc20_asset.ag",
+  "root": "examples/icc/token_asset.ag",
   "templates": [
     {
-      "actor": "KCC20",
+      "actor": "Token",
       "hash": null,
-      "symbol": "gen__kcc20_template"
+      "symbol": "gen__token_template"
     },
     {
       "actor": "MinterProxy",

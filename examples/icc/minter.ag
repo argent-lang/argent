@@ -1,13 +1,13 @@
-// KCC20 mint controller app.
+// Token mint controller app.
 //
-// The observed asset covenant family lives in `kcc20_asset.ag`; this controller
+// The observed asset covenant family lives in `token_asset.ag`; this controller
 // imports its artifact and commits to its exported actor-type handles.
 
-import "./kcc20_asset.ag";
+import "./token_asset.ag";
 
 state MinterState {
     pubkey owner;
-    cov_id kcc20_covid;
+    cov_id token_covid;
     int amount;
     bool initialized;
 }
@@ -15,16 +15,16 @@ state MinterState {
 actor Minter owns MinterState {
     entry mint(sig owner_sig, byte[32] recipient_owner, int minted_amount)
     // `observes` declares a foreign covenant id for this transition.
-    observes asset by self.kcc20_covid {
+    observes asset by self.token_covid {
         // Named handles are exhaustive over the observed covenant inputs.
         inputs {
-            proxy: KCC20Asset::MinterProxy,
+            proxy: TokenAsset::MinterProxy,
         }
 
         // Declaration order defines the op_cov_output_idx order; no auth/cov index syntax.
         outputs {
-            proxy: KCC20Asset::MinterProxy,
-            recipient: KCC20Asset::KCC20,
+            proxy: TokenAsset::MinterProxy,
+            recipient: TokenAsset::Token,
         }
     }
     emits {
@@ -41,20 +41,20 @@ actor Minter owns MinterState {
             controller_id: self.cov_id,
         };
 
-        KCC20State next_recipient = {
+        TokenState next_recipient = {
             owner_identifier: recipient_owner,
             identifier_type: IDENTIFIER_PUBKEY,
             amount: minted_amount,
         };
 
         require asset.outputs become {
-            proxy <- KCC20Asset::MinterProxy(next_proxy),
-            recipient <- KCC20Asset::KCC20(next_recipient),
+            proxy <- TokenAsset::MinterProxy(next_proxy),
+            recipient <- TokenAsset::Token(next_recipient),
         };
 
         MinterState next_controller = {
             owner: owner,
-            kcc20_covid: kcc20_covid,
+            token_covid: token_covid,
             amount: amount - minted_amount,
             initialized: initialized,
         };
@@ -64,6 +64,6 @@ actor Minter owns MinterState {
     }
 }
 
-app KCC20MintController {
+app TokenMintController {
     actor Minter;
 }

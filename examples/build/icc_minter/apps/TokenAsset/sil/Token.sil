@@ -1,6 +1,6 @@
 pragma silverscript ^0.1.0;
 
-contract KCC20(byte[32] init_owner_identifier, byte init_identifier_type, int init_amount) {
+contract Token(byte[32] init_owner_identifier, byte init_identifier_type, int init_amount) {
     struct MinterProxyState {
         byte[32] controller_id;
     }
