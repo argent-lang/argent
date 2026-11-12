@@ -301,7 +301,7 @@ changing the compiled layout.
 
 This better matches single-entity specs in general. Their entries operate on
 instances of one entity type, whose contract is already fixed, so callers should
-not need extra arguments to describe its template. Token transfers and delegates
+not need extra arguments to describe its template. KCC20 transfers and delegates
 are one example. The rule also applies when that actor belongs to a multi-actor
 app.
 
