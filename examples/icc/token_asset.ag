@@ -1,9 +1,9 @@
-// KCC20 asset covenant family used by the ICC mint controller example.
+// Token asset covenant family used by the ICC mint controller example.
 
 const byte IDENTIFIER_PUBKEY = 0x00;
 const byte IDENTIFIER_COVENANT_ID = 0x02;
 
-state KCC20State {
+state TokenState {
     byte[32] owner_identifier;
     byte identifier_type;
     int amount;
@@ -13,13 +13,13 @@ state MinterProxyState {
     cov_id controller_id;
 }
 
-actor KCC20 owns KCC20State {
+actor Token owns TokenState {
     entry transfer(
         byte[32] new_owner_identifier,
         byte new_identifier_type,
         sig owner_sig
     ) emits {
-        next: KCC20,
+        next: Token,
     } {
         if (identifier_type == IDENTIFIER_PUBKEY) {
             require(checkSig(owner_sig, pubkey(owner_identifier)));
@@ -29,24 +29,24 @@ actor KCC20 owns KCC20State {
             require(false);
         }
 
-        KCC20State next_state = {
+        TokenState next_state = {
             owner_identifier: new_owner_identifier,
             identifier_type: new_identifier_type,
             amount: amount,
         };
 
         unrestricted(next.value);
-        become next <- KCC20(next_state);
+        become next <- Token(next_state);
     }
 }
 
 actor MinterProxy owns MinterProxyState {
     entry mint(
         MinterProxyState next_proxy,
-        KCC20State recipient_state
+        TokenState recipient_state
     ) emits {
         proxy: MinterProxy,
-        recipient: KCC20,
+        recipient: Token,
     } {
         require(controller_id.co_spent());
         require(next_proxy.controller_id == controller_id);
@@ -55,12 +55,12 @@ actor MinterProxy owns MinterProxyState {
         unrestricted(recipient.value);
         become {
             proxy <- MinterProxy(next_proxy),
-            recipient <- KCC20(recipient_state),
+            recipient <- Token(recipient_state),
         };
     }
 }
 
-app KCC20Asset {
-    actor KCC20;
+app TokenAsset {
+    actor Token;
     actor MinterProxy;
 }

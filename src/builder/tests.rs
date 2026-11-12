@@ -3579,7 +3579,7 @@ fn observed_covenant_runtime_builds_icc_mint_and_rejects_mismatches() {
     let asset_artifact = icc_asset_artifact();
     let bundle = ArtifactBundle::new(&controller_artifact)
         .expect("bundle accepts controller artifact")
-        .with_app("kcc20_asset", &asset_artifact)
+        .with_app("token_asset", &asset_artifact)
         .expect("bundle accepts observed asset artifact");
     let builder = TxBuilder::from_bundle(&bundle).expect("builder accepts artifact bundle");
     let owner = keypair_from_byte(9);
@@ -3598,13 +3598,13 @@ fn observed_covenant_runtime_builds_icc_mint_and_rejects_mismatches() {
     let minter_initial = minter_state(owner_pk.clone(), asset_covenant_id, 100, true);
     let minter_next = minter_state(owner_pk.clone(), asset_covenant_id, 83, true);
     let proxy_state = minter_proxy_state(controller_covenant_id);
-    let recipient_state = kcc20_state(recipient_owner.clone(), minted_amount);
+    let recipient_state = token_state(recipient_owner.clone(), minted_amount);
 
     let minter_utxo = builder
         .covenant_utxo("Minter", minter_initial.clone(), minter_value, 0, false, Some(controller_covenant_id))
         .expect("minter utxo builds");
     let proxy_utxo = builder
-        .covenant_utxo("kcc20_asset::MinterProxy", proxy_state.clone(), proxy_value, 0, false, Some(asset_covenant_id))
+        .covenant_utxo("token_asset::MinterProxy", proxy_state.clone(), proxy_value, 0, false, Some(asset_covenant_id))
         .expect("proxy utxo builds");
     let entries = vec![minter_utxo.clone(), proxy_utxo.clone()];
     let context = TxContext::new()
@@ -3618,7 +3618,7 @@ fn observed_covenant_runtime_builds_icc_mint_and_rejects_mismatches() {
             0,
         )
         .actor_input(
-            "kcc20_asset::MinterProxy",
+            "token_asset::MinterProxy",
             proxy_state.clone(),
             EntryCall::new("mint").args(args![proxy_state.clone(), recipient_state.clone()]),
             proxy_outpoint,
@@ -3626,8 +3626,8 @@ fn observed_covenant_runtime_builds_icc_mint_and_rejects_mismatches() {
             0,
         )
         .actor_output("Minter", minter_next.clone(), CovenantBinding::new(0, controller_covenant_id), minter_value)
-        .actor_output("kcc20_asset::MinterProxy", proxy_state.clone(), CovenantBinding::new(1, asset_covenant_id), proxy_value)
-        .actor_output("kcc20_asset::KCC20", recipient_state.clone(), CovenantBinding::new(1, asset_covenant_id), recipient_value);
+        .actor_output("token_asset::MinterProxy", proxy_state.clone(), CovenantBinding::new(1, asset_covenant_id), proxy_value)
+        .actor_output("token_asset::Token", recipient_state.clone(), CovenantBinding::new(1, asset_covenant_id), recipient_value);
     let tx = builder.build(&context).expect("observed ICC mint passes");
 
     let minter_contract = controller_artifact.sil_abi.contract("Minter").expect("Minter contract exists");
@@ -3645,10 +3645,10 @@ fn observed_covenant_runtime_builds_icc_mint_and_rejects_mismatches() {
             ArtifactValue::Bytes(sign_mutable_input(&MutableTransaction::with_entries(tx.clone(), entries.clone()), 0, &owner)),
             ArtifactValue::Bytes(recipient_owner.clone()),
             ArtifactValue::Int(minted_amount),
-            ArtifactValue::Bytes(sil_template(asset_artifact.sil_abi.contract("KCC20").expect("KCC20 contract exists")).prefix),
-            ArtifactValue::Bytes(sil_template(asset_artifact.sil_abi.contract("KCC20").expect("KCC20 contract exists")).suffix),
             ArtifactValue::Int(proxy_prefix_len),
             ArtifactValue::Int(bad_proxy_suffix_len),
+            ArtifactValue::Bytes(sil_template(asset_artifact.sil_abi.contract("Token").expect("Token contract exists")).prefix),
+            ArtifactValue::Bytes(sil_template(asset_artifact.sil_abi.contract("Token").expect("Token contract exists")).suffix),
         ],
     )
     .expect("manual corrupt observed sigscript encodes");
@@ -3672,8 +3672,8 @@ fn observed_covenant_runtime_builds_icc_mint_and_rejects_mismatches() {
             0,
         )
         .actor_output("Minter", minter_next.clone(), CovenantBinding::new(0, controller_covenant_id), minter_value)
-        .actor_output("kcc20_asset::MinterProxy", proxy_state.clone(), CovenantBinding::new(1, asset_covenant_id), proxy_value)
-        .actor_output("kcc20_asset::KCC20", recipient_state.clone(), CovenantBinding::new(1, asset_covenant_id), recipient_value);
+        .actor_output("token_asset::MinterProxy", proxy_state.clone(), CovenantBinding::new(1, asset_covenant_id), proxy_value)
+        .actor_output("token_asset::Token", recipient_state.clone(), CovenantBinding::new(1, asset_covenant_id), recipient_value);
     let missing_proxy_err = builder.build(&missing_proxy).expect_err("missing observed input is rejected by the runtime");
     assert!(matches!(missing_proxy_err, BuilderError::ObservedCountMismatch { side: Side::In, expected: 1, found: 0, .. }));
 
@@ -3688,7 +3688,7 @@ fn observed_covenant_runtime_builds_icc_mint_and_rejects_mismatches() {
             0,
         )
         .actor_input(
-            "kcc20_asset::MinterProxy",
+            "token_asset::MinterProxy",
             wrong_proxy_state,
             EntryCall::new("mint").args(args![proxy_state.clone(), recipient_state.clone()]),
             proxy_outpoint,
@@ -3709,7 +3709,7 @@ fn observed_covenant_runtime_builds_icc_mint_and_rejects_mismatches() {
             0,
         )
         .actor_input(
-            "kcc20_asset::MinterProxy",
+            "token_asset::MinterProxy",
             proxy_state.clone(),
             EntryCall::new("mint").args(args![proxy_state.clone(), recipient_state.clone()]),
             proxy_outpoint,
@@ -3717,10 +3717,10 @@ fn observed_covenant_runtime_builds_icc_mint_and_rejects_mismatches() {
             0,
         )
         .actor_output("Minter", minter_next, CovenantBinding::new(0, controller_covenant_id), minter_value)
-        .actor_output("kcc20_asset::MinterProxy", proxy_state.clone(), CovenantBinding::new(1, asset_covenant_id), proxy_value)
+        .actor_output("token_asset::MinterProxy", proxy_state.clone(), CovenantBinding::new(1, asset_covenant_id), proxy_value)
         .actor_output(
-            "kcc20_asset::KCC20",
-            kcc20_state(recipient_owner.clone(), minted_amount + 1),
+            "token_asset::Token",
+            token_state(recipient_owner.clone(), minted_amount + 1),
             CovenantBinding::new(1, asset_covenant_id),
             recipient_value,
         );
@@ -3741,7 +3741,7 @@ fn observed_covenant_runtime_builds_icc_mint_and_rejects_mismatches() {
             0,
         )
         .actor_input(
-            "kcc20_asset::MinterProxy",
+            "token_asset::MinterProxy",
             proxy_state.clone(),
             EntryCall::new("mint").args(args![proxy_state.clone(), recipient_state.clone()]),
             proxy_outpoint,
@@ -3749,8 +3749,8 @@ fn observed_covenant_runtime_builds_icc_mint_and_rejects_mismatches() {
             0,
         )
         .actor_output("Minter", wrong_asset_minter_next, CovenantBinding::new(0, controller_covenant_id), minter_value)
-        .actor_output("kcc20_asset::MinterProxy", proxy_state, CovenantBinding::new(1, asset_covenant_id), proxy_value)
-        .actor_output("kcc20_asset::KCC20", recipient_state, CovenantBinding::new(1, asset_covenant_id), recipient_value);
+        .actor_output("token_asset::MinterProxy", proxy_state, CovenantBinding::new(1, asset_covenant_id), proxy_value)
+        .actor_output("token_asset::Token", recipient_state, CovenantBinding::new(1, asset_covenant_id), recipient_value);
     assert!(builder.build(&wrong_asset).is_err());
 }
 
@@ -3768,16 +3768,16 @@ fn artifact_bundle_rejects_bad_ids_dependency_ids_and_interface_mismatches() {
         matches!(
             missing_dependency_err,
             BuilderError::MissingDependencyArtifact { ref app, ref dependency, .. }
-                if app == "KCC20MintController" && dependency == "KCC20Asset"
+                if app == "TokenMintController" && dependency == "TokenAsset"
         ),
         "unexpected error: {missing_dependency_err}"
     );
     let bundle = ArtifactBundle::new(&controller_artifact)
         .expect("bundle accepts controller artifact")
-        .with_app("kcc20_asset", &asset_artifact)
+        .with_app("token_asset", &asset_artifact)
         .expect("matching observed artifact attaches");
     TxBuilder::from_bundle(&bundle).expect("builder accepts valid bundle");
-    ArtifactBundle::named("kcc20_mint_controller", &controller_artifact).expect("bundle accepts an explicitly named primary artifact");
+    ArtifactBundle::named("token_mint_controller", &controller_artifact).expect("bundle accepts an explicitly named primary artifact");
 
     let wrong_alias_err = ArtifactBundle::new(&controller_artifact)
         .expect("controller artifact remains valid")
@@ -3786,7 +3786,7 @@ fn artifact_bundle_rejects_bad_ids_dependency_ids_and_interface_mismatches() {
     assert!(matches!(
         wrong_alias_err,
         BuilderError::AppAliasMismatch { app, expected, found }
-            if app == "KCC20Asset" && expected == "kcc20_asset" && found == "wrong"
+            if app == "TokenAsset" && expected == "token_asset" && found == "wrong"
     ));
 
     let wrong_primary_alias_err =
@@ -3794,17 +3794,17 @@ fn artifact_bundle_rejects_bad_ids_dependency_ids_and_interface_mismatches() {
     assert!(matches!(
         wrong_primary_alias_err,
         BuilderError::AppAliasMismatch { app, expected, found }
-            if app == "KCC20MintController" && expected == "kcc20_mint_controller" && found == "wrong"
+            if app == "TokenMintController" && expected == "token_mint_controller" && found == "wrong"
     ));
 
     let mut bad_id_asset = asset_artifact.clone();
     bad_id_asset.id = "00".repeat(32);
     let bad_id_err = ArtifactBundle::new(&controller_artifact)
         .expect("controller artifact remains valid")
-        .with_app("kcc20_asset", &bad_id_asset)
+        .with_app("token_asset", &bad_id_asset)
         .expect_err("bad observed artifact id is rejected");
     let (app, source) = artifact_verification(&bad_id_err);
-    assert_eq!(app, "kcc20_asset");
+    assert_eq!(app, "token_asset");
     assert!(matches!(source, ArtifactVerificationError::Identity(ArtifactIdentityError::ArtifactIdMismatch { .. })));
 
     let mut different_asset = asset_artifact.clone();
@@ -3812,7 +3812,7 @@ fn artifact_bundle_rejects_bad_ids_dependency_ids_and_interface_mismatches() {
     different_asset.id = different_asset.computed_id_hex().expect("different dependency artifact id computes");
     let different_bundle = ArtifactBundle::new(&controller_artifact)
         .expect("controller artifact remains valid")
-        .with_app("kcc20_asset", &different_asset)
+        .with_app("token_asset", &different_asset)
         .expect("individually valid dependency artifact attaches");
     let Err(different_err) = TxBuilder::from_bundle(&different_bundle) else {
         panic!("a different dependency artifact must be rejected");
@@ -3826,10 +3826,10 @@ fn artifact_bundle_rejects_bad_ids_dependency_ids_and_interface_mismatches() {
             found_dependency,
             found_artifact_id,
         }
-            if app == "KCC20MintController"
-                && dependency == "KCC20Asset"
+            if app == "TokenMintController"
+                && dependency == "TokenAsset"
                 && expected_artifact_id == asset_artifact.id
-                && found_dependency == "KCC20Asset"
+                && found_dependency == "TokenAsset"
                 && found_artifact_id == different_asset.id
     ));
 
@@ -3837,13 +3837,13 @@ fn artifact_bundle_rejects_bad_ids_dependency_ids_and_interface_mismatches() {
     wrong_name_controller
         .dependencies
         .iter_mut()
-        .find(|dependency| dependency.app == "KCC20Asset")
+        .find(|dependency| dependency.app == "TokenAsset")
         .expect("controller records its asset dependency")
-        .app = "KCC20_Asset".to_string();
+        .app = "Token_Asset".to_string();
     wrong_name_controller.id = wrong_name_controller.computed_id_hex().expect("changed dependency app name computes");
     let wrong_name_bundle = ArtifactBundle::new(&wrong_name_controller)
         .expect("modified controller artifact remains valid")
-        .with_app("kcc20_asset", &asset_artifact)
+        .with_app("token_asset", &asset_artifact)
         .expect("dependency artifact uses the same normalized alias");
     let Err(wrong_name_err) = TxBuilder::from_bundle(&wrong_name_bundle) else {
         panic!("a different dependency app name must be rejected");
@@ -3851,7 +3851,7 @@ fn artifact_bundle_rejects_bad_ids_dependency_ids_and_interface_mismatches() {
     assert!(matches!(
         wrong_name_err,
         BuilderError::DependencyArtifactMismatch { dependency, found_dependency, .. }
-            if dependency == "KCC20_Asset" && found_dependency == "KCC20Asset"
+            if dependency == "Token_Asset" && found_dependency == "TokenAsset"
     ));
 
     let mut bad_interface_asset = asset_artifact.clone();
@@ -3868,19 +3868,19 @@ fn artifact_bundle_rejects_bad_ids_dependency_ids_and_interface_mismatches() {
     bad_interface_controller
         .dependencies
         .iter_mut()
-        .find(|dependency| dependency.app == "KCC20Asset")
+        .find(|dependency| dependency.app == "TokenAsset")
         .expect("controller records its asset dependency")
         .artifact_id = bad_interface_asset.id.clone();
     bad_interface_controller.id = bad_interface_controller.computed_id_hex().expect("controller with replaced dependency id computes");
     let bad_interface_bundle = ArtifactBundle::new(&bad_interface_controller)
         .expect("modified controller artifact remains valid")
-        .with_app("kcc20_asset", &bad_interface_asset)
+        .with_app("token_asset", &bad_interface_asset)
         .expect("dependency artifact attaches before linked interfaces are checked");
     let Err(mismatch_err) = TxBuilder::from_bundle(&bad_interface_bundle) else {
         panic!("interface fingerprint mismatch must reject the builder");
     };
     assert!(
-        matches!(&mismatch_err, BuilderError::InterfaceMismatch { app, actor, .. } if app == "kcc20_asset" && actor == "MinterProxy"),
+        matches!(&mismatch_err, BuilderError::InterfaceMismatch { app, actor, .. } if app == "token_asset" && actor == "MinterProxy"),
         "unexpected error: {mismatch_err}"
     );
 }
@@ -4373,7 +4373,7 @@ fn icc_controller_artifact() -> Artifact {
 }
 
 fn icc_asset_artifact() -> Artifact {
-    example_artifact("examples/icc/kcc20_asset.ag", "icc-asset")
+    example_artifact("examples/icc/token_asset.ag", "icc-asset")
 }
 
 fn open_icc_core_artifact() -> Artifact {
@@ -4568,10 +4568,10 @@ fn board_state(selector: i64, ply: i64) -> BTreeMap<String, ArtifactValue> {
     }
 }
 
-fn minter_state(owner: Vec<u8>, kcc20_covid: Hash, amount: i64, initialized: bool) -> BTreeMap<String, ArtifactValue> {
+fn minter_state(owner: Vec<u8>, token_covid: Hash, amount: i64, initialized: bool) -> BTreeMap<String, ArtifactValue> {
     state! {
         owner: owner,
-        kcc20_covid: kcc20_covid,
+        token_covid: token_covid,
         amount: amount,
         initialized: initialized,
     }
@@ -4581,7 +4581,7 @@ fn minter_proxy_state(controller_id: Hash) -> BTreeMap<String, ArtifactValue> {
     state! { controller_id: controller_id }
 }
 
-fn kcc20_state(owner_identifier: Vec<u8>, amount: i64) -> BTreeMap<String, ArtifactValue> {
+fn token_state(owner_identifier: Vec<u8>, amount: i64) -> BTreeMap<String, ArtifactValue> {
     state! {
         owner_identifier: owner_identifier,
         identifier_type: 0_u8,

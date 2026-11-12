@@ -85,7 +85,7 @@ Build the tracked examples manually:
 ```sh
 cargo run -- build examples/tickets.ag --out examples/build/tickets
 cargo run -- build examples/stones/app.ag --out examples/build/stones
-cargo run -- build examples/icc/kcc20_asset.ag --out examples/build/icc_kcc20_asset
+cargo run -- build examples/icc/token_asset.ag --out examples/build/icc_token_asset
 cargo run -- build examples/icc/minter.ag --out examples/build/icc_minter
 cargo run -- build examples/open_icc/agent.ag --out examples/build/open_icc_agent
 cargo run -- build examples/open_icc/core.ag --out examples/build/open_icc_core

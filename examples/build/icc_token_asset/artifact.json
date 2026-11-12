@@ -1,22 +1,22 @@
 {
   "schema_version": 1,
-  "id": "401e12685c9852cb6fdd22c13b0eb0a415a095876f7106a26364536a211fa8cd",
+  "id": "8e4802e7629330f2fe644c6ade6e6c67ff5fae80a5756bae2a367327992bc403",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
   },
-  "app": "KCC20Asset",
+  "app": "TokenAsset",
   "dependencies": [],
-  "root": "examples/icc/kcc20_asset.ag",
+  "root": "examples/icc/token_asset.ag",
   "modules": [
-    "examples/icc/kcc20_asset.ag"
+    "examples/icc/token_asset.ag"
   ],
   "argent": {
     "templates": [
       {
-        "id": "template/kcc20",
-        "actor": "KCC20",
-        "symbol": "gen__kcc20_template"
+        "id": "template/token",
+        "actor": "Token",
+        "symbol": "gen__token_template"
       },
       {
         "id": "template/minter_proxy",
@@ -27,13 +27,13 @@
     "template_plan": {
       "templates": [
         {
-          "id": "template/kcc20",
-          "actor": "KCC20",
-          "contract": "KCC20",
-          "symbol": "gen__kcc20_template",
+          "id": "template/token",
+          "actor": "Token",
+          "contract": "Token",
+          "symbol": "gen__token_template",
           "sil_template_hash": [42, 204, 29, 114, 37, 68, 129, 112, 97, 216, 131, 59, 210, 81, 169, 161, 114, 142, 233, 135, 48, 86, 48, 244, 217, 218, 18, 19, 10, 161, 206, 132],
           "actor_type_handle": {
-            "state": "KCC20State",
+            "state": "TokenState",
             "context_fields": [],
             "template": {
               "prefix": [107],
@@ -55,7 +55,7 @@
           "actor_type_handle": {
             "state": "MinterProxyState",
             "context_fields": [
-              "gen__kcc20_template"
+              "gen__token_template"
             ],
             "template": {
               "prefix": [107, 32, 42, 204, 29, 114, 37, 68, 129, 112, 97, 216, 131, 59, 210, 81, 169, 161, 114, 142, 233, 135, 48, 86, 48, 244, 217, 218, 18, 19, 10, 161, 206, 132],
@@ -76,10 +76,10 @@
           "source": "MinterProxyState",
           "field_roles": [
             {
-              "name": "gen__kcc20_template",
+              "name": "gen__token_template",
               "role": {
                 "kind": "template",
-                "contract": "KCC20"
+                "contract": "Token"
               }
             }
           ]
@@ -90,25 +90,25 @@
       "route_families": [],
       "witness_recipes": [
         {
-          "id": "witness/kcc20/template_prefix_bytes",
-          "template_id": "template/kcc20",
+          "id": "witness/token/template_prefix_bytes",
+          "template_id": "template/token",
           "subject": {
             "kind": "actor",
-            "actor": "KCC20"
+            "actor": "Token"
           },
-          "param": "gen__kcc20_prefix",
+          "param": "gen__token_prefix",
           "purpose": {
             "kind": "template_prefix_bytes"
           }
         },
         {
-          "id": "witness/kcc20/template_suffix_bytes",
-          "template_id": "template/kcc20",
+          "id": "witness/token/template_suffix_bytes",
+          "template_id": "template/token",
           "subject": {
             "kind": "actor",
-            "actor": "KCC20"
+            "actor": "Token"
           },
-          "param": "gen__kcc20_suffix",
+          "param": "gen__token_suffix",
           "purpose": {
             "kind": "template_suffix_bytes"
           }
@@ -118,25 +118,40 @@
     "interfaces": {
       "exports": [
         {
-          "id": "interface/actor/KCC20",
-          "app": "KCC20Asset",
-          "actor": "KCC20",
-          "state": "KCC20State",
-          "fingerprint_hex": "68a09fba1e686fcdcf15c631eba96dce55f36c3f7e6bcab188f1eade3933fee2"
+          "id": "interface/actor/Token",
+          "app": "TokenAsset",
+          "actor": "Token",
+          "state": "TokenState",
+          "fingerprint_hex": "e0d2512cdd1031db52068bd3f964231533fd0f251b835e738743d6d27b9ca09b"
         },
         {
           "id": "interface/actor/MinterProxy",
-          "app": "KCC20Asset",
+          "app": "TokenAsset",
           "actor": "MinterProxy",
           "state": "MinterProxyState",
-          "fingerprint_hex": "6e4a918db5a03bebaeebbb6f4b9fba6a8626d7098a34d61272e6216f02c1d7f1"
+          "fingerprint_hex": "d7a211832c46036e523d7d6821ef816f614f187dba2289fd06391ffea9d38f73"
         }
       ],
       "imports": []
     },
     "states": [
       {
-        "name": "KCC20State",
+        "name": "MinterProxyState",
+        "fields": [
+          {
+            "name": "controller_id",
+            "type": {
+              "kind": "fixed_bytes",
+              "len": 32
+            },
+            "source_type": {
+              "name": "cov_id"
+            }
+          }
+        ]
+      },
+      {
+        "name": "TokenState",
         "fields": [
           {
             "name": "owner_identifier",
@@ -158,48 +173,33 @@
             }
           }
         ]
-      },
-      {
-        "name": "MinterProxyState",
-        "fields": [
-          {
-            "name": "controller_id",
-            "type": {
-              "kind": "fixed_bytes",
-              "len": 32
-            },
-            "source_type": {
-              "name": "cov_id"
-            }
-          }
-        ]
       }
     ],
     "actor_enums": [],
     "actors": [
       {
-        "name": "KCC20",
-        "state": "KCC20State",
+        "name": "Token",
+        "state": "TokenState",
         "abi": {
-          "contract": "KCC20"
+          "contract": "Token"
         },
         "entries": [
           {
             "name": "transfer",
             "kind": "leader",
             "abi": {
-              "contract": "KCC20",
+              "contract": "Token",
               "entry": "transfer"
             },
             "route_plan": {
               "active_input": {
                 "name": "self",
-                "actor": "KCC20",
+                "actor": "Token",
                 "cov_index": 0
               },
               "leader_input": {
                 "name": "self",
-                "actor": "KCC20",
+                "actor": "Token",
                 "cov_index": 0
               },
               "consumes": [],
@@ -208,7 +208,7 @@
                   "name": "next",
                   "auth_index": 0,
                   "actors": [
-                    "KCC20"
+                    "Token"
                   ]
                 }
               ],
@@ -225,7 +225,7 @@
                   "name": "next",
                   "auth_index": 0,
                   "actors": [
-                    "KCC20"
+                    "Token"
                   ]
                 }
               ]
@@ -235,8 +235,8 @@
                 "output": "next",
                 "successor": {
                   "kind": "constructed",
-                  "actor": "KCC20",
-                  "template_id": "template/kcc20",
+                  "actor": "Token",
+                  "template_id": "template/token",
                   "state_expr": "next_state"
                 }
               }
@@ -282,39 +282,39 @@
                   "name": "recipient",
                   "auth_index": 1,
                   "actors": [
-                    "KCC20"
+                    "Token"
                   ]
                 }
               ],
               "witness_recipe_ids": [
-                "witness/kcc20/template_prefix_bytes",
-                "witness/kcc20/template_suffix_bytes"
+                "witness/token/template_prefix_bytes",
+                "witness/token/template_suffix_bytes"
               ]
             },
             "hidden_params": [
               {
-                "recipe_id": "witness/kcc20/template_prefix_bytes",
-                "name": "gen__kcc20_prefix",
+                "recipe_id": "witness/token/template_prefix_bytes",
+                "name": "gen__token_prefix",
                 "type": {
                   "kind": "bytes"
                 },
                 "subject": {
                   "kind": "actor",
-                  "actor": "KCC20"
+                  "actor": "Token"
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
                 }
               },
               {
-                "recipe_id": "witness/kcc20/template_suffix_bytes",
-                "name": "gen__kcc20_suffix",
+                "recipe_id": "witness/token/template_suffix_bytes",
+                "name": "gen__token_suffix",
                 "type": {
                   "kind": "bytes"
                 },
                 "subject": {
                   "kind": "actor",
-                  "actor": "KCC20"
+                  "actor": "Token"
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
@@ -324,22 +324,22 @@
             "template_selectors": [],
             "witnesses": [
               {
-                "recipe_id": "witness/kcc20/template_prefix_bytes",
-                "param": "gen__kcc20_prefix",
+                "recipe_id": "witness/token/template_prefix_bytes",
+                "param": "gen__token_prefix",
                 "subject": {
                   "kind": "actor",
-                  "actor": "KCC20"
+                  "actor": "Token"
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
                 }
               },
               {
-                "recipe_id": "witness/kcc20/template_suffix_bytes",
-                "param": "gen__kcc20_suffix",
+                "recipe_id": "witness/token/template_suffix_bytes",
+                "param": "gen__token_suffix",
                 "subject": {
                   "kind": "actor",
-                  "actor": "KCC20"
+                  "actor": "Token"
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
@@ -361,7 +361,7 @@
                   "name": "recipient",
                   "auth_index": 1,
                   "actors": [
-                    "KCC20"
+                    "Token"
                   ]
                 }
               ]
@@ -380,8 +380,8 @@
                 "output": "recipient",
                 "successor": {
                   "kind": "constructed",
-                  "actor": "KCC20",
-                  "template_id": "template/kcc20",
+                  "actor": "Token",
+                  "template_id": "template/token",
                   "state_expr": "recipient_state"
                 }
               }
@@ -395,7 +395,18 @@
     "schema_version": 1,
     "compiler_version": "0.1.0",
     "structs": {
-      "KCC20State": {
+      "MinterProxyState": {
+        "fields": [
+          {
+            "name": "controller_id",
+            "type": {
+              "kind": "fixed_bytes",
+              "len": 32
+            }
+          }
+        ]
+      },
+      "TokenState": {
         "fields": [
           {
             "name": "owner_identifier",
@@ -417,22 +428,80 @@
             }
           }
         ]
-      },
-      "MinterProxyState": {
-        "fields": [
-          {
-            "name": "controller_id",
-            "type": {
-              "kind": "fixed_bytes",
-              "len": 32
-            }
-          }
-        ]
       }
     },
     "contracts": {
-      "KCC20": {
-        "source_path": "sil/KCC20.sil",
+      "MinterProxy": {
+        "source_path": "sil/MinterProxy.sil",
+        "runtime_state": {
+          "source": "State",
+          "fields": [
+            {
+              "name": "gen__token_template",
+              "type": {
+                "kind": "fixed_bytes",
+                "len": 32
+              }
+            },
+            {
+              "name": "controller_id",
+              "type": {
+                "kind": "fixed_bytes",
+                "len": 32
+              }
+            }
+          ]
+        },
+        "entries": {
+          "mint": {
+            "dispatch_tag": "091975bb",
+            "params": [
+              {
+                "name": "next_proxy",
+                "type": {
+                  "kind": "struct",
+                  "name": "MinterProxyState"
+                }
+              },
+              {
+                "name": "recipient_state",
+                "type": {
+                  "kind": "struct",
+                  "name": "TokenState"
+                }
+              },
+              {
+                "name": "gen__token_prefix",
+                "type": {
+                  "kind": "bytes"
+                }
+              },
+              {
+                "name": "gen__token_suffix",
+                "type": {
+                  "kind": "bytes"
+                }
+              }
+            ]
+          }
+        },
+        "compiled": {
+          "bytecode": [
+            107, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 108, 118, 4, 9, 25, 117, 187, 135, 99, 117, 87, 121, 130, 1, 32, 157, 117, 86, 121, 130, 1, 32, 157, 117, 85, 121, 130, 81, 157, 117, 84, 121, 130, 89, 159, 105, 117, 83, 121, 130, 81, 151, 0, 157, 117, 82, 121, 130, 81, 151, 0, 157, 117, 185, 203, 82, 156, 105, 185, 0, 204,
+            185, 81, 204, 82, 121, 208, 0, 160, 105, 89, 121, 83, 121, 135, 105, 83, 121, 90, 121, 1, 32, 82, 121, 126, 1, 32, 82, 121, 126, 126, 185, 118, 201, 2, 35, 1, 148, 118, 81, 147, 188, 124, 126, 185, 118, 201, 118, 2, 224, 128, 147, 124, 188, 126, 170, 2, 0, 0, 1, 170, 126, 1, 32, 126,
+            124, 126, 1, 135, 126, 84, 121, 195, 136, 85, 121, 88, 121, 130, 124, 117, 81, 150, 88, 205, 89, 121, 126, 88, 121, 130, 124, 117, 81, 150, 88, 205, 89, 121, 126, 126, 217, 136, 1, 32, 91, 121, 126, 1, 1, 91, 121, 126, 1, 8, 91, 121, 88, 205, 126, 126, 126, 88, 121, 124, 126, 87, 121, 126,
+            170, 2, 0, 0, 1, 170, 126, 1, 32, 126, 124, 126, 1, 135, 126, 83, 121, 195, 136, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117, 81, 103, 106, 104
+          ],
+          "template_hash": [221, 89, 232, 11, 101, 225, 131, 84, 129, 79, 107, 79, 34, 96, 15, 233, 97, 221, 67, 52, 15, 8, 212, 18, 17, 93, 143, 4, 198, 207, 207, 101],
+          "state_span": {
+            "offset": 1,
+            "len": 66
+          }
+        }
+      },
+      "Token": {
+        "source_path": "sil/Token.sil",
         "runtime_state": {
           "source": "State",
           "fields": [
@@ -494,75 +563,6 @@
           "state_span": {
             "offset": 1,
             "len": 44
-          }
-        }
-      },
-      "MinterProxy": {
-        "source_path": "sil/MinterProxy.sil",
-        "runtime_state": {
-          "source": "State",
-          "fields": [
-            {
-              "name": "gen__kcc20_template",
-              "type": {
-                "kind": "fixed_bytes",
-                "len": 32
-              }
-            },
-            {
-              "name": "controller_id",
-              "type": {
-                "kind": "fixed_bytes",
-                "len": 32
-              }
-            }
-          ]
-        },
-        "entries": {
-          "mint": {
-            "dispatch_tag": "091975bb",
-            "params": [
-              {
-                "name": "next_proxy",
-                "type": {
-                  "kind": "struct",
-                  "name": "MinterProxyState"
-                }
-              },
-              {
-                "name": "recipient_state",
-                "type": {
-                  "kind": "struct",
-                  "name": "KCC20State"
-                }
-              },
-              {
-                "name": "gen__kcc20_prefix",
-                "type": {
-                  "kind": "bytes"
-                }
-              },
-              {
-                "name": "gen__kcc20_suffix",
-                "type": {
-                  "kind": "bytes"
-                }
-              }
-            ]
-          }
-        },
-        "compiled": {
-          "bytecode": [
-            107, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 108, 118, 4, 9, 25, 117, 187, 135, 99, 117, 87, 121, 130, 1, 32, 157, 117, 86, 121, 130, 1, 32, 157, 117, 85, 121, 130, 81, 157, 117, 84, 121, 130, 89, 159, 105, 117, 83, 121, 130, 81, 151, 0, 157, 117, 82, 121, 130, 81, 151, 0, 157, 117, 185, 203, 82, 156, 105, 185, 0, 204,
-            185, 81, 204, 82, 121, 208, 0, 160, 105, 89, 121, 83, 121, 135, 105, 83, 121, 90, 121, 1, 32, 82, 121, 126, 1, 32, 82, 121, 126, 126, 185, 118, 201, 2, 35, 1, 148, 118, 81, 147, 188, 124, 126, 185, 118, 201, 118, 2, 224, 128, 147, 124, 188, 126, 170, 2, 0, 0, 1, 170, 126, 1, 32, 126,
-            124, 126, 1, 135, 126, 84, 121, 195, 136, 85, 121, 88, 121, 130, 124, 117, 81, 150, 88, 205, 89, 121, 126, 88, 121, 130, 124, 117, 81, 150, 88, 205, 89, 121, 126, 126, 217, 136, 1, 32, 91, 121, 126, 1, 1, 91, 121, 126, 1, 8, 91, 121, 88, 205, 126, 126, 126, 88, 121, 124, 126, 87, 121, 126,
-            170, 2, 0, 0, 1, 170, 126, 1, 32, 126, 124, 126, 1, 135, 126, 83, 121, 195, 136, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117, 81, 103, 106, 104
-          ],
-          "template_hash": [221, 89, 232, 11, 101, 225, 131, 84, 129, 79, 107, 79, 34, 96, 15, 233, 97, 221, 67, 52, 15, 8, 212, 18, 17, 93, 143, 4, 198, 207, 207, 101],
-          "state_span": {
-            "offset": 1,
-            "len": 66
           }
         }
       }

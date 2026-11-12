@@ -35,10 +35,10 @@
       "state": "MinterState"
     }
   ],
-  "app": "KCC20MintController",
+  "app": "TokenMintController",
   "modules": [
     "examples/icc/minter.ag",
-    "examples/icc/kcc20_asset.ag"
+    "examples/icc/token_asset.ag"
   ],
   "root": "examples/icc/minter.ag",
   "templates": [

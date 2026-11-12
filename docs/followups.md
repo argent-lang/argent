@@ -154,12 +154,12 @@ Validate the actor, entry, state layout, and value types against the artifact.
 Add a test in which an actor rename changes generated ABI names. The observer
 must continue to work without a code change.
 
-## KCC20 bootstrap with `spawns`
+## Token bootstrap with `spawns`
 
 **Area:** ICC examples, ICC documentation, and `argent-rt` runtime tests.
 
-**Context:** The Argent KCC20 example has a `Minter` controller app and a
-KCC20 asset app. During mint, `Minter` observes the asset-side `MinterProxy`.
+**Context:** The Argent Token example has a `Minter` controller app and a
+Token asset app. During mint, `Minter` observes the asset-side `MinterProxy`.
 The controller state stores the asset covenant ID.
 
 The `kcc20_covenant_minter` test in Silverscript uses two transactions:
@@ -202,7 +202,7 @@ emits next: Minter {
     MinterState next_controller = {
         owner: owner,
         proxy_type: proxy_type,
-        kcc20_covid: asset_id,
+        token_covid: asset_id,
         amount: amount,
         initialized: true,
     };

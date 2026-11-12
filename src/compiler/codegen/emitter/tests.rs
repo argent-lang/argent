@@ -4839,7 +4839,7 @@ fn builds_examples_with_compiled_artifacts() {
         ],
     );
     assert_example_build_artifact("examples/stones/app.ag", "stones", &[]);
-    assert_example_build_artifact("examples/icc/kcc20_asset.ag", "icc-kcc20-asset", &[]);
+    assert_example_build_artifact("examples/icc/token_asset.ag", "icc-token-asset", &[]);
     assert_example_build_artifact("examples/icc/minter.ag", "icc-minter", &[]);
 }
 
@@ -4848,7 +4848,7 @@ fn observes_blocks_are_recorded_in_artifact() {
     let artifact = inline_artifact(
         "icc-observes",
         r#"
-            state KCC20State {
+            state TokenState {
                 int amount;
             }
 
@@ -4857,11 +4857,11 @@ fn observes_blocks_are_recorded_in_artifact() {
             }
 
             state MinterState {
-                cov_id kcc20_covid;
+                cov_id token_covid;
                 int amount;
             }
 
-            actor KCC20 owns KCC20State {
+            actor Token owns TokenState {
                 entry hold() emits none {
                     require(amount >= 0);
                 }
@@ -4875,14 +4875,14 @@ fn observes_blocks_are_recorded_in_artifact() {
 
             actor Minter owns MinterState {
                 entry mint(int minted_amount)
-                observes asset by self.kcc20_covid {
+                observes asset by self.token_covid {
                     inputs {
                         proxy: MinterProxy,
                     }
 
                     outputs {
                         proxy: MinterProxy,
-                        recipient: KCC20,
+                        recipient: Token,
                     }
                 }
                 emits {
@@ -4890,7 +4890,7 @@ fn observes_blocks_are_recorded_in_artifact() {
                 } {
                     unrestricted(controller.value);
                     MinterState next_minter = {
-                        kcc20_covid: kcc20_covid,
+                        token_covid: token_covid,
                         amount: amount - minted_amount,
                     };
 
@@ -4899,7 +4899,7 @@ fn observes_blocks_are_recorded_in_artifact() {
             }
 
             app Test {
-                actor KCC20;
+                actor Token;
                 actor Minter;
                 actor MinterProxy;
             }
@@ -4912,8 +4912,8 @@ fn observes_blocks_are_recorded_in_artifact() {
     assert_eq!(mint.observes.len(), 1);
     let observe = &mint.observes[0];
     assert_eq!(observe.name, "asset");
-    assert_eq!(observe.covenant_expr, "self.kcc20_covid");
-    assert_eq!(observe.covenant_id_source, CovenantIdSourceArtifact::StateField { field: "kcc20_covid".to_string() });
+    assert_eq!(observe.covenant_expr, "self.token_covid");
+    assert_eq!(observe.covenant_id_source, CovenantIdSourceArtifact::StateField { field: "token_covid".to_string() });
     assert_eq!(observe.inputs[0].name, "proxy");
     assert!(matches!(
         &observe.inputs[0].target,
@@ -4927,19 +4927,19 @@ fn observes_blocks_are_recorded_in_artifact() {
     assert_eq!(observe.outputs[1].name, "recipient");
     assert!(matches!(
         &observe.outputs[1].target,
-        ObservedTargetArtifact::StaticActor { app, actor } if app == "Test" && actor == "KCC20"
+        ObservedTargetArtifact::StaticActor { app, actor } if app == "Test" && actor == "Token"
     ));
     assert_eq!(
         mint.hidden_params.iter().map(|param| (param.name.as_str(), &param.subject, param.purpose)).collect::<Vec<_>>(),
         vec![
             (
-                "gen__kcc20_prefix",
-                &HiddenParamSubjectArtifact::Actor { actor: "KCC20".to_string() },
+                "gen__token_prefix",
+                &HiddenParamSubjectArtifact::Actor { actor: "Token".to_string() },
                 HiddenParamPurposeArtifact::TemplatePrefixBytes,
             ),
             (
-                "gen__kcc20_suffix",
-                &HiddenParamSubjectArtifact::Actor { actor: "KCC20".to_string() },
+                "gen__token_suffix",
+                &HiddenParamSubjectArtifact::Actor { actor: "Token".to_string() },
                 HiddenParamPurposeArtifact::TemplateSuffixBytes,
             ),
             (
@@ -4957,8 +4957,8 @@ fn observes_blocks_are_recorded_in_artifact() {
     assert_eq!(
         mint.route_plan.witness_recipe_ids.iter().map(String::as_str).collect::<Vec<_>>(),
         vec![
-            "witness/kcc20/template_prefix_bytes",
-            "witness/kcc20/template_suffix_bytes",
+            "witness/token/template_prefix_bytes",
+            "witness/token/template_suffix_bytes",
             "witness/minter_proxy/template_prefix_len",
             "witness/minter_proxy/template_suffix_len",
         ]
@@ -4971,8 +4971,8 @@ fn observes_blocks_are_recorded_in_artifact() {
             .map(|role| (role.name.as_str(), role.role.clone()))
             .collect::<Vec<_>>(),
         vec![
-            ("gen__kcc20_template", RuntimeFieldRoleArtifact::Template { contract: "KCC20".to_string() },),
             ("gen__minter_proxy_template", RuntimeFieldRoleArtifact::Template { contract: "MinterProxy".to_string() },),
+            ("gen__token_template", RuntimeFieldRoleArtifact::Template { contract: "Token".to_string() },),
         ]
     );
 }
@@ -5217,33 +5217,33 @@ fn observed_slots_lower_to_foreign_state_checks() {
     crate::build_file("examples/icc/minter.ag", &out_dir).expect("ICC example builds");
 
     let minter_sil = fs::read_to_string(out_dir.join("sil/Minter.sil")).expect("Minter.sil exists");
-    assert!(minter_sil.contains("byte[32] constant gen__kcc20_asset__kcc20_template_const = byte[32](0x"), "{minter_sil}");
+    assert!(minter_sil.contains("byte[32] constant gen__token_asset__token_template_const = byte[32](0x"), "{minter_sil}");
     assert!(minter_sil.contains("entry mint("), "{minter_sil}");
     assert!(minter_sil.contains("sig owner_sig,"), "{minter_sil}");
     assert!(minter_sil.contains("byte[32] recipient_owner,"), "{minter_sil}");
-    assert!(minter_sil.contains("int gen__kcc20_asset__minter_proxy_prefix_len,"), "{minter_sil}");
-    assert!(minter_sil.contains("byte[] gen__kcc20_asset__kcc20_suffix"), "{minter_sil}");
+    assert!(minter_sil.contains("int gen__token_asset__minter_proxy_prefix_len,"), "{minter_sil}");
+    assert!(minter_sil.contains("byte[] gen__token_asset__token_suffix"), "{minter_sil}");
     assert!(
-        minter_sil.contains("byte[32] gen__kcc20_asset__minter_proxy_template = gen__kcc20_asset__minter_proxy_template_const;"),
+        minter_sil.contains("byte[32] gen__token_asset__minter_proxy_template = gen__token_asset__minter_proxy_template_const;"),
         "{minter_sil}"
     );
-    assert!(!minter_sil.contains("gen__init_kcc20_asset__"), "{minter_sil}");
+    assert!(!minter_sil.contains("gen__init_token_asset__"), "{minter_sil}");
     assert!(minter_sil.contains("struct MinterProxyState"), "{minter_sil}");
-    assert!(minter_sil.contains("struct KCC20State"), "{minter_sil}");
-    assert!(minter_sil.contains("byte[32] gen__asset_cov_id = kcc20_covid;"), "{minter_sil}");
+    assert!(minter_sil.contains("struct TokenState"), "{minter_sil}");
+    assert!(minter_sil.contains("byte[32] gen__asset_cov_id = token_covid;"), "{minter_sil}");
     assert!(minter_sil.contains("require(OpCovInputCount(gen__asset_cov_id) == 1);"), "{minter_sil}");
     assert!(minter_sil.contains("require(OpCovOutputCount(gen__asset_cov_id) == 2);"), "{minter_sil}");
-    assert!(!minter_sil.contains("gen__kcc20_asset__minter_proxy_prefix.length"), "{minter_sil}");
-    assert!(!minter_sil.contains("gen__kcc20_asset__minter_proxy_suffix.length"), "{minter_sil}");
+    assert!(!minter_sil.contains("gen__token_asset__minter_proxy_prefix.length"), "{minter_sil}");
+    assert!(!minter_sil.contains("gen__token_asset__minter_proxy_suffix.length"), "{minter_sil}");
     assert!(minter_sil.contains("MinterProxyState gen__asset_proxy_state = readInputStateWithTemplate("), "{minter_sil}");
     assert!(minter_sil.contains("gen__asset_proxy_input_idx,"), "{minter_sil}");
-    assert!(minter_sil.contains("gen__kcc20_asset__minter_proxy_template"), "{minter_sil}");
+    assert!(minter_sil.contains("gen__token_asset__minter_proxy_template"), "{minter_sil}");
     assert!(minter_sil.contains("int gen__asset_proxy_output_idx = OpCovOutputIdx(gen__asset_cov_id, 0);"), "{minter_sil}");
     assert!(minter_sil.contains("int gen__asset_recipient_output_idx = OpCovOutputIdx(gen__asset_cov_id, 1);"), "{minter_sil}");
     assert!(minter_sil.contains("validateOutputStateWithInputTemplate(gen__asset_proxy_output_idx,"), "{minter_sil}");
     assert!(minter_sil.contains("gen__asset_proxy_input_idx,"), "{minter_sil}");
     assert!(minter_sil.contains("validateOutputStateWithTemplate(gen__asset_recipient_output_idx,"), "{minter_sil}");
-    assert!(minter_sil.contains("gen__kcc20_asset__kcc20_template"), "{minter_sil}");
+    assert!(minter_sil.contains("gen__token_asset__token_template"), "{minter_sil}");
     assert!(minter_sil.contains("MinterProxyState prev_proxy = gen__asset_proxy_state;"), "{minter_sil}");
 
     let artifact_json = fs::read_to_string(out_dir.join("artifact.json")).expect("artifact json exists");
@@ -5258,20 +5258,20 @@ fn icc_asset_lowers_cov_id_co_spend_and_else_if() {
     let out_dir = std::env::temp_dir().join(format!("argent-icc-asset-test-{}", std::process::id()));
     let _ = fs::remove_dir_all(&out_dir);
 
-    crate::build_file("examples/icc/kcc20_asset.ag", &out_dir).expect("ICC asset app builds");
+    crate::build_file("examples/icc/token_asset.ag", &out_dir).expect("ICC asset app builds");
 
-    let kcc20_sil = fs::read_to_string(out_dir.join("sil/KCC20.sil")).expect("KCC20.sil exists");
-    assert!(kcc20_sil.contains("if (identifier_type == IDENTIFIER_COVENANT_ID) {"), "{kcc20_sil}");
-    assert!(kcc20_sil.contains("require(checkSig(owner_sig, pubkey(owner_identifier)));"), "{kcc20_sil}");
-    assert!(kcc20_sil.contains("require(OpCovInputCount(owner_identifier) > 0);"), "{kcc20_sil}");
-    assert!(!kcc20_sil.contains("KCC20State"), "{kcc20_sil}");
-    assert!(kcc20_sil.contains("State next_state = State {"), "{kcc20_sil}");
-    assert!(kcc20_sil.contains("validateOutputState(gen__next_output_idx, next_state);"), "{kcc20_sil}");
+    let token_sil = fs::read_to_string(out_dir.join("sil/Token.sil")).expect("Token.sil exists");
+    assert!(token_sil.contains("if (identifier_type == IDENTIFIER_COVENANT_ID) {"), "{token_sil}");
+    assert!(token_sil.contains("require(checkSig(owner_sig, pubkey(owner_identifier)));"), "{token_sil}");
+    assert!(token_sil.contains("require(OpCovInputCount(owner_identifier) > 0);"), "{token_sil}");
+    assert!(!token_sil.contains("TokenState"), "{token_sil}");
+    assert!(token_sil.contains("State next_state = State {"), "{token_sil}");
+    assert!(token_sil.contains("validateOutputState(gen__next_output_idx, next_state);"), "{token_sil}");
 
     let proxy_sil = fs::read_to_string(out_dir.join("sil/MinterProxy.sil")).expect("MinterProxy.sil exists");
     assert!(proxy_sil.contains("byte[32] controller_id = init_controller_id;"), "{proxy_sil}");
     assert!(proxy_sil.contains("entry mint(MinterProxyState next_proxy,"), "{proxy_sil}");
-    assert!(proxy_sil.contains("gen__kcc20_template: gen__kcc20_template"), "{proxy_sil}");
+    assert!(proxy_sil.contains("gen__token_template: gen__token_template"), "{proxy_sil}");
     assert!(proxy_sil.contains("controller_id: next_proxy.controller_id"), "{proxy_sil}");
     assert!(proxy_sil.contains("require(OpCovInputCount(controller_id) > 0);"), "{proxy_sil}");
 
