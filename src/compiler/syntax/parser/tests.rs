@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 
+use super::discover_imports;
 use super::{Cardinality, CardinalityBound, EmitSpec, TypeRef};
 use crate::compiler::loader::SourceSet;
+use crate::compiler::syntax::lexer::lex_argent_source;
+use crate::compiler::syntax::source::{SourceFile, SourceId};
 
 fn parse_module(path: PathBuf, source: String) -> crate::error::Result<super::Module> {
     let sources = SourceSet::discover_inline(path, source)?;
@@ -391,4 +394,38 @@ fn rejects_semicolons_in_role_binding_lists() {
             .expect_err("semicolon-separated role bindings must not parse");
         assert!(err.to_string().contains("expected `,` or `}`"), "unexpected error: {err}");
     }
+}
+
+#[test]
+fn discovers_module_imports_with_aliases_and_pinned_artifact_ids() {
+    let file = SourceFile {
+        id: SourceId(0),
+        display_path: PathBuf::from("imports.ag"),
+        text: r#"
+            import "./shared.ag";
+            import "./library.ag" as library;
+            import "./asset/artifact.json" id "ab01";
+            import "./other/artifact.json" as other id "cd02";
+            "#
+        .to_string(),
+    };
+    let tokens = lex_argent_source(&file.text).expect("imports lex");
+    let imports = discover_imports(&file, &tokens).expect("imports parse");
+
+    let imports = imports
+        .iter()
+        .map(|discovered| {
+            let import = &discovered.import;
+            (import.path.as_str(), import.alias.as_deref(), import.id.as_deref())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        imports,
+        [
+            ("./shared.ag", None, None),
+            ("./library.ag", Some("library"), None),
+            ("./asset/artifact.json", None, Some("ab01")),
+            ("./other/artifact.json", Some("other"), Some("cd02")),
+        ]
+    );
 }

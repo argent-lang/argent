@@ -53,6 +53,28 @@ pub(crate) enum DeclarationOrigin {
     Dependency { app: String, name: String, kind: SymbolKind },
 }
 
+/// Declaration identities of a pinned artifact import, keyed by the artifact's own names.
+///
+/// The artifact is declared as a source module (states, actor enums and exported actors, each in artifact order), so these are
+/// the identities its declarations have in every importing app: an importer that uses the artifact's
+/// state links it to the same declaration the artifact reports.
+pub(crate) fn artifact_origins(path: &std::path::Path, artifact: &Artifact) -> BTreeMap<String, DeclarationOrigin> {
+    let states = artifact.argent.states.iter().map(|state| (&state.name, SymbolKind::State));
+    let actor_enums = artifact.argent.actor_enums.iter().map(|item| (&item.name, SymbolKind::ActorEnum));
+    let actors = artifact.argent.interfaces.exports.iter().map(|interface| (&interface.actor, SymbolKind::Actor));
+    let mut indexes = BTreeMap::<SymbolKind, usize>::new();
+    states
+        .chain(actor_enums)
+        .chain(actors)
+        .map(|(name, kind)| {
+            let index = indexes.entry(kind).or_default();
+            let origin = DeclarationOrigin::Source { path: path.to_path_buf(), kind, index: *index };
+            *index += 1;
+            (name.clone(), origin)
+        })
+        .collect()
+}
+
 pub(crate) struct LinkedDependency<'a> {
     pub artifact: &'a Artifact,
     pub origins: &'a BTreeMap<String, DeclarationOrigin>,
@@ -342,7 +364,7 @@ impl LinkedContext {
     }
 }
 
-fn linked_field_decl(field: &ArgentFieldArtifact) -> Result<FieldDecl> {
+pub(crate) fn linked_field_decl(field: &ArgentFieldArtifact) -> Result<FieldDecl> {
     Ok(FieldDecl { ty: linked_field_type(field)?, name: field.name.clone(), virtual_slot: field.virtual_slot })
 }
 
