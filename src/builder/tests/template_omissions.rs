@@ -479,8 +479,8 @@ fn linked_spawn_bytes_remain_outside_current_successor_pruning() {
         temp.join("child.ag"),
         r#"
         state ChildState { int count; }
-        actor Child owns ChildState { entry close() emits none { require(count > 0); } }
-        app ChildApp { actor Child; }
+        actor Finished owns ChildState { entry close() emits none { require(count > 0); } }
+        app ChildApp { actor Finished; }
     "#,
     )
     .expect("child source");
@@ -490,16 +490,22 @@ fn linked_spawn_bytes_remain_outside_current_successor_pruning() {
         import "./child.ag" as dep;
         state LauncherState { int count; }
         actor Launcher owns LauncherState {
-            entry launch()
-            spawns children by children_id { outputs { child: dep::ChildApp::Child, } }
-            emits next: Launcher {
+            entry launch(bool finish)
+            spawns children by children_id { outputs { child: dep::ChildApp::Finished, } }
+            emits next: Launcher | Finished {
                 unrestricted(children.outputs.child.value);
-                require children.outputs become { child <- dep::ChildApp::Child(dep::ChildState { count: count }), };
+                require children.outputs become { child <- dep::ChildApp::Finished(dep::ChildState { count: count }), };
                 unrestricted(next.value);
-                become next <- Launcher(LauncherState { count: count + 1 });
+                LauncherState updated = { count: count + 1 };
+                if (finish) {
+                    become next <- Finished(updated);
+                } else {
+                    become next <- Launcher(updated);
+                }
             }
         }
-        app LauncherApp { actor Launcher; }
+        actor Finished owns LauncherState { entry close() emits none { require(count >= 0); } }
+        app LauncherApp { actor Launcher; actor Finished; }
     "#,
     )
     .expect("launcher source");
@@ -514,21 +520,55 @@ fn linked_spawn_bytes_remain_outside_current_successor_pruning() {
         .actor_input(
             "Launcher",
             count_state(4),
-            "launch",
+            EntryCall::new("launch").args(args![false]),
             TransactionOutpoint::new(TransactionId::from_bytes([0x66; 32]), 0),
             launcher,
             0,
         )
         .actor_output("Launcher", count_state(5), CovenantBinding::new(0, covenant_id), 900)
-        .actor_genesis_output(0, "spawn::children", "child_app::Child", count_state(4), 100);
+        .actor_genesis_output(0, "spawn::children", "child_app::Finished", count_state(4), 100);
     let transaction = builder.build(&context).expect("linked spawn executes");
     let child = &compiled.app("ChildApp").expect("ChildApp").argent.template_plan.templates[0].actor_type_handle.template;
+    assert!(!child.prefix.is_empty() || !child.suffix.is_empty());
+    let entry = entry_artifact(artifact, "Launcher", "launch");
+    assert_eq!(
+        entry
+            .hidden_params
+            .iter()
+            .filter_map(|hidden| match (&hidden.subject, hidden.purpose) {
+                (HiddenParamSubjectArtifact::Actor { actor }, purpose)
+                    if matches!(
+                        purpose,
+                        HiddenParamPurposeArtifact::TemplatePrefixBytes | HiddenParamPurposeArtifact::TemplateSuffixBytes
+                    ) =>
+                {
+                    Some((actor.as_str(), purpose))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        [
+            ("Finished", HiddenParamPurposeArtifact::TemplatePrefixBytes),
+            ("Finished", HiddenParamPurposeArtifact::TemplateSuffixBytes),
+            ("ChildApp::Finished", HiddenParamPurposeArtifact::TemplatePrefixBytes),
+            ("ChildApp::Finished", HiddenParamPurposeArtifact::TemplateSuffixBytes),
+        ],
+    );
+    // Pruning the local `Finished` must not empty the foreign actor's same-named
+    // template: its bytes are still needed by the separate spawned covenant.
     assert_signature_args(
         artifact,
         "Launcher",
         "launch",
         &transaction.inputs[0].signature_script,
-        vec![ArtifactValue::Bytes(child.prefix.clone()), ArtifactValue::Bytes(child.suffix.clone()), ArtifactValue::Int(1)],
+        vec![
+            ArtifactValue::Bool(false),
+            ArtifactValue::Bytes(Vec::new()),
+            ArtifactValue::Bytes(Vec::new()),
+            ArtifactValue::Bytes(child.prefix.clone()),
+            ArtifactValue::Bytes(child.suffix.clone()),
+            ArtifactValue::Int(1),
+        ],
     );
     fs::remove_dir_all(temp).expect("remove test files");
 }
