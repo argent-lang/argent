@@ -571,8 +571,19 @@ impl<'artifact> TxBuilder<'artifact> {
 
     /// Resolve compiler-generated arguments from artifact-local routes and the
     /// concrete observed actors selected by the transaction.
-    fn resolve_context_hidden_args(&self, context: &mut ResolveContext<'artifact, '_, '_>) -> BuilderResult<()> {
-        for input in &mut context.inputs {
+    fn resolve_context_hidden_args(
+        &self,
+        context: &mut ResolveContext<'artifact, '_, '_>,
+        omissions: &[(usize, &str)],
+    ) -> BuilderResult<()> {
+        let mut omitted_by_input = BTreeMap::<usize, Vec<&str>>::new();
+        for &(input_index, actor) in omissions {
+            if !matches!(context.inputs.get(input_index), Some(ResolveInput::Actor(_))) {
+                return Err(BuilderError::InvalidTemplateOmissionInput(input_index));
+            }
+            omitted_by_input.entry(input_index).or_default().push(actor);
+        }
+        for (input_index, input) in context.inputs.iter_mut().enumerate() {
             let ResolveInput::Actor(input) = input else {
                 continue;
             };
@@ -585,7 +596,11 @@ impl<'artifact> TxBuilder<'artifact> {
                 input.artifact_entry,
                 &input.source.state,
                 &args.template_selectors,
-                HiddenArgContexts { observed: Some(observations), spawned: Some(spawned_actors) },
+                HiddenArgContexts {
+                    observed: Some(observations),
+                    spawned: Some(spawned_actors),
+                    omitted_template_actors: omitted_by_input.get(&input_index).map_or(&[], Vec::as_slice),
+                },
             )?);
         }
 
@@ -665,13 +680,22 @@ impl<'artifact> TxBuilder<'artifact> {
     /// Artifact-local routes and concrete observed actors supply all
     /// compiler-generated witness arguments.
     pub fn build(&self, context: &TxContext<'_>) -> BuilderResult<Transaction> {
+        self.build_with_template_omissions(context, &[])
+    }
+
+    /// Build a transaction, encoding empty prefix and suffix arguments for the
+    /// static actor templates listed as `(input_index, actor)` in `omissions`.
+    ///
+    /// The caller must know that the selected path for that input does not use
+    /// those bytes. The transaction still runs through normal script validation.
+    pub fn build_with_template_omissions(&self, context: &TxContext<'_>, omissions: &[(usize, &str)]) -> BuilderResult<Transaction> {
         let mut context = self.bind_context(context)?;
         let unsigned = self.unsigned_transaction(&context)?;
         self.validate_leader_actor_input_counts(&context)?;
         self.resolve_context_args(&mut context, &unsigned)?;
         self.resolve_context_observations(&mut context, &unsigned)?;
         self.resolve_context_spawns(&mut context)?;
-        self.resolve_context_hidden_args(&mut context)?;
+        self.resolve_context_hidden_args(&mut context, omissions)?;
         let mut signature_scripts = Vec::with_capacity(context.inputs.len());
 
         for (input_index, input) in context.inputs.iter().enumerate() {

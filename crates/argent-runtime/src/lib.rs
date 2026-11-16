@@ -346,6 +346,10 @@ pub enum BuilderError {
     UnexpectedHiddenSubject { param: String, expected: &'static str },
     #[error("entry `{actor}::{entry}` does not define template selector `{selector}`")]
     UnknownTemplateSelector { actor: String, entry: String, selector: String },
+    #[error("template byte omission must target an actor input, but input {0} is not an actor input")]
+    InvalidTemplateOmissionInput(usize),
+    #[error("entry `{actor}::{entry}` does not have template bytes for `{target}`")]
+    UnknownOmittedTemplate { actor: String, entry: String, target: String },
     #[error("template selector `{selector}` requires a selected actor")]
     MissingTemplateSelectorChoice { selector: String },
     #[error("template selector `{selector}` cannot select actor `{actor}`")]
@@ -642,6 +646,7 @@ struct SpawnedActorContext {
 struct HiddenArgContexts<'a> {
     observed: Option<&'a BTreeMap<String, ObservedCovenantContext>>,
     spawned: Option<&'a BTreeMap<(String, String), SpawnedActorContext>>,
+    omitted_template_actors: &'a [&'a str],
 }
 
 impl<'a> ArtifactBundle<'a> {
@@ -833,6 +838,22 @@ impl<'a> TxBuilder<'a> {
     ) -> BuilderResult<Vec<ArtifactValue>> {
         let artifact = contract_ref.artifact;
         let contract = contract_ref.contract;
+        for &target in contexts.omitted_template_actors {
+            let has_template_bytes = artifact_entry.hidden_params.iter().any(|hidden| {
+                matches!(&hidden.subject, HiddenParamSubjectArtifact::Actor { actor } if actor == target)
+                    && matches!(
+                        hidden.purpose,
+                        HiddenParamPurposeArtifact::TemplatePrefixBytes | HiddenParamPurposeArtifact::TemplateSuffixBytes
+                    )
+            });
+            if !has_template_bytes {
+                return Err(BuilderError::UnknownOmittedTemplate {
+                    actor: contract_ref.name.to_string(),
+                    entry: artifact_entry.name.clone(),
+                    target: target.to_string(),
+                });
+            }
+        }
         let mut args = Vec::with_capacity(artifact_entry.hidden_params.len());
         for hidden in &artifact_entry.hidden_params {
             args.push(match &hidden.purpose {
@@ -856,6 +877,11 @@ impl<'a> TxBuilder<'a> {
                         })?
                         .output_index;
                     ArtifactValue::Int(output_index as i64)
+                }
+                HiddenParamPurposeArtifact::TemplatePrefixBytes | HiddenParamPurposeArtifact::TemplateSuffixBytes
+                    if matches!(&hidden.subject, HiddenParamSubjectArtifact::Actor { actor } if contexts.omitted_template_actors.contains(&actor.as_str())) =>
+                {
+                    ArtifactValue::Bytes(Vec::new())
                 }
                 HiddenParamPurposeArtifact::TemplatePrefixBytes => {
                     let template = self.hidden_template(artifact, hidden, artifact_entry, template_selectors, contexts)?;

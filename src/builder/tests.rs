@@ -3484,6 +3484,63 @@ fn same_template_shortcut_redeems_self_transition_and_rejects_changed_template()
 }
 
 #[test]
+fn context_omits_template_bytes_for_an_inactive_route_when_requested() {
+    let artifact = inline_artifact(
+        "inactive-route-template-bytes",
+        r#"
+            state CounterState { int count; }
+
+            actor Counter owns CounterState {
+                entry advance(bool finish) emits next: Counter | Finished {
+                    unrestricted(next.value);
+                    CounterState updated = { count: count + 1 };
+                    if (finish) {
+                        become next <- Finished(updated);
+                    } else {
+                        become next <- Counter(updated);
+                    }
+                }
+            }
+
+            actor Finished owns CounterState {
+                entry close() emits none { require(count > 0); }
+            }
+
+            app Test { actor Counter; actor Finished; }
+        "#,
+    );
+    let builder = TxBuilder::new(&artifact).expect("builder accepts artifact");
+    let state = count_state(4);
+    let covenant_id = Hash::from_bytes([0x51; 32]);
+    let outpoint = TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x52; 32]), index: 0 };
+    let value = 1_000;
+    let utxo = builder.covenant_utxo("Counter", state.clone(), value, 0, false, Some(covenant_id)).expect("counter UTXO builds");
+    let context = |finish, successor| {
+        TxContext::new()
+            .actor_input("Counter", state.clone(), EntryCall::new("advance").args(args![finish]), outpoint, utxo.clone(), 0)
+            .actor_output(successor, count_state(5), CovenantBinding::new(0, covenant_id), value)
+    };
+
+    let continuing = context(false, "Counter");
+    let finished = context(true, "Finished");
+    let default = builder.build(&continuing).expect("default continuation passes");
+    let compact =
+        builder.build_with_template_omissions(&continuing, &[(0, "Finished")]).expect("continuation with empty template bytes passes");
+    assert!(compact.inputs[0].signature_script.len() < default.inputs[0].signature_script.len());
+
+    builder.build(&finished).expect("the active route gets template bytes by default");
+    assert!(builder.build_with_template_omissions(&finished, &[(0, "Finished")]).is_err());
+    assert!(matches!(
+        builder.build_with_template_omissions(&continuing, &[(0, "Unknown")]),
+        Err(BuilderError::UnknownOmittedTemplate { .. })
+    ));
+    assert!(matches!(
+        builder.build_with_template_omissions(&continuing, &[(1, "Finished")]),
+        Err(BuilderError::InvalidTemplateOmissionInput(1))
+    ));
+}
+
+#[test]
 fn exact_continuation_shortcut_redeems_register_player_and_rejects_changed_state() {
     let artifact = example_artifact("examples/stones/app.ag", "stones-exact-continuation");
     let builder = TxBuilder::new(&artifact).expect("builder accepts artifact");
