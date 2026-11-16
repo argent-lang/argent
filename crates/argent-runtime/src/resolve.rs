@@ -1,8 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use argent_artifact::{
     ActorArtifact, ActorTargetArtifact, CardinalityArtifact, CovenantIdSourceArtifact, EntryArtifact, EntryKindArtifact,
-    ObserveArtifact, ObservedActorArtifact, SilContractArtifact, SilEntryArtifact, SpawnArtifact,
+    HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, ObserveArtifact, ObservedActorArtifact, SilContractArtifact,
+    SilEntryArtifact, SpawnArtifact,
 };
 use kaspa_consensus_core::{
     Hash,
@@ -569,29 +570,103 @@ impl<'artifact> TxBuilder<'artifact> {
         Ok(spawned_actors)
     }
 
+    /// Omit only static output-template bytes with no other declared use.
+    fn unused_output_template_actors(
+        &self,
+        context: &ResolveContext<'artifact, '_, '_>,
+        input_index: usize,
+        input: &ResolveActorInput<'artifact, '_, '_>,
+    ) -> BuilderResult<Vec<&'artifact str>> {
+        if !input.artifact_entry.hidden_params.iter().any(|hidden| {
+            matches!(hidden.subject, HiddenParamSubjectArtifact::Actor { .. })
+                && matches!(
+                    hidden.purpose,
+                    HiddenParamPurposeArtifact::TemplatePrefixBytes | HiddenParamPurposeArtifact::TemplateSuffixBytes
+                )
+        }) {
+            return Ok(Vec::new());
+        }
+        let Some(covenant_id) = input.source.utxo.covenant_id else { return Ok(Vec::new()) };
+        let mut required = BTreeSet::new();
+        for output in &context.outputs {
+            // Genesis and other inputs' continuations do not use this input's witnesses.
+            let ResolvedOutputBinding::Existing(binding) = output.binding else { continue };
+            if usize::from(binding.authorizing_input) != input_index || binding.covenant_id != covenant_id {
+                continue;
+            }
+            let ResolvedOutputOwner::Actor(actor) = &output.owner else {
+                // A raw script may be any declared successor. Keep its witnesses.
+                return Ok(Vec::new());
+            };
+            required.insert((actor.contract.artifact.app.as_str(), actor.contract.name));
+        }
+
+        // Optional consumes retain their witnesses even when this transaction has no elements.
+        for consume in &input.artifact_entry.consumes {
+            // Source-facing consume records can retain module-qualified spellings.
+            // Without a canonical target, keep all bytes rather than guess an identity.
+            let Ok(target) = self.contract_ref_in_artifact(input.artifact, &consume.actor) else { return Ok(Vec::new()) };
+            required.insert((target.artifact.app.as_str(), target.name));
+        }
+        for target in input
+            .artifact_entry
+            .observes
+            .iter()
+            .flat_map(|observe| observe.inputs.iter().chain(&observe.outputs))
+            .map(|observed| &observed.target)
+        {
+            if let ActorTargetArtifact::StaticActor { app, actor } = target {
+                let target = if app == &input.artifact.app {
+                    self.contract_ref_in_artifact(input.artifact, actor)?
+                } else {
+                    self.observed_contract_ref(input.artifact, app, actor)?
+                };
+                required.insert((target.artifact.app.as_str(), target.name));
+            }
+        }
+        // Resolved spawn groups provide concrete app/actor identities, including
+        // runtime-selected targets.
+        for spawned in input.spawned_actors.iter().flat_map(|actors| actors.values()) {
+            let target = self.contract_ref_in_app(&spawned.app, &spawned.actor)?;
+            required.insert((target.artifact.app.as_str(), target.name));
+        }
+
+        let mut current_targets = BTreeSet::new();
+        for actor in input.artifact_entry.route_plan.outputs.iter().flat_map(|output| &output.actors) {
+            let target = self.actor_subject_contract_ref(input.artifact, actor)?;
+            current_targets.insert((target.artifact.app.as_str(), target.name));
+        }
+        let mut omitted = BTreeSet::new();
+        for hidden in &input.artifact_entry.hidden_params {
+            if !matches!(
+                hidden.purpose,
+                HiddenParamPurposeArtifact::TemplatePrefixBytes | HiddenParamPurposeArtifact::TemplateSuffixBytes
+            ) {
+                continue;
+            }
+            let HiddenParamSubjectArtifact::Actor { actor } = &hidden.subject else { continue };
+            let target = self.actor_subject_contract_ref(input.artifact, actor)?;
+            let identity = (target.artifact.app.as_str(), target.name);
+            if current_targets.contains(&identity) && !required.contains(&identity) {
+                omitted.insert(actor.as_str());
+            }
+        }
+        Ok(omitted.into_iter().collect())
+    }
+
     /// Resolve compiler-generated arguments from artifact-local routes and the
     /// concrete observed actors selected by the transaction.
-    fn resolve_context_hidden_args(
-        &self,
-        context: &mut ResolveContext<'artifact, '_, '_>,
-        omissions: &[(usize, &str)],
-    ) -> BuilderResult<()> {
-        let mut omitted_by_input = BTreeMap::<usize, Vec<&str>>::new();
-        for &(input_index, actor) in omissions {
-            if !matches!(context.inputs.get(input_index), Some(ResolveInput::Actor(_))) {
-                return Err(BuilderError::InvalidTemplateOmissionInput(input_index));
-            }
-            omitted_by_input.entry(input_index).or_default().push(actor);
-        }
-        for (input_index, input) in context.inputs.iter_mut().enumerate() {
+    fn resolve_context_hidden_args(&self, context: &mut ResolveContext<'artifact, '_, '_>) -> BuilderResult<()> {
+        for input_index in 0..context.inputs.len() {
+            let input = &context.inputs[input_index];
             let ResolveInput::Actor(input) = input else {
                 continue;
             };
-
+            let omitted_template_actors = self.unused_output_template_actors(context, input_index, input)?;
             let args = input.args.as_ref().expect("argument resolution precedes hidden-argument resolution");
             let observations = input.observations.as_ref().expect("observation resolution precedes hidden-argument resolution");
             let spawned_actors = input.spawned_actors.as_ref().expect("spawn resolution precedes hidden-argument resolution");
-            input.hidden_args = Some(self.resolve_hidden_args_in_artifact(
+            let hidden_args = self.resolve_hidden_args_in_artifact(
                 input.contract_ref(),
                 input.artifact_entry,
                 &input.source.state,
@@ -599,9 +674,11 @@ impl<'artifact> TxBuilder<'artifact> {
                 HiddenArgContexts {
                     observed: Some(observations),
                     spawned: Some(spawned_actors),
-                    omitted_template_actors: omitted_by_input.get(&input_index).map_or(&[], Vec::as_slice),
+                    omitted_template_actors: &omitted_template_actors,
                 },
-            )?);
+            )?;
+            let ResolveInput::Actor(input) = &mut context.inputs[input_index] else { unreachable!() };
+            input.hidden_args = Some(hidden_args);
         }
 
         Ok(())
@@ -678,24 +755,16 @@ impl<'artifact> TxBuilder<'artifact> {
     /// Build, validate, and finalize the transaction described by `context`.
     ///
     /// Artifact-local routes and concrete observed actors supply all
-    /// compiler-generated witness arguments.
+    /// compiler-generated witness arguments. Unused static output-template bytes
+    /// are omitted when no other declared use needs them. ABI positions are unchanged.
     pub fn build(&self, context: &TxContext<'_>) -> BuilderResult<Transaction> {
-        self.build_with_template_omissions(context, &[])
-    }
-
-    /// Build a transaction, encoding empty prefix and suffix arguments for the
-    /// static actor templates listed as `(input_index, actor)` in `omissions`.
-    ///
-    /// The caller must know that the selected path for that input does not use
-    /// those bytes. The transaction still runs through normal script validation.
-    pub fn build_with_template_omissions(&self, context: &TxContext<'_>, omissions: &[(usize, &str)]) -> BuilderResult<Transaction> {
         let mut context = self.bind_context(context)?;
         let unsigned = self.unsigned_transaction(&context)?;
         self.validate_leader_actor_input_counts(&context)?;
         self.resolve_context_args(&mut context, &unsigned)?;
         self.resolve_context_observations(&mut context, &unsigned)?;
         self.resolve_context_spawns(&mut context)?;
-        self.resolve_context_hidden_args(&mut context, omissions)?;
+        self.resolve_context_hidden_args(&mut context)?;
         let mut signature_scripts = Vec::with_capacity(context.inputs.len());
 
         for (input_index, input) in context.inputs.iter().enumerate() {
@@ -1534,6 +1603,86 @@ mod tests {
             builder.resolve_context_args(&mut resolved, &unsigned),
             Err(BuilderError::Codec(silverscript_abi::CodecError::WrongArgumentCount { expected: 1, actual: 0, .. }))
         ));
+    }
+
+    #[test]
+    fn template_pruning_uses_resolved_identity_and_only_existing_authorized_outputs() {
+        let primary = artifact("primary", "Counter", "bump");
+        let attached = artifact("asset", "Counter", "bump");
+        let bundle = ArtifactBundle::new(&primary).expect("primary").with_app("asset", &attached).expect("attached app");
+        let builder = TxBuilder::from_bundle(&bundle).expect("builder");
+        let covenant_id = Hash::from_bytes([0x80; 32]);
+        let utxo = builder.covenant_utxo("Counter", state(2), 1_000, 0, false, Some(covenant_id)).expect("input UTXO");
+        let context = TxContext::new().actor_input("Counter", state(2), "bump", outpoint(1), utxo, 0).actor_output(
+            "asset::Counter",
+            state(3),
+            CovenantBinding::new(0, covenant_id),
+            1_000,
+        );
+
+        // This metadata seam tests the pruning classifier, not generated contracts:
+        // attach one static byte witness and current target to the minimal test entry.
+        let mut entry = primary.argent.actors[0].entries[0].clone();
+        entry.route_plan.outputs.push(argent_artifact::RouteOutputHandleArtifact {
+            name: "next".to_string(),
+            auth_index: Some(0),
+            actors: vec!["Counter".to_string()],
+        });
+        entry.hidden_params.push(argent_artifact::HiddenParamArtifact {
+            recipe_id: "test".to_string(),
+            name: "prefix".to_string(),
+            ty: TypeArtifact::Bytes,
+            subject: HiddenParamSubjectArtifact::Actor { actor: "Counter".to_string() },
+            purpose: HiddenParamPurposeArtifact::TemplatePrefixBytes,
+            route_proof_id: None,
+        });
+        let mut resolved = builder.bind_context(&context).expect("context binds");
+        let ResolveInput::Actor(input) = &mut resolved.inputs[0] else { unreachable!() };
+        input.artifact_entry = &entry;
+        let omissions = |resolved: &ResolveContext<'_, '_, '_>| {
+            let ResolveInput::Actor(input) = &resolved.inputs[0] else { unreachable!() };
+            builder
+                .unused_output_template_actors(resolved, 0, input)
+                .expect("pruning plan")
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+
+        // A foreign actor with the same name is not the selected-app actor.
+        assert_eq!(omissions(&resolved), ["Counter"]);
+        resolved.outputs[0].owner = ResolvedOutputOwner::Actor(ResolvedActor {
+            contract: builder.contract_ref_in_artifact(&primary, "Counter").expect("primary Counter"),
+            state: state(3),
+        });
+        assert!(omissions(&resolved).is_empty());
+        resolved.outputs[0].owner = ResolvedOutputOwner::Spk(ScriptPublicKey::default());
+        assert!(omissions(&resolved).is_empty(), "raw successor retains all bytes");
+        resolved.outputs[0].binding = ResolvedOutputBinding::Existing(CovenantBinding::new(1, covenant_id));
+        assert_eq!(omissions(&resolved), ["Counter"], "another authorizer's raw output is unrelated");
+        resolved.outputs[0].binding = ResolvedOutputBinding::Existing(CovenantBinding::new(0, Hash::from_bytes([0x81; 32])));
+        assert_eq!(omissions(&resolved), ["Counter"], "another covenant is unrelated even under the same authorizer");
+        resolved.outputs[0].binding = ResolvedOutputBinding::Genesis {
+            binding: CovenantBinding::new(0, covenant_id),
+            group: GenesisGroupName::Spawn("test".to_string()),
+        };
+        assert_eq!(omissions(&resolved), ["Counter"], "genesis is not a continuation");
+        resolved.outputs[0].binding = ResolvedOutputBinding::Unbound;
+        assert_eq!(omissions(&resolved), ["Counter"], "an ordinary raw output is unrelated");
+
+        // Non-Actor witnesses must not become pruning candidates, even if their
+        // subject text or parameter purpose resembles a static template witness.
+        for subject in [
+            HiddenParamSubjectArtifact::TemplateSelector { selector: "Counter".to_string() },
+            HiddenParamSubjectArtifact::RouteFamily { family_id: "Counter".to_string() },
+        ] {
+            let mut other = entry.clone();
+            other.hidden_params[0].subject = subject;
+            let mut alternative = builder.bind_context(&context).expect("context binds");
+            let ResolveInput::Actor(input) = &mut alternative.inputs[0] else { unreachable!() };
+            input.artifact_entry = &other;
+            assert!(omissions(&alternative).is_empty());
+        }
     }
 
     #[test]

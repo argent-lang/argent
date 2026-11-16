@@ -57,6 +57,7 @@ fn fixture_ast(source: &str) -> serde_json::Value {
 }
 
 mod genesis_proof;
+mod template_omissions;
 
 static ARTIFACT_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -3029,6 +3030,17 @@ fn toy_chess_builder_redeems_route_family_and_worker_paths() {
     let player_contract = artifact.sil_abi.contract("Player").expect("Player contract exists");
     let enter_mux = player_contract.entry("enter_mux").expect("enter_mux ABI exists");
     let mux_template = sil_template(artifact.sil_abi.contract("Mux").expect("Mux contract exists"));
+    template_omissions::assert_signature_args(
+        &artifact,
+        "Player",
+        "enter_mux",
+        &enter_mux_tx.inputs[0].signature_script,
+        vec![
+            ArtifactValue::Bytes(mux_template.prefix.clone()),
+            ArtifactValue::Bytes(mux_template.suffix.clone()),
+            ArtifactValue::Bytes(route_family_table_bytes(&artifact, "route_family/BoardState/mux")),
+        ],
+    );
     let mut wrong_routes = route_family_table_bytes(&artifact, "route_family/BoardState/mux");
     wrong_routes[0] ^= 1;
     let bad_route_table_sigscript = encode_entry_sig_script(
@@ -3075,6 +3087,14 @@ fn toy_chess_builder_redeems_route_family_and_worker_paths() {
         .actor_output("Pawn", dynamic_pawn_next.clone(), CovenantBinding::new(0, covenant_id), input_value);
     let context_tx = builder.build(&context).expect("context builder resolves the dynamic route witnesses");
     assert!(context_tx.inputs[0].compute_commit.compute_budget().is_some());
+    let pawn_template = sil_template(artifact.sil_abi.contract("Pawn").expect("Pawn contract exists"));
+    template_omissions::assert_signature_args(
+        &artifact,
+        "Mux",
+        "choose",
+        &context_tx.inputs[0].signature_script,
+        vec![ArtifactValue::Int(0), ArtifactValue::Bytes(pawn_template.prefix), ArtifactValue::Bytes(pawn_template.suffix)],
+    );
 
     let dynamic_knight = TxContext::new()
         .actor_input(
@@ -3481,63 +3501,6 @@ fn same_template_shortcut_redeems_self_transition_and_rejects_changed_template()
         .actor_input("Foo", initial, EntryCall::new("bump").args(args![5]), outpoint, input_utxo, 0)
         .actor_output("Bar", next, CovenantBinding::new(0, covenant_id), input_value);
     assert!(builder.build(&wrong_template).is_err(), "same-template validation must reject a different actor template");
-}
-
-#[test]
-fn context_omits_template_bytes_for_an_inactive_route_when_requested() {
-    let artifact = inline_artifact(
-        "inactive-route-template-bytes",
-        r#"
-            state CounterState { int count; }
-
-            actor Counter owns CounterState {
-                entry advance(bool finish) emits next: Counter | Finished {
-                    unrestricted(next.value);
-                    CounterState updated = { count: count + 1 };
-                    if (finish) {
-                        become next <- Finished(updated);
-                    } else {
-                        become next <- Counter(updated);
-                    }
-                }
-            }
-
-            actor Finished owns CounterState {
-                entry close() emits none { require(count > 0); }
-            }
-
-            app Test { actor Counter; actor Finished; }
-        "#,
-    );
-    let builder = TxBuilder::new(&artifact).expect("builder accepts artifact");
-    let state = count_state(4);
-    let covenant_id = Hash::from_bytes([0x51; 32]);
-    let outpoint = TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x52; 32]), index: 0 };
-    let value = 1_000;
-    let utxo = builder.covenant_utxo("Counter", state.clone(), value, 0, false, Some(covenant_id)).expect("counter UTXO builds");
-    let context = |finish, successor| {
-        TxContext::new()
-            .actor_input("Counter", state.clone(), EntryCall::new("advance").args(args![finish]), outpoint, utxo.clone(), 0)
-            .actor_output(successor, count_state(5), CovenantBinding::new(0, covenant_id), value)
-    };
-
-    let continuing = context(false, "Counter");
-    let finished = context(true, "Finished");
-    let default = builder.build(&continuing).expect("default continuation passes");
-    let compact =
-        builder.build_with_template_omissions(&continuing, &[(0, "Finished")]).expect("continuation with empty template bytes passes");
-    assert!(compact.inputs[0].signature_script.len() < default.inputs[0].signature_script.len());
-
-    builder.build(&finished).expect("the active route gets template bytes by default");
-    assert!(builder.build_with_template_omissions(&finished, &[(0, "Finished")]).is_err());
-    assert!(matches!(
-        builder.build_with_template_omissions(&continuing, &[(0, "Unknown")]),
-        Err(BuilderError::UnknownOmittedTemplate { .. })
-    ));
-    assert!(matches!(
-        builder.build_with_template_omissions(&continuing, &[(1, "Finished")]),
-        Err(BuilderError::InvalidTemplateOmissionInput(1))
-    ));
 }
 
 #[test]
