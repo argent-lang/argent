@@ -585,7 +585,7 @@ impl<'artifact> TxBuilder<'artifact> {
     /// Omit only static output-template bytes with no other declared use.
     fn unused_output_template_actors(
         &self,
-        context: &ResolveContext<'artifact, '_, '_>,
+        outputs: &[ResolvedOutput<'artifact>],
         input_index: usize,
         input: &ResolveActorInput<'artifact, '_, '_>,
     ) -> BuilderResult<Vec<&'artifact str>> {
@@ -600,7 +600,7 @@ impl<'artifact> TxBuilder<'artifact> {
         }
         let Some(covenant_id) = input.source.utxo.covenant_id else { return Ok(Vec::new()) };
         let mut required = BTreeSet::new();
-        for output in &context.outputs {
+        for output in outputs {
             // Genesis and other inputs' continuations do not use this input's witnesses.
             let ResolvedOutputBinding::Existing(binding) = output.binding else { continue };
             if usize::from(binding.authorizing_input) != input_index || binding.covenant_id != covenant_id {
@@ -669,16 +669,15 @@ impl<'artifact> TxBuilder<'artifact> {
     /// Resolve compiler-generated arguments from artifact-local routes and the
     /// concrete observed actors selected by the transaction.
     fn resolve_context_hidden_args(&self, context: &mut ResolveContext<'artifact, '_, '_>) -> BuilderResult<()> {
-        for input_index in 0..context.inputs.len() {
-            let input = &context.inputs[input_index];
+        for (input_index, input) in context.inputs.iter_mut().enumerate() {
             let ResolveInput::Actor(input) = input else {
                 continue;
             };
-            let omitted_template_actors = self.unused_output_template_actors(context, input_index, input)?;
+            let omitted_template_actors = self.unused_output_template_actors(&context.outputs, input_index, input)?;
             let args = input.args.as_ref().expect("argument resolution precedes hidden-argument resolution");
             let observations = input.observations.as_ref().expect("observation resolution precedes hidden-argument resolution");
             let spawned_actors = input.spawned_actors.as_ref().expect("spawn resolution precedes hidden-argument resolution");
-            let hidden_args = self.resolve_hidden_args_in_artifact(
+            input.hidden_args = Some(self.resolve_hidden_args_in_artifact(
                 input.contract_ref(),
                 input.artifact_entry,
                 &input.source.state,
@@ -688,9 +687,7 @@ impl<'artifact> TxBuilder<'artifact> {
                     spawned: Some(spawned_actors),
                     omitted_template_actors: &omitted_template_actors,
                 },
-            )?;
-            let ResolveInput::Actor(input) = &mut context.inputs[input_index] else { unreachable!() };
-            input.hidden_args = Some(hidden_args);
+            )?);
         }
 
         Ok(())
@@ -1652,7 +1649,7 @@ mod tests {
         let omissions = |resolved: &ResolveContext<'_, '_, '_>| {
             let ResolveInput::Actor(input) = &resolved.inputs[0] else { unreachable!() };
             builder
-                .unused_output_template_actors(resolved, 0, input)
+                .unused_output_template_actors(&resolved.outputs, 0, input)
                 .expect("pruning plan")
                 .into_iter()
                 .map(str::to_owned)
