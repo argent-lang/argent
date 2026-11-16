@@ -396,6 +396,10 @@ pub enum BuilderError {
     GenesisOutputIndexOverflow(usize),
     #[error("actor output {output_index} `{actor}` must have an existing or genesis covenant binding")]
     UnboundActorOutput { output_index: usize, actor: String },
+    #[error(
+        "actor output {output_index} from app `{target_app}` cannot continue actor input {authorizing_input} from app `{source_app}`"
+    )]
+    ActorOutputAppMismatch { output_index: usize, authorizing_input: u16, source_app: String, target_app: String },
     #[error("genesis actor output {output_index} `{actor}` must have static state")]
     GenesisOutputStateCallback { output_index: usize, actor: String },
     #[error("failed to build state for actor output {output_index} `{actor}`: {source}")]

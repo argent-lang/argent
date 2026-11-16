@@ -371,6 +371,8 @@ impl<'a> TxContext<'a> {
     }
 
     /// Append an actor covenant output.
+    ///
+    /// If its authorizing input is an actor, the output must belong to the same app.
     pub fn actor_output(
         mut self,
         actor: impl Into<ActorPath>,

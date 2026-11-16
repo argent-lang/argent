@@ -228,7 +228,19 @@ impl<'artifact> TxBuilder<'artifact> {
             }
             let owner = match &output.owner {
                 OutputOwner::Actor { actor, state } => {
-                    BoundOutputOwner::Actor { path: actor, contract: self.bind_actor(actor)?, state }
+                    let contract = self.bind_actor(actor)?;
+                    if let OutputCovenant::Existing(binding) = output.covenant
+                        && let Some(ResolveInput::Actor(authorizer)) = inputs.get(usize::from(binding.authorizing_input))
+                        && authorizer.artifact.app != contract.artifact.app
+                    {
+                        return Err(BuilderError::ActorOutputAppMismatch {
+                            output_index,
+                            authorizing_input: binding.authorizing_input,
+                            source_app: authorizer.artifact.app.clone(),
+                            target_app: contract.artifact.app.clone(),
+                        });
+                    }
+                    BoundOutputOwner::Actor { path: actor, contract, state }
                 }
                 OutputOwner::Spk(script_public_key) => BoundOutputOwner::Spk(script_public_key),
             };
@@ -1606,15 +1618,13 @@ mod tests {
     }
 
     #[test]
-    fn template_pruning_uses_resolved_identity_and_only_existing_authorized_outputs() {
+    fn template_pruning_uses_only_existing_authorized_outputs() {
         let primary = artifact("primary", "Counter", "bump");
-        let attached = artifact("asset", "Counter", "bump");
-        let bundle = ArtifactBundle::new(&primary).expect("primary").with_app("asset", &attached).expect("attached app");
-        let builder = TxBuilder::from_bundle(&bundle).expect("builder");
+        let builder = TxBuilder::new(&primary).expect("builder");
         let covenant_id = Hash::from_bytes([0x80; 32]);
         let utxo = builder.covenant_utxo("Counter", state(2), 1_000, 0, false, Some(covenant_id)).expect("input UTXO");
         let context = TxContext::new().actor_input("Counter", state(2), "bump", outpoint(1), utxo, 0).actor_output(
-            "asset::Counter",
+            "primary::Counter",
             state(3),
             CovenantBinding::new(0, covenant_id),
             1_000,
@@ -1649,12 +1659,6 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        // A foreign actor with the same name is not the selected-app actor.
-        assert_eq!(omissions(&resolved), ["Counter"]);
-        resolved.outputs[0].owner = ResolvedOutputOwner::Actor(ResolvedActor {
-            contract: builder.contract_ref_in_artifact(&primary, "Counter").expect("primary Counter"),
-            state: state(3),
-        });
         assert!(omissions(&resolved).is_empty());
         resolved.outputs[0].owner = ResolvedOutputOwner::Spk(ScriptPublicKey::default());
         assert!(omissions(&resolved).is_empty(), "raw successor retains all bytes");
@@ -1683,6 +1687,20 @@ mod tests {
             input.artifact_entry = &other;
             assert!(omissions(&alternative).is_empty());
         }
+    }
+
+    #[test]
+    fn ordinary_authorizers_do_not_impose_an_actor_app_on_outputs() {
+        let primary = artifact("primary", "Counter", "bump");
+        let attached = artifact("asset", "Counter", "bump");
+        let bundle = ArtifactBundle::new(&primary).expect("primary").with_app("asset", &attached).expect("attached app");
+        let builder = TxBuilder::from_bundle(&bundle).expect("builder");
+        let covenant_id = Hash::from_bytes([0x83; 32]);
+        let context = TxContext::new()
+            .input(outpoint(1), UtxoEntry::new(1_000, ScriptPublicKey::default(), 0, false, Some(covenant_id)), Vec::new(), 0)
+            .actor_output("asset::Counter", state(3), CovenantBinding::new(0, covenant_id), 1_000);
+        let resolved = builder.bind_context(&context).expect("ordinary input has no nominal app restriction");
+        assert!(matches!(&resolved.outputs[0].owner, ResolvedOutputOwner::Actor(actor) if actor.contract.artifact.app == "asset"));
     }
 
     #[test]

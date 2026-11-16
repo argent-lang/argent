@@ -1,9 +1,11 @@
 use super::*;
 
 fn counter_artifact() -> Artifact {
-    inline_artifact(
-        "inactive-route-template-bytes",
-        r#"
+    counter_artifact_named("Test")
+}
+
+fn counter_artifact_named(app: &str) -> Artifact {
+    let source = r#"
             state CounterState { int count; }
             actor Counter owns CounterState {
                 entry advance(bool finish) emits next: Counter | Finished {
@@ -20,8 +22,8 @@ fn counter_artifact() -> Artifact {
                 entry close() emits none { require(count > 0); }
             }
             app Test { actor Counter; actor Finished; }
-        "#,
-    )
+        "#;
+    inline_artifact("inactive-route-template-bytes", &source.replace("app Test", &format!("app {app}")))
 }
 
 fn assert_counter_signature(artifact: &Artifact, tx: &Transaction, input_index: usize, finish: bool, include_template: bool) {
@@ -69,6 +71,59 @@ fn static_template_bytes_follow_the_actual_successor() {
     for invalid in [context(true, "Finished", 6), context(true, "Counter", 5), context(false, "Finished", 5)] {
         assert!(matches!(builder.build(&invalid), Err(BuilderError::InputScript { input_index: 0, .. })));
     }
+}
+
+#[test]
+fn typed_continuations_stay_in_the_authorizing_actor_app_even_for_identical_templates() {
+    let primary = counter_artifact();
+    let remote = counter_artifact_named("Remote");
+    let local_contract = primary.sil_abi.contract("Finished").expect("local Finished");
+    let remote_contract = remote.sil_abi.contract("Finished").expect("remote Finished");
+    assert_eq!(local_contract.compiled.bytecode, remote_contract.compiled.bytecode);
+    assert_eq!(local_contract.compiled.template_hash, remote_contract.compiled.template_hash);
+    let bundle = ArtifactBundle::new(&primary).expect("primary").with_artifact(&remote).expect("remote");
+    let builder = TxBuilder::from_bundle(&bundle).expect("builder");
+    let covenant_id = Hash::from_bytes([0x67; 32]);
+    let counter = builder.covenant_utxo("Counter", count_state(4), 1_000, 0, false, Some(covenant_id)).expect("Counter UTXO");
+    let context = || {
+        TxContext::new()
+            .input(
+                TransactionOutpoint::new(TransactionId::from_bytes([0x68; 32]), 0),
+                UtxoEntry::new(100, ScriptPublicKey::new(0, vec![OpTrue].into()), 0, false, None),
+                Vec::new(),
+                0,
+            )
+            .actor_input(
+                "Counter",
+                count_state(4),
+                EntryCall::new("advance").args(args![true]),
+                TransactionOutpoint::new(TransactionId::from_bytes([0x69; 32]), 0),
+                counter.clone(),
+                0,
+            )
+    };
+    let state_called = Cell::new(false);
+    let invalid = context().actor_output(
+        "remote::Finished",
+        state_with(|_| {
+            state_called.set(true);
+            count_state(5)
+        }),
+        CovenantBinding::new(1, covenant_id),
+        1_000,
+    );
+    let error = builder.build(&invalid).expect_err("typed continuations must stay in the authorizing actor's app");
+    assert!(matches!(error, BuilderError::ActorOutputAppMismatch {
+        output_index: 0, authorizing_input: 1, source_app, target_app,
+    } if source_app == "Test" && target_app == "Remote"));
+    assert!(!state_called.get(), "reject before evaluating deferred output state");
+
+    // Raw scripts carry no nominal app identity. The byte-identical successor
+    // remains valid, and the unknown-output fallback preserves its witnesses.
+    let output = builder.covenant_utxo("remote::Finished", count_state(5), 1_000, 0, false, Some(covenant_id)).expect("raw UTXO");
+    let raw = context().output(output.script_public_key, Some(CovenantBinding::new(1, covenant_id)), 1_000);
+    let transaction = builder.build(&raw).expect("the raw identical successor passes normal script validation");
+    assert_counter_signature(&primary, &transaction, 1, true, true);
 }
 
 #[test]
