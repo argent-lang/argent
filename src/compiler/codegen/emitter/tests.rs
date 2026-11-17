@@ -17,6 +17,8 @@ use crate::compiler::naming::to_snake;
 use crate::compiler::syntax::node::ModuleId;
 use crate::routing::{CommitmentNode, RouteGraph, SelectorRequirement};
 
+#[path = "hidden_param_usage_tests.rs"]
+mod hidden_param_usage;
 #[path = "output_naming_tests.rs"]
 mod output_naming;
 
@@ -6050,7 +6052,7 @@ fn static_current_actor_targets_do_not_request_template_witnesses() {
             let entry_id = crate::compiler::syntax::node::EntryId { actor: actor_id, index: 0 };
             let reads_current = input_name != "none";
             let uses = model.entry_template_uses(entry_id).expect("template uses resolve");
-            assert_eq!(uses.reads.contains(&crate::compiler::model::StaticActorId::InApp(actor_id)), reads_current, "{case}");
+            assert_eq!(uses.reads().contains(&crate::compiler::model::StaticActorId::InApp(actor_id)), reads_current, "{case}");
             let plan = model.witness_plan_by_id(entry_id).expect("witness plan resolves");
             assert!(plan.roles.iter().all(|role| !matches!(role, crate::compiler::model::WitnessRole::Template { index, .. } if plan.templates[*index].actor == "Counter")), "{case}");
             let actor_sil = actor_sil_for_model(&model);

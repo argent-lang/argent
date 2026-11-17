@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "1f2e74b1eff7c5036ead6be95c991894628a0e922ab81c253171d283d166e795",
+  "id": "34f46e15b0e10e127a148e1a0b8d3c709b1762610d73b7190e7d01d4b8551544",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -673,7 +673,8 @@
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/mux/template_suffix_bytes",
@@ -687,7 +688,8 @@
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/mux/route_family_table",
@@ -955,7 +957,8 @@
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/archive/template_suffix_bytes",
@@ -969,7 +972,8 @@
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               }
             ],
             "template_selectors": [],
@@ -1198,7 +1202,8 @@
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/pawn/template_suffix_bytes",
@@ -1212,7 +1217,8 @@
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/mux/route_family_table",

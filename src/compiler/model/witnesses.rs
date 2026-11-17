@@ -34,6 +34,8 @@ pub(crate) struct TemplateWitnessSpec {
     pub(crate) actor: String,
     pub(crate) form: TemplateWitnessForm,
     pub(crate) source: TemplateWitnessSource,
+    /// All shared uses are current-covenant output validation, not input or foreign uses.
+    pub(crate) current_outputs_only: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -256,7 +258,7 @@ impl WitnessPlan {
             .filter(|interaction| interaction.cardinality().range_bounds().is_some_and(|(minimum, _)| minimum == 0))
             .flat_map(|interaction| interaction.target().static_actors().cloned())
             .collect::<BTreeSet<_>>();
-        let mut required = uses.reads.union(&uses.writes).cloned().collect::<BTreeSet<_>>();
+        let mut required = uses.reads().union(uses.writes()).cloned().collect::<BTreeSet<_>>();
         let mut templates = Vec::new();
         for (actor_id, target) in model.app_actors.iter_with_ids() {
             let id = StaticActorId::InApp(actor_id);
@@ -264,29 +266,33 @@ impl WitnessPlan {
                 templates.push(TemplateWitnessSpec {
                     id: id.clone(),
                     actor: target.to_string(),
-                    form: if uses.writes.contains(&id) && !uses.reads.contains(&id) {
+                    form: if uses.writes().contains(&id) && !uses.reads().contains(&id) {
                         TemplateWitnessForm::Bytes
                     } else {
                         TemplateWitnessForm::Len
                     },
                     source: TemplateWitnessSource::Field,
+                    current_outputs_only: uses.current_outputs_only(&id),
                 });
             }
         }
         for id in required {
             templates.push(TemplateWitnessSpec {
-                form: if uses.writes.contains(&id) && !uses.reads.contains(&id) {
+                form: if uses.writes().contains(&id) && !uses.reads().contains(&id) {
                     TemplateWitnessForm::Bytes
                 } else {
                     TemplateWitnessForm::Len
                 },
                 actor: model.static_actor_reference(&id)?,
+                current_outputs_only: uses.current_outputs_only(&id),
                 id,
                 source: TemplateWitnessSource::Field,
             });
         }
         for spec in &mut templates {
-            if spec.id != StaticActorId::InApp(source_id) && optional_input_actors.contains(&spec.id) && uses.writes.contains(&spec.id)
+            if spec.id != StaticActorId::InApp(source_id)
+                && optional_input_actors.contains(&spec.id)
+                && uses.writes().contains(&spec.id)
             {
                 let target = model
                     .state_lowering_by_id(source_id)?
@@ -298,7 +304,7 @@ impl WitnessPlan {
             }
         }
         let mut family_specs = BTreeMap::<String, RouteFamilyWitnessSpec>::new();
-        for target in &uses.writes {
+        for target in uses.writes() {
             let StaticActorId::InApp(target_id) = target else { continue };
             if *target_id == source_id {
                 continue;

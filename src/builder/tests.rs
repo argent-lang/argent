@@ -2,8 +2,8 @@ use super::*;
 use crate::{
     artifact::{
         ActorTargetArtifact, ActorTemplateArtifact, ArtifactIdentityError, ArtifactVerificationError, HiddenParamPurposeArtifact,
-        HiddenParamSubjectArtifact, ObservedTargetArtifact, SilAbiVerificationError, SilContractArtifact, TemplatePlanError,
-        TypeArtifact, route_template_proof_receipt_id, route_template_table_receipt_id,
+        HiddenParamSubjectArtifact, HiddenParamUsage, ObservedTargetArtifact, SilAbiVerificationError, SilContractArtifact,
+        TemplatePlanError, TypeArtifact, route_template_proof_receipt_id, route_template_table_receipt_id,
     },
     codec::{CodecError, decode_hex, encode_entry_sig_script},
 };

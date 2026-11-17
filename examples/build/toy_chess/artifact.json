@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "7233a9b26e541ea1d872432a5a3781cbabf44cb20a22319d320d43006d94b2aa",
+  "id": "8f96e01854d88a55b517f7fdceec70d284984f34021b144f81024106e5a1e3f8",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -653,7 +653,8 @@
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/player/template_suffix_bytes",
@@ -667,7 +668,8 @@
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               }
             ],
             "template_selectors": [],
@@ -776,7 +778,8 @@
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/mux/template_suffix_bytes",
@@ -790,7 +793,8 @@
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/mux/route_family_table",
@@ -1184,7 +1188,8 @@
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/pawn/template_suffix_bytes",
@@ -1198,7 +1203,8 @@
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               }
             ],
             "template_selectors": [],
@@ -1297,7 +1303,8 @@
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/knight/template_suffix_bytes",
@@ -1311,7 +1318,8 @@
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               }
             ],
             "template_selectors": [],
@@ -1419,7 +1427,8 @@
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/mux/template_suffix_bytes",
@@ -1433,7 +1442,8 @@
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               }
             ],
             "template_selectors": [],
@@ -1541,7 +1551,8 @@
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/mux/template_suffix_bytes",
@@ -1555,7 +1566,8 @@
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               }
             ],
             "template_selectors": [],

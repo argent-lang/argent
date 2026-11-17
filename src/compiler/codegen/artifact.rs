@@ -796,6 +796,14 @@ fn hidden_params_for_entry(
             ty,
             subject,
             purpose,
+            usage: match role {
+                WitnessRole::Template { index, .. }
+                    if plan.templates[index].form == TemplateWitnessForm::Bytes && plan.templates[index].current_outputs_only =>
+                {
+                    HiddenParamUsage::CurrentOutputsOnly
+                }
+                _ => HiddenParamUsage::General,
+            },
             route_proof_id: None,
         });
     }

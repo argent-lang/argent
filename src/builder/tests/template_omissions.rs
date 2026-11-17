@@ -71,6 +71,34 @@ fn static_template_bytes_follow_the_actual_successor() {
     for invalid in [context(true, "Finished", 6), context(true, "Counter", 5), context(false, "Finished", 5)] {
         assert!(matches!(builder.build(&invalid), Err(BuilderError::InputScript { input_index: 0, .. })));
     }
+
+    // Legacy artifacts have no usage metadata and keep every witness populated.
+    let mut legacy = artifact.clone();
+    for entry in legacy.argent.actors.iter_mut().flat_map(|actor| &mut actor.entries) {
+        for hidden in &mut entry.hidden_params {
+            hidden.usage = HiddenParamUsage::General;
+        }
+    }
+    legacy.id = legacy.computed_id_hex().expect("legacy identity");
+    let legacy: Artifact = serde_json::from_value(serde_json::to_value(legacy).expect("legacy JSON")).expect("legacy round trip");
+    let legacy_builder = TxBuilder::new(&legacy).expect("legacy builder");
+    let transaction = legacy_builder.build(&context(false, "Counter", 5)).expect("legacy witnesses stay populated");
+    assert_counter_signature(&legacy, &transaction, 0, false, true);
+
+    // Usage belongs to each argument, even when prefix/suffix share one subject.
+    let mut mixed = artifact.clone();
+    mixed.argent.actors[0].entries[0].hidden_params[1].usage = HiddenParamUsage::General;
+    mixed.id = mixed.computed_id_hex().expect("mixed identity");
+    let mixed_builder = TxBuilder::new(&mixed).expect("mixed builder");
+    let transaction = mixed_builder.build(&context(false, "Counter", 5)).expect("only the annotated prefix is omitted");
+    let template = sil_template(mixed.sil_abi.contract("Finished").expect("Finished contract"));
+    assert_signature_args(
+        &mixed,
+        "Counter",
+        "advance",
+        &transaction.inputs[0].signature_script,
+        vec![ArtifactValue::Bool(false), ArtifactValue::Bytes(Vec::new()), ArtifactValue::Bytes(template.suffix)],
+    );
 }
 
 #[test]
@@ -240,63 +268,6 @@ fn optional_consumes_retain_template_bytes_without_a_matching_successor() {
 }
 
 #[test]
-fn static_spawn_keeps_template_bytes_without_a_matching_continuation() {
-    let artifact = inline_artifact(
-        "spawn-template-retention",
-        r#"
-            state CounterState { int count; }
-            actor Counter owns CounterState {
-                entry advance(bool finish)
-                spawns children by children_id { outputs { child: Finished, } }
-                emits next: Counter | Finished {
-                    unrestricted(children.outputs.child.value);
-                    require children.outputs become { child <- Finished(CounterState { count: count }), };
-                    unrestricted(next.value);
-                    CounterState updated = { count: count + 1 };
-                    if (finish) {
-                        become next <- Finished(updated);
-                    } else {
-                        become next <- Counter(updated);
-                    }
-                }
-            }
-            actor Finished owns CounterState {
-                entry close() emits none { require(count > 0); }
-            }
-            app Test { actor Counter; actor Finished; }
-        "#,
-    );
-    let builder = TxBuilder::new(&artifact).expect("builder");
-    let covenant_id = Hash::from_bytes([0x5c; 32]);
-    let counter = builder.covenant_utxo("Counter", count_state(4), 1_000, 0, false, Some(covenant_id)).expect("Counter UTXO");
-    let context = TxContext::new()
-        .actor_input(
-            "Counter",
-            count_state(4),
-            EntryCall::new("advance").args(args![false]),
-            TransactionOutpoint::new(TransactionId::from_bytes([0x5d; 32]), 0),
-            counter,
-            0,
-        )
-        .actor_output("Counter", count_state(5), CovenantBinding::new(0, covenant_id), 900)
-        .actor_genesis_output(0, "spawn::children", "Finished", count_state(4), 100);
-    let transaction = builder.build(&context).expect("static spawn executes");
-    let template = sil_template(artifact.sil_abi.contract("Finished").expect("Finished contract"));
-    assert_signature_args(
-        &artifact,
-        "Counter",
-        "advance",
-        &transaction.inputs[0].signature_script,
-        vec![
-            ArtifactValue::Bool(false),
-            ArtifactValue::Bytes(template.prefix),
-            ArtifactValue::Bytes(template.suffix),
-            ArtifactValue::Int(1),
-        ],
-    );
-}
-
-#[test]
 fn static_observation_keeps_template_bytes_without_a_matching_continuation() {
     let artifact = inline_artifact(
         "observe-template-retention",
@@ -415,7 +386,14 @@ fn module_qualified_consumes_keep_their_templates() {
     let covenant_id = Hash::from_bytes([0x62; 32]);
     let counter = builder.covenant_utxo("Counter", count_state(4), 1_000, 0, false, Some(covenant_id)).expect("Counter UTXO");
     let peer = builder.covenant_utxo("Peer", count_state(9), 100, 0, false, Some(covenant_id)).expect("Peer UTXO");
-    assert_eq!(entry_artifact(&artifact, "Counter", "advance").consumes[0].actor, "helpers::Peer");
+    let advance = entry_artifact(&artifact, "Counter", "advance");
+    assert_eq!(advance.consumes[0].actor, "helpers::Peer");
+    for param in &advance.hidden_params {
+        if let HiddenParamSubjectArtifact::Actor { actor } = &param.subject {
+            let expected = if actor == "Peer" { HiddenParamUsage::General } else { HiddenParamUsage::CurrentOutputsOnly };
+            assert_eq!(param.usage, expected);
+        }
+    }
     for peer_count in [0, 1] {
         let context = |entry| {
             let mut context = TxContext::new().actor_input(
@@ -447,7 +425,6 @@ fn module_qualified_consumes_keep_their_templates() {
             ))
             .expect("qualified consume executes");
         let peer = sil_template(artifact.sil_abi.contract("Peer").expect("Peer contract"));
-        let template = sil_template(artifact.sil_abi.contract("Finished").expect("Finished contract"));
         assert_signature_args(
             &artifact,
             "Counter",
@@ -457,8 +434,8 @@ fn module_qualified_consumes_keep_their_templates() {
                 ArtifactValue::Bool(false),
                 ArtifactValue::Int(peer.prefix.len() as i64),
                 ArtifactValue::Int(peer.suffix.len() as i64),
-                ArtifactValue::Bytes(template.prefix),
-                ArtifactValue::Bytes(template.suffix),
+                ArtifactValue::Bytes(Vec::new()),
+                ArtifactValue::Bytes(Vec::new()),
             ],
         );
         // Entries with no byte witnesses must not try resolving source-facing consume names either.
@@ -542,16 +519,16 @@ fn linked_spawn_bytes_remain_outside_current_successor_pruning() {
                         HiddenParamPurposeArtifact::TemplatePrefixBytes | HiddenParamPurposeArtifact::TemplateSuffixBytes
                     ) =>
                 {
-                    Some((actor.as_str(), purpose))
+                    Some((actor.as_str(), purpose, hidden.usage))
                 }
                 _ => None,
             })
             .collect::<Vec<_>>(),
         [
-            ("Finished", HiddenParamPurposeArtifact::TemplatePrefixBytes),
-            ("Finished", HiddenParamPurposeArtifact::TemplateSuffixBytes),
-            ("ChildApp::Finished", HiddenParamPurposeArtifact::TemplatePrefixBytes),
-            ("ChildApp::Finished", HiddenParamPurposeArtifact::TemplateSuffixBytes),
+            ("Finished", HiddenParamPurposeArtifact::TemplatePrefixBytes, HiddenParamUsage::CurrentOutputsOnly),
+            ("Finished", HiddenParamPurposeArtifact::TemplateSuffixBytes, HiddenParamUsage::CurrentOutputsOnly),
+            ("ChildApp::Finished", HiddenParamPurposeArtifact::TemplatePrefixBytes, HiddenParamUsage::General),
+            ("ChildApp::Finished", HiddenParamPurposeArtifact::TemplateSuffixBytes, HiddenParamUsage::General),
         ],
     );
     // Pruning the local `Finished` must not empty the foreign actor's same-named

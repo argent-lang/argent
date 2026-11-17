@@ -91,7 +91,7 @@ impl<'m, 'src> ContractLowerer<'m, 'src> {
             embeds_current_lengths |= self
                 .model
                 .entry_template_uses(EntryId { actor: self.actor_id, index })?
-                .reads
+                .reads()
                 .contains(&StaticActorId::InApp(self.actor_id));
         }
         if embeds_current_lengths {

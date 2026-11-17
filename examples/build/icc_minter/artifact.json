@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "13210ac4113443cb7ad0baf36fbc672de3425293daca11ca31d6e849fb58c50b",
+  "id": "cf1e734e1d1055e20c9dafe931994bd16443ed52051512549157ed056fb48d51",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -9,7 +9,7 @@
   "dependencies": [
     {
       "app": "TokenAsset",
-      "artifact_id": "8e4802e7629330f2fe644c6ade6e6c67ff5fae80a5756bae2a367327992bc403"
+      "artifact_id": "c0f403b1ae4b01661c2aca34c1986bdebf0cccc4267ac7c03964742a1539b512"
     }
   ],
   "root": "examples/icc/minter.ag",

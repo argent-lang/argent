@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "b90d80fe4bd356fafda0829f035649bd0ffc560a707533e0b0d93995de9aba4c",
+  "id": "87898368301cc8afc4231c07b3c12e4a5f9d93ff51c4b15c450f3b05f832a1d1",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -9,7 +9,7 @@
   "dependencies": [
     {
       "app": "ForeignApp",
-      "artifact_id": "ddf7caa9ac8c41d0d3a24b41a4fc91414065acaa743bda38d41be983e99b6607"
+      "artifact_id": "4071fc90ce89bb3dfc8cddd5eab0c401aa3bcba857a804876cf0bb2412c76318"
     }
   ],
   "root": "tests/fixtures/runtime/context_static_actor_values/launcher.ag",

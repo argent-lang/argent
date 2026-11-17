@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "8e4802e7629330f2fe644c6ade6e6c67ff5fae80a5756bae2a367327992bc403",
+  "id": "c0f403b1ae4b01661c2aca34c1986bdebf0cccc4267ac7c03964742a1539b512",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -304,7 +304,8 @@
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/token/template_suffix_bytes",
@@ -318,7 +319,8 @@
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               }
             ],
             "template_selectors": [],

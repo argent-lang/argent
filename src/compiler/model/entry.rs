@@ -846,7 +846,7 @@ impl<'a> EntryModel<'a> {
                         && app_actors.name(*id).is_some()
                         && !(app_actors.iter().count() == 1 && *id == source_actor)
                     {
-                        uses.reads.insert(target.clone());
+                        uses.record(target.clone(), ActorTemplateUse::Input);
                     }
                 }
             }
@@ -862,7 +862,7 @@ impl<'a> EntryModel<'a> {
                 && app_actors.name(id).is_some()
                 && id != source_actor
             {
-                uses.writes.insert(StaticActorId::InApp(id));
+                uses.record(StaticActorId::InApp(id), ActorTemplateUse::CurrentOutput);
             }
         }
         for group in self.existing_groups().chain(self.genesis_groups()) {
@@ -872,7 +872,7 @@ impl<'a> EntryModel<'a> {
                         && app_actors.name(*id).is_some()
                         && *id != source_actor
                     {
-                        uses.writes.insert(target.clone());
+                        uses.record(target.clone(), ActorTemplateUse::ForeignOutput);
                     }
                 }
             }
@@ -885,8 +885,47 @@ impl<'a> EntryModel<'a> {
 /// Actor template capabilities used while lowering one entry.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct ActorTemplateUses {
-    pub(crate) reads: BTreeSet<StaticActorId>,
-    pub(crate) writes: BTreeSet<StaticActorId>,
+    reads: BTreeSet<StaticActorId>,
+    writes: BTreeSet<StaticActorId>,
+    general_uses: BTreeSet<StaticActorId>,
+}
+
+/// Context of a generated use of a shared static actor-template witness.
+#[derive(Clone, Copy)]
+pub(crate) enum ActorTemplateUse {
+    Input,
+    CurrentOutput,
+    ForeignOutput,
+}
+
+impl ActorTemplateUses {
+    pub(crate) fn reads(&self) -> &BTreeSet<StaticActorId> {
+        &self.reads
+    }
+
+    pub(crate) fn writes(&self) -> &BTreeSet<StaticActorId> {
+        &self.writes
+    }
+
+    pub(crate) fn record(&mut self, target: StaticActorId, usage: ActorTemplateUse) {
+        match usage {
+            ActorTemplateUse::CurrentOutput => {
+                self.writes.insert(target);
+            }
+            ActorTemplateUse::Input => {
+                self.reads.insert(target.clone());
+                self.general_uses.insert(target);
+            }
+            ActorTemplateUse::ForeignOutput => {
+                self.writes.insert(target.clone());
+                self.general_uses.insert(target);
+            }
+        }
+    }
+
+    pub(crate) fn current_outputs_only(&self, target: &StaticActorId) -> bool {
+        self.writes.contains(target) && !self.general_uses.contains(target)
+    }
 }
 
 /// Ordered interactions governed by one covenant ID.

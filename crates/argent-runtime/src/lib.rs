@@ -27,8 +27,8 @@ pub use silverscript_abi::ArtifactValue;
 
 use argent_artifact::{
     ActorArtifact, ActorInterfaceArtifact, ActorTemplateArtifact, ArgentStateArtifact, ArtifactVerificationError, EntryArtifact,
-    HiddenParamArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, ObserveArtifact, ObservedActorArtifact,
-    ObservedActorSideArtifact, ObservedTargetArtifact, RouteTemplateLeafArtifact, RouteTemplateProofArtifact,
+    HiddenParamArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, HiddenParamUsage, ObserveArtifact,
+    ObservedActorArtifact, ObservedActorSideArtifact, ObservedTargetArtifact, RouteTemplateLeafArtifact, RouteTemplateProofArtifact,
     RuntimeFieldRoleArtifact, RuntimeStatePlanArtifact, SilContractArtifact, SilEntryArtifact, fixed_runtime_context_value,
 };
 use kaspa_consensus_core::{
@@ -863,7 +863,8 @@ impl<'a> TxBuilder<'a> {
                     ArtifactValue::Int(output_index as i64)
                 }
                 HiddenParamPurposeArtifact::TemplatePrefixBytes | HiddenParamPurposeArtifact::TemplateSuffixBytes
-                    if matches!(&hidden.subject, HiddenParamSubjectArtifact::Actor { actor } if contexts.omitted_template_actors.contains(&actor.as_str())) =>
+                    if hidden.usage == HiddenParamUsage::CurrentOutputsOnly
+                        && matches!(&hidden.subject, HiddenParamSubjectArtifact::Actor { actor } if contexts.omitted_template_actors.contains(&actor.as_str())) =>
                 {
                     ArtifactValue::Bytes(Vec::new())
                 }

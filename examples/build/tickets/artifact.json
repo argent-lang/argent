@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "8522171d20bf07ea6b9d86b07ad9e81f41d5899ed542069922f05c004ab72c5b",
+  "id": "192dce787b784896fd0089c5a0b5d5e66cfbbece51a7c823c299001ad1381bab",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -241,7 +241,8 @@
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/ticket/template_suffix_bytes",
@@ -255,7 +256,8 @@
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               }
             ],
             "template_selectors": [],
