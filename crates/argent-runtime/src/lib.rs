@@ -866,6 +866,9 @@ impl<'a> TxBuilder<'a> {
                     if hidden.usage == HiddenParamUsage::CurrentOutputsOnly
                         && matches!(&hidden.subject, HiddenParamSubjectArtifact::Actor { actor } if contexts.omitted_template_actors.contains(&actor.as_str())) =>
                 {
+                    // The compiler marks this argument as current-output-only, and the
+                    // supplied context has no continuation to its actor from this input.
+                    // Keep the ABI slot but omit the unused template bytes.
                     ArtifactValue::Bytes(Vec::new())
                 }
                 HiddenParamPurposeArtifact::TemplatePrefixBytes => {

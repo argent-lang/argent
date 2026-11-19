@@ -619,6 +619,8 @@ impl<'artifact> TxBuilder<'artifact> {
             };
             required.insert((actor.contract.artifact.app.as_str(), actor.contract.name));
         }
+        // CurrentOutputsOnly targets belong to this input's app,
+        // so candidates only need to store their contract names.
         candidates.retain(|actor| !required.contains(&(input.artifact.app.as_str(), *actor)));
         candidates.into_iter().collect()
     }
