@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "e843bab4be50109df7b2de4975a11b88c0f6f3107e80073b87b9a1fd67abeb60",
+  "id": "0cf7365a7d74c36696a5d48c818b461cb80bcc3fe8088194e446628b508f55c4",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -691,7 +691,8 @@
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/player/template_suffix_bytes",
@@ -705,7 +706,8 @@
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               }
             ],
             "template_selectors": [],
@@ -852,7 +854,8 @@
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/stones_game/template_suffix_bytes",
@@ -866,7 +869,8 @@
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               }
             ],
             "template_selectors": [],
@@ -1182,7 +1186,8 @@
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/stones_settle/template_suffix_bytes",
@@ -1196,7 +1201,8 @@
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               }
             ],
             "template_selectors": [],
@@ -1305,7 +1311,8 @@
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/stones_settle/template_suffix_bytes",
@@ -1319,7 +1326,8 @@
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               }
             ],
             "template_selectors": [],

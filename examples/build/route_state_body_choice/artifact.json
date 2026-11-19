@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "16d9788d2793d92876acea917c20b51bf36d10e97a7de886b05c81efe671d03a",
+  "id": "cbb5a31da4169596aae79cd3309885bf10bd499e09441e903857d5bd2c8ec169",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -547,7 +547,8 @@
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/mux/template_suffix_bytes",
@@ -561,7 +562,8 @@
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/spectator/template_prefix_bytes",
@@ -575,7 +577,8 @@
                 },
                 "purpose": {
                   "kind": "template_prefix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/spectator/template_suffix_bytes",
@@ -589,7 +592,8 @@
                 },
                 "purpose": {
                   "kind": "template_suffix_bytes"
-                }
+                },
+                "usage": "current_outputs_only"
               },
               {
                 "recipe_id": "witness/mux/route_family_table",

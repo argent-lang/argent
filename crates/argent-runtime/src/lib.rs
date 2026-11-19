@@ -27,8 +27,8 @@ pub use silverscript_abi::ArtifactValue;
 
 use argent_artifact::{
     ActorArtifact, ActorInterfaceArtifact, ActorTemplateArtifact, ArgentStateArtifact, ArtifactVerificationError, EntryArtifact,
-    HiddenParamArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, ObserveArtifact, ObservedActorArtifact,
-    ObservedActorSideArtifact, ObservedTargetArtifact, RouteTemplateLeafArtifact, RouteTemplateProofArtifact,
+    HiddenParamArtifact, HiddenParamPurposeArtifact, HiddenParamSubjectArtifact, HiddenParamUsage, ObserveArtifact,
+    ObservedActorArtifact, ObservedActorSideArtifact, ObservedTargetArtifact, RouteTemplateLeafArtifact, RouteTemplateProofArtifact,
     RuntimeFieldRoleArtifact, RuntimeStatePlanArtifact, SilContractArtifact, SilEntryArtifact, fixed_runtime_context_value,
 };
 use kaspa_consensus_core::{
@@ -396,6 +396,10 @@ pub enum BuilderError {
     GenesisOutputIndexOverflow(usize),
     #[error("actor output {output_index} `{actor}` must have an existing or genesis covenant binding")]
     UnboundActorOutput { output_index: usize, actor: String },
+    #[error(
+        "actor output {output_index} from app `{target_app}` cannot continue actor input {authorizing_input} from app `{source_app}`"
+    )]
+    ActorOutputAppMismatch { output_index: usize, authorizing_input: u16, source_app: String, target_app: String },
     #[error("genesis actor output {output_index} `{actor}` must have static state")]
     GenesisOutputStateCallback { output_index: usize, actor: String },
     #[error("failed to build state for actor output {output_index} `{actor}`: {source}")]
@@ -642,6 +646,7 @@ struct SpawnedActorContext {
 struct HiddenArgContexts<'a> {
     observed: Option<&'a BTreeMap<String, ObservedCovenantContext>>,
     spawned: Option<&'a BTreeMap<(String, String), SpawnedActorContext>>,
+    omitted_template_actors: &'a [&'a str],
 }
 
 impl<'a> ArtifactBundle<'a> {
@@ -856,6 +861,15 @@ impl<'a> TxBuilder<'a> {
                         })?
                         .output_index;
                     ArtifactValue::Int(output_index as i64)
+                }
+                HiddenParamPurposeArtifact::TemplatePrefixBytes | HiddenParamPurposeArtifact::TemplateSuffixBytes
+                    if hidden.usage == HiddenParamUsage::CurrentOutputsOnly
+                        && matches!(&hidden.subject, HiddenParamSubjectArtifact::Actor { actor } if contexts.omitted_template_actors.contains(&actor.as_str())) =>
+                {
+                    // The compiler marks this argument as current-output-only, and the
+                    // supplied context has no continuation to its actor from this input.
+                    // Keep the ABI slot but omit the unused template bytes.
+                    ArtifactValue::Bytes(Vec::new())
                 }
                 HiddenParamPurposeArtifact::TemplatePrefixBytes => {
                     let template = self.hidden_template(artifact, hidden, artifact_entry, template_selectors, contexts)?;

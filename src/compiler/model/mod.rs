@@ -30,9 +30,9 @@ pub(crate) use actor::ActorModel;
 pub(crate) use actor_values::LinkedActorValuePlan;
 pub(crate) use consts::{ConstIntError, ConstResolver};
 pub(crate) use entry::{
-    ActorTarget, ActorTemplateUses, ClauseActorTypeRef, CovenantGroup, CovenantGroupId, CovenantIdSource, EntryInteraction,
-    EntryModel, InteractionId, InteractionLocation, InteractionSource, ResolvedRoute, ResolvedSuccessor, TemplateSelector,
-    clause_actor_type_ref, observed_is_dynamic_binding, observed_open_bindings, observed_open_state_for_decl,
+    ActorTarget, ActorTemplateUse, ActorTemplateUses, ClauseActorTypeRef, CovenantGroup, CovenantGroupId, CovenantIdSource,
+    EntryInteraction, EntryModel, InteractionId, InteractionLocation, InteractionSource, ResolvedRoute, ResolvedSuccessor,
+    TemplateSelector, clause_actor_type_ref, observed_is_dynamic_binding, observed_open_bindings, observed_open_state_for_decl,
     resolve_observe_covenant_id_source, spawn_target_state,
 };
 pub(crate) use inputs::{
@@ -391,14 +391,14 @@ impl AppCompilationContext<'_> {
             for interaction in group.inputs() {
                 for target in interaction.target().static_actors() {
                     if matches!(target, StaticActorId::Linked(_)) {
-                        uses.reads.insert(target.clone());
+                        uses.record(target.clone(), ActorTemplateUse::Input);
                     }
                 }
             }
             for interaction in group.outputs() {
                 for target in interaction.target().static_actors() {
                     if matches!(target, StaticActorId::Linked(_)) {
-                        uses.writes.insert(target.clone());
+                        uses.record(target.clone(), ActorTemplateUse::ForeignOutput);
                     }
                 }
             }

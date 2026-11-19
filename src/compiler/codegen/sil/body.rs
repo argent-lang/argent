@@ -103,7 +103,7 @@ impl<'m, 'src> ContractLowerer<'m, 'src> {
         let params = self.entry_params(entry_id, entry, witnesses)?;
         let imported = ImportedTemplateSpec::from_witness_plan(witnesses, self.model)?;
         let mut prefix = self.entry_template_prelude(witnesses, &imported);
-        if self.model.entry_template_uses(entry_id)?.reads.contains(&StaticActorId::InApp(self.actor_id)) {
+        if self.model.entry_template_uses(entry_id)?.reads().contains(&StaticActorId::InApp(self.actor_id)) {
             let span = SilSpan::default();
             for (part, name) in [
                 ("prefix", hidden_witness_prefix_len_name(&self.actor.name)),

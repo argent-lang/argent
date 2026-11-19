@@ -17,6 +17,22 @@ fn test_actor_ids(names: &[&str]) -> BTreeMap<String, StaticActorId> {
 }
 
 #[test]
+fn general_template_uses_dominate_current_output_uses_in_any_order() {
+    let target = StaticActorId::InApp(DeclId::new(ModuleId::new(0), SymbolKind::Actor, 0));
+    for general in [ActorTemplateUse::Input, ActorTemplateUse::ForeignOutput] {
+        for general_first in [false, true] {
+            let mut uses = ActorTemplateUses::default();
+            let contexts =
+                if general_first { [general, ActorTemplateUse::CurrentOutput] } else { [ActorTemplateUse::CurrentOutput, general] };
+            for context in contexts {
+                uses.record(target.clone(), context);
+            }
+            assert!(!uses.current_outputs_only(&target));
+        }
+    }
+}
+
+#[test]
 fn bound_route_identity_controls_static_target_validation() {
     let program = load_inline_program(
         std::path::PathBuf::from("bound-route.ag"),

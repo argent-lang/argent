@@ -2,8 +2,8 @@ use super::*;
 use crate::{
     artifact::{
         ActorTargetArtifact, ActorTemplateArtifact, ArtifactIdentityError, ArtifactVerificationError, HiddenParamPurposeArtifact,
-        HiddenParamSubjectArtifact, ObservedTargetArtifact, SilAbiVerificationError, SilContractArtifact, TemplatePlanError,
-        TypeArtifact, route_template_proof_receipt_id, route_template_table_receipt_id,
+        HiddenParamSubjectArtifact, HiddenParamUsage, ObservedTargetArtifact, SilAbiVerificationError, SilContractArtifact,
+        TemplatePlanError, TypeArtifact, route_template_proof_receipt_id, route_template_table_receipt_id,
     },
     codec::{CodecError, decode_hex, encode_entry_sig_script},
 };
@@ -57,6 +57,7 @@ fn fixture_ast(source: &str) -> serde_json::Value {
 }
 
 mod genesis_proof;
+mod template_omissions;
 
 static ARTIFACT_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -3029,6 +3030,17 @@ fn toy_chess_builder_redeems_route_family_and_worker_paths() {
     let player_contract = artifact.sil_abi.contract("Player").expect("Player contract exists");
     let enter_mux = player_contract.entry("enter_mux").expect("enter_mux ABI exists");
     let mux_template = sil_template(artifact.sil_abi.contract("Mux").expect("Mux contract exists"));
+    template_omissions::assert_signature_args(
+        &artifact,
+        "Player",
+        "enter_mux",
+        &enter_mux_tx.inputs[0].signature_script,
+        vec![
+            ArtifactValue::Bytes(mux_template.prefix.clone()),
+            ArtifactValue::Bytes(mux_template.suffix.clone()),
+            ArtifactValue::Bytes(route_family_table_bytes(&artifact, "route_family/BoardState/mux")),
+        ],
+    );
     let mut wrong_routes = route_family_table_bytes(&artifact, "route_family/BoardState/mux");
     wrong_routes[0] ^= 1;
     let bad_route_table_sigscript = encode_entry_sig_script(
@@ -3075,6 +3087,14 @@ fn toy_chess_builder_redeems_route_family_and_worker_paths() {
         .actor_output("Pawn", dynamic_pawn_next.clone(), CovenantBinding::new(0, covenant_id), input_value);
     let context_tx = builder.build(&context).expect("context builder resolves the dynamic route witnesses");
     assert!(context_tx.inputs[0].compute_commit.compute_budget().is_some());
+    let pawn_template = sil_template(artifact.sil_abi.contract("Pawn").expect("Pawn contract exists"));
+    template_omissions::assert_signature_args(
+        &artifact,
+        "Mux",
+        "choose",
+        &context_tx.inputs[0].signature_script,
+        vec![ArtifactValue::Int(0), ArtifactValue::Bytes(pawn_template.prefix), ArtifactValue::Bytes(pawn_template.suffix)],
+    );
 
     let dynamic_knight = TxContext::new()
         .actor_input(

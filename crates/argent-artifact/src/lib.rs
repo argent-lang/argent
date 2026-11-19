@@ -679,8 +679,29 @@ pub struct HiddenParamArtifact {
     pub ty: TypeArtifact,
     pub subject: HiddenParamSubjectArtifact,
     pub purpose: HiddenParamPurposeArtifact,
+    /// Entry-local generated uses of this argument. Missing metadata keeps the
+    /// complete witness; only marked current-output-only bytes can be omitted.
+    #[serde(default, skip_serializing_if = "HiddenParamUsage::is_general")]
+    pub usage: HiddenParamUsage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route_proof_id: Option<String>,
+}
+
+/// Compiler-recorded use scope of one entry's hidden argument.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HiddenParamUsage {
+    /// Input authentication, foreign outputs, shared uses, or older metadata.
+    #[default]
+    General,
+    /// Static in-app actor prefix/suffix bytes used only to validate current successors.
+    CurrentOutputsOnly,
+}
+
+impl HiddenParamUsage {
+    fn is_general(&self) -> bool {
+        *self == Self::General
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -2155,6 +2176,49 @@ mod tests {
         second.dependencies.push(AppDependencyArtifact { app: "Dependency".to_string(), artifact_id: "11".repeat(32) });
 
         assert_ne!(first.computed_id_hex().expect("first id computes"), second.computed_id_hex().expect("second id computes"));
+    }
+
+    #[test]
+    fn legacy_hidden_param_usage_preserves_json_and_artifact_identity() {
+        let legacy_param = serde_json::json!({
+            "recipe_id": "template/Foo/prefix", "name": "prefix", "type": {"kind": "bytes"},
+            "subject": {"kind": "actor", "actor": "Foo"}, "purpose": {"kind": "template_prefix_bytes"}
+        });
+        let hidden: HiddenParamArtifact = serde_json::from_value(legacy_param.clone()).expect("legacy param");
+        assert_eq!(hidden.usage, HiddenParamUsage::General);
+        assert_eq!(serde_json::to_value(&hidden).expect("param JSON"), legacy_param);
+        let mut explicit_general = legacy_param.clone();
+        explicit_general["usage"] = serde_json::json!("general");
+        let explicit: HiddenParamArtifact = serde_json::from_value(explicit_general).expect("explicit general");
+        assert_eq!(serde_json::to_value(explicit).expect("general JSON"), legacy_param);
+
+        let mut artifact = artifact_with_route_families(Vec::new());
+        artifact.argent.actors[0].entries.push(EntryArtifact {
+            name: "step".to_string(),
+            kind: EntryKindArtifact::Leader,
+            abi: EntryAbiRefArtifact { contract: "Mux".to_string(), entry: "step".to_string() },
+            route_plan: EntryRoutePlanArtifact::default(),
+            hidden_params: vec![hidden],
+            template_selectors: Vec::new(),
+            observes: Vec::new(),
+            spawns: Vec::new(),
+            witnesses: Vec::new(),
+            consumes: Vec::new(),
+            emits: EmitArtifact::None,
+            routes: Vec::new(),
+        });
+        artifact.id = artifact.computed_id_hex().expect("legacy identity");
+        let legacy_json = serde_json::to_value(&artifact).expect("legacy JSON");
+        assert!(legacy_json["argent"]["actors"][0]["entries"][0]["hidden_params"][0].get("usage").is_none());
+        let mut decoded: Artifact = serde_json::from_value(legacy_json.clone()).expect("legacy artifact");
+        assert_eq!(decoded.computed_id_hex().expect("round-trip identity"), artifact.id);
+        assert_eq!(serde_json::to_value(&decoded).expect("round-trip JSON"), legacy_json);
+        decoded.argent.actors[0].entries[0].hidden_params[0].usage = HiddenParamUsage::CurrentOutputsOnly;
+        assert_eq!(
+            serde_json::to_value(&decoded).expect("annotated JSON")["argent"]["actors"][0]["entries"][0]["hidden_params"][0]["usage"],
+            "current_outputs_only"
+        );
+        assert_ne!(decoded.computed_id_hex().expect("annotated identity"), artifact.id);
     }
 
     #[test]
