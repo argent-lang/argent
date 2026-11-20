@@ -160,6 +160,21 @@ fn build_app_graph(apps: compiler::app_graph::AppGraphPlan<'_>, app_name: &str, 
         let source_app = &unit.source_app;
         let dependencies = &unit.dependencies;
         let program = apps.program_for(unit);
+        if let Some(artifact) = program.artifact(unit.root) {
+            // A pinned artifact import: the loader checked the artifact and its id, so link it as published.
+            let app_out = dependency_dir.join(&source_app.app);
+            std::fs::create_dir_all(&app_out)?;
+            let json = serde_json::to_string_pretty(artifact).map_err(|err| ArgentError::new(err.to_string()))?;
+            std::fs::write(app_out.join("artifact.json"), json)?;
+            origins.insert(source_app.app.clone(), compiler::model::link::artifact_origins(&source_app.source, artifact));
+            if artifacts.insert(source_app.app.clone(), artifact.clone()).is_some() {
+                return Err(ArgentError::new(format!(
+                    "app name `{}` occurs more than once in the compiled dependency graph",
+                    source_app.app
+                )));
+            }
+            continue;
+        }
         let linked = dependencies
             .iter()
             .map(|dependency| {

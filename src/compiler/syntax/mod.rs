@@ -120,6 +120,8 @@ pub struct Module {
 pub struct Import {
     pub path: String,
     pub alias: Option<String>,
+    /// Pinned id of a published app artifact: `import "./app/artifact.json" id "<artifact id>";`.
+    pub id: Option<String>,
 }
 
 #[derive(Debug, Clone)]

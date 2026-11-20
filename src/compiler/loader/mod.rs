@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::artifact::Artifact;
 use crate::compiler::syntax::Program;
 use crate::compiler::syntax::lexer::{Token, lex_argent_source};
 use crate::compiler::syntax::node::SourceNodeIndex;
@@ -12,10 +13,12 @@ use crate::compiler::syntax::parser::{DiscoveredImport, discover_imports, parse_
 use crate::compiler::syntax::source::{SourceFile, SourceId};
 use crate::error::{ArgentError, Result};
 
+use self::artifact::{check_pin, declaration_source, is_artifact_path, read_artifact};
 use self::stdlib::{is_standard_module, standard_source};
 use super::resolve::ResolvedImport;
 pub(crate) use super::resolve::{ResolvedDeclaration, ResolvedModules};
 
+mod artifact;
 pub(crate) mod stdlib;
 
 #[cfg(test)]
@@ -36,6 +39,8 @@ pub(crate) struct SourceSet {
     imports: Vec<Vec<DiscoveredImport>>,
     edges: Vec<Vec<ResolvedImport>>,
     source_ids: BTreeMap<SourceIdentity, SourceId>,
+    /// Published app artifacts behind artifact-backed sources (`import "./app/artifact.json" id "...";`).
+    artifacts: BTreeMap<SourceId, Artifact>,
     root: Option<SourceId>,
 }
 
@@ -48,6 +53,9 @@ enum SourceIdentity {
 
 impl SourceSet {
     pub(crate) fn discover_file(path: &Path) -> Result<Self> {
+        if is_artifact_path(path) {
+            return Err(ArgentError::at(path, "a published app artifact is not Argent source; import it from a source module"));
+        }
         let mut sources = Self::default();
         sources.root = Some(sources.load_file(path)?);
         Ok(sources)
@@ -60,6 +68,9 @@ impl SourceSet {
         let imports = sources.imports[root.0].clone();
         for discovered in imports {
             let import = discovered.import;
+            if import.id.is_some() {
+                return Err(pin_without_artifact(&sources.files[root.0].display_path, &import.path));
+            }
             if !is_standard_module(&import.path) {
                 return Err(ArgentError::at(
                     &sources.files[root.0].display_path,
@@ -86,12 +97,37 @@ impl SourceSet {
         for discovered in imports {
             let import = discovered.import;
             let target = if is_standard_module(&import.path) {
+                if import.id.is_some() {
+                    return Err(pin_without_artifact(&self.files[id.0].display_path, &import.path));
+                }
                 self.load_standard(&import.path)?
+            } else if is_artifact_path(Path::new(&import.path)) {
+                self.load_artifact(&base.join(&import.path), import.id.as_deref())?
             } else {
+                if import.id.is_some() {
+                    return Err(pin_without_artifact(&self.files[id.0].display_path, &import.path));
+                }
                 self.load_file(&base.join(&import.path))?
             };
             self.edges[id.0].push(ResolvedImport { target: ModuleId::new(target.0), alias: import.alias });
         }
+        Ok(id)
+    }
+
+    /// Loads a published app artifact once per path as a declaration-only source; every import of it must pin its id.
+    fn load_artifact(&mut self, path: &Path, pin: Option<&str>) -> Result<SourceId> {
+        let canonical = fs::canonicalize(path).map_err(|err| ArgentError::at(path, err.to_string()))?;
+        let identity = SourceIdentity::File(canonical.clone());
+        if let Some(id) = self.source_ids.get(&identity).copied() {
+            check_pin(&canonical, &self.artifacts[&id], pin)?;
+            return Ok(id);
+        }
+        let artifact = read_artifact(&canonical)?;
+        check_pin(&canonical, &artifact, pin)?;
+        let display_path = std::path::absolute(path).map_err(|err| ArgentError::at(path, err.to_string()))?;
+        let text = declaration_source(&display_path, &artifact)?;
+        let id = self.insert_source(identity, display_path, text)?;
+        self.artifacts.insert(id, artifact);
         Ok(id)
     }
 
@@ -105,6 +141,9 @@ impl SourceSet {
         let imports = self.imports[id.0].clone();
         for discovered in imports {
             let import = discovered.import;
+            if import.id.is_some() {
+                return Err(pin_without_artifact(Path::new(path), &import.path));
+            }
             if !is_standard_module(&import.path) {
                 return Err(ArgentError::new(format!("Argent standard module `{}` cannot import a filesystem module", import.path)));
             }
@@ -141,7 +180,12 @@ impl SourceSet {
     pub(crate) fn with_resolved<R>(&self, use_program: impl for<'src> FnOnce(ResolvedModules<'src>) -> Result<R>) -> Result<R> {
         let program = self.parse_modules()?;
         let root = ModuleId::new(self.root.expect("source discovery sets a root").0);
-        let resolved = ResolvedModules::from_program(&program, root, self.edges.clone())?;
+        let artifacts = self.artifacts.iter().map(|(id, artifact)| (ModuleId::new(id.0), artifact.clone())).collect();
+        let resolved = ResolvedModules::from_program(&program, root, self.edges.clone(), artifacts)?;
         use_program(resolved)
     }
+}
+
+fn pin_without_artifact(importer: &Path, path: &str) -> ArgentError {
+    ArgentError::at(importer, format!("an `id` pin applies only to a published app artifact, not to `{path}`"))
 }
