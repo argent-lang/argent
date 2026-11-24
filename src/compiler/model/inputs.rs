@@ -163,9 +163,8 @@ impl EntryInputPlan {
         let mut consumed_ranges = BTreeMap::new();
         let entry_model = model.entry_model_by_id(entry_id)?;
         let checked_range_index_required = entry_model
-            .current()
-            .inputs()
-            .iter()
+            .groups()
+            .flat_map(|group| group.inputs())
             .chain(entry_model.current().outputs())
             .any(|interaction| interaction.cardinality().is_range());
         let allows_covenant_batching =
@@ -209,11 +208,7 @@ impl EntryInputPlan {
                 });
             }
         }
-        for interaction in entry_model
-            .existing_groups()
-            .chain(entry_model.genesis_groups())
-            .flat_map(|group| group.inputs().iter().chain(group.outputs()))
-        {
+        for interaction in entry_model.existing_groups().chain(entry_model.genesis_groups()).flat_map(|group| group.outputs()) {
             if interaction.location().is_range() {
                 unsupported_range.get_or_insert_with(|| {
                     format!(
@@ -291,6 +286,21 @@ impl EntryInputPlan {
                 };
                 let open_state = observed_open_state_for_decl(entry_id, actor, entry, observe, input, model)?;
                 let static_target = if open_state.is_none() { model.resolve_static_actor_target(interaction.target()) } else { None };
+                if let Some((minimum, _)) = interaction.cardinality().range_bounds() {
+                    let path = format!("{}.inputs.{}", observe.name, input.name);
+                    if minimum == 0 {
+                        return Err(ArgentError::new(format!(
+                            "entry `{}::{}` observed input range `{path}` must have a minimum of at least one",
+                            actor.name, entry.name
+                        )));
+                    }
+                    if static_target.is_none() {
+                        return Err(ArgentError::new(format!(
+                            "entry `{}::{}` observed input range `{path}` must use one fixed actor target",
+                            actor.name, entry.name
+                        )));
+                    }
+                }
                 let target = if let Some(ref state) = open_state {
                     lowering.open_state_target(state)
                 } else {
@@ -320,7 +330,10 @@ impl EntryInputPlan {
                         InputAuthentication::Template
                     },
                     location: Some(interaction.location()),
-                    ranged_proof_input_position: None,
+                    ranged_proof_input_position: match interaction.location() {
+                        InteractionLocation::Range { start, .. } => Some(start),
+                        _ => None,
+                    },
                     guaranteed: true,
                     fields: source_fields
                         .into_iter()
@@ -372,13 +385,14 @@ impl EntryInputPlan {
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
         let mut range_maxima = BTreeMap::new();
-        for (index, interaction) in entry_model.current().inputs().iter().enumerate() {
+        for interaction in entry_model.groups().flat_map(|group| group.inputs()) {
             if let Some((_, maximum)) = interaction.cardinality().range_bounds() {
-                let id = bindings
-                    .entry_consumes
-                    .get(&(entry_model.id.index, index))
-                    .ok_or_else(|| ArgentError::new("ranged input requirement has no bound handle"))?;
-                range_maxima.insert(*id, (interaction.handle().to_string(), maximum));
+                let id = consumed
+                    .get(&interaction.id())
+                    .or_else(|| observed.get(&interaction.id()))
+                    .ok_or_else(|| ArgentError::new("ranged input requirement has no planned reference"))?;
+                let handle = references[id.0].origin.source_path(entry)?.join(".");
+                range_maxima.insert(*id, (handle, maximum));
             }
         }
 
@@ -391,16 +405,34 @@ impl EntryInputPlan {
                 references: &'a BTreeMap<(usize, usize), Option<LocalId>>,
                 input_paths: &'a BTreeMap<(Option<LocalId>, Vec<String>), EntryInputReferenceId>,
                 reference_uses: &'a mut BTreeMap<(usize, usize), EntryInputReferenceId>,
-                range_maxima: &'a BTreeMap<LocalId, (String, i64)>,
+                range_maxima: &'a BTreeMap<EntryInputReferenceId, (String, i64)>,
                 found: Option<String>,
                 invalid_range_index: Option<(String, i64, i64)>,
+            }
+
+            impl FieldUseVisitor<'_> {
+                fn input_path(&self, expr: &Expr<'_>) -> Option<(Option<LocalId>, Vec<String>)> {
+                    let mut segments = Vec::new();
+                    let mut current = expr;
+                    while let ExprKind::FieldAccess { source, field, .. } = &current.kind {
+                        segments.push(field.clone());
+                        current = source;
+                    }
+                    let ExprKind::Identifier(root_name) = &current.kind else { return None };
+                    let root = *self.references.get(&(current.span.start(), current.span.end()))?;
+                    if root.is_none() && root_name != "self" {
+                        return None;
+                    }
+                    segments.reverse();
+                    Some((root, segments))
+                }
             }
 
             impl<'src> AstVisitorMut<'src> for FieldUseVisitor<'_> {
                 fn visit_expr(&mut self, expr: &mut Expr<'src>) {
                     if let ExprKind::ArrayIndex { source, index } = &expr.kind
-                        && matches!(&source.kind, ExprKind::Identifier(_))
-                        && let Some(Some(id)) = self.references.get(&(source.span.start(), source.span.end()))
+                        && let Some(path) = self.input_path(source)
+                        && let Some(id) = self.input_paths.get(&path)
                         && let Some((handle, maximum)) = self.range_maxima.get(id)
                         && let Some(value) = (match &index.kind {
                             ExprKind::Int(value) => Some(*value),
@@ -414,26 +446,12 @@ impl EntryInputPlan {
                     {
                         self.invalid_range_index = Some((handle.clone(), value, *maximum));
                     }
-                    let mut segments = Vec::new();
-                    let mut current = &*expr;
-                    while let ExprKind::FieldAccess { source, field, .. } = &current.kind {
-                        segments.push(field.as_str());
-                        current = source;
-                    }
-                    if let ExprKind::Identifier(root_name) = &current.kind
-                        && let Some(root) = self.references.get(&(current.span.start(), current.span.end()))
-                        && (root.is_some() || root_name == "self")
-                    {
-                        segments.reverse();
-                        let suffix = segments.iter().map(|segment| (*segment).to_string()).collect::<Vec<_>>();
-                        if let Some(id) = self.input_paths.get(&(*root, suffix)) {
+                    if let Some((root, segments)) = self.input_path(expr) {
+                        if let Some(id) = self.input_paths.get(&(root, segments.clone())) {
                             self.reference_uses.insert((expr.span.start(), expr.span.end()), *id);
                         }
-                        if let Some((_, _, field)) = self
-                            .unavailable
-                            .iter()
-                            .filter(|(binding, _, _)| binding == root)
-                            .find(|(_, path, _)| path.iter().map(String::as_str).eq(segments.iter().copied()))
+                        if let Some((_, _, field)) =
+                            self.unavailable.iter().find(|(binding, path, _)| *binding == root && *path == segments)
                         {
                             self.found = Some(field.clone());
                         }

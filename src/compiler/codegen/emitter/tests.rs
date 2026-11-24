@@ -234,7 +234,7 @@ fn delegate_consume_ranges_are_rejected_before_emission() {
 }
 
 #[test]
-fn observed_ranges_are_rejected_before_emission() {
+fn observed_input_ranges_require_positive_minima() {
     let err = emit_inline_error(
         r#"
             const int MAX_ACCOUNTS = 2;
@@ -260,7 +260,109 @@ fn observed_ranges_are_rejected_before_emission() {
         "#,
     );
 
-    assert!(err.to_string().contains("range code generation is not implemented yet"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("observed input range `source.inputs.accounts` must have a minimum of at least one"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn observed_input_ranges_authenticate_members_and_reuse_the_first_template() {
+    let (actors, artifact) = inline_actor_sil_and_artifact(
+        "observed-input-range",
+        r#"
+            const int MAX_ACCOUNTS = 3;
+            state ReaderState { cov_id asset_id; }
+            state AccountState { int balance; }
+            state MarkerState { int tag; }
+
+            actor Reader owns ReaderState {
+                entry inspect(int position, byte[32] expected)
+                observes asset by self.asset_id {
+                    inputs {
+                        head: Marker,
+                        accounts: Account[1..=MAX_ACCOUNTS],
+                        tail: Marker,
+                    }
+                    outputs { after: Account, }
+                }
+                emits next: Account {
+                    AccountState selected = state(asset.inputs.accounts[position]);
+                    require(asset.inputs.accounts.length >= 1);
+                    require(asset.inputs.accounts[position].balance == selected.balance);
+                    require(asset.inputs.accounts[0].value >= 0);
+                    require(asset.inputs.accounts[position].cov_id == self.asset_id);
+                    require(digest(state(asset.inputs.accounts[position])) == expected);
+                    require asset.outputs become { after <- Account(state(asset.inputs.accounts[position])), };
+                    unrestricted(next.value);
+                    become next <- Account(selected);
+                }
+            }
+
+            actor Account owns AccountState {
+                entry close() emits none { require(balance == 0); }
+            }
+            actor Marker owns MarkerState {
+                entry tag_is_set() emits none { require(tag > 0); }
+            }
+            app Test { actor Reader; actor Account; actor Marker; }
+        "#,
+    );
+    let sil = &actors["Reader"];
+    for expected in [
+        "OpCovInputCount(gen__asset_cov_id) - 2",
+        "OpCovInputIdx(gen__asset_cov_id, OpCovInputCount(gen__asset_cov_id) - 1)",
+        "for (gen__0_observed_1_accounts_position, 0, gen__0_observed_1_accounts_count, 3)",
+        "readInputStateWithTemplate(gen__0_observed_1_accounts_input_idx",
+        "gen__0_observed_1_accounts_authored_states[gen__checked_range_index(position, gen__0_observed_1_accounts_count)].balance",
+        "tx.inputs[OpCovInputIdx(gen__asset_cov_id, 1 + 0)].value",
+    ] {
+        assert!(sil.contains(expected), "missing `{expected}` in generated Sil:\n{sil}");
+    }
+    let bounds = sil.find("require(gen__0_observed_1_accounts_count <= 3)").expect("range bound is emitted");
+    let first_read = sil.find("readInputStateWithTemplate(gen__asset_head_input_idx").expect("leading singleton is read");
+    assert!(bounds < first_read, "bounds must precede all reads of this observed group:\n{sil}");
+    for index in ["gen__asset_after_output_idx", "gen__next_output_idx"] {
+        assert!(
+            sil.lines().any(|line| line.contains(&format!("validateOutputStateWithInputTemplate({index},"))
+                && line.contains("OpCovInputIdx(gen__asset_cov_id, 1)")),
+            "wrong proof source for `{index}`:\n{sil}"
+        );
+    }
+    let entry = artifact.argent.actors.iter().find(|actor| actor.name == "Reader").unwrap().entries.first().unwrap();
+    assert_eq!(entry.hidden_params.iter().filter(|param| param.name.starts_with("gen__account_")).count(), 2);
+}
+
+#[test]
+fn observed_input_ranges_reject_nonstatic_targets_and_invalid_uses() {
+    let compile = |target, body| {
+        emit_inline_error(&format!(
+            r#"
+        state ReaderState {{ cov_id asset_id; }}
+        state AccountState {{ int amount; }}
+        actor Reader owns ReaderState {{
+            entry inspect(actor_type<AccountState> account_type)
+            observes asset by self.asset_id {{
+                inputs {{ accounts: {target}[1..=2], }}
+            }}
+            emits none {{ {body} }}
+        }}
+        actor Account owns AccountState {{}}
+        app Test {{ actor Reader; actor Account; }}
+    "#
+        ))
+    };
+    for (target, body, diagnostic) in [
+        ("account_type", "", "must use one fixed actor target"),
+        ("Account", "require(asset.inputs.accounts[-1].value >= 0);", "index `-1` is outside"),
+        ("Account", "require(asset.inputs.accounts[2].value >= 0);", "index `2` is outside"),
+        ("Account", "AccountState item = asset.inputs.accounts[0];", "is an input reference; use `state("),
+        ("Account", "AccountState item = state(asset.inputs.accounts);", "input range `asset.inputs.accounts` requires an index"),
+        ("Account", "byte[32] hash = digest(state(asset.inputs.accounts));", "input range `asset.inputs.accounts` requires an index"),
+    ] {
+        let err = compile(target, body);
+        assert!(err.to_string().contains(diagnostic), "missing `{diagnostic}`: {err}");
+    }
 }
 
 #[test]

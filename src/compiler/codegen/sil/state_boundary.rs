@@ -7,10 +7,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::compiler::model::{
     AppCompilationContext, ClauseActorTypeRef, ContractStateLowering, EntryInputReferenceId, GeneratedFieldId, GeneratedFieldSource,
-    InputAuthentication, InputFieldAvailability, InputReferenceOrigin, InputReferenceRequirement, InteractionId, InteractionSource,
-    ObservedTemplateSource, OutputProofRequirement, OutputTargetPlan, PhysicalFieldId, PhysicalStateLayout, PhysicalTargetId,
-    ResolvedTypeBase, SilStateType, SourceFieldId, SourceStateId, SourceStorageRelation, StaticActorId, TargetPhysicalPlan,
-    TemplateSelector, TemplateWitnessForm, packed_field_len,
+    InputAuthentication, InputFieldAvailability, InputReferenceOrigin, InputReferenceRequirement, InteractionId, InteractionLocation,
+    InteractionSource, ObservedTemplateSource, OutputProofRequirement, OutputTargetPlan, PhysicalFieldId, PhysicalStateLayout,
+    PhysicalTargetId, ResolvedTypeBase, SilStateType, SourceFieldId, SourceStateId, SourceStorageRelation, StaticActorId,
+    TargetPhysicalPlan, TemplateSelector, TemplateWitnessForm, packed_field_len,
 };
 use crate::compiler::syntax::node::{DeclId, EntryId};
 use crate::compiler::syntax::{ActorDecl, ArrayDim, EntryDecl, TypeRef, word};
@@ -596,7 +596,7 @@ pub(in crate::compiler::codegen) fn plan_output_validation(
                     let path = reference.origin.source_path(entry)?;
                     let [name] = path.as_slice() else { return Err(ArgentError::new("consumed output proof has no input handle")) };
                     match reference.location {
-                        Some(crate::compiler::model::InteractionLocation::Range { .. }) => {
+                        Some(InteractionLocation::Range { .. }) => {
                             let position = reference
                                 .ranged_proof_input_position
                                 .ok_or_else(|| ArgentError::new("ranged consumed output proof has no planned input position"))?;
@@ -617,8 +617,15 @@ pub(in crate::compiler::codegen) fn plan_output_validation(
                     let [observe, _, handle] = path.as_slice() else {
                         return Err(ArgentError::new("observed output proof has no input handle"));
                     };
-                    let index = hidden_observed_input_idx_name(observe, handle);
-                    SilExpr::identifier(index)
+                    if let Some(position) = reference.ranged_proof_input_position {
+                        // A ranged proof may use its first member only when the plan guarantees one exists.
+                        SilExpr::call(
+                            "OpCovInputIdx",
+                            vec![SilExpr::identifier(hidden_observe_cov_id_name(observe)), SilExpr::int(position as i64)],
+                        )
+                    } else {
+                        SilExpr::identifier(hidden_observed_input_idx_name(observe, handle))
+                    }
                 }
                 InputReferenceOrigin::Active => return Err(ArgentError::new("active input cannot prove a foreign output template")),
             };
@@ -720,12 +727,20 @@ pub(in crate::compiler::codegen) struct PlannedEntryInputReference {
 }
 
 impl PlannedEntryInputReference {
+    pub(in crate::compiler::codegen) fn id(&self) -> EntryInputReferenceId {
+        self.id
+    }
+
     pub(in crate::compiler::codegen) fn reference(&self) -> &str {
         &self.reference
     }
 
     pub(in crate::compiler::codegen) fn physical_target(&self) -> &PhysicalTargetId {
         &self.access.target
+    }
+
+    pub(in crate::compiler::codegen) fn source_state(&self) -> &SourceStateId {
+        &self.access.source
     }
 
     pub(in crate::compiler::codegen) fn read_statement(&self) -> SilStatement<'static> {
@@ -1093,8 +1108,16 @@ pub(in crate::compiler::codegen) fn plan_entry_input_references(
                 unreachable!("observed input has its source declaration")
             };
             let reference = format!("{}.inputs.{}", observe.name, input.name);
-            let physical_expr = hidden_observed_input_state_name(&observe.name, &input.name);
             let requirement = semantic.observed(interaction.id())?;
+            let (physical_expr, input_index) = if interaction.location().is_range() {
+                let stem = range_input_stem(interaction.id(), interaction.handle());
+                (hidden_consumed_input_state_name(&stem), hidden_input_idx_name(&stem))
+            } else {
+                (
+                    hidden_observed_input_state_name(&observe.name, &input.name),
+                    hidden_observed_input_idx_name(&observe.name, &input.name),
+                )
+            };
             if requirement.origin != InputReferenceOrigin::Observed(interaction.id()) {
                 return Err(ArgentError::new("observed input materialization differs from its semantic origin"));
             }
@@ -1160,9 +1183,7 @@ pub(in crate::compiler::codegen) fn plan_entry_input_references(
                     id,
                     reference,
                     physical_expr,
-                    input_index: InputIndexExpr {
-                        expr: SilExpr::identifier(hidden_observed_input_idx_name(&observe.name, &input.name)),
-                    },
+                    input_index: InputIndexExpr { expr: SilExpr::identifier(input_index) },
                     direct_authored_state: requirement.direct_authored_state,
                 },
                 proof,

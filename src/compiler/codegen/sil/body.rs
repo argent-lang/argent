@@ -5,9 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::compiler::model::{
     AppCompilationContext, BoundRouteActor, CallableId, ClauseActorTypeRef, CovenantGroup, CovenantIdSource, CurrentInputGroupPolicy,
-    EntryInteraction, EntryOutputPlan, InputReferenceOrigin, InteractionId, InteractionLocation, InteractionSource,
-    ObservedOutputFieldWitnessSpec, ObservedTemplateSource, OutputProofRequirement, ResolvedSuccessor, SourceFieldId, SourceStateId,
-    StaticActorId, TemplateSelector, TemplateWitnessSource, WitnessAbiType, WitnessPlan, observed_is_dynamic_binding,
+    EntryInputReferenceId, EntryInteraction, EntryOutputPlan, InputReferenceOrigin, InteractionId, InteractionLocation,
+    InteractionSource, ObservedOutputFieldWitnessSpec, ObservedTemplateSource, OutputProofRequirement, ResolvedSuccessor,
+    SourceFieldId, SourceStateId, StaticActorId, TemplateSelector, TemplateWitnessSource, WitnessAbiType, WitnessPlan,
+    observed_is_dynamic_binding,
 };
 use crate::compiler::resolve::{Binding, LocalId, ResolvedName};
 use crate::compiler::syntax::body::RouteArity;
@@ -374,13 +375,17 @@ impl<'m, 'src> ContractLowerer<'m, 'src> {
                 modifier_spans: Vec::new(),
                 name_span: span,
             });
-            for (builtin, count) in [("OpCovInputCount", group.inputs().len()), ("OpCovOutputCount", group.outputs().len())] {
+            for (builtin, items) in [("OpCovInputCount", group.inputs()), ("OpCovOutputCount", group.outputs())] {
+                if items.iter().any(|item| item.location().is_range()) {
+                    // The range bounds check covers the full side, including its singletons.
+                    continue;
+                }
                 statements.push(SilStatement::Require {
                     expr: SilExpr::new(
                         SilExprKind::Binary {
                             op: SilBinaryOp::Eq,
                             left: Box::new(SilExpr::call(builtin, vec![SilExpr::identifier(cov_id.clone())])),
-                            right: Box::new(SilExpr::int(count as i64)),
+                            right: Box::new(SilExpr::int(items.len() as i64)),
                         },
                         span,
                     ),
@@ -388,6 +393,17 @@ impl<'m, 'src> ContractLowerer<'m, 'src> {
                     span,
                     message_span: None,
                 });
+            }
+            // Prove the ranged side's full cardinality before reading any member,
+            // but emit the reads in declaration order.
+            let mut range_read = None;
+            for interaction in group.inputs() {
+                if let Some(bounds) = interaction.cardinality().range_bounds() {
+                    let reference = input_references.observed(interaction.id())?;
+                    let (checks, read) = self.ranged_input(interaction, bounds, &cov_id, 0, reference)?;
+                    statements.extend(checks);
+                    range_read = Some(read);
+                }
             }
             let mut materialized_open_bindings = BTreeSet::new();
             for interaction in group.outputs() {
@@ -425,6 +441,11 @@ impl<'m, 'src> ContractLowerer<'m, 'src> {
                 let InteractionSource::ObserveInput(input) = interaction.source() else {
                     unreachable!("existing covenant inputs are observed inputs");
                 };
+                let reference = input_references.observed(interaction.id())?;
+                if interaction.location().is_range() {
+                    statements.push(range_read.take().expect("ranged input has one planned read"));
+                    continue;
+                }
                 let index = match interaction.location() {
                     InteractionLocation::FromStart(index) => SilExpr::int(index as i64),
                     InteractionLocation::FromEnd(distance) => SilExpr::new(
@@ -447,7 +468,7 @@ impl<'m, 'src> ContractLowerer<'m, 'src> {
                     modifier_spans: Vec::new(),
                     name_span: span,
                 });
-                statements.push(input_references.observed(interaction.id())?.read_statement());
+                statements.push(reference.read_statement());
             }
             for interaction in group.outputs() {
                 let InteractionSource::ObserveOutput(output) = interaction.source() else {
@@ -546,7 +567,10 @@ impl<'m, 'src> ContractLowerer<'m, 'src> {
             let slot_offset = input_plan.current_group_policy().slot_offset();
             for interaction in entry_model.current().inputs() {
                 if let Some(bounds) = input_plan.consumed_range(interaction.id()) {
-                    statements.extend(self.ranged_current_input(interaction, bounds, &cov_id, slot_offset, input_references)?);
+                    let (checks, read) =
+                        self.ranged_input(interaction, bounds, &cov_id, slot_offset, input_references.consumed(interaction.id())?)?;
+                    statements.extend(checks);
+                    statements.push(read);
                     continue;
                 }
                 let name = hidden_input_idx_name(interaction.handle());
@@ -601,21 +625,22 @@ impl<'m, 'src> ContractLowerer<'m, 'src> {
         Ok(statements)
     }
 
-    /// Authenticate and cache each member of a ranged current-covenant consume.
-    fn ranged_current_input(
+    /// Authenticate each member before appending its available authored fields to a private cache.
+    fn ranged_input(
         &self,
         interaction: &crate::compiler::model::EntryInteraction<'_>,
         (minimum, maximum): (i64, i64),
         cov_id: &str,
         slot_offset: usize,
-        input_references: &EntryInputReferencePlan,
-    ) -> Result<Vec<SilStatement<'static>>> {
+        input_reference: &PlannedEntryInputReference,
+    ) -> Result<(Vec<SilStatement<'static>>, SilStatement<'static>)> {
         let InteractionLocation::Range { start, singleton_count } = interaction.location() else {
-            unreachable!("ranged current input has a ranged location");
+            unreachable!("ranged input has a ranged location");
         };
         let span = SilSpan::default();
         let excluded = slot_offset + singleton_count;
-        let count = hidden_input_count_name(interaction.handle());
+        let stem = range_input_stem(interaction.id(), interaction.handle());
+        let count = hidden_input_count_name(&stem);
         let group_count = SilExpr::call("OpCovInputCount", vec![SilExpr::identifier(cov_id)]);
         let count_value = if excluded == 0 {
             group_count
@@ -652,9 +677,8 @@ impl<'m, 'src> ContractLowerer<'m, 'src> {
             bound(SilBinaryOp::Ge, minimum),
             bound(SilBinaryOp::Le, maximum),
         ];
-        let input_reference = input_references.consumed(interaction.id())?;
-        checks.extend(input_reference.range_cache_declarations(interaction.handle()));
-        let position = hidden_input_position_name(interaction.handle());
+        checks.extend(input_reference.range_cache_declarations(&stem));
+        let position = hidden_input_position_name(&stem);
         let first_cov_index = slot_offset + start;
         let cov_index = if first_cov_index == 0 {
             SilExpr::identifier(position.clone())
@@ -671,7 +695,7 @@ impl<'m, 'src> ContractLowerer<'m, 'src> {
         let mut body = vec![SilStatement::VariableDefinition {
             type_ref: SilTypeRef { base: SilTypeBase::Int, array_dims: Vec::new() },
             modifiers: Vec::new(),
-            name: hidden_input_idx_name(interaction.handle()),
+            name: hidden_input_idx_name(&stem),
             expr: Some(SilExpr::call("OpCovInputIdx", vec![SilExpr::identifier(cov_id), cov_index])),
             span,
             type_span: span,
@@ -679,8 +703,8 @@ impl<'m, 'src> ContractLowerer<'m, 'src> {
             name_span: span,
         }];
         body.push(input_reference.read_statement());
-        body.extend(input_reference.range_cache_append(interaction.handle())?);
-        checks.push(SilStatement::For {
+        body.extend(input_reference.range_cache_append(&stem)?);
+        let read = SilStatement::For {
             ident: position,
             start: SilExpr::int(0),
             end: SilExpr::identifier(count),
@@ -689,8 +713,8 @@ impl<'m, 'src> ContractLowerer<'m, 'src> {
             span,
             ident_span: span,
             body_span: span,
-        });
-        Ok(checks)
+        };
+        Ok((checks, read))
     }
 
     /// Authenticate each declared genesis group from transaction-derived output data.
@@ -938,6 +962,15 @@ struct EntryInputStateAstLowerer<'n, 'm, 'p, 'src> {
 }
 
 impl EntryInputStateAstLowerer<'_, '_, '_, '_> {
+    fn input_range(&self, expr: &SilExpr<'_>) -> Option<(&PlannedEntryInputReference, &InputRangeLocation)> {
+        let reference = self.references.reference_ast(expr)?;
+        Some((reference, self.bindings.input_ranges.get(&reference.id())?))
+    }
+
+    fn input_range_requires_index(reference: &PlannedEntryInputReference) -> ArgentError {
+        ArgentError::new(format!("input range `{}` requires an index to select an input reference", reference.reference()))
+    }
+
     fn lower_state_name(&mut self, name: &mut String, span: SilSpan<'_>) {
         match self.names.state_type_source(span) {
             Ok(Some(source)) => {
@@ -1155,9 +1188,9 @@ impl<'ast> AstVisitorMut<'ast> for EntryInputStateAstLowerer<'_, '_, '_, '_> {
         }
         if let SilExprKind::FieldAccess { source, .. } = &mut expr.kind
             && let SilExprKind::ArrayIndex { source: array, index } = &mut source.kind
-            && let SilExprKind::Identifier(_) = &array.kind
-            && (matches!(self.bindings.input_value(self.names.binding(array.span)), Some(InputValueLocation::Range { .. }))
-                || self.bindings.output_range(self.names.binding(array.span)).is_some())
+            && (self.input_range(array).is_some()
+                || (matches!(array.kind, SilExprKind::Identifier(_))
+                    && self.bindings.output_range(self.names.binding(array.span)).is_some()))
         {
             self.visit_expr(index);
         }
@@ -1165,8 +1198,7 @@ impl<'ast> AstVisitorMut<'ast> for EntryInputStateAstLowerer<'_, '_, '_, '_> {
             && name == word::STATE
             && let [reference] = args.as_mut_slice()
             && let SilExprKind::ArrayIndex { source, index } = &mut reference.kind
-            && let SilExprKind::Identifier(_) = &source.kind
-            && matches!(self.bindings.input_value(self.names.binding(source.span)), Some(InputValueLocation::Range { .. }))
+            && self.input_range(source).is_some()
         {
             self.visit_expr(index);
         }
@@ -1177,6 +1209,7 @@ impl<'ast> AstVisitorMut<'ast> for EntryInputStateAstLowerer<'_, '_, '_, '_> {
             && state_name == word::STATE
             && let [reference] = state_args.as_slice()
             && let Some(planned) = self.references.reference_ast(reference)
+            && self.input_range(reference).is_none()
             && let Some(lowered) = planned.authored_payload_digest_ast(self.model)
         {
             *expr = lowered;
@@ -1186,6 +1219,27 @@ impl<'ast> AstVisitorMut<'ast> for EntryInputStateAstLowerer<'_, '_, '_, '_> {
             && name == word::DIGEST
             && let [value] = args.as_slice()
         {
+            if let SilExprKind::Call { name, args, .. } = &value.kind
+                && name == word::STATE
+                && let [reference] = args.as_slice()
+            {
+                if let Some((planned, _)) = self.input_range(reference) {
+                    self.error = Some(Self::input_range_requires_index(planned));
+                    return;
+                }
+                if let SilExprKind::ArrayIndex { source, .. } = &reference.kind
+                    && let Some((planned, _)) = self.input_range(source)
+                {
+                    let source = planned.source_state().clone();
+                    let mut authored = value.clone();
+                    self.visit_expr(&mut authored);
+                    if self.error.is_none() {
+                        self.digest_helpers.borrow_mut().insert(source.clone());
+                        *expr = SilExpr::call(self.state_values.digest_helper_name(&source), vec![authored]);
+                    }
+                    return;
+                }
+            }
             if let SilExprKind::FieldAccess { source, field, .. } = &value.kind
                 && field == word::STATE
                 && let Some(reference) = self.references.reference_ast(source)
@@ -1227,12 +1281,10 @@ impl<'ast> AstVisitorMut<'ast> for EntryInputStateAstLowerer<'_, '_, '_, '_> {
             && name == word::STATE
             && let [reference] = args.as_slice()
             && let SilExprKind::ArrayIndex { source, index } = &reference.kind
-            && let SilExprKind::Identifier(handle) = &source.kind
-            && let Some(InputValueLocation::Range { range, .. }) = self.bindings.input_value(self.names.binding(source.span))
-            && let Some(planned) = self.references.reference_ast(source)
+            && let Some((planned, location)) = self.input_range(source)
         {
-            let checked = self.checked_range_index((**index).clone(), range);
-            if let Some(lowered) = planned.complete_range_item_ast(handle, checked) {
+            let checked = self.checked_range_index((**index).clone(), &location.range);
+            if let Some(lowered) = planned.complete_range_item_ast(&location.stem, checked) {
                 *expr = lowered;
             } else {
                 self.error = Some(planned.unavailable_authored_state());
@@ -1242,10 +1294,24 @@ impl<'ast> AstVisitorMut<'ast> for EntryInputStateAstLowerer<'_, '_, '_, '_> {
         if let SilExprKind::Call { name, args, .. } = &expr.kind
             && name == word::STATE
             && let [reference] = args.as_slice()
+            && let Some((planned, _)) = self.input_range(reference)
+        {
+            self.error = Some(Self::input_range_requires_index(planned));
+            return;
+        }
+        if let SilExprKind::Call { name, args, .. } = &expr.kind
+            && name == word::STATE
+            && let [reference] = args.as_slice()
             && let Some(planned) = self.references.reference_ast(reference)
             && let Some(lowered) = planned.complete_authored_ast()
         {
             *expr = lowered;
+            return;
+        }
+        if let SilExprKind::FieldAccess { source, .. } = &expr.kind
+            && let Some((planned, _)) = self.input_range(source)
+        {
+            self.error = Some(Self::input_range_requires_index(planned));
             return;
         }
         if let SilExprKind::Call { name, args, .. } = &expr.kind
@@ -1299,10 +1365,9 @@ impl<'ast> AstVisitorMut<'ast> for EntryInputStateAstLowerer<'_, '_, '_, '_> {
             return;
         }
         if let SilExprKind::UnarySuffix { source, kind: SilUnarySuffixKind::Length, .. } = &expr.kind
-            && let SilExprKind::Identifier(_) = &source.kind
-            && let Some(InputValueLocation::Range { range, .. }) = self.bindings.input_value(self.names.binding(source.span))
+            && let Some((_, location)) = self.input_range(source)
         {
-            *expr = SilExpr::identifier(range.count.clone());
+            *expr = SilExpr::identifier(location.range.count.clone());
             return;
         }
         if let SilExprKind::UnarySuffix { source, kind: SilUnarySuffixKind::Length, .. } = &expr.kind
@@ -1314,9 +1379,7 @@ impl<'ast> AstVisitorMut<'ast> for EntryInputStateAstLowerer<'_, '_, '_, '_> {
         }
         if let SilExprKind::FieldAccess { source, field, .. } = &expr.kind
             && let SilExprKind::ArrayIndex { source: array, index } = &source.kind
-            && let SilExprKind::Identifier(handle) = &array.kind
-            && let Some(InputValueLocation::Range { covenant_id, range }) = self.bindings.input_value(self.names.binding(array.span))
-            && let Some(reference) = self.references.reference_ast(array)
+            && let Some((reference, InputRangeLocation { covenant_id, range, stem })) = self.input_range(array)
         {
             let span = SilSpan::default();
             let checked = self.checked_range_index((**index).clone(), range);
@@ -1343,7 +1406,7 @@ impl<'ast> AstVisitorMut<'ast> for EntryInputStateAstLowerer<'_, '_, '_, '_> {
                     span,
                 ),
                 word::COVENANT_ID => SilExpr::call("OpInputCovenantId", vec![input_index]),
-                field => match reference.range_field_ast(handle, checked, field) {
+                field => match reference.range_field_ast(stem, checked, field) {
                     Some(value) => value,
                     None => {
                         self.error = Some(reference.unavailable_field(field));
@@ -1427,13 +1490,19 @@ impl<'ast> AstVisitorMut<'ast> for EntryInputStateAstLowerer<'_, '_, '_, '_> {
             return;
         }
         if let SilExprKind::ArrayIndex { source, .. } = &expr.kind
-            && let SilExprKind::Identifier(_) = &source.kind
-            && matches!(self.bindings.input_value(self.names.binding(source.span)), Some(InputValueLocation::Range { .. }))
+            && self.input_range(source).is_some()
         {
             self.error = Some(ArgentError::new(format!(
                 "ranged input item `{}` is an input reference; use `state({})` for an authored state value",
                 expr.span.as_str().trim(),
                 expr.span.as_str().trim()
+            )));
+            return;
+        }
+        if let Some((reference, _)) = self.input_range(expr) {
+            self.error = Some(ArgentError::new(format!(
+                "input range `{}` is not a state value; index it or use its length",
+                reference.reference()
             )));
             return;
         }
@@ -1450,27 +1519,21 @@ struct RangeValueLocation {
 }
 
 #[derive(Clone, Debug)]
-enum InputValueLocation {
-    Singleton,
-    Range { covenant_id: String, range: RangeValueLocation },
+struct InputRangeLocation {
+    covenant_id: String,
+    range: RangeValueLocation,
+    stem: String,
 }
 
 /// Materialized transaction locations for one entry.
 struct BodyBindings {
-    input_values: BTreeMap<LocalId, InputValueLocation>,
+    input_ranges: BTreeMap<EntryInputReferenceId, InputRangeLocation>,
     output_ranges: BTreeMap<LocalId, RangeValueLocation>,
 }
 
 impl BodyBindings {
     fn new() -> Self {
-        Self { input_values: BTreeMap::new(), output_ranges: BTreeMap::new() }
-    }
-
-    fn input_value(&self, binding: Option<&Binding>) -> Option<&InputValueLocation> {
-        match binding {
-            Some(Binding::Local(id)) => self.input_values.get(id),
-            _ => None,
-        }
+        Self { input_ranges: BTreeMap::new(), output_ranges: BTreeMap::new() }
     }
 
     fn output_range(&self, binding: Option<&Binding>) -> Option<&RangeValueLocation> {
@@ -1501,32 +1564,29 @@ impl<'a, 'm, 'p> BodyLowerer<'a, 'm, 'p> {
         let mut bindings = BodyBindings::new();
         let declaration_bindings = model.resolution.bindings(entry_model.id.actor);
 
-        for interaction in entry_model.current().inputs() {
-            input_references.consumed(interaction.id())?;
-            let input_value = if let Some((minimum, _)) = input_plan.consumed_range(interaction.id()) {
+        for group in entry_model.groups() {
+            for interaction in group.inputs() {
+                let Some((minimum, _)) = interaction.cardinality().range_bounds() else { continue };
                 let InteractionLocation::Range { start, .. } = interaction.location() else {
                     unreachable!("ranged interaction retains a ranged location");
                 };
-                let slot_offset = input_plan.current_group_policy().slot_offset();
-                InputValueLocation::Range {
-                    covenant_id: hidden_cov_id_name(),
-                    range: RangeValueLocation {
-                        first_index: slot_offset + start,
-                        count: hidden_input_count_name(interaction.handle()),
-                        minimum,
-                    },
-                }
-            } else {
-                InputValueLocation::Singleton
-            };
-            let crate::compiler::model::InteractionId::CurrentInput(input) = interaction.id() else {
-                unreachable!("current input has a consume identity")
-            };
-            let id = *declaration_bindings
-                .entry_consumes
-                .get(&(entry_model.id.index, input))
-                .ok_or_else(|| ArgentError::new("consumed input has no bound local identity"))?;
-            bindings.input_values.insert(id, input_value);
+                let (reference, covenant_id, slot_offset) = if let Some(observe) = group.observe() {
+                    (input_references.observed(interaction.id())?, hidden_observe_cov_id_name(&observe.name), 0)
+                } else {
+                    (
+                        input_references.consumed(interaction.id())?,
+                        hidden_cov_id_name(),
+                        input_plan.current_group_policy().slot_offset(),
+                    )
+                };
+                let stem = range_input_stem(interaction.id(), interaction.handle());
+                let location = InputRangeLocation {
+                    covenant_id,
+                    range: RangeValueLocation { first_index: slot_offset + start, count: hidden_input_count_name(&stem), minimum },
+                    stem,
+                };
+                bindings.input_ranges.insert(reference.id(), location);
+            }
         }
 
         let mut output_values = BTreeMap::new();

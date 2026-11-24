@@ -374,6 +374,8 @@ pub enum BuilderError {
     InvalidObservedCovenantId { observe: String },
     #[error("observe `{observe}` expects {expected} {side}s for its covenant id, found {found}")]
     ObservedCountMismatch { observe: String, side: Side, expected: usize, found: usize },
+    #[error("observed range `{observe}.{side}s.{handle}` requires {minimum}..={maximum} total covenant {side}s, found {found}")]
+    ObservedCardinalityMismatch { observe: String, side: Side, handle: String, minimum: usize, maximum: usize, found: usize },
     #[error("observed {side} `{observe}.{handle}` at transaction index {index} has no actor metadata")]
     MissingObservedActorMetadata { observe: String, side: Side, handle: String, index: usize },
     #[error("spawn `{spawn}` has no genesis output `{handle}` at group index {group_index}")]
@@ -631,7 +633,7 @@ struct ObservedOutput {
 #[derive(Clone, Debug)]
 struct ObservedCovenantContext {
     app: String,
-    inputs: BTreeMap<String, ObservedInput>,
+    inputs: BTreeMap<String, Vec<ObservedInput>>,
     outputs: BTreeMap<String, ObservedOutput>,
 }
 
@@ -1183,29 +1185,26 @@ impl<'a> TxBuilder<'a> {
         match &hidden.subject {
             HiddenParamSubjectArtifact::Actor { actor } => self.actor_subject_contract_ref(primary_artifact, actor),
             HiddenParamSubjectArtifact::ObservedActor { observe, side, handle, actor } => {
-                match contexts.observed.and_then(|contexts| contexts.get(observe)) {
-                    Some(context) => {
+                let declaration = self.observed_actor(entry, observe, *side, handle)?;
+                match &declaration.target {
+                    ObservedTargetArtifact::StaticActor { app, actor } if app == &primary_artifact.app => {
+                        self.contract_ref_in_artifact(primary_artifact, actor)
+                    }
+                    ObservedTargetArtifact::StaticActor { app, actor } => self.observed_contract_ref(primary_artifact, app, actor),
+                    ObservedTargetArtifact::DynamicActor { .. } => {
+                        let context = contexts
+                            .observed
+                            .and_then(|contexts| contexts.get(observe))
+                            .ok_or_else(|| BuilderError::MissingObservedCovenant { observe: observe.clone() })?;
+                        // Open observations remain singleton; fixed ranges use their declared actor.
                         let observed_actor = match side {
-                            ObservedActorSideArtifact::Input => context.inputs.get(handle).map(|observed| observed.actor.as_str()),
+                            ObservedActorSideArtifact::Input => {
+                                context.inputs.get(handle).and_then(|items| items.first()).map(|observed| observed.actor.as_str())
+                            }
                             ObservedActorSideArtifact::Output => context.outputs.get(handle).map(|observed| observed.actor.as_str()),
                         }
                         .unwrap_or(actor.as_str());
                         self.contract_ref_in_app(&context.app, observed_actor)
-                    }
-                    None => {
-                        let observed_actor = self.observed_actor(entry, observe, *side, handle)?;
-                        match &observed_actor.target {
-                            ObservedTargetArtifact::DynamicActor { .. } => {
-                                Err(BuilderError::MissingObservedCovenant { observe: observe.clone() })
-                            }
-                            ObservedTargetArtifact::StaticActor { app, actor } => {
-                                if app == &primary_artifact.app {
-                                    self.contract_ref_in_artifact(primary_artifact, actor)
-                                } else {
-                                    self.observed_contract_ref(primary_artifact, app, actor)
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -1342,28 +1341,30 @@ impl<'a> TxBuilder<'a> {
             }
         }
         for input in expected {
-            let observed = context.inputs.get(&input.name).ok_or_else(|| BuilderError::MissingObservedActor {
+            let members = context.inputs.get(&input.name).ok_or_else(|| BuilderError::MissingObservedActor {
                 observe: observe_name.to_string(),
                 side: Side::In,
                 handle: input.name.clone(),
             })?;
-            self.validate_observed_actor(
-                observing_artifact,
-                &context.app,
-                observe_name,
-                ObservedActorSideArtifact::Input,
-                input,
-                &observed.actor,
-            )?;
-            let contract_ref = self.contract_ref_in_app(&context.app, &observed.actor)?;
-            let expected_script_public_key =
-                pay_to_script_hash_script(&self.redeem_script_for_contract(contract_ref, observed.state.clone())?);
-            if observed.utxo.script_public_key != expected_script_public_key {
-                return Err(BuilderError::ObservedUtxoScriptMismatch {
-                    observe: observe_name.to_string(),
-                    handle: input.name.clone(),
-                    actor: observed.actor.clone(),
-                });
+            for observed in members {
+                self.validate_observed_actor(
+                    observing_artifact,
+                    &context.app,
+                    observe_name,
+                    ObservedActorSideArtifact::Input,
+                    input,
+                    &observed.actor,
+                )?;
+                let contract_ref = self.contract_ref_in_app(&context.app, &observed.actor)?;
+                let expected_script_public_key =
+                    pay_to_script_hash_script(&self.redeem_script_for_contract(contract_ref, observed.state.clone())?);
+                if observed.utxo.script_public_key != expected_script_public_key {
+                    return Err(BuilderError::ObservedUtxoScriptMismatch {
+                        observe: observe_name.to_string(),
+                        handle: input.name.clone(),
+                        actor: observed.actor.clone(),
+                    });
+                }
             }
         }
         Ok(())

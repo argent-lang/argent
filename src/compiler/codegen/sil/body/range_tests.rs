@@ -471,17 +471,18 @@ fn rejects_a_bare_ranged_input_item_as_authored_state() {
 #[test]
 fn expanded_ranged_inputs_allow_available_projections_but_not_reconstruction() {
     let source = r#"
-        state BatchState { int marker; }
+        state BatchState { cov_id observed_id; }
         state Capsule { int nonce; virtual detail; }
         state Details { int count; }
         state Expanded expands Capsule { detail: Details; }
 
         actor Batch owns BatchState {
-            entry inspect() consumes { vaults: Vault[1..=3], } emits none {
-                require(vaults.length >= 1);
-                require(vaults[0].nonce >= 0);
-                require(vaults[0].value >= 0);
-                require(vaults[0].cov_id == self.cov_id);
+            entry inspect() CLAUSE emits none {
+                require(RANGE.length >= 1);
+                require(RANGE[0].nonce >= 0);
+                require(RANGE[0].value >= 0);
+                require(RANGE[0].cov_id == COVENANT);
+                EXTRA
             }
         }
         actor Vault owns Expanded {
@@ -491,17 +492,29 @@ fn expanded_ranged_inputs_allow_available_projections_but_not_reconstruction() {
         }
         app Test { actor Batch; actor Vault; }
     "#;
-    let sil = lower_test_body(source, "Batch");
-    assert!(sil.contains("gen__vaults_nonce_values[0]"), "available field did not project:\n{sil}");
-    assert!(sil.contains("tx.inputs[OpCovInputIdx(gen__cov_id, 1 + 0)].value"), "native value did not lower:\n{sil}");
-    crate::compile_inline("expanded-ranged-input.ag", source)
-        .expect("available projections from an expanded ranged input compile through the full Sil backend");
+    for (clause, path, covenant, cache, index) in [
+        ("consumes { vaults: Vault[1..=3], }", "vaults", "self.cov_id", "gen__vaults", "gen__cov_id, 1 + 0"),
+        (
+            "observes remote by self.observed_id { inputs { vaults: Vault[1..=3], } }",
+            "remote.inputs.vaults",
+            "self.observed_id",
+            "gen__0_observed_0_vaults",
+            "gen__remote_cov_id, 0",
+        ),
+    ] {
+        let source = source.replace("CLAUSE", clause).replace("RANGE", path).replace("COVENANT", covenant);
+        let valid = source.replace("EXTRA", "");
+        let sil = lower_test_body(&valid, "Batch");
+        assert!(sil.contains(&format!("{cache}_nonce_values[0]")), "available field did not project:\n{sil}");
+        assert!(sil.contains(&format!("tx.inputs[OpCovInputIdx({index})].value")), "native value did not lower:\n{sil}");
+        crate::compile_inline("expanded-ranged-input.ag", valid)
+            .expect("available projections from an expanded ranged input compile through the full Sil backend");
 
-    for body in ["require(vaults[0].detail.count >= 0);", "Expanded opened = state(vaults[0]);"] {
-        let invalid =
-            source.replace("require(vaults[0].cov_id == self.cov_id);", &format!("require(vaults[0].cov_id == self.cov_id); {body}"));
-        let err = lower_test_body_result(&invalid, "Batch").expect_err("expanded preimages are unavailable for ranged inputs");
-        assert!(err.to_string().contains("validated preimage"), "unexpected error: {err}");
+        for body in [format!("require({path}[0].detail.count >= 0);"), format!("Expanded opened = state({path}[0]);")] {
+            let invalid = source.replace("EXTRA", &body);
+            let err = lower_test_body_result(&invalid, "Batch").expect_err("expanded preimages are unavailable for ranged inputs");
+            assert!(err.to_string().contains("validated preimage"), "unexpected error: {err}");
+        }
     }
 }
 

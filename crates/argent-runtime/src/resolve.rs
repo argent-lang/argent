@@ -872,18 +872,23 @@ fn resolve_observation(
     observe: &ObserveArtifact,
     covenant_id: Hash,
 ) -> BuilderResult<ObservedCovenantContext> {
-    let matching_inputs = matching_observed_inputs(context, covenant_id);
-    require_observed_count(&observe.name, Side::In, observe.inputs.len(), matching_inputs.len())?;
+    let mut matching_inputs = matching_observed_inputs(context, covenant_id).into_iter();
+    let range_len = observed_range_len(&observe.name, Side::In, &observe.inputs, matching_inputs.len())?;
     let matching_outputs = matching_observed_outputs(unsigned, covenant_id);
     require_observed_count(&observe.name, Side::Out, observe.outputs.len(), matching_outputs.len())?;
 
-    // Pair both sides positionally: covenant members are indexed by transaction
-    // order, while emitted observe checks assign indexes in declaration order.
+    // Assign covenant members in transaction order to declarations in source order.
+    // A range takes its share of the input group before any trailing singletons.
     let mut app = None;
     let mut inputs = BTreeMap::new();
-    for (declaration, index) in observe.inputs.iter().zip(matching_inputs) {
-        let (handle, observed) = resolve_observed_input(&observe.name, declaration, index, &context.inputs[index], &mut app)?;
-        inputs.insert(handle, observed);
+    for declaration in &observe.inputs {
+        let count = if declaration.cardinality.is_one() { 1 } else { range_len };
+        let members = matching_inputs
+            .by_ref()
+            .take(count)
+            .map(|index| resolve_observed_input(&observe.name, declaration, index, &context.inputs[index], &mut app))
+            .collect::<BuilderResult<_>>()?;
+        inputs.insert(declaration.name.clone(), members);
     }
     let mut outputs = BTreeMap::new();
     for (declaration, index) in observe.outputs.iter().zip(matching_outputs) {
@@ -897,6 +902,28 @@ fn resolve_observation(
         message: format!("observe `{}` has no actor inputs or outputs from which to resolve an app", observe.name),
     })?;
     Ok(ObservedCovenantContext { app, inputs, outputs })
+}
+
+fn observed_range_len(observe: &str, side: Side, declarations: &[ObservedActorArtifact], found: usize) -> BuilderResult<usize> {
+    let Some(range) = declarations.iter().find(|actor| !actor.cardinality.is_one()) else {
+        require_observed_count(observe, side, declarations.len(), found)?;
+        return Ok(0);
+    };
+    // Artifact checks guarantee at most one range with valid bounds per section.
+    let (minimum, maximum) = cardinality_bounds(range.cardinality).expect("checked observed cardinality");
+    let singleton_count = declarations.len() - 1;
+    let (minimum, maximum) = (minimum + singleton_count, maximum + singleton_count);
+    if !(minimum..=maximum).contains(&found) {
+        return Err(BuilderError::ObservedCardinalityMismatch {
+            observe: observe.to_string(),
+            side,
+            handle: range.name.clone(),
+            minimum,
+            maximum,
+            found,
+        });
+    }
+    Ok(found - singleton_count)
 }
 
 fn matching_observed_inputs(context: &ResolveContext<'_, '_, '_>, covenant_id: Hash) -> Vec<usize> {
@@ -936,7 +963,7 @@ fn resolve_observed_input(
     index: usize,
     candidate: &ResolveInput<'_, '_, '_>,
     app: &mut Option<String>,
-) -> BuilderResult<(String, ObservedInput)> {
+) -> BuilderResult<ObservedInput> {
     let ResolveInput::Actor(candidate) = candidate else {
         return Err(BuilderError::MissingObservedActorMetadata {
             observe: observe.to_string(),
@@ -946,14 +973,11 @@ fn resolve_observed_input(
         });
     };
     merge_observed_app(observe, app, &artifact_app_alias(&candidate.artifact.app))?;
-    Ok((
-        declaration.name.clone(),
-        ObservedInput {
-            actor: candidate.source.actor.actor.clone(),
-            state: candidate.source.state.clone(),
-            utxo: candidate.source.utxo.clone(),
-        },
-    ))
+    Ok(ObservedInput {
+        actor: candidate.source.actor.actor.clone(),
+        state: candidate.source.state.clone(),
+        utxo: candidate.source.utxo.clone(),
+    })
 }
 
 fn resolve_observed_output(
