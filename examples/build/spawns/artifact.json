@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "a03fb7ff4fcac35cb731c24fd0c29ba2437827e5200acce2c8cb5cb6edf2b0da",
+  "id": "a3ff2784781240ac92d8ab6ed6d82da4d384aa3dd917fb5592bc2facb94e4aec",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -459,7 +459,7 @@
   },
   "sil_abi": {
     "schema_version": 1,
-    "compiler_version": "0.1.0",
+    "compiler_version": "0.1.2",
     "structs": {
       "ControllerState": {
         "fields": [

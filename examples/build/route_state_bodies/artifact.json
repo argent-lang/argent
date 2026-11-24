@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "34f46e15b0e10e127a148e1a0b8d3c709b1762610d73b7190e7d01d4b8551544",
+  "id": "6c6d301e2fdb0961c5d4e675354a1059891a3287d85807a2e8f14c202a0d5942",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -1303,7 +1303,7 @@
   },
   "sil_abi": {
     "schema_version": 1,
-    "compiler_version": "0.1.0",
+    "compiler_version": "0.1.2",
     "structs": {
       "ArchiveState": {
         "fields": [

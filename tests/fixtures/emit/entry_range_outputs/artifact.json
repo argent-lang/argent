@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "a8f6f152987f9c0285cf3d3eff99e4d24080a32b7ae26288dc862b91968c58ee",
+  "id": "91bf6fcb1b016bf05ed251a54284446648b61264941643d87e7d5541d2f81e6f",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -382,7 +382,7 @@
   },
   "sil_abi": {
     "schema_version": 1,
-    "compiler_version": "0.1.0",
+    "compiler_version": "0.1.2",
     "structs": {
       "AccountState": {
         "fields": [

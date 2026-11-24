@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "98bbd21d41ea14ce76d180642c208d67ec4e9b2aa89fe01c16e24aa8a5bec0f0",
+  "id": "9beebbaa0b3160edca53981ae635f08e7cd0a1bc952c06a7a6fcc9714640c78c",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -531,7 +531,7 @@
   },
   "sil_abi": {
     "schema_version": 1,
-    "compiler_version": "0.1.0",
+    "compiler_version": "0.1.2",
     "structs": {
       "AgentCapsule": {
         "fields": [

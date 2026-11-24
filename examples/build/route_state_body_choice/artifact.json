@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "cbb5a31da4169596aae79cd3309885bf10bd499e09441e903857d5bd2c8ec169",
+  "id": "eee8df13ace0d7b2d1289eacefe817f44f7a8610dfc1cb658cf94dbd5c630bff",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -973,7 +973,7 @@
   },
   "sil_abi": {
     "schema_version": 1,
-    "compiler_version": "0.1.0",
+    "compiler_version": "0.1.2",
     "structs": {
       "BoardState": {
         "fields": [
