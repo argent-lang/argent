@@ -1,8 +1,8 @@
 # Ranges in entry clauses
 
 > This document defines the shared range model and its staged implementation.
-> The compiler supports leader consumes, current-entry emits, and observed
-> input ranges. Observed output and spawned ranges are follow-up stages below.
+> The compiler supports leader consumes, current-entry emits, and fixed-actor
+> observed ranges. Spawned ranges are a follow-up stage below.
 
 ## Purpose
 
@@ -63,14 +63,25 @@ An emitted range uses one bulk `become` route. The `Actor[]` suffix marks the
 route as bulk, and its state expression is an array. The compiler validates one
 output for each array item.
 
-Observed inputs use the same range syntax:
+Observed inputs and outputs use the same range syntax:
 
 ```rust
 observes assets by self.asset_id {
     inputs {
         previous: Asset[1..=MAX_ASSETS],
     }
+    outputs {
+        next: Asset[0..=MAX_ASSETS],
+    }
 }
+```
+
+Pass a named authored state array to the bulk route:
+
+```rust
+require assets.outputs become {
+    next <- Asset[](next_states),
+};
 ```
 
 Spawned outputs reserve the same source form, but the compiler does not yet
@@ -314,9 +325,19 @@ If a range could be empty, an output could not rely on it for a template proof.
 Open ranged targets are not yet supported. A shared `as` binding would also
 need a first input to bind.
 
-Observed output ranges will derive their length from `OpCovOutputCount` minus
-the number of singleton outputs and validate one authored state per output.
-Their minimum can be zero: there is no output to validate in an empty range.
+An observed output range uses `OpCovOutputCount(observed_id)` minus the number
+of singleton outputs. The count includes continuations of the observed covenant
+regardless of which input authorizes them. It excludes genesis outputs. The
+bulk route checks that the state array has the same length, then materializes and
+validates each element at its `OpCovOutputIdx` position. A matching,
+guaranteed input can provide the template for all elements. Otherwise, the
+outputs share one template witness when required.
+
+The output minimum can be zero: the array must then be empty when there are
+no output members. This does not change the requirement to name the range in
+the `require ... outputs become` block. The runtime still requires at least
+one observed member. The emitting contracts still own their output-value
+checks.
 
 ### Spawns
 
@@ -342,10 +363,10 @@ covenant-ID proof.
 ## Current implementation boundary
 
 The compiler and runtime support leader `consumes` ranges, current `emits`
-ranges, and fixed-actor observed input ranges. Singleton items can appear
-before and after a range. Delegate consumes, observed output ranges, and
-spawned ranges are not yet supported. Artifact checks reject unsupported
-shapes rather than interpreting them as singleton declarations.
+ranges, and fixed-actor observed input and output ranges. Singleton items can
+appear before and after a range. Delegate consume ranges, open observed
+ranges, and spawned ranges are not yet supported. Artifact checks reject
+unsupported shapes rather than interpreting them as singleton declarations.
 
 Ranged output-value policy is currently handle-level. One indexed
 `next[i].value` reference, including `unrestricted(next[i].value)`, satisfies

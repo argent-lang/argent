@@ -1,0 +1,61 @@
+state ObserverState {
+    cov_id asset_id;
+}
+
+state AssetState {
+    int amount;
+}
+
+state MarkerState {
+    int tag;
+}
+
+actor Observer owns ObserverState {
+    entry inspect(MarkerState head_state, AssetState[] next_assets, MarkerState tail_state)
+    observes remote by self.asset_id {
+        inputs {
+            head: Marker,
+            assets: Asset[1..=2],
+            tail: Marker,
+        }
+        outputs {
+            head: Marker,
+            assets: Asset[0..=3],
+            tail: Marker,
+        }
+    }
+    emits none {
+        require(remote.inputs.assets[0].amount > 0);
+        require remote.outputs become {
+            head <- Marker(head_state),
+            assets <- Asset[](next_assets),
+            tail <- Marker(tail_state),
+        };
+    }
+}
+
+actor Asset owns AssetState {
+    entry archive() emits next: Archive {
+        unrestricted(next.value);
+        become next <- Archive(AssetState { amount: amount });
+    }
+}
+
+actor Archive owns AssetState {
+    entry hold() emits none {
+        require(amount >= 0);
+    }
+}
+
+actor Marker owns MarkerState {
+    entry hold() emits none {
+        require(tag > 0);
+    }
+}
+
+app Test {
+    actor Observer;
+    actor Asset;
+    actor Archive;
+    actor Marker;
+}

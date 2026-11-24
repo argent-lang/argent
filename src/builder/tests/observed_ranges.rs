@@ -92,3 +92,78 @@ fn observed_input_range_and_trailing_singleton_follow_covenant_order() {
         );
     }
 }
+
+#[test]
+fn linked_observed_output_range_validates_every_state() {
+    let output = tempfile::tempdir().expect("fixture output directory");
+    let compiled = crate::build_file_app_bundle(
+        "tests/fixtures/runtime/context_ranged_observe_outputs/observer.ag",
+        "ObserverApp",
+        output.path(),
+    )
+    .expect("linked observed output fixture compiles");
+    let observer_entry = entry_artifact(compiled.primary(), "Observer", "inspect");
+    let asset_witnesses = observer_entry
+        .hidden_params
+        .iter()
+        .filter(|param| subject_label(&param.subject) == "AssetApp::Asset")
+        .map(|param| param.purpose)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        asset_witnesses,
+        [HiddenParamPurposeArtifact::TemplatePrefixBytes, HiddenParamPurposeArtifact::TemplateSuffixBytes],
+        "one linked template witness serves the complete range"
+    );
+
+    let bundle = compiled.runtime_bundle().expect("runtime bundle");
+    let builder = TxBuilder::from_bundle(&bundle).expect("builder accepts observed output range");
+    let remote_id = Hash::from_bytes([0x98; 32]);
+    let local_id = Hash::from_bytes([0x99; 32]);
+    let outpoint = |byte| TransactionOutpoint::new(TransactionId::from_bytes([byte; 32]), 0);
+    let observer = state! { remote_id: remote_id };
+    let observer_utxo = builder.covenant_utxo("Observer", observer.clone(), 6_000, 0, false, Some(local_id)).unwrap();
+    let issuer = state! { serial: 42 };
+    let issuer_utxo = builder.covenant_utxo("asset_app::Issuer", issuer.clone(), 2_000, 0, false, Some(remote_id)).unwrap();
+    let covenant = CovenantBinding::new(1, remote_id);
+    let states = |amounts: &[i64]| amounts.iter().map(|&amount| state! { amount: amount }).collect::<Vec<_>>();
+    let context = |expected: &[i64], actual: &[i64]| {
+        let mut context = TxContext::new()
+            .actor_input(
+                "Observer",
+                observer.clone(),
+                EntryCall::new("inspect").args(args![states(expected)]),
+                outpoint(0x9a),
+                observer_utxo.clone(),
+                0,
+            )
+            .actor_input(
+                "asset_app::Issuer",
+                issuer.clone(),
+                EntryCall::new("split").args(args![states(actual)]),
+                outpoint(0x9b),
+                issuer_utxo.clone(),
+                0,
+            );
+        for (index, state) in states(actual).into_iter().enumerate() {
+            if index == 1 {
+                context = context.output(ScriptPublicKey::new(0, vec![OpTrue].into()), None, 100);
+            }
+            context = context.actor_output("asset_app::Asset", state, covenant, 1_000);
+        }
+        context.actor_output("asset_app::Issuer", issuer.clone(), covenant, 2_000)
+    };
+
+    for amounts in [&[][..], &[7], &[7, 8]] {
+        builder.build(&context(amounts, amounts)).unwrap_or_else(|error| panic!("observed output length {}: {error}", amounts.len()));
+    }
+    for expected in [&[7][..], &[7, 9]] {
+        let error = builder.build(&context(expected, &[7, 8])).expect_err("observer checks the array length and all output states");
+        assert!(matches!(error, BuilderError::InputScript { input_index: 0, .. }), "unexpected error: {error}");
+    }
+    let error = builder.build(&context(&[7, 8, 9], &[7, 8, 9])).expect_err("observed output count exceeds its declared bounds");
+    assert!(matches!(
+        error,
+        BuilderError::ObservedCardinalityMismatch { observe, side: Side::Out, handle, minimum: 1, maximum: 3, found: 4 }
+            if observe == "remote" && handle == "items"
+    ));
+}

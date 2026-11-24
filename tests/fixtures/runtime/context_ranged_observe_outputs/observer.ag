@@ -1,0 +1,26 @@
+import "./asset.ag" as asset;
+
+state ObserverState {
+    cov_id remote_id;
+}
+
+actor Observer owns ObserverState {
+    entry inspect(asset::AssetState[] expected)
+    observes remote by self.remote_id {
+        inputs {
+            issuer: asset::AssetApp::Issuer,
+        }
+        outputs {
+            items: asset::AssetApp::Asset[0..=2],
+            issuer_next: asset::AssetApp::Issuer,
+        }
+    }
+    emits none {
+        require remote.outputs become {
+            items <- asset::AssetApp::Asset[](expected),
+            issuer_next <- asset::AssetApp::Issuer(state(remote.inputs.issuer)),
+        };
+    }
+}
+
+app ObserverApp { actor Observer; }

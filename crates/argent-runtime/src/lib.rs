@@ -634,7 +634,7 @@ struct ObservedOutput {
 struct ObservedCovenantContext {
     app: String,
     inputs: BTreeMap<String, Vec<ObservedInput>>,
-    outputs: BTreeMap<String, ObservedOutput>,
+    outputs: BTreeMap<String, Vec<ObservedOutput>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1201,7 +1201,9 @@ impl<'a> TxBuilder<'a> {
                             ObservedActorSideArtifact::Input => {
                                 context.inputs.get(handle).and_then(|items| items.first()).map(|observed| observed.actor.as_str())
                             }
-                            ObservedActorSideArtifact::Output => context.outputs.get(handle).map(|observed| observed.actor.as_str()),
+                            ObservedActorSideArtifact::Output => {
+                                context.outputs.get(handle).and_then(|items| items.first()).map(|observed| observed.actor.as_str())
+                            }
                         }
                         .unwrap_or(actor.as_str());
                         self.contract_ref_in_app(&context.app, observed_actor)
@@ -1387,21 +1389,23 @@ impl<'a> TxBuilder<'a> {
             }
         }
         for output in expected {
-            let observed = context.outputs.get(&output.name).ok_or_else(|| BuilderError::MissingObservedActor {
+            let members = context.outputs.get(&output.name).ok_or_else(|| BuilderError::MissingObservedActor {
                 observe: observe_name.to_string(),
                 side: Side::Out,
                 handle: output.name.clone(),
             })?;
-            self.validate_observed_actor(
-                observing_artifact,
-                &context.app,
-                observe_name,
-                ObservedActorSideArtifact::Output,
-                output,
-                &observed.actor,
-            )?;
-            let contract_ref = self.contract_ref_in_app(&context.app, &observed.actor)?;
-            self.redeem_script_for_contract(contract_ref, observed.state.clone())?;
+            for observed in members {
+                self.validate_observed_actor(
+                    observing_artifact,
+                    &context.app,
+                    observe_name,
+                    ObservedActorSideArtifact::Output,
+                    output,
+                    &observed.actor,
+                )?;
+                let contract_ref = self.contract_ref_in_app(&context.app, &observed.actor)?;
+                self.redeem_script_for_contract(contract_ref, observed.state.clone())?;
+            }
         }
         Ok(())
     }
@@ -1599,11 +1603,15 @@ impl<'a> TxBuilder<'a> {
         let context = observed
             .and_then(|contexts| contexts.get(observe))
             .ok_or_else(|| BuilderError::MissingObservedCovenant { observe: observe.clone() })?;
-        let output = context.outputs.get(handle).ok_or_else(|| BuilderError::MissingObservedActor {
-            observe: observe.clone(),
-            side: Side::Out,
-            handle: handle.clone(),
-        })?;
+        // Virtual output fields are supplied only for singleton open observations.
+        let output = context
+            .outputs
+            .get(handle)
+            .and_then(|members| match members.as_slice() {
+                [output] => Some(output),
+                _ => None,
+            })
+            .ok_or_else(|| BuilderError::MissingObservedActor { observe: observe.clone(), side: Side::Out, handle: handle.clone() })?;
         let contract_ref = self.contract_ref_in_app(&context.app, &output.actor)?;
         let actor_state = &self.actor_ref_in_artifact(contract_ref.artifact, contract_ref.name)?.actor.state;
         if !state_satisfies(contract_ref.artifact, actor_state, state) {

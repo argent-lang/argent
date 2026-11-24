@@ -1320,7 +1320,16 @@ impl<'a, 'm> BodyTypeAnalyzer<'a, 'm> {
             .find(|candidate| candidate.id() == output_id)
             .ok_or_else(|| ArgentError::new("foreign route has no bound output"))?;
         if output.cardinality().is_range() {
-            return Ok(());
+            // Unsupported targets and arity mismatches receive their clause diagnostics.
+            if group.spawn().is_some() || output.target().single_static_actor().is_none() || arity != RouteArity::Many {
+                return Ok(());
+            }
+            if !matches!(expr.kind, SilExprKind::Identifier(_)) {
+                return Err(ArgentError::new(format!(
+                    "observe range output `{}` requires a named authored state array; bind the state array before calling `Actor[](...)`",
+                    output.handle()
+                )));
+            }
         }
         let expected = if let Some(target) = output.target().single_static_actor() {
             Some(self.model.static_actor_source_state(target)?)

@@ -366,6 +366,45 @@ fn observed_input_ranges_reject_nonstatic_targets_and_invalid_uses() {
 }
 
 #[test]
+fn observed_output_range_reuses_the_first_authenticated_input_and_materializes_each_state() {
+    let (sil, artifact) = emit_fixture("observed_input_output_ranges", "Observer");
+    assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/observed_input_output_ranges/Observer.sil"));
+    let observer = artifact.argent.actors.iter().find(|actor| actor.name == "Observer").expect("Observer exists");
+    let entry = &observer.entries[0];
+    assert_eq!(entry.observes[0].outputs[1].cardinality, CardinalityArtifact::Range { minimum: 0, maximum: 3 });
+    assert_eq!(
+        entry
+            .hidden_params
+            .iter()
+            .filter(|param| param.name.starts_with("gen__asset_"))
+            .map(|param| param.name.as_str())
+            .collect::<Vec<_>>(),
+        ["gen__asset_prefix_len", "gen__asset_suffix_len"],
+        "all members share the lengths already used to authenticate the range input"
+    );
+}
+
+#[test]
+fn observed_output_ranges_reject_scalar_and_unproven_successors() {
+    let source = include_str!("../../../../tests/fixtures/emit/observed_input_output_ranges/app.ag");
+    for (from, to, diagnostic) in [
+        ("Asset[](next_assets)", "Asset(next_assets)", "must use bulk become syntax"),
+        ("assets <- Asset[](next_assets),", "", "does not validate output `assets`"),
+        ("AssetState[] next_assets", "MarkerState[] next_assets", "is not a proven authored `AssetState` value"),
+        ("Asset[](next_assets)", "Asset[](AssetState[]{ AssetState { amount: 1 } })", "requires a named authored state array"),
+    ] {
+        let err = emit_inline_error(&source.replace(from, to));
+        assert!(err.to_string().contains(diagnostic), "missing `{diagnostic}`: {err}");
+    }
+    let dynamic = source
+        .replace("MarkerState head_state,", "actor_type<AssetState> dynamic_target, MarkerState head_state,")
+        .replace("assets: Asset[0..=3]", "assets: dynamic_target[0..=3]")
+        .replace("Asset[](next_assets)", "dynamic_target[](next_assets)");
+    let err = emit_inline_error(&dynamic);
+    assert!(err.to_string().contains("observed output range `remote.outputs.assets` must use one fixed actor target"), "{err}");
+}
+
+#[test]
 fn spawn_ranges_are_rejected_before_emission() {
     let err = emit_inline_error(
         r#"
@@ -419,7 +458,7 @@ fn unsupported_foreign_ranges_fail_before_artifact_projection() {
                 }
                 observes existing by self.source_id {
                     inputs {
-                        previous: Account[0..=MAX_ACCOUNTS],
+                        previous: Account[1..=MAX_ACCOUNTS],
                     }
                     outputs {
                         observed: Account[1..=MAX_ACCOUNTS],
@@ -443,7 +482,7 @@ fn unsupported_foreign_ranges_fail_before_artifact_projection() {
                     };
 
                     require existing.outputs become {
-                        observed <- Account(next_state),
+                        observed <- Account[](next_states),
                     };
 
                     unrestricted(next[0].value);

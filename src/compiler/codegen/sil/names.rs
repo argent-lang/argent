@@ -702,6 +702,15 @@ pub(super) fn range_input_stem(id: InteractionId, handle: &str) -> String {
     }
 }
 
+/// Include the observed group and output IDs; source labels may repeat across groups.
+pub(super) fn range_output_stem(id: InteractionId, handle: &str) -> String {
+    match id {
+        InteractionId::CurrentOutput(_) => handle.to_string(),
+        InteractionId::ObservedOutput { observe, output } => format!("{observe}_observed_output_{output}_{handle}"),
+        _ => unreachable!("only supported output interactions have output range names"),
+    }
+}
+
 pub(super) fn hidden_consumed_input_authored_cache_name(handle: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{handle}_authored_states")
 }

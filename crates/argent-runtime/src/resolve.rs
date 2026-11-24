@@ -872,29 +872,18 @@ fn resolve_observation(
     observe: &ObserveArtifact,
     covenant_id: Hash,
 ) -> BuilderResult<ObservedCovenantContext> {
-    let mut matching_inputs = matching_observed_inputs(context, covenant_id).into_iter();
-    let range_len = observed_range_len(&observe.name, Side::In, &observe.inputs, matching_inputs.len())?;
+    let matching_inputs = matching_observed_inputs(context, covenant_id);
+    let input_range_len = observed_range_len(&observe.name, Side::In, &observe.inputs, matching_inputs.len())?;
     let matching_outputs = matching_observed_outputs(unsigned, covenant_id);
-    require_observed_count(&observe.name, Side::Out, observe.outputs.len(), matching_outputs.len())?;
+    let output_range_len = observed_range_len(&observe.name, Side::Out, &observe.outputs, matching_outputs.len())?;
 
-    // Assign covenant members in transaction order to declarations in source order.
-    // A range takes its share of the input group before any trailing singletons.
     let mut app = None;
-    let mut inputs = BTreeMap::new();
-    for declaration in &observe.inputs {
-        let count = if declaration.cardinality.is_one() { 1 } else { range_len };
-        let members = matching_inputs
-            .by_ref()
-            .take(count)
-            .map(|index| resolve_observed_input(&observe.name, declaration, index, &context.inputs[index], &mut app))
-            .collect::<BuilderResult<_>>()?;
-        inputs.insert(declaration.name.clone(), members);
-    }
-    let mut outputs = BTreeMap::new();
-    for (declaration, index) in observe.outputs.iter().zip(matching_outputs) {
-        let (handle, observed) = resolve_observed_output(&observe.name, declaration, index, &context.outputs[index], &mut app)?;
-        outputs.insert(handle, observed);
-    }
+    let inputs = resolve_observed_members(&observe.inputs, matching_inputs, input_range_len, |declaration, index| {
+        resolve_observed_input(&observe.name, declaration, index, &context.inputs[index], &mut app)
+    })?;
+    let outputs = resolve_observed_members(&observe.outputs, matching_outputs, output_range_len, |declaration, index| {
+        resolve_observed_output(&observe.name, declaration, index, &context.outputs[index], &mut app)
+    })?;
 
     let app = app.ok_or_else(|| BuilderError::InvalidTransition {
         actor: input.actor.to_string(),
@@ -902,6 +891,25 @@ fn resolve_observation(
         message: format!("observe `{}` has no actor inputs or outputs from which to resolve an app", observe.name),
     })?;
     Ok(ObservedCovenantContext { app, inputs, outputs })
+}
+
+fn resolve_observed_members<T>(
+    declarations: &[ObservedActorArtifact],
+    matching_indices: Vec<usize>,
+    range_len: usize,
+    mut resolve: impl FnMut(&ObservedActorArtifact, usize) -> BuilderResult<T>,
+) -> BuilderResult<BTreeMap<String, Vec<T>>> {
+    // Assign covenant members in transaction order to declarations in source order.
+    // A range takes its share of the group before any trailing singletons.
+    let mut indices = matching_indices.into_iter();
+    declarations
+        .iter()
+        .map(|declaration| {
+            let count = if declaration.cardinality.is_one() { 1 } else { range_len };
+            let members = indices.by_ref().take(count).map(|index| resolve(declaration, index)).collect::<BuilderResult<_>>()?;
+            Ok((declaration.name.clone(), members))
+        })
+        .collect()
 }
 
 fn observed_range_len(observe: &str, side: Side, declarations: &[ObservedActorArtifact], found: usize) -> BuilderResult<usize> {
@@ -945,8 +953,12 @@ fn matching_observed_outputs(unsigned: &MutableTransaction<Transaction>, covenan
         .outputs
         .iter()
         .enumerate()
-        .filter(|(_, candidate)| candidate.covenant.as_ref().is_some_and(|binding| binding.covenant_id == covenant_id))
-        .map(|(index, _)| index)
+        .filter_map(|(index, output)| {
+            let binding = output.covenant?;
+            let authorizer = unsigned.entries.get(usize::from(binding.authorizing_input))?.as_ref()?;
+            // OpCovOutputCount/Idx include continuations, not genesis outputs.
+            (binding.covenant_id == covenant_id && authorizer.covenant_id == Some(covenant_id)).then_some(index)
+        })
         .collect()
 }
 
@@ -986,7 +998,7 @@ fn resolve_observed_output(
     index: usize,
     candidate: &ResolvedOutput<'_>,
     app: &mut Option<String>,
-) -> BuilderResult<(String, ObservedOutput)> {
+) -> BuilderResult<ObservedOutput> {
     let ResolvedOutputOwner::Actor(actor) = &candidate.owner else {
         return Err(BuilderError::MissingObservedActorMetadata {
             observe: observe.to_string(),
@@ -996,7 +1008,7 @@ fn resolve_observed_output(
         });
     };
     merge_observed_app(observe, app, &artifact_app_alias(&actor.contract.artifact.app))?;
-    Ok((declaration.name.clone(), ObservedOutput { actor: actor.contract.name.to_string(), state: actor.state.clone() }))
+    Ok(ObservedOutput { actor: actor.contract.name.to_string(), state: actor.state.clone() })
 }
 
 fn merge_observed_app(observe: &str, app: &mut Option<String>, candidate: &str) -> BuilderResult<()> {
@@ -1139,6 +1151,26 @@ mod tests {
             ResolveInput::Actor(input) => input.args.as_ref(),
             ResolveInput::Ordinary(_) => None,
         }
+    }
+
+    #[test]
+    fn observed_output_membership_excludes_genesis() {
+        let continuation_id = Hash::from_bytes([0x11; 32]);
+        let spk = ScriptPublicKey::default();
+        let continuation = TransactionOutput::with_covenant(100, spk.clone(), Some(CovenantBinding::new(0, continuation_id)));
+        let mut genesis = TransactionOutput::new(100, spk.clone());
+        let genesis_id = rk_hashing::covenant_id(outpoint(2), [(1, &genesis)].into_iter());
+        genesis.covenant = Some(CovenantBinding::new(1, genesis_id));
+        let tx = TxBuilder::transaction(
+            vec![TxBuilder::transaction_input(outpoint(1), Vec::new()), TxBuilder::transaction_input(outpoint(2), Vec::new())],
+            vec![continuation, genesis],
+        );
+        let unsigned = MutableTransaction::with_entries(
+            tx,
+            vec![UtxoEntry::new(100, spk.clone(), 0, false, Some(continuation_id)), UtxoEntry::new(100, spk, 0, false, None)],
+        );
+        assert_eq!(matching_observed_outputs(&unsigned, continuation_id), [0]);
+        assert!(matching_observed_outputs(&unsigned, genesis_id).is_empty());
     }
 
     #[test]

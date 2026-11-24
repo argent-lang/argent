@@ -1,0 +1,67 @@
+pragma silverscript ^0.1.0;
+
+contract Observer(byte[32] gen__init_archive_template, byte[32] gen__init_asset_template, byte[32] gen__init_marker_template, byte[32] init_asset_id) {
+    struct ObserverState {
+        byte[32] asset_id;
+    }
+
+    struct AssetState {
+        int amount;
+    }
+
+    struct MarkerState {
+        int tag;
+    }
+
+    struct Gen__AssetState {
+        byte[32] gen__archive_template;
+        byte[32] gen__asset_template;
+        int amount;
+    }
+
+    byte[32] gen__archive_template = gen__init_archive_template;
+
+    byte[32] gen__asset_template = gen__init_asset_template;
+
+    byte[32] gen__marker_template = gen__init_marker_template;
+
+    byte[32] asset_id = init_asset_id;
+
+    function gen__checked_range_index(int gen__range_index, int gen__range_count): int {
+        require(gen__range_index >= 0);
+        require(gen__range_index < gen__range_count);
+        return(gen__range_index);
+    }
+
+    entry inspect(MarkerState head_state, AssetState[] next_assets, MarkerState tail_state, int gen__asset_prefix_len, int gen__asset_suffix_len, int gen__marker_prefix_len, int gen__marker_suffix_len) {
+        byte[32] gen__remote_cov_id = asset_id;
+        int gen__0_observed_output_1_assets_output_count = OpCovOutputCount(gen__remote_cov_id) - 2;
+        require(gen__0_observed_output_1_assets_output_count >= 0);
+        require(gen__0_observed_output_1_assets_output_count <= 3);
+        int gen__0_observed_1_assets_count = OpCovInputCount(gen__remote_cov_id) - 2;
+        require(gen__0_observed_1_assets_count >= 1);
+        require(gen__0_observed_1_assets_count <= 2);
+        AssetState[] gen__0_observed_1_assets_authored_states;
+        int gen__remote_head_input_idx = OpCovInputIdx(gen__remote_cov_id, 0);
+        MarkerState gen__remote_head_state = readInputStateWithTemplate(gen__remote_head_input_idx, gen__marker_prefix_len, gen__marker_suffix_len, gen__marker_template);
+        for (gen__0_observed_1_assets_position, 0, gen__0_observed_1_assets_count, 2) {
+            int gen__0_observed_1_assets_input_idx = OpCovInputIdx(gen__remote_cov_id, 1 + gen__0_observed_1_assets_position);
+            Gen__AssetState gen__0_observed_1_assets_state = readInputStateWithTemplate(gen__0_observed_1_assets_input_idx, gen__asset_prefix_len, gen__asset_suffix_len, gen__asset_template);
+            gen__0_observed_1_assets_authored_states = gen__0_observed_1_assets_authored_states.append(AssetState {amount: gen__0_observed_1_assets_state.amount});
+        }
+        int gen__remote_tail_input_idx = OpCovInputIdx(gen__remote_cov_id, OpCovInputCount(gen__remote_cov_id) - 1);
+        MarkerState gen__remote_tail_state = readInputStateWithTemplate(gen__remote_tail_input_idx, gen__marker_prefix_len, gen__marker_suffix_len, gen__marker_template);
+        int gen__remote_head_output_idx = OpCovOutputIdx(gen__remote_cov_id, 0);
+        int gen__remote_tail_output_idx = OpCovOutputIdx(gen__remote_cov_id, OpCovOutputCount(gen__remote_cov_id) - 1);
+        require(OpAuthOutputCount(this.activeInputIndex) == 0);
+        require(gen__0_observed_1_assets_authored_states[0].amount > 0);
+        validateOutputStateWithInputTemplate(gen__remote_head_output_idx, head_state, gen__remote_head_input_idx, gen__marker_prefix_len, gen__marker_suffix_len, gen__marker_template);
+        require(next_assets.length == gen__0_observed_output_1_assets_output_count);
+        for (gen__0_observed_output_1_assets_output_position, 0, gen__0_observed_output_1_assets_output_count, 3) {
+            AssetState gen__1_route_source_assets = next_assets[gen__0_observed_output_1_assets_output_position];
+            Gen__AssetState gen__1_route_physical_assets = Gen__AssetState {gen__archive_template: gen__archive_template, gen__asset_template: gen__asset_template, amount: gen__1_route_source_assets.amount};
+            validateOutputStateWithInputTemplate(OpCovOutputIdx(gen__remote_cov_id, 1 + gen__0_observed_output_1_assets_output_position), gen__1_route_physical_assets, OpCovInputIdx(gen__remote_cov_id, 1), gen__asset_prefix_len, gen__asset_suffix_len, gen__asset_template);
+        }
+        validateOutputStateWithInputTemplate(gen__remote_tail_output_idx, tail_state, gen__remote_head_input_idx, gen__marker_prefix_len, gen__marker_suffix_len, gen__marker_template);
+    }
+}

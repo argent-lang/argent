@@ -134,6 +134,12 @@ impl EntryOutputPlan {
                 let key = interaction.id();
                 let open = observed_open_state_for_decl(entry_id, actor, entry, observe, output, model)?;
                 let static_target = if open.is_none() { model.resolve_static_actor_target(interaction.target()) } else { None };
+                if interaction.location().is_range() && static_target.is_none() {
+                    return Err(ArgentError::new(format!(
+                        "entry `{}::{}` observed output range `{}.outputs.{}` must use one fixed actor target",
+                        actor.name, entry.name, observe.name, output.name
+                    )));
+                }
                 let target = if let Some(target) = static_target {
                     model.output_plan_by_id(entry_model.id.actor)?.actor(&target.id())?
                 } else {

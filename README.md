@@ -363,7 +363,7 @@ The core language, compiler, artifact, and runtime flows are functional and
 covered by tracked end-to-end examples. Work before the first release is
 focused on:
 
-- completing ranged observe and spawn clauses
+- extending ranges to open observes and spawn clauses
 - refactoring code generation into a pure Argent-to-Silverscript AST
   transformation
 - auditing and hardening the compiler, artifacts, and runtime

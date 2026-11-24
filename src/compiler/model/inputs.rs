@@ -208,7 +208,7 @@ impl EntryInputPlan {
                 });
             }
         }
-        for interaction in entry_model.existing_groups().chain(entry_model.genesis_groups()).flat_map(|group| group.outputs()) {
+        for interaction in entry_model.genesis_groups().flat_map(|group| group.outputs()) {
             if interaction.location().is_range() {
                 unsupported_range.get_or_insert_with(|| {
                     format!(
