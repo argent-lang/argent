@@ -36,7 +36,7 @@ practical.
 ## Project status
 
 > The project is still under active development and is not yet release-ready.
-[Silverscript v1.0.0](https://github.com/kaspanet/silverscript/releases/tag/v1.0.0)
+[Silverscript v1.0.2](https://github.com/kaspanet/silverscript/releases/tag/v1.0.2)
 is released for production use, and Argent is pinned to that release. Advanced
 users who can review the generated `.sil` contracts thus have a viable path to
 careful early production use. This requires understanding Argent's route

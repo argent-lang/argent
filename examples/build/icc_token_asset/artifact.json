@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "c0f403b1ae4b01661c2aca34c1986bdebf0cccc4267ac7c03964742a1539b512",
+  "id": "48784d831e5c07c7cf82f0d16e9cd681be34daf15e7c651113c82aeea33e96c8",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -395,7 +395,7 @@
   },
   "sil_abi": {
     "schema_version": 1,
-    "compiler_version": "0.1.0",
+    "compiler_version": "0.1.2",
     "structs": {
       "MinterProxyState": {
         "fields": [

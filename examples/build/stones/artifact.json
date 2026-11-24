@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "0cf7365a7d74c36696a5d48c818b461cb80bcc3fe8088194e446628b508f55c4",
+  "id": "3ad414aae8dd88250267b80166cfc6c0b55303a95b2dbaf4496b0ecb3c30403b",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -1557,7 +1557,7 @@
   },
   "sil_abi": {
     "schema_version": 1,
-    "compiler_version": "0.1.0",
+    "compiler_version": "0.1.2",
     "structs": {
       "GameState": {
         "fields": [

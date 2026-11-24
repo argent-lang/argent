@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "id": "cf1e734e1d1055e20c9dafe931994bd16443ed52051512549157ed056fb48d51",
+  "id": "451db625868a07a92202b4a213baa282a9a2216e2ecf6fdc4a6d5b7a62ea4336",
   "generator": {
     "name": "argentc",
     "version": "0.1.0"
@@ -9,7 +9,7 @@
   "dependencies": [
     {
       "app": "TokenAsset",
-      "artifact_id": "c0f403b1ae4b01661c2aca34c1986bdebf0cccc4267ac7c03964742a1539b512"
+      "artifact_id": "48784d831e5c07c7cf82f0d16e9cd681be34daf15e7c651113c82aeea33e96c8"
     }
   ],
   "root": "examples/icc/minter.ag",
@@ -427,7 +427,7 @@
   },
   "sil_abi": {
     "schema_version": 1,
-    "compiler_version": "0.1.0",
+    "compiler_version": "0.1.2",
     "structs": {
       "MinterProxyState": {
         "fields": [

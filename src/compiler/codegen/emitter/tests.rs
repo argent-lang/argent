@@ -10035,6 +10035,42 @@ fn artifact_codec_uses_compiled_sil_dispatch_tags() {
 }
 
 #[test]
+fn sil_r0_succinct_builtins_report_upstream_advisory() {
+    for builtin in ["r0.succinct.verify", "r0.succinct.blake2b.verify", "r0.succinct.poseidon2.verify", "r0.succinct.sha256.verify"] {
+        for scope in ["entry", "global", "actor"] {
+            let params =
+                "byte[32] claim, byte[4] index, byte[] digests, byte[] seal, byte[32] journal, byte[32] image, byte[32] control";
+            let args = "claim, index, digests, seal, journal, image, control";
+            let call = format!("{builtin}({args});");
+            let helper = format!("fn verify_proof({params}) {{ {call} }}");
+            let entry_body = if scope == "entry" { call } else { format!("verify_proof({args});") };
+            let source = format!(
+                r#"
+                    state ProofState {{ int nonce; }}
+                    {global_helper}
+                    actor Proof owns ProofState {{
+                        {actor_helper}
+                        entry inspect({params}) emits none {{ {entry_body} }}
+                    }}
+                    app Test {{ actor Proof; }}
+                "#,
+                global_helper = if scope == "global" { &helper } else { "" },
+                actor_helper = if scope == "actor" { &helper } else { "" },
+            );
+            let err = emit_inline_error(&source);
+            let message = err.to_string();
+            assert!(message.contains(&format!("{builtin}() is currently not supported")), "{scope}: {err}");
+            assert!(
+                message.contains(
+                    "https://medium.com/@michaelsuttonil/what-the-risc-zero-advisory-means-for-kaspas-zk-covenants-e8cb067ea65b"
+                ),
+                "{scope}: {err}"
+            );
+        }
+    }
+}
+
+#[test]
 fn sil_signature_builtins_pass_through() {
     let (actor_sil, _) = inline_actor_sil_and_artifact(
         "sil-signature-builtins",
