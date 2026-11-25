@@ -41,7 +41,12 @@ fn observed_input_range_and_trailing_singleton_follow_covenant_order() {
             }
 
             actor Marker owns MarkerState {
-                entry close() emits none { require(tag == 99); }
+                entry keep() emits next: Marker {
+                    require(next.value == self.value);
+                    become next <- self;
+                }
+
+                entry close() emits none { require(tag > 1); }
             }
 
             app Test { actor Watcher; actor Asset; actor Marker; }
@@ -91,6 +96,33 @@ fn observed_input_range_and_trailing_singleton_follow_covenant_order() {
             if observe == "remote" && handle == "assets" && actual == found)
         );
     }
+
+    let mut transaction = builder.build(&context(2)).expect("two valid observed assets");
+    let asset_utxo = |amount| builder.covenant_utxo("Asset", state! { amount: amount }, 1_000, 0, false, Some(remote_id)).unwrap();
+    let mut entries =
+        vec![watcher_utxo.clone(), asset_utxo(7), UtxoEntry::new(100, op_true.clone(), 0, false, None), asset_utxo(8), marker_utxo];
+    execute_input_with_covenants(&transaction, entries.clone(), 0).expect("observer accepts both valid range members in the VM");
+
+    // Leave the first asset in place. Supply a valid Marker spend as the second member,
+    // with the same value, covenant ID, and integer state as the asset it replaces.
+    let template = |actor| sil_template(artifact.sil_abi.contract(actor).unwrap());
+    let (asset_template, marker_template) = (template("Asset"), template("Marker"));
+    assert_eq!(asset_template.prefix.len(), marker_template.prefix.len());
+    assert_eq!(asset_template.suffix.len(), marker_template.suffix.len());
+    assert_ne!(asset_template.hash, marker_template.hash);
+    let replacement_state = state! { tag: 8 };
+    let replacement_utxo = builder.covenant_utxo("Marker", replacement_state.clone(), 1_000, 0, false, Some(remote_id)).unwrap();
+    let replacement = builder
+        .build(&TxContext::new().actor_input("Marker", replacement_state, "close", outpoint(0x88), replacement_utxo.clone(), 0))
+        .expect("replacement Marker can be spent");
+    transaction.inputs[3].signature_script = replacement.inputs[0].signature_script.clone();
+    entries[3] = replacement_utxo;
+
+    // Execute the observer directly so the builder's range checks cannot reject first.
+    execute_input_with_covenants(&transaction, entries.clone(), 3).expect("replacement input is valid in the observed transaction");
+    let error = execute_input_with_covenants(&transaction, entries, 0)
+        .expect_err("observer must authenticate the second range member's template");
+    assert_eq!(error, kaspa_txscript_errors::TxScriptError::VerifyError);
 }
 
 #[test]

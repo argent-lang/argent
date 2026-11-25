@@ -339,6 +339,12 @@ the `require ... outputs become` block. The runtime still requires at least
 one observed member. The emitting contracts still own their output-value
 checks.
 
+To measure the cost of observed input ranges, run
+`cargo run --locked --example observed_range_cost`. It varies the declared
+maximum and actual count independently and reports the observer's compiled
+bytecode size and charged script units. The fixture caches one `int` per input
+and has no observed outputs, so the results do not include output validation.
+
 ### Spawns
 
 A future ranged-spawn stage needs one dynamic array of global output indices.
