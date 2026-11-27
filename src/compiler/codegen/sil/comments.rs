@@ -9,7 +9,7 @@ use silverscript_lang::ast::{ContractAst, ExprKind, Statement};
 use super::contract::ContractLowerer;
 use super::names::{
     hidden_cov_id_name, hidden_input_count_name, hidden_input_idx_name, hidden_observe_cov_id_name, hidden_observed_input_idx_name,
-    hidden_observed_output_idx_name, hidden_output_count_name, hidden_output_idx_name,
+    hidden_observed_output_idx_name, hidden_output_count_name, hidden_output_idx_name, range_input_stem, range_output_stem,
 };
 
 /// Indices refer to nodes in `AnnotatedContractAst::contract`, not source offsets.
@@ -166,7 +166,12 @@ impl ContractLowerer<'_, '_> {
                                 });
                             }
                             for input in group.inputs() {
-                                if name != &hidden_observed_input_idx_name(&observe.name, input.handle()) {
+                                let input_binding = if input.location().is_range() {
+                                    hidden_input_count_name(&range_input_stem(input.id(), input.handle()))
+                                } else {
+                                    hidden_observed_input_idx_name(&observe.name, input.handle())
+                                };
+                                if name != &input_binding {
                                     continue;
                                 }
                                 if let InteractionSource::ObserveInput(decl) = input.source() {
@@ -177,7 +182,12 @@ impl ContractLowerer<'_, '_> {
                                 }
                             }
                             for output in group.outputs() {
-                                if name != &hidden_observed_output_idx_name(&observe.name, output.handle()) {
+                                let output_binding = if output.location().is_range() {
+                                    hidden_output_count_name(&range_output_stem(output.id(), output.handle()))
+                                } else {
+                                    hidden_observed_output_idx_name(&observe.name, output.handle())
+                                };
+                                if name != &output_binding {
                                     continue;
                                 }
                                 if let InteractionSource::ObserveOutput(decl) = output.source() {

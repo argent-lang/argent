@@ -1029,6 +1029,11 @@ impl AppCompilationContext<'_> {
                                 "{label} `{name}` singleton output `{handle}` must use scalar become syntax `{handle} <- Actor(state)`"
                             )));
                         }
+                        if covenant.observe().is_some() && output.cardinality().is_range() && !*many {
+                            return Err(ArgentError::new(format!(
+                                "observe `{name}` range output `{handle}` must use bulk become syntax `{handle} <- Actor[](states)`"
+                            )));
+                        }
                         let expected = match output.source() {
                             InteractionSource::ObserveOutput(output) => &output.actor,
                             InteractionSource::SpawnOutput(output) => &output.actor,

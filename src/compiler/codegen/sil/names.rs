@@ -9,7 +9,7 @@ use silverscript_lang::span::Span;
 use crate::codec::encode_hex;
 use crate::compiler::model::link::LinkedActor;
 use crate::compiler::model::{
-    AppCompilationContext, ClauseActorTypeRef, GeneratedFieldId, ObservedActorSide, ObservedActorWitnessSpec,
+    AppCompilationContext, ClauseActorTypeRef, GeneratedFieldId, InteractionId, ObservedActorSide, ObservedActorWitnessSpec,
     ObservedOutputFieldWitnessSpec, PhysicalFieldId, PlannedStateValue, RouteFamily, SourceFieldId, SourceStateId,
     SpawnActorWitnessSpec, StateExpansionWitnessSpec, TemplateWitnessForm, WitnessComponent, WitnessPlan, WitnessRole,
 };
@@ -691,6 +691,24 @@ pub(super) fn hidden_observed_input_state_name(observe: &str, handle: &str) -> S
 
 pub(super) fn hidden_consumed_input_state_name(handle: &str) -> String {
     format!("{RESERVED_GENERATED_PREFIX}{handle}_state")
+}
+
+/// Keep ranged observations distinct from bare consumes and from each other.
+pub(super) fn range_input_stem(id: InteractionId, handle: &str) -> String {
+    match id {
+        InteractionId::CurrentInput(_) => handle.to_string(),
+        InteractionId::ObservedInput { observe, input } => format!("{observe}_observed_{input}_{handle}"),
+        _ => unreachable!("only input interactions have input range names"),
+    }
+}
+
+/// Include the observed group and output IDs; source labels may repeat across groups.
+pub(super) fn range_output_stem(id: InteractionId, handle: &str) -> String {
+    match id {
+        InteractionId::CurrentOutput(_) => handle.to_string(),
+        InteractionId::ObservedOutput { observe, output } => format!("{observe}_observed_output_{output}_{handle}"),
+        _ => unreachable!("only supported output interactions have output range names"),
+    }
 }
 
 pub(super) fn hidden_consumed_input_authored_cache_name(handle: &str) -> String {

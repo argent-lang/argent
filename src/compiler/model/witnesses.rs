@@ -252,9 +252,8 @@ impl WitnessPlan {
         let uses = model.entry_template_uses(entry_id)?;
         let input_plan = model.input_plan_by_id(entry_id)?;
         let optional_input_actors = entry_model
-            .current()
-            .inputs()
-            .iter()
+            .groups()
+            .flat_map(|group| group.inputs())
             .filter(|interaction| interaction.cardinality().range_bounds().is_some_and(|(minimum, _)| minimum == 0))
             .flat_map(|interaction| interaction.target().static_actors().cloned())
             .collect::<BTreeSet<_>>();
@@ -289,6 +288,7 @@ impl WitnessPlan {
                 source: TemplateWitnessSource::Field,
             });
         }
+        // An optional read can share the full bytes when no required input can prove the output template.
         for spec in &mut templates {
             if spec.id != StaticActorId::InApp(source_id)
                 && optional_input_actors.contains(&spec.id)

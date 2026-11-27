@@ -4,7 +4,7 @@
 
 use thiserror::Error;
 
-use crate::{Artifact, CardinalityArtifact, EmitArtifact, EntryKindArtifact};
+use crate::{ActorTargetArtifact, Artifact, CardinalityArtifact, EmitArtifact, EntryKindArtifact};
 
 /// Maximum range cardinality accepted by Argent compilers and runtimes.
 ///
@@ -27,8 +27,8 @@ impl Artifact {
     ///
     /// A leader entry may have at most one ranged consume and at most one
     /// ranged emit. A ranged emit must resolve to one actor, not an actor union
-    /// or actor-enum domain. Delegate consumes, observe inputs and outputs, and
-    /// spawn outputs must be singletons.
+    /// or actor-enum domain. Each observe section may have one range with a
+    /// static actor. Delegate consumes and spawn outputs must be singletons.
     ///
     /// Transaction-specific input and output counts are checked when a runtime
     /// context is bound.
@@ -90,11 +90,18 @@ impl Artifact {
                     }
                 }
                 for observe in &entry.observes {
-                    for input in &observe.inputs {
-                        reject_unsupported_range("observed input", &format!("{}.{}", observe.name, input.name), input.cardinality)?;
-                    }
-                    for output in &observe.outputs {
-                        reject_unsupported_range("observed output", &format!("{}.{}", observe.name, output.name), output.cardinality)?;
+                    for (section, items) in [("observed input", &observe.inputs), ("observed output", &observe.outputs)] {
+                        let mut has_range = false;
+                        for item in items {
+                            let handle = format!("{}.{}", observe.name, item.name);
+                            check(section, &handle, item.cardinality)?;
+                            if !item.cardinality.is_one() {
+                                if has_range || !matches!(item.target, ActorTargetArtifact::StaticActor { .. }) {
+                                    reject_unsupported_range(section, &handle, item.cardinality)?;
+                                }
+                                has_range = true;
+                            }
+                        }
                     }
                 }
                 for spawn in &entry.spawns {
@@ -126,6 +133,10 @@ mod tests {
         let entry = &mut artifact.argent.actors[0].entries[0];
         entry.consumes.push(ranged_consume("accounts", 0, 3));
         entry.emits = EmitArtifact::Outputs { outputs: vec![ranged_emit("next", &["Counter"], 1, 3)] };
+        let mut first = observe("asset", vec![ranged_observed_actor("accounts", 0)]);
+        first.outputs.push(ranged_observed_actor("next", 0));
+        entry.observes.push(first);
+        entry.observes.push(observe("other", vec![ranged_observed_actor("accounts", 1)]));
 
         artifact.check_cardinality_consistency().expect("supported input and output ranges are consistent");
     }
@@ -173,25 +184,29 @@ mod tests {
             EmitArtifact::Outputs { outputs: vec![ranged_emit("next", &["Counter", "Archive"], 0, 2)] };
         assert_unsupported(dynamic_emit, "emit", "next");
 
-        let mut observed_input = artifact_with_entry();
-        observed_input.argent.actors[0].entries[0].observes.push(ObserveArtifact {
-            name: "asset".to_string(),
-            covenant_expr: "asset_id".to_string(),
-            covenant_id_source: CovenantIdSourceArtifact::StateField { field: "asset_id".to_string() },
-            inputs: vec![ranged_observed_actor("inputs")],
-            outputs: Vec::new(),
-        });
-        assert_unsupported(observed_input, "observed input", "asset.inputs");
+        let mut open_input = ranged_observed_actor("open", 0);
+        open_input.target = ActorTargetArtifact::DynamicActor { state: "CounterState".to_string() };
+        for (inputs, handle) in [
+            (vec![open_input], "asset.open"),
+            (vec![ranged_observed_actor("first", 0), ranged_observed_actor("second", 1)], "asset.second"),
+        ] {
+            let mut artifact = artifact_with_entry();
+            artifact.argent.actors[0].entries[0].observes.push(observe("asset", inputs));
+            assert_unsupported(artifact, "observed input", handle);
+        }
 
-        let mut observed_output = artifact_with_entry();
-        observed_output.argent.actors[0].entries[0].observes.push(ObserveArtifact {
-            name: "asset".to_string(),
-            covenant_expr: "asset_id".to_string(),
-            covenant_id_source: CovenantIdSourceArtifact::StateField { field: "asset_id".to_string() },
-            inputs: Vec::new(),
-            outputs: vec![ranged_observed_actor("outputs")],
-        });
-        assert_unsupported(observed_output, "observed output", "asset.outputs");
+        let mut open_output = ranged_observed_actor("open", 0);
+        open_output.target = ActorTargetArtifact::DynamicActor { state: "CounterState".to_string() };
+        for (outputs, handle) in [
+            (vec![open_output], "asset.open"),
+            (vec![ranged_observed_actor("first", 0), ranged_observed_actor("second", 1)], "asset.second"),
+        ] {
+            let mut artifact = artifact_with_entry();
+            let mut observe = observe("asset", Vec::new());
+            observe.outputs = outputs;
+            artifact.argent.actors[0].entries[0].observes.push(observe);
+            assert_unsupported(artifact, "observed output", handle);
+        }
 
         let mut spawn = artifact_with_entry();
         spawn.argent.actors[0].entries[0].spawns.push(SpawnArtifact {
@@ -272,11 +287,21 @@ mod tests {
         }
     }
 
-    fn ranged_observed_actor(name: &str) -> ObservedActorArtifact {
+    fn ranged_observed_actor(name: &str, minimum: i64) -> ObservedActorArtifact {
         ObservedActorArtifact {
             name: name.to_string(),
             target: static_actor_target(),
-            cardinality: CardinalityArtifact::Range { minimum: 1, maximum: 3 },
+            cardinality: CardinalityArtifact::Range { minimum, maximum: 3 },
+        }
+    }
+
+    fn observe(name: &str, inputs: Vec<ObservedActorArtifact>) -> ObserveArtifact {
+        ObserveArtifact {
+            name: name.to_string(),
+            covenant_expr: "asset_id".to_string(),
+            covenant_id_source: CovenantIdSourceArtifact::StateField { field: "asset_id".to_string() },
+            inputs,
+            outputs: Vec::new(),
         }
     }
 

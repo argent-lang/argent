@@ -94,10 +94,20 @@ At the source level, this means:
 - `asset.outputs.proxy` is the observed output named `proxy`
 - `MinterProxy(next_proxy)` means the observed output must become `MinterProxy`
   with `next_proxy` as its state
-- all declared observed outputs must be covered by the observed `become` block
+- if present, a `require … outputs become` block must cover every declared
+  output in its group
 
 The source program should describe the relationship between the covenants, not
 the implementation details needed to enforce that relationship.
+
+An observed handle can name a [range](entry-clause-ranges.md#observes) of one
+fixed actor, for example `tokens: TokenAsset::Token[0..=3]`. Either side can
+start at zero. An output range uses a bulk route such as
+`tokens <- TokenAsset::Token[](next_states)`. To reuse an input template for
+an output, Argent needs a matching input that is guaranteed to exist.
+
+Use `asset.inputs.tokens.length` for the count, `asset.inputs.tokens[i]` for
+an input reference, and `state(asset.inputs.tokens[i])` for its authored state.
 
 ## Co-spend presence
 

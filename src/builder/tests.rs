@@ -57,6 +57,7 @@ fn fixture_ast(source: &str) -> serde_json::Value {
 }
 
 mod genesis_proof;
+mod observed_ranges;
 mod template_omissions;
 
 static ARTIFACT_COUNTER: AtomicUsize = AtomicUsize::new(0);

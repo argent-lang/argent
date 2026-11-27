@@ -7,10 +7,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::compiler::model::{
     AppCompilationContext, ClauseActorTypeRef, ContractStateLowering, EntryInputReferenceId, GeneratedFieldId, GeneratedFieldSource,
-    InputAuthentication, InputFieldAvailability, InputReferenceOrigin, InputReferenceRequirement, InteractionId, InteractionSource,
-    ObservedTemplateSource, OutputProofRequirement, OutputTargetPlan, PhysicalFieldId, PhysicalStateLayout, PhysicalTargetId,
-    ResolvedTypeBase, SilStateType, SourceFieldId, SourceStateId, SourceStorageRelation, StaticActorId, TargetPhysicalPlan,
-    TemplateSelector, TemplateWitnessForm, packed_field_len,
+    InputAuthentication, InputFieldAvailability, InputReferenceOrigin, InputReferenceRequirement, InteractionId, InteractionLocation,
+    InteractionSource, ObservedTemplateSource, OutputProofRequirement, OutputTargetPlan, PhysicalFieldId, PhysicalStateLayout,
+    PhysicalTargetId, ResolvedTypeBase, SilStateType, SourceFieldId, SourceStateId, SourceStorageRelation, StaticActorId,
+    TargetPhysicalPlan, TemplateSelector, TemplateWitnessForm, packed_field_len,
 };
 use crate::compiler::syntax::node::{DeclId, EntryId};
 use crate::compiler::syntax::{ActorDecl, ArrayDim, EntryDecl, TypeRef, word};
@@ -375,6 +375,17 @@ enum InputTemplateLength {
 }
 
 impl InputTemplateLength {
+    fn shared_witnesses(actor: &str, form: TemplateWitnessForm) -> (Self, Self) {
+        match form {
+            TemplateWitnessForm::Bytes => {
+                (Self::BytesWitness(hidden_witness_prefix_name(actor)), Self::BytesWitness(hidden_witness_suffix_name(actor)))
+            }
+            TemplateWitnessForm::Len => {
+                (Self::IntWitness(hidden_witness_prefix_len_name(actor)), Self::IntWitness(hidden_witness_suffix_len_name(actor)))
+            }
+        }
+    }
+
     fn expr(&self) -> SilExpr<'static> {
         match self {
             Self::IntWitness(name) => SilExpr::identifier(name.clone()),
@@ -596,7 +607,7 @@ pub(in crate::compiler::codegen) fn plan_output_validation(
                     let path = reference.origin.source_path(entry)?;
                     let [name] = path.as_slice() else { return Err(ArgentError::new("consumed output proof has no input handle")) };
                     match reference.location {
-                        Some(crate::compiler::model::InteractionLocation::Range { .. }) => {
+                        Some(InteractionLocation::Range { .. }) => {
                             let position = reference
                                 .ranged_proof_input_position
                                 .ok_or_else(|| ArgentError::new("ranged consumed output proof has no planned input position"))?;
@@ -617,8 +628,15 @@ pub(in crate::compiler::codegen) fn plan_output_validation(
                     let [observe, _, handle] = path.as_slice() else {
                         return Err(ArgentError::new("observed output proof has no input handle"));
                     };
-                    let index = hidden_observed_input_idx_name(observe, handle);
-                    SilExpr::identifier(index)
+                    if let Some(position) = reference.ranged_proof_input_position {
+                        // A ranged proof may use its first member only when the plan guarantees one exists.
+                        SilExpr::call(
+                            "OpCovInputIdx",
+                            vec![SilExpr::identifier(hidden_observe_cov_id_name(observe)), SilExpr::int(position as i64)],
+                        )
+                    } else {
+                        SilExpr::identifier(hidden_observed_input_idx_name(observe, handle))
+                    }
                 }
                 InputReferenceOrigin::Active => return Err(ArgentError::new("active input cannot prove a foreign output template")),
             };
@@ -720,12 +738,20 @@ pub(in crate::compiler::codegen) struct PlannedEntryInputReference {
 }
 
 impl PlannedEntryInputReference {
+    pub(in crate::compiler::codegen) fn id(&self) -> EntryInputReferenceId {
+        self.id
+    }
+
     pub(in crate::compiler::codegen) fn reference(&self) -> &str {
         &self.reference
     }
 
     pub(in crate::compiler::codegen) fn physical_target(&self) -> &PhysicalTargetId {
         &self.access.target
+    }
+
+    pub(in crate::compiler::codegen) fn source_state(&self) -> &SourceStateId {
+        &self.access.source
     }
 
     pub(in crate::compiler::codegen) fn read_statement(&self) -> SilStatement<'static> {
@@ -1049,17 +1075,7 @@ pub(in crate::compiler::codegen) fn plan_entry_input_references(
                     actor.name, entry.name, consume.actor
                 ))
             })?;
-            let (prefix_len, suffix_len) = if witness.form == TemplateWitnessForm::Bytes {
-                (
-                    InputTemplateLength::BytesWitness(hidden_witness_prefix_name(&witness.actor)),
-                    InputTemplateLength::BytesWitness(hidden_witness_suffix_name(&witness.actor)),
-                )
-            } else {
-                (
-                    InputTemplateLength::IntWitness(hidden_witness_prefix_len_name(&witness.actor)),
-                    InputTemplateLength::IntWitness(hidden_witness_suffix_len_name(&witness.actor)),
-                )
-            };
+            let (prefix_len, suffix_len) = InputTemplateLength::shared_witnesses(&witness.actor, witness.form);
             let template = hidden_template_name(&witness.actor);
             InputTemplateProof::Template { prefix_len, suffix_len, template_ast: Box::new(SilExpr::identifier(template.clone())) }
         };
@@ -1093,8 +1109,16 @@ pub(in crate::compiler::codegen) fn plan_entry_input_references(
                 unreachable!("observed input has its source declaration")
             };
             let reference = format!("{}.inputs.{}", observe.name, input.name);
-            let physical_expr = hidden_observed_input_state_name(&observe.name, &input.name);
             let requirement = semantic.observed(interaction.id())?;
+            let (physical_expr, input_index) = if interaction.location().is_range() {
+                let stem = range_input_stem(interaction.id(), interaction.handle());
+                (hidden_consumed_input_state_name(&stem), hidden_input_idx_name(&stem))
+            } else {
+                (
+                    hidden_observed_input_state_name(&observe.name, &input.name),
+                    hidden_observed_input_idx_name(&observe.name, &input.name),
+                )
+            };
             if requirement.origin != InputReferenceOrigin::Observed(interaction.id()) {
                 return Err(ArgentError::new("observed input materialization differs from its semantic origin"));
             }
@@ -1108,10 +1132,24 @@ pub(in crate::compiler::codegen) fn plan_entry_input_references(
                     .observed_witness
                     .as_ref()
                     .ok_or_else(|| ArgentError::new("observed input requirement has no witness descriptor"))?;
-                let target_reference = match &spec.template_source {
-                    ObservedTemplateSource::FixedInApp(id) => Some(model.types.display_names[id].clone()),
-                    ObservedTemplateSource::FixedLinked(id) => Some(format!("{}::{}", id.app, id.actor)),
+                let fixed_actor = match &spec.template_source {
+                    ObservedTemplateSource::FixedInApp(id) => Some(StaticActorId::InApp(*id)),
+                    ObservedTemplateSource::FixedLinked(id) => Some(StaticActorId::Linked(id.clone())),
                     _ => None,
+                };
+                let (prefix_len, suffix_len) = if let Some(fixed_actor) = fixed_actor {
+                    let witness = model.witness_plan_by_id(entry_id)?.template(&fixed_actor).ok_or_else(|| {
+                        ArgentError::new(format!(
+                            "entry `{}::{}` has no template witness plan for observed actor `{}`",
+                            actor.name, entry.name, input.actor
+                        ))
+                    })?;
+                    InputTemplateLength::shared_witnesses(&witness.actor, witness.form)
+                } else {
+                    (
+                        InputTemplateLength::IntWitness(hidden_observed_actor_prefix_len_name(spec)),
+                        InputTemplateLength::IntWitness(hidden_observed_actor_suffix_len_name(spec)),
+                    )
                 };
                 let template_ast = match &spec.template_source {
                     ObservedTemplateSource::FixedInApp(id) => {
@@ -1137,19 +1175,7 @@ pub(in crate::compiler::codegen) fn plan_entry_input_references(
                     },
                     ObservedTemplateSource::Witness => SilExpr::identifier(hidden_observed_actor_template_name(spec)),
                 };
-                InputTemplateProof::Template {
-                    prefix_len: InputTemplateLength::IntWitness(
-                        target_reference
-                            .as_deref()
-                            .map_or_else(|| hidden_observed_actor_prefix_len_name(spec), hidden_witness_prefix_len_name),
-                    ),
-                    suffix_len: InputTemplateLength::IntWitness(
-                        target_reference
-                            .as_deref()
-                            .map_or_else(|| hidden_observed_actor_suffix_len_name(spec), hidden_witness_suffix_len_name),
-                    ),
-                    template_ast: Box::new(template_ast),
-                }
+                InputTemplateProof::Template { prefix_len, suffix_len, template_ast: Box::new(template_ast) }
             };
             if requirement.id.0 != references.len() {
                 return Err(ArgentError::new("observed input materialization differs from the planned reference order"));
@@ -1160,9 +1186,7 @@ pub(in crate::compiler::codegen) fn plan_entry_input_references(
                     id,
                     reference,
                     physical_expr,
-                    input_index: InputIndexExpr {
-                        expr: SilExpr::identifier(hidden_observed_input_idx_name(&observe.name, &input.name)),
-                    },
+                    input_index: InputIndexExpr { expr: SilExpr::identifier(input_index) },
                     direct_authored_state: requirement.direct_authored_state,
                 },
                 proof,

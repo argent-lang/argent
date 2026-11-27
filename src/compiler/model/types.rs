@@ -1320,7 +1320,16 @@ impl<'a, 'm> BodyTypeAnalyzer<'a, 'm> {
             .find(|candidate| candidate.id() == output_id)
             .ok_or_else(|| ArgentError::new("foreign route has no bound output"))?;
         if output.cardinality().is_range() {
-            return Ok(());
+            // Unsupported targets and arity mismatches receive their clause diagnostics.
+            if group.spawn().is_some() || output.target().single_static_actor().is_none() || arity != RouteArity::Many {
+                return Ok(());
+            }
+            if !matches!(expr.kind, SilExprKind::Identifier(_)) {
+                return Err(ArgentError::new(format!(
+                    "observe range output `{}` requires a named authored state array; bind the state array before calling `Actor[](...)`",
+                    output.handle()
+                )));
+            }
         }
         let expected = if let Some(target) = output.target().single_static_actor() {
             Some(self.model.static_actor_source_state(target)?)
@@ -1420,14 +1429,20 @@ impl<'a, 'm> BodyTypeAnalyzer<'a, 'm> {
                             }),
                         _ => None,
                     };
-                    let observed = if let SilExprKind::FieldAccess { source, field: handle, .. } = &reference.kind
+                    let (observed_ref, observed_cursor, indexed) = match &reference.kind {
+                        SilExprKind::ArrayIndex { source, .. } => {
+                            (source.as_ref(), reference_cursor.child(ChildEdge::ExpressionSource), true)
+                        }
+                        _ => (reference, reference_cursor, false),
+                    };
+                    let observed = if let SilExprKind::FieldAccess { source, field: handle, .. } = &observed_ref.kind
                         && let SilExprKind::FieldAccess { source, field: inputs, .. } = &source.kind
                         && inputs == "inputs"
                         && matches!(&source.kind, SilExprKind::Identifier(_))
                         && let Some(root_site) = self
                             .program
                             .nodes()
-                            .find(&reference_cursor.child(ChildEdge::ExpressionSource).child(ChildEdge::ExpressionSource).address)
+                            .find(&observed_cursor.child(ChildEdge::ExpressionSource).child(ChildEdge::ExpressionSource).address)
                         && let Some(Binding::Local(root)) = bindings.sites.get(&root_site)
                     {
                         self.entry
@@ -1436,18 +1451,24 @@ impl<'a, 'm> BodyTypeAnalyzer<'a, 'm> {
                             .enumerate()
                             .find(|(index, _)| bindings.entry_observes.get(&(self.id.index, *index)) == Some(root))
                             .and_then(|(_, observe)| {
-                                observe.inputs.iter().find(|input| input.name == *handle).and_then(|input| {
-                                    observed_open_state_for_decl(self.id, actor, self.entry, observe, input, self.model)
-                                        .ok()
-                                        .flatten()
-                                        .or_else(|| {
-                                            self.model
-                                                .static_observed_actor_target(self.id, actor, self.entry, observe, input)
-                                                .ok()
-                                                .flatten()
-                                                .and_then(|target| self.model.static_actor_source_state(&target.id()).ok())
-                                        })
-                                })
+                                observe
+                                    .inputs
+                                    .iter()
+                                    .find(|input| {
+                                        input.name == *handle && indexed == matches!(input.cardinality, Cardinality::Range { .. })
+                                    })
+                                    .and_then(|input| {
+                                        observed_open_state_for_decl(self.id, actor, self.entry, observe, input, self.model)
+                                            .ok()
+                                            .flatten()
+                                            .or_else(|| {
+                                                self.model
+                                                    .static_observed_actor_target(self.id, actor, self.entry, observe, input)
+                                                    .ok()
+                                                    .flatten()
+                                                    .and_then(|target| self.model.static_actor_source_state(&target.id()).ok())
+                                            })
+                                    })
                             })
                     } else {
                         None

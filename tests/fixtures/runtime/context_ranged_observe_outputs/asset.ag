@@ -1,0 +1,28 @@
+state IssuerState {
+    int serial;
+}
+
+state AssetState {
+    int amount;
+}
+
+actor Issuer owns IssuerState {
+    entry split(AssetState[] issued)
+    emits {
+        items: Asset[0..=2],
+        next: Issuer,
+    } {
+        unrestricted(items[0].value);
+        require(next.value == self.value);
+        become {
+            items <- Asset[](issued),
+            next <- self,
+        };
+    }
+}
+
+actor Asset owns AssetState {
+    entry inspect() emits none { require(amount >= 0); }
+}
+
+app AssetApp { actor Issuer; actor Asset; }

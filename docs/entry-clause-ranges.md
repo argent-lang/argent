@@ -1,15 +1,14 @@
 # Ranges in entry clauses
 
 > This document defines the shared range model and its staged implementation.
-> Leader consumes and current-entry emits are implemented first; observed and
-> spawned ranges remain explicit follow-up stages below.
+> The compiler supports leader consumes, current-entry emits, and fixed-actor
+> observed ranges. Spawned ranges are a follow-up stage below.
 
 ## Purpose
 
-Argent entry clauses describe an ordered transaction shape. Each declared
-handle currently describes one input or one output. Some protocols need a
-bounded number of items of the same actor type. A range lets one handle
-describe that ordered group.
+Argent entry clauses describe an ordered transaction shape. A singleton
+handle describes one input or output. A range handle describes a bounded
+number of items of the same actor type.
 
 The compiler lowers a range to a bounded `for` loop and private authenticated
 caches. The transaction sets the actual length. A compile-time upper bound
@@ -64,9 +63,7 @@ An emitted range uses one bulk `become` route. The `Actor[]` suffix marks the
 route as bulk, and its state expression is an array. The compiler validates one
 output for each array item.
 
-Observed and spawned ranges reserve the same source form, but the current
-compiler rejects them at code generation until their transaction rules are
-implemented:
+Observed inputs and outputs use the same range syntax:
 
 ```rust
 observes assets by self.asset_id {
@@ -74,10 +71,23 @@ observes assets by self.asset_id {
         previous: Asset[1..=MAX_ASSETS],
     }
     outputs {
-        next: Asset[1..=MAX_ASSETS],
+        next: Asset[0..=MAX_ASSETS],
     }
 }
+```
 
+Pass a named authored state array to the bulk route:
+
+```rust
+require assets.outputs become {
+    next <- Asset[](next_states),
+};
+```
+
+Spawned outputs reserve the same source form, but the compiler does not yet
+support them:
+
+```rust
 spawns batch by batch_id {
     outputs {
         items: Item[1..=MAX_ITEMS],
@@ -107,11 +117,18 @@ The following rules apply to each range:
 2. The generated script requires `minimum <= actual length <= maximum`.
 3. The generated script covers every item exactly once and in transaction
    order.
-4. Every item has the actor type that the declaration permits.
+4. Every input and every output in `emits` has an actor type permitted by its
+   declaration.
 5. Every input state read uses the required template check.
-6. Every output state and template is validated.
+6. Every output in `emits` is checked against its successor state and template.
 7. The upper bound is part of the actor template. State cannot change it.
 8. A bulk route state array has the same length as its output range.
+
+*Observed outputs.* A `require … outputs become` block checks the actor type
+and state of every declared output in its group. Observers typically include
+this block, but unlike output validation for `emits` and `spawns`, it can be
+omitted or run conditionally. The declarations still set the count bounds
+and positions.
 
 Input-reference ranges and authored output arrays stay on opposite sides of
 the state boundary:
@@ -290,9 +307,9 @@ for (i, 0, next_count, MAX_ACCOUNTS) {
 
 The exact validation builtin still depends on the current route rules. A same
 template route can use `validateOutputState`. A route that can reuse an input
-template can use `validateOutputStateWithInputTemplate`. This reuse is valid
-only when the matching input range cannot be empty. Otherwise, use a shared
-output template witness.
+template can use `validateOutputStateWithInputTemplate`. This requires a
+matching authenticated input that is guaranteed to exist. Otherwise, the
+compiler uses a shared output template witness.
 
 In the entry body, `next.length` is the actual output count. Indexed
 `next[i].value` access uses the same generated bounds check as ranged input
@@ -300,17 +317,40 @@ values.
 
 ### Observes
 
-A future observed-range stage will derive each actual length from
-`OpCovInputCount` or `OpCovOutputCount`, materialize observed input states in a
-bounded loop, and validate observed output state arrays in a bounded loop.
+An observed input range uses `OpCovInputCount(observed_id)` minus the number
+of singletons on that side. Unlike `consumes`, there is no active-input offset.
+The compiler authenticates each item and caches only the authored fields it
+can read from the authenticated state. For example, use
+`assets.inputs.previous.length`, `assets.inputs.previous[i].value`, or
+`state(assets.inputs.previous[i])`. Whole-state reconstruction still requires
+validated openings for all expanded fields.
 
-The runtime must change its observed context from one item per handle to one or
-many items per handle. Fixed actor ranges can share one template witness.
+An observed range must name a fixed actor, in this app or a linked app. An
+input range with a positive minimum guarantees a first member. A range with
+a zero minimum does not supply a template proof, even if it has members in
+a particular transaction. Open ranged targets are not yet supported.
 
-Input-template reuse needs a clear rule. The first implementation should use a
-shared output template witness for an observed output range. A later
-optimization can reuse one matching observed input when the input range cannot
-be empty.
+An observed output range uses `OpCovOutputCount(observed_id)` minus the number
+of singleton outputs. The count includes continuations of the observed covenant
+regardless of which input authorizes them. It excludes genesis outputs. The
+bulk route checks that the state array has the same length, then materializes and
+validates each element at its `OpCovOutputIdx` position. The compiler can
+reuse the template from a matching authenticated input anywhere in the entry
+if the input is guaranteed to exist. Otherwise, outputs that need that
+template share one prefix and suffix byte witness. Reads of the same actor
+use the lengths of those bytes.
+
+Either minimum can be zero. With no input members, the read loop does not
+run. With no output members, the `require ... outputs become` block still
+names the range and supplies an empty array. If both sides are empty, the
+observation checks absence, not actor identity. The emitting contracts still
+own their output-value checks.
+
+To measure the cost of observed input ranges, run
+`cargo run --locked --example observed_range_cost`. It varies the declared
+maximum and actual count independently and reports the observer's compiled
+bytecode size and charged script units. The fixture caches one `int` per input
+and has no observed outputs, so the results do not include output validation.
 
 ### Spawns
 
@@ -335,15 +375,11 @@ covenant-ID proof.
 
 ## Current implementation boundary
 
-The first compiler slice supports leader `consumes` ranges and current
-`emits` ranges with one fixed actor target. It supports singleton items before
-and after either range. Delegate consumes, observed ranges, spawned ranges,
-and their runtime transaction construction remain follow-up work. The runtime
-rejects artifacts that claim observed or spawned ranges until those paths are
-implemented; it does not silently interpret them as singleton declarations.
-Artifact attachment also rejects more than one range on either supported
-current-covenant side and rejects ranged emits without exactly one fixed actor,
-mirroring the compiler's first-version shape.
+The compiler and runtime support leader `consumes` ranges, current `emits`
+ranges, and fixed-actor observed input and output ranges. Singleton items can
+appear before and after a range. Delegate consume ranges, open observed
+ranges, and spawned ranges are not yet supported. Artifact checks reject
+unsupported shapes rather than interpreting them as singleton declarations.
 
 Ranged output-value policy is currently handle-level. One indexed
 `next[i].value` reference, including `unrestricted(next[i].value)`, satisfies
@@ -378,15 +414,14 @@ The route graph does not need multiplicity. Add one graph relation for a range:
 - a consume range adds one consume relation;
 - an emit range adds one emit relation;
 - a fixed-actor spawn range adds one emit relation;
-- an observe range adds no app route relation.
+- an observe range uses the same route relations as a singleton of that actor.
 
 The commitment forest and cut transitions therefore stay unchanged.
 
-The body lowerer needs explicit range bindings. Its current text replacement
-is not sufficient for indexed expressions such as `accounts[i].value`,
-`remote.inputs.assets[i].amount`, or `state(remote.inputs.assets[i])`. Add
-token-aware indexed access lowering. A
-full expression type checker is not required for the first version.
+The body lowerer resolves range expressions to declared interaction handles.
+It uses those bindings to lower indexed expressions such as
+`accounts[i].value`, `remote.inputs.assets[i].amount`, and
+`state(remote.inputs.assets[i])` with the planned index checks.
 
 Add structured `for` statement support to the Argent body lowerer. Users need
 loops to calculate totals and build successor state arrays. Keep bulk `become`
@@ -475,10 +510,11 @@ genesis rules add more cases.
 
 ### 6. Implement observes
 
-- Generate ranged observed input and output loops.
-- Add vector entries to observed runtime contexts.
-- Update hidden template resolution and observed output field witnesses.
-- Add closed-ICC runtime tests first. Add shared open actor types later.
+- Authenticate fixed-actor input ranges and reuse their first input as a
+  template proof where applicable.
+- Validate fixed-actor output ranges in bounded loops.
+- Partition observed sides in transaction order in the runtime.
+- Leave shared open actor types and their witnesses for a later stage.
 
 ### 7. Implement spawns
 

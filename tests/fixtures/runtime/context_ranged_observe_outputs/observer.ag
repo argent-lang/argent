@@ -1,0 +1,42 @@
+import "./asset.ag" as asset;
+
+state ObserverState {
+    cov_id remote_id;
+}
+
+actor Observer owns ObserverState {
+    entry inspect(int expected_inputs, asset::AssetState[] expected_outputs)
+    observes remote by self.remote_id {
+        inputs {
+            issuer: asset::AssetApp::Issuer,
+            assets: asset::AssetApp::Asset[0..=2],
+        }
+        outputs {
+            items: asset::AssetApp::Asset[0..=2],
+            issuer_next: asset::AssetApp::Issuer,
+        }
+    }
+    emits none {
+        require(remote.inputs.assets.length == expected_inputs);
+        for (i, 0, remote.inputs.assets.length, 2) {
+            require(remote.inputs.assets[i].amount == 7 + i);
+        }
+        require remote.outputs become {
+            items <- asset::AssetApp::Asset[](expected_outputs),
+            issuer_next <- asset::AssetApp::Issuer(state(remote.inputs.issuer)),
+        };
+    }
+
+    entry absent()
+    observes remote by self.remote_id {
+        inputs { assets: asset::AssetApp::Asset[0..=2], }
+        outputs { items: asset::AssetApp::Asset[0..=2], }
+    }
+    emits none {
+        require(remote.inputs.assets.length == 0);
+        asset::AssetState[] no_items;
+        require remote.outputs become { items <- asset::AssetApp::Asset[](no_items), };
+    }
+}
+
+app ObserverApp { actor Observer; }
