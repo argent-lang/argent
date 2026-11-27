@@ -199,3 +199,162 @@ fn linked_observed_output_range_validates_every_state() {
             if observe == "remote" && handle == "items"
     ));
 }
+
+#[test]
+fn ranged_current_and_observed_transitions_keep_their_own_members() {
+    let source = r#"
+        state CoordinatorState { cov_id remote_id; }
+        state ItemState { int debit; int credit; }
+
+        actor Coordinator owns CoordinatorState {
+            entry settle(ItemState[] expected_current, ItemState[] expected_remote)
+            consumes { current: Item[CURRENT_MINIMUM..=2], }
+            observes remote by self.remote_id {
+                inputs { items: Watched[1..=4], }
+                outputs { next: Watched[0..=5], }
+            }
+            emits { next_current: Item[1..=3], } {
+                require(current.length == expected_current.length);
+                require(remote.inputs.items.length == expected_remote.length);
+
+                ItemState[] local_next;
+                for (i, 0, current.length, 2) {
+                    ItemState found = state(current[i]);
+                    require(found.debit == expected_current[i].debit);
+                    require(found.credit == expected_current[i].credit);
+                    local_next = local_next.append(ItemState { debit: found.debit + 100, credit: found.credit + 200 });
+                }
+                local_next = local_next.append(ItemState { debit: 113, credit: 223 });
+
+                ItemState[] remote_next;
+                for (i, 0, remote.inputs.items.length, 4) {
+                    ItemState found = state(remote.inputs.items[i]);
+                    require(found.debit == expected_remote[i].debit);
+                    require(found.credit == expected_remote[i].credit);
+                    remote_next = remote_next.append(ItemState { debit: found.debit + 300, credit: found.credit + 400 });
+                }
+                remote_next = remote_next.append(ItemState { debit: 353, credit: 503 });
+
+                require remote.outputs become { next <- Watched[](remote_next), };
+                unrestricted(next_current[0].value);
+                become next_current <- Item[](local_next);
+            }
+        }
+
+        actor Item owns ItemState {
+            delegate participate() consumes { leader: Coordinator, } {}
+            entry advance(ItemState[] successors) emits { next: Item[1..=2], } {
+                unrestricted(next[0].value);
+                become next <- Item[](successors);
+            }
+        }
+
+        actor OtherItem owns ItemState {
+            entry advance(ItemState[] successors) emits { next: OtherItem[1..=2], } {
+                require(credit > debit);
+                unrestricted(next[0].value);
+                become next <- OtherItem[](successors);
+            }
+        }
+
+        app Test { actor Coordinator; actor Item; actor OtherItem; }
+    "#;
+    let current_inputs = [[4, 17], [8, 19]];
+    let remote_inputs = [[25, 77], [26, 79], [37, 89], [43, 97]];
+    let current_outputs = [[104, 217], [108, 219], [113, 223]];
+    let remote_outputs = [[325, 477], [326, 479], [337, 489], [343, 497], [353, 503]];
+    let state = |[debit, credit]: [i64; 2]| state! { debit: debit, credit: credit };
+    let states = |values: &[[i64; 2]]| values.iter().copied().map(state).collect::<Vec<_>>();
+    let current_id = Hash::from_bytes([0x9c; 32]);
+    let remote_id = Hash::from_bytes([0x9d; 32]);
+    let outpoint = |index| TransactionOutpoint::new(TransactionId::from_bytes([0x9e; 32]), index);
+
+    for (watched, current_minimum) in [("Item", 1), ("OtherItem", 1), ("Item", 0)] {
+        let source = source.replace("Watched", watched).replace("CURRENT_MINIMUM", &current_minimum.to_string());
+        let artifact = inline_artifact("combined-observed-ranges", &source);
+        if watched == "Item" {
+            let item_witnesses = entry_artifact(&artifact, "Coordinator", "settle")
+                .hidden_params
+                .iter()
+                .map(|param| (subject_label(&param.subject), param.purpose))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                item_witnesses,
+                [("Item", HiddenParamPurposeArtifact::TemplatePrefixLen), ("Item", HiddenParamPurposeArtifact::TemplateSuffixLen)],
+                "the two groups share one pair of Item template lengths and need no template bytes"
+            );
+        } else {
+            let template_hash = |actor| artifact.sil_abi.contract(actor).unwrap().compiled.template_hash;
+            assert_ne!(template_hash("Item"), template_hash(watched));
+        }
+        let (expected_current, emitted_states) = if current_minimum == 0 {
+            // The guaranteed observed range supplies the Item proof even though current has no members.
+            (&current_inputs[..0], &current_outputs[2..])
+        } else {
+            (&current_inputs[..], &current_outputs[..])
+        };
+        let builder = TxBuilder::new(&artifact).expect("builder accepts the combined ranges");
+        let coordinator = state! { remote_id: remote_id };
+        let coordinator_utxo = builder.covenant_utxo("Coordinator", coordinator.clone(), 3_000, 0, false, Some(current_id)).unwrap();
+        let add_input = |context: TxContext<'static>, actor: &str, values, entry: EntryCall<'static>, covenant_id| {
+            let state = state(values);
+            let utxo = builder.covenant_utxo(actor, state.clone(), 1_000, 0, false, Some(covenant_id)).unwrap();
+            let index = u32::try_from(context.inputs.len()).unwrap();
+            context.actor_input(actor, state, entry, outpoint(index), utxo, 0)
+        };
+        let context = |consumed: &[[i64; 2]], observed: &[[i64; 2]; 4], emitted: &[[i64; 2]], continued: &[[i64; 2]; 5]| {
+            let mut context = TxContext::new().actor_input(
+                "Coordinator",
+                coordinator.clone(),
+                EntryCall::new("settle").args(args![states(expected_current), states(&remote_inputs)]),
+                outpoint(0),
+                coordinator_utxo.clone(),
+                0,
+            );
+            // Interleave remote and current members after the coordinator when both are present.
+            let mut remote_authorizers = [0u16; 4];
+            // The first remote input authorizes two outputs; each other one authorizes one.
+            for (i, (authorizer, &values)) in remote_authorizers.iter_mut().zip(observed).enumerate() {
+                *authorizer = u16::try_from(context.inputs.len()).unwrap();
+                let outputs = if i == 0 { &continued[..2] } else { &continued[i + 1..i + 2] };
+                let entry = EntryCall::new("advance").args(args![states(outputs)]);
+                context = add_input(context, watched, values, entry, remote_id);
+                if let Some(&values) = consumed.get(i) {
+                    context = add_input(context, "Item", values, EntryCall::new("participate"), current_id);
+                }
+            }
+            for (i, &values) in continued.iter().enumerate() {
+                let authorizer = remote_authorizers[i.saturating_sub(1)];
+                context = context.actor_output(watched, state(values), CovenantBinding::new(authorizer, remote_id), 500);
+                if let Some(&values) = emitted.get(i) {
+                    context = context.actor_output("Item", state(values), CovenantBinding::new(0, current_id), 500);
+                }
+            }
+            context
+        };
+
+        builder
+            .build(&context(expected_current, &remote_inputs, emitted_states, &remote_outputs))
+            .unwrap_or_else(|error| panic!("combined ranges with {watched} and current minimum {current_minimum}: {error}"));
+
+        if current_minimum == 0 {
+            continue;
+        }
+
+        for side in ["consumes", "observed inputs", "emits", "observed outputs"] {
+            let (mut consumed, mut observed, mut emitted, mut continued) =
+                (current_inputs, remote_inputs, current_outputs, remote_outputs);
+            match side {
+                "consumes" => consumed[1][1] += 1,
+                "observed inputs" => observed[3][1] += 1,
+                "emits" => emitted[2][1] += 1,
+                "observed outputs" => continued[4][1] += 1,
+                _ => unreachable!(),
+            }
+            let error = builder
+                .build(&context(&consumed, &observed, &emitted, &continued))
+                .expect_err("coordinator must reject the wrong state");
+            assert!(matches!(error, BuilderError::InputScript { input_index: 0, .. }), "{watched} / {side}: {error}");
+        }
+    }
+}
