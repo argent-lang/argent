@@ -234,35 +234,23 @@ fn delegate_consume_ranges_are_rejected_before_emission() {
 }
 
 #[test]
-fn observed_input_ranges_require_positive_minima() {
-    let err = emit_inline_error(
-        r#"
-            const int MAX_ACCOUNTS = 2;
-
-            state BatchState {
-                cov_id source_id;
-            }
-            state AccountState {}
-
-            actor Batch owns BatchState {
-                entry inspect()
-                observes source by self.source_id {
-                    inputs {
-                        accounts: Account[0..=MAX_ACCOUNTS],
-                    }
-                    outputs {}
-                }
-                emits none {}
-            }
-
-            actor Account owns AccountState {}
-            app Test { actor Batch; actor Account; }
-        "#,
+fn optional_observed_input_range_reuses_a_guaranteed_input_from_another_group() {
+    let with_required_input = include_str!("../../../../tests/fixtures/emit/observed_input_output_ranges/app.ag").replace(
+        "entry inspect_optional(AssetState[] next_items)",
+        "entry inspect_optional(cov_id other_id, AssetState[] next_items)\n    observes other by other_id { inputs { asset: Asset, } }",
     );
-
+    let (actors, _) = inline_actor_sil_and_artifact("optional-observed-input-range-with-proof", &with_required_input);
+    let sil = &actors["Observer"];
     assert!(
-        err.to_string().contains("observed input range `source.inputs.accounts` must have a minimum of at least one"),
-        "unexpected error: {err}"
+        sil.lines()
+            .any(|line| line.contains("entry inspect_optional(")
+                && line.contains("int gen__asset_prefix_len, int gen__asset_suffix_len")),
+        "{sil}"
+    );
+    assert!(
+        sil.lines().any(|line| line.contains("validateOutputStateWithInputTemplate(OpCovOutputIdx(gen__remote_cov_id,")
+            && line.contains("gen__other_asset_input_idx, gen__asset_prefix_len, gen__asset_suffix_len,")),
+        "{sil}"
     );
 }
 
@@ -343,7 +331,7 @@ fn observed_input_ranges_reject_nonstatic_targets_and_invalid_uses() {
         actor Reader owns ReaderState {{
             entry inspect(actor_type<AccountState> account_type)
             observes asset by self.asset_id {{
-                inputs {{ accounts: {target}[1..=2], }}
+                inputs {{ accounts: {target}[0..=2], }}
             }}
             emits none {{ {body} }}
         }}
@@ -366,22 +354,28 @@ fn observed_input_ranges_reject_nonstatic_targets_and_invalid_uses() {
 }
 
 #[test]
-fn observed_output_range_reuses_the_first_authenticated_input_and_materializes_each_state() {
+fn observed_output_ranges_pin_both_template_proof_paths() {
     let (sil, artifact) = emit_fixture("observed_input_output_ranges", "Observer");
     assert_eq!(sil, include_str!("../../../../tests/fixtures/emit/observed_input_output_ranges/Observer.sil"));
     let observer = artifact.argent.actors.iter().find(|actor| actor.name == "Observer").expect("Observer exists");
-    let entry = &observer.entries[0];
-    assert_eq!(entry.observes[0].outputs[1].cardinality, CardinalityArtifact::Range { minimum: 0, maximum: 3 });
-    assert_eq!(
-        entry
-            .hidden_params
-            .iter()
-            .filter(|param| param.name.starts_with("gen__asset_"))
-            .map(|param| param.name.as_str())
-            .collect::<Vec<_>>(),
-        ["gen__asset_prefix_len", "gen__asset_suffix_len"],
-        "all members share the lengths already used to authenticate the range input"
-    );
+    for (name, slot, minimum, witnesses) in [
+        ("inspect", 1, 1, ["gen__asset_prefix_len", "gen__asset_suffix_len"]),
+        ("inspect_optional", 0, 0, ["gen__asset_prefix", "gen__asset_suffix"]),
+    ] {
+        let entry = observer.entries.iter().find(|entry| entry.name == name).expect("Observer entry exists");
+        assert_eq!(entry.observes[0].inputs[slot].cardinality, CardinalityArtifact::Range { minimum, maximum: 2 });
+        assert_eq!(entry.observes[0].outputs[slot].cardinality, CardinalityArtifact::Range { minimum: 0, maximum: 3 });
+        assert_eq!(
+            entry
+                .hidden_params
+                .iter()
+                .filter(|param| param.name.starts_with("gen__asset_"))
+                .map(|param| param.name.as_str())
+                .collect::<Vec<_>>(),
+            witnesses,
+            "each range shares one witness pair in {name}"
+        );
+    }
 }
 
 #[test]

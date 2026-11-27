@@ -286,20 +286,12 @@ impl EntryInputPlan {
                 };
                 let open_state = observed_open_state_for_decl(entry_id, actor, entry, observe, input, model)?;
                 let static_target = if open_state.is_none() { model.resolve_static_actor_target(interaction.target()) } else { None };
-                if let Some((minimum, _)) = interaction.cardinality().range_bounds() {
+                if interaction.location().is_range() && static_target.is_none() {
                     let path = format!("{}.inputs.{}", observe.name, input.name);
-                    if minimum == 0 {
-                        return Err(ArgentError::new(format!(
-                            "entry `{}::{}` observed input range `{path}` must have a minimum of at least one",
-                            actor.name, entry.name
-                        )));
-                    }
-                    if static_target.is_none() {
-                        return Err(ArgentError::new(format!(
-                            "entry `{}::{}` observed input range `{path}` must use one fixed actor target",
-                            actor.name, entry.name
-                        )));
-                    }
+                    return Err(ArgentError::new(format!(
+                        "entry `{}::{}` observed input range `{path}` must use one fixed actor target",
+                        actor.name, entry.name
+                    )));
                 }
                 let target = if let Some(ref state) = open_state {
                     lowering.open_state_target(state)
@@ -334,7 +326,7 @@ impl EntryInputPlan {
                         InteractionLocation::Range { start, .. } => Some(start),
                         _ => None,
                     },
-                    guaranteed: true,
+                    guaranteed: interaction.cardinality().range_bounds().is_none_or(|(minimum, _)| minimum > 0),
                     fields: source_fields
                         .into_iter()
                         .map(|field| {

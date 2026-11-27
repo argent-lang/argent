@@ -632,9 +632,16 @@ struct ObservedOutput {
 
 #[derive(Clone, Debug)]
 struct ObservedCovenantContext {
-    app: String,
+    // No app is resolved when the observation has no members.
+    app: Option<String>,
     inputs: BTreeMap<String, Vec<ObservedInput>>,
     outputs: BTreeMap<String, Vec<ObservedOutput>>,
+}
+
+impl ObservedCovenantContext {
+    fn require_app(&self, observe: &str) -> BuilderResult<&str> {
+        self.app.as_deref().ok_or_else(|| BuilderError::MissingObservedCovenant { observe: observe.to_string() })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1206,7 +1213,7 @@ impl<'a> TxBuilder<'a> {
                             }
                         }
                         .unwrap_or(actor.as_str());
-                        self.contract_ref_in_app(&context.app, observed_actor)
+                        self.contract_ref_in_app(context.require_app(observe)?, observed_actor)
                     }
                 }
             }
@@ -1321,19 +1328,24 @@ impl<'a> TxBuilder<'a> {
         observe: &ObserveArtifact,
         context: &ObservedCovenantContext,
     ) -> BuilderResult<()> {
-        self.bundle.app(&context.app)?;
-        self.validate_observed_inputs(observing_artifact, observe_name, &observe.inputs, context)?;
-        self.validate_observed_outputs(observing_artifact, observe_name, &observe.outputs, context)
+        let Some(app) = context.app.as_deref() else {
+            // Both counts have been checked, and there are no members to validate.
+            return Ok(());
+        };
+        self.bundle.app(app)?;
+        self.validate_observed_inputs(observing_artifact, app, observe_name, &observe.inputs, &context.inputs)?;
+        self.validate_observed_outputs(observing_artifact, app, observe_name, &observe.outputs, &context.outputs)
     }
 
     fn validate_observed_inputs(
         &self,
         observing_artifact: &'a Artifact,
+        app: &str,
         observe_name: &str,
         expected: &[ObservedActorArtifact],
-        context: &ObservedCovenantContext,
+        inputs: &BTreeMap<String, Vec<ObservedInput>>,
     ) -> BuilderResult<()> {
-        for handle in context.inputs.keys() {
+        for handle in inputs.keys() {
             if expected.iter().all(|input| &input.name != handle) {
                 return Err(BuilderError::UnknownObservedActor {
                     observe: observe_name.to_string(),
@@ -1343,7 +1355,7 @@ impl<'a> TxBuilder<'a> {
             }
         }
         for input in expected {
-            let members = context.inputs.get(&input.name).ok_or_else(|| BuilderError::MissingObservedActor {
+            let members = inputs.get(&input.name).ok_or_else(|| BuilderError::MissingObservedActor {
                 observe: observe_name.to_string(),
                 side: Side::In,
                 handle: input.name.clone(),
@@ -1351,13 +1363,13 @@ impl<'a> TxBuilder<'a> {
             for observed in members {
                 self.validate_observed_actor(
                     observing_artifact,
-                    &context.app,
+                    app,
                     observe_name,
                     ObservedActorSideArtifact::Input,
                     input,
                     &observed.actor,
                 )?;
-                let contract_ref = self.contract_ref_in_app(&context.app, &observed.actor)?;
+                let contract_ref = self.contract_ref_in_app(app, &observed.actor)?;
                 let expected_script_public_key =
                     pay_to_script_hash_script(&self.redeem_script_for_contract(contract_ref, observed.state.clone())?);
                 if observed.utxo.script_public_key != expected_script_public_key {
@@ -1375,11 +1387,12 @@ impl<'a> TxBuilder<'a> {
     fn validate_observed_outputs(
         &self,
         observing_artifact: &'a Artifact,
+        app: &str,
         observe_name: &str,
         expected: &[ObservedActorArtifact],
-        context: &ObservedCovenantContext,
+        outputs: &BTreeMap<String, Vec<ObservedOutput>>,
     ) -> BuilderResult<()> {
-        for handle in context.outputs.keys() {
+        for handle in outputs.keys() {
             if expected.iter().all(|output| &output.name != handle) {
                 return Err(BuilderError::UnknownObservedActor {
                     observe: observe_name.to_string(),
@@ -1389,7 +1402,7 @@ impl<'a> TxBuilder<'a> {
             }
         }
         for output in expected {
-            let members = context.outputs.get(&output.name).ok_or_else(|| BuilderError::MissingObservedActor {
+            let members = outputs.get(&output.name).ok_or_else(|| BuilderError::MissingObservedActor {
                 observe: observe_name.to_string(),
                 side: Side::Out,
                 handle: output.name.clone(),
@@ -1397,13 +1410,13 @@ impl<'a> TxBuilder<'a> {
             for observed in members {
                 self.validate_observed_actor(
                     observing_artifact,
-                    &context.app,
+                    app,
                     observe_name,
                     ObservedActorSideArtifact::Output,
                     output,
                     &observed.actor,
                 )?;
-                let contract_ref = self.contract_ref_in_app(&context.app, &observed.actor)?;
+                let contract_ref = self.contract_ref_in_app(app, &observed.actor)?;
                 self.redeem_script_for_contract(contract_ref, observed.state.clone())?;
             }
         }
@@ -1612,7 +1625,7 @@ impl<'a> TxBuilder<'a> {
                 _ => None,
             })
             .ok_or_else(|| BuilderError::MissingObservedActor { observe: observe.clone(), side: Side::Out, handle: handle.clone() })?;
-        let contract_ref = self.contract_ref_in_app(&context.app, &output.actor)?;
+        let contract_ref = self.contract_ref_in_app(context.require_app(observe)?, &output.actor)?;
         let actor_state = &self.actor_ref_in_artifact(contract_ref.artifact, contract_ref.name)?.actor.state;
         if !state_satisfies(contract_ref.artifact, actor_state, state) {
             return Err(BuilderError::ObservedStateLayoutMismatch {

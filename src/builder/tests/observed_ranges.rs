@@ -126,14 +126,14 @@ fn observed_input_range_and_trailing_singleton_follow_covenant_order() {
 }
 
 #[test]
-fn linked_observed_output_range_validates_every_state() {
+fn linked_observed_ranges_validate_every_state_and_allow_empty_inputs() {
     let output = tempfile::tempdir().expect("fixture output directory");
     let compiled = crate::build_file_app_bundle(
         "tests/fixtures/runtime/context_ranged_observe_outputs/observer.ag",
         "ObserverApp",
         output.path(),
     )
-    .expect("linked observed output fixture compiles");
+    .expect("linked observed ranges compile");
     let observer_entry = entry_artifact(compiled.primary(), "Observer", "inspect");
     let asset_witnesses = observer_entry
         .hidden_params
@@ -144,7 +144,7 @@ fn linked_observed_output_range_validates_every_state() {
     assert_eq!(
         asset_witnesses,
         [HiddenParamPurposeArtifact::TemplatePrefixBytes, HiddenParamPurposeArtifact::TemplateSuffixBytes],
-        "one linked template witness serves the complete range"
+        "linked output template bytes also supply the optional input range's read lengths"
     );
 
     let bundle = compiled.runtime_bundle().expect("runtime bundle");
@@ -158,16 +158,10 @@ fn linked_observed_output_range_validates_every_state() {
     let issuer_utxo = builder.covenant_utxo("asset_app::Issuer", issuer.clone(), 2_000, 0, false, Some(remote_id)).unwrap();
     let covenant = CovenantBinding::new(1, remote_id);
     let states = |amounts: &[i64]| amounts.iter().map(|&amount| state! { amount: amount }).collect::<Vec<_>>();
-    let context = |expected: &[i64], actual: &[i64]| {
-        let mut context = TxContext::new()
-            .actor_input(
-                "Observer",
-                observer.clone(),
-                EntryCall::new("inspect").args(args![states(expected)]),
-                outpoint(0x9a),
-                observer_utxo.clone(),
-                0,
-            )
+    let observer_context =
+        |entry| TxContext::new().actor_input("Observer", observer.clone(), entry, outpoint(0x9a), observer_utxo.clone(), 0);
+    let context = |observed: &[i64], expected: &[i64], actual: &[i64]| {
+        let mut context = observer_context(EntryCall::new("inspect").args(args![observed.len() as i64, states(expected)]))
             .actor_input(
                 "asset_app::Issuer",
                 issuer.clone(),
@@ -176,6 +170,10 @@ fn linked_observed_output_range_validates_every_state() {
                 issuer_utxo.clone(),
                 0,
             );
+        for (index, state) in states(observed).into_iter().enumerate() {
+            let utxo = builder.covenant_utxo("asset_app::Asset", state.clone(), 1_000, 0, false, Some(remote_id)).unwrap();
+            context = context.actor_input("asset_app::Asset", state, "inspect", outpoint(0x9c + index as u8), utxo, 0);
+        }
         for (index, state) in states(actual).into_iter().enumerate() {
             if index == 1 {
                 context = context.output(ScriptPublicKey::new(0, vec![OpTrue].into()), None, 100);
@@ -186,13 +184,21 @@ fn linked_observed_output_range_validates_every_state() {
     };
 
     for amounts in [&[][..], &[7], &[7, 8]] {
-        builder.build(&context(amounts, amounts)).unwrap_or_else(|error| panic!("observed output length {}: {error}", amounts.len()));
+        builder
+            .build(&context(&[], amounts, amounts))
+            .unwrap_or_else(|error| panic!("no Asset inputs, {} observed Asset outputs: {error}", amounts.len()));
     }
+    builder.build(&context(&[7, 8], &[7, 8], &[7, 8])).expect("optional Asset inputs read using the witnessed template lengths");
+    builder.build(&observer_context("absent".into())).expect("the observed covenant may have no transaction members");
+
+    let error = builder.build(&context(&[7, 9], &[7], &[7])).expect_err("observer checks every input state");
+    assert!(matches!(error, BuilderError::InputScript { input_index: 0, .. }), "unexpected error: {error}");
     for expected in [&[7][..], &[7, 9]] {
-        let error = builder.build(&context(expected, &[7, 8])).expect_err("observer checks the array length and all output states");
+        let error =
+            builder.build(&context(&[], expected, &[7, 8])).expect_err("observer checks the array length and all output states");
         assert!(matches!(error, BuilderError::InputScript { input_index: 0, .. }), "unexpected error: {error}");
     }
-    let error = builder.build(&context(&[7, 8, 9], &[7, 8, 9])).expect_err("observed output count exceeds its declared bounds");
+    let error = builder.build(&context(&[], &[7, 8, 9], &[7, 8, 9])).expect_err("observed output count exceeds its declared bounds");
     assert!(matches!(
         error,
         BuilderError::ObservedCardinalityMismatch { observe, side: Side::Out, handle, minimum: 1, maximum: 3, found: 4 }

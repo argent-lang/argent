@@ -32,6 +32,15 @@ actor Observer owns ObserverState {
             tail <- Marker(tail_state),
         };
     }
+
+    entry inspect_optional(AssetState[] next_items)
+    observes remote by self.asset_id {
+        inputs { items: Asset[0..=2], }
+        outputs { items: Asset[0..=3], }
+    }
+    emits none {
+        require remote.outputs become { items <- Asset[](next_items), };
+    }
 }
 
 actor Asset owns AssetState {

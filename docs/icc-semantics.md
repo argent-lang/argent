@@ -100,10 +100,10 @@ The source program should describe the relationship between the covenants, not
 the implementation details needed to enforce that relationship.
 
 An observed handle can name a [range](entry-clause-ranges.md#observes) of one
-fixed actor, for example `tokens: TokenAsset::Token[1..=3]`. An input range
-must have a positive minimum so a matching output can reuse its first input's
-template. An output range may start at zero and uses a bulk route such as
-`tokens <- TokenAsset::Token[](next_states)`.
+fixed actor, for example `tokens: TokenAsset::Token[0..=3]`. Either side can
+start at zero. An output range uses a bulk route such as
+`tokens <- TokenAsset::Token[](next_states)`. To reuse an input template for
+an output, Argent needs a matching input that is guaranteed to exist.
 
 Use `asset.inputs.tokens.length` for the count, `asset.inputs.tokens[i]` for
 an input reference, and `state(asset.inputs.tokens[i])` for its authored state.

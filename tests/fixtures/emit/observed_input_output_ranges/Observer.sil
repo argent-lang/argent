@@ -64,4 +64,27 @@ contract Observer(byte[32] gen__init_archive_template, byte[32] gen__init_asset_
         }
         validateOutputStateWithInputTemplate(gen__remote_tail_output_idx, tail_state, gen__remote_head_input_idx, gen__marker_prefix_len, gen__marker_suffix_len, gen__marker_template);
     }
+
+    entry inspect_optional(AssetState[] next_items, byte[] gen__asset_prefix, byte[] gen__asset_suffix) {
+        byte[32] gen__remote_cov_id = asset_id;
+        int gen__0_observed_output_0_items_output_count = OpCovOutputCount(gen__remote_cov_id);
+        require(gen__0_observed_output_0_items_output_count >= 0);
+        require(gen__0_observed_output_0_items_output_count <= 3);
+        int gen__0_observed_0_items_count = OpCovInputCount(gen__remote_cov_id);
+        require(gen__0_observed_0_items_count >= 0);
+        require(gen__0_observed_0_items_count <= 2);
+        AssetState[] gen__0_observed_0_items_authored_states;
+        for (gen__0_observed_0_items_position, 0, gen__0_observed_0_items_count, 2) {
+            int gen__0_observed_0_items_input_idx = OpCovInputIdx(gen__remote_cov_id, gen__0_observed_0_items_position);
+            Gen__AssetState gen__0_observed_0_items_state = readInputStateWithTemplate(gen__0_observed_0_items_input_idx, gen__asset_prefix.length, gen__asset_suffix.length, gen__asset_template);
+            gen__0_observed_0_items_authored_states = gen__0_observed_0_items_authored_states.append(AssetState {amount: gen__0_observed_0_items_state.amount});
+        }
+        require(OpAuthOutputCount(this.activeInputIndex) == 0);
+        require(next_items.length == gen__0_observed_output_0_items_output_count);
+        for (gen__0_observed_output_0_items_output_position, 0, gen__0_observed_output_0_items_output_count, 3) {
+            AssetState gen__0_route_source_items = next_items[gen__0_observed_output_0_items_output_position];
+            Gen__AssetState gen__0_route_physical_items = Gen__AssetState {gen__archive_template: gen__archive_template, gen__asset_template: gen__asset_template, amount: gen__0_route_source_items.amount};
+            validateOutputStateWithTemplate(OpCovOutputIdx(gen__remote_cov_id, gen__0_observed_output_0_items_output_position), gen__0_route_physical_items, gen__asset_prefix, gen__asset_suffix, gen__asset_template);
+        }
+    }
 }

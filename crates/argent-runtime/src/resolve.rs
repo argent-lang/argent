@@ -451,7 +451,7 @@ impl<'artifact> TxBuilder<'artifact> {
 
             for observe in &input.artifact_entry.observes {
                 let covenant_id = observed_covenant_id(input.source, args, observe)?;
-                let observation = resolve_observation(context, unsigned, input.source, observe, covenant_id)?;
+                let observation = resolve_observation(context, unsigned, observe, covenant_id)?;
                 observations.insert(observe.name.clone(), observation);
             }
 
@@ -868,7 +868,6 @@ fn observed_covenant_id(input: &ActorInput<'_>, args: &ResolvedEntryArgs, observ
 fn resolve_observation(
     context: &ResolveContext<'_, '_, '_>,
     unsigned: &MutableTransaction<Transaction>,
-    input: &ActorInput<'_>,
     observe: &ObserveArtifact,
     covenant_id: Hash,
 ) -> BuilderResult<ObservedCovenantContext> {
@@ -885,11 +884,6 @@ fn resolve_observation(
         resolve_observed_output(&observe.name, declaration, index, &context.outputs[index], &mut app)
     })?;
 
-    let app = app.ok_or_else(|| BuilderError::InvalidTransition {
-        actor: input.actor.to_string(),
-        entry: input.entry.name.clone(),
-        message: format!("observe `{}` has no actor inputs or outputs from which to resolve an app", observe.name),
-    })?;
     Ok(ObservedCovenantContext { app, inputs, outputs })
 }
 

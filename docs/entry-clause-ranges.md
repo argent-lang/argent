@@ -300,9 +300,9 @@ for (i, 0, next_count, MAX_ACCOUNTS) {
 
 The exact validation builtin still depends on the current route rules. A same
 template route can use `validateOutputState`. A route that can reuse an input
-template can use `validateOutputStateWithInputTemplate`. This reuse is valid
-only when the matching input range cannot be empty. Otherwise, use a shared
-output template witness.
+template can use `validateOutputStateWithInputTemplate`. This requires a
+matching authenticated input that is guaranteed to exist. Otherwise, the
+compiler uses a shared output template witness.
 
 In the entry body, `next.length` is the actual output count. Indexed
 `next[i].value` access uses the same generated bounds check as ranged input
@@ -318,26 +318,26 @@ can read from the authenticated state. For example, use
 `state(assets.inputs.previous[i])`. Whole-state reconstruction still requires
 validated openings for all expanded fields.
 
-An observed input range must name a fixed actor, in this app or a linked app,
-and have a minimum of at least one. This guarantees a first input: a matching
-output can reuse its authenticated template, just as with a singleton input.
-If a range could be empty, an output could not rely on it for a template proof.
-Open ranged targets are not yet supported. A shared `as` binding would also
-need a first input to bind.
+An observed range must name a fixed actor, in this app or a linked app. An
+input range with a positive minimum guarantees a first member. A range with
+a zero minimum does not supply a template proof, even if it has members in
+a particular transaction. Open ranged targets are not yet supported.
 
 An observed output range uses `OpCovOutputCount(observed_id)` minus the number
 of singleton outputs. The count includes continuations of the observed covenant
 regardless of which input authorizes them. It excludes genesis outputs. The
 bulk route checks that the state array has the same length, then materializes and
-validates each element at its `OpCovOutputIdx` position. A matching,
-guaranteed input can provide the template for all elements. Otherwise, the
-outputs share one template witness when required.
+validates each element at its `OpCovOutputIdx` position. The compiler can
+reuse the template from a matching authenticated input anywhere in the entry
+if the input is guaranteed to exist. Otherwise, outputs that need that
+template share one prefix and suffix byte witness. Reads of the same actor
+use the lengths of those bytes.
 
-The output minimum can be zero: the array must then be empty when there are
-no output members. This does not change the requirement to name the range in
-the `require ... outputs become` block. The runtime still requires at least
-one observed member. The emitting contracts still own their output-value
-checks.
+Either minimum can be zero. With no input members, the read loop does not
+run. With no output members, the `require ... outputs become` block still
+names the range and supplies an empty array. If both sides are empty, the
+observation checks absence, not actor identity. The emitting contracts still
+own their output-value checks.
 
 To measure the cost of observed input ranges, run
 `cargo run --locked --example observed_range_cost`. It varies the declared

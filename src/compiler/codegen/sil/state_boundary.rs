@@ -375,6 +375,17 @@ enum InputTemplateLength {
 }
 
 impl InputTemplateLength {
+    fn shared_witnesses(actor: &str, form: TemplateWitnessForm) -> (Self, Self) {
+        match form {
+            TemplateWitnessForm::Bytes => {
+                (Self::BytesWitness(hidden_witness_prefix_name(actor)), Self::BytesWitness(hidden_witness_suffix_name(actor)))
+            }
+            TemplateWitnessForm::Len => {
+                (Self::IntWitness(hidden_witness_prefix_len_name(actor)), Self::IntWitness(hidden_witness_suffix_len_name(actor)))
+            }
+        }
+    }
+
     fn expr(&self) -> SilExpr<'static> {
         match self {
             Self::IntWitness(name) => SilExpr::identifier(name.clone()),
@@ -1064,17 +1075,7 @@ pub(in crate::compiler::codegen) fn plan_entry_input_references(
                     actor.name, entry.name, consume.actor
                 ))
             })?;
-            let (prefix_len, suffix_len) = if witness.form == TemplateWitnessForm::Bytes {
-                (
-                    InputTemplateLength::BytesWitness(hidden_witness_prefix_name(&witness.actor)),
-                    InputTemplateLength::BytesWitness(hidden_witness_suffix_name(&witness.actor)),
-                )
-            } else {
-                (
-                    InputTemplateLength::IntWitness(hidden_witness_prefix_len_name(&witness.actor)),
-                    InputTemplateLength::IntWitness(hidden_witness_suffix_len_name(&witness.actor)),
-                )
-            };
+            let (prefix_len, suffix_len) = InputTemplateLength::shared_witnesses(&witness.actor, witness.form);
             let template = hidden_template_name(&witness.actor);
             InputTemplateProof::Template { prefix_len, suffix_len, template_ast: Box::new(SilExpr::identifier(template.clone())) }
         };
@@ -1131,10 +1132,24 @@ pub(in crate::compiler::codegen) fn plan_entry_input_references(
                     .observed_witness
                     .as_ref()
                     .ok_or_else(|| ArgentError::new("observed input requirement has no witness descriptor"))?;
-                let target_reference = match &spec.template_source {
-                    ObservedTemplateSource::FixedInApp(id) => Some(model.types.display_names[id].clone()),
-                    ObservedTemplateSource::FixedLinked(id) => Some(format!("{}::{}", id.app, id.actor)),
+                let fixed_actor = match &spec.template_source {
+                    ObservedTemplateSource::FixedInApp(id) => Some(StaticActorId::InApp(*id)),
+                    ObservedTemplateSource::FixedLinked(id) => Some(StaticActorId::Linked(id.clone())),
                     _ => None,
+                };
+                let (prefix_len, suffix_len) = if let Some(fixed_actor) = fixed_actor {
+                    let witness = model.witness_plan_by_id(entry_id)?.template(&fixed_actor).ok_or_else(|| {
+                        ArgentError::new(format!(
+                            "entry `{}::{}` has no template witness plan for observed actor `{}`",
+                            actor.name, entry.name, input.actor
+                        ))
+                    })?;
+                    InputTemplateLength::shared_witnesses(&witness.actor, witness.form)
+                } else {
+                    (
+                        InputTemplateLength::IntWitness(hidden_observed_actor_prefix_len_name(spec)),
+                        InputTemplateLength::IntWitness(hidden_observed_actor_suffix_len_name(spec)),
+                    )
                 };
                 let template_ast = match &spec.template_source {
                     ObservedTemplateSource::FixedInApp(id) => {
@@ -1160,19 +1175,7 @@ pub(in crate::compiler::codegen) fn plan_entry_input_references(
                     },
                     ObservedTemplateSource::Witness => SilExpr::identifier(hidden_observed_actor_template_name(spec)),
                 };
-                InputTemplateProof::Template {
-                    prefix_len: InputTemplateLength::IntWitness(
-                        target_reference
-                            .as_deref()
-                            .map_or_else(|| hidden_observed_actor_prefix_len_name(spec), hidden_witness_prefix_len_name),
-                    ),
-                    suffix_len: InputTemplateLength::IntWitness(
-                        target_reference
-                            .as_deref()
-                            .map_or_else(|| hidden_observed_actor_suffix_len_name(spec), hidden_witness_suffix_len_name),
-                    ),
-                    template_ast: Box::new(template_ast),
-                }
+                InputTemplateProof::Template { prefix_len, suffix_len, template_ast: Box::new(template_ast) }
             };
             if requirement.id.0 != references.len() {
                 return Err(ArgentError::new("observed input materialization differs from the planned reference order"));

@@ -28,8 +28,7 @@ impl Artifact {
     /// A leader entry may have at most one ranged consume and at most one
     /// ranged emit. A ranged emit must resolve to one actor, not an actor union
     /// or actor-enum domain. Each observe section may have one range with a
-    /// static actor. Observed input ranges require a positive minimum. Delegate
-    /// consumes and spawn outputs must be singletons.
+    /// static actor. Delegate consumes and spawn outputs must be singletons.
     ///
     /// Transaction-specific input and output counts are checked when a runtime
     /// context is bound.
@@ -91,18 +90,13 @@ impl Artifact {
                     }
                 }
                 for observe in &entry.observes {
-                    for (section, items, minimum_allowed) in
-                        [("observed input", &observe.inputs, 1), ("observed output", &observe.outputs, 0)]
-                    {
+                    for (section, items) in [("observed input", &observe.inputs), ("observed output", &observe.outputs)] {
                         let mut has_range = false;
                         for item in items {
                             let handle = format!("{}.{}", observe.name, item.name);
                             check(section, &handle, item.cardinality)?;
-                            if let CardinalityArtifact::Range { minimum, .. } = item.cardinality {
-                                if has_range
-                                    || minimum < minimum_allowed
-                                    || !matches!(item.target, ActorTargetArtifact::StaticActor { .. })
-                                {
+                            if !item.cardinality.is_one() {
+                                if has_range || !matches!(item.target, ActorTargetArtifact::StaticActor { .. }) {
                                     reject_unsupported_range(section, &handle, item.cardinality)?;
                                 }
                                 has_range = true;
@@ -139,12 +133,10 @@ mod tests {
         let entry = &mut artifact.argent.actors[0].entries[0];
         entry.consumes.push(ranged_consume("accounts", 0, 3));
         entry.emits = EmitArtifact::Outputs { outputs: vec![ranged_emit("next", &["Counter"], 1, 3)] };
-        let mut first = observe("asset", vec![ranged_observed_actor("accounts")]);
-        let mut output = ranged_observed_actor("next");
-        output.cardinality = CardinalityArtifact::Range { minimum: 0, maximum: 3 };
-        first.outputs.push(output);
+        let mut first = observe("asset", vec![ranged_observed_actor("accounts", 0)]);
+        first.outputs.push(ranged_observed_actor("next", 0));
         entry.observes.push(first);
-        entry.observes.push(observe("other", vec![ranged_observed_actor("accounts")]));
+        entry.observes.push(observe("other", vec![ranged_observed_actor("accounts", 1)]));
 
         artifact.check_cardinality_consistency().expect("supported input and output ranges are consistent");
     }
@@ -192,25 +184,22 @@ mod tests {
             EmitArtifact::Outputs { outputs: vec![ranged_emit("next", &["Counter", "Archive"], 0, 2)] };
         assert_unsupported(dynamic_emit, "emit", "next");
 
-        let mut open_input = ranged_observed_actor("open");
+        let mut open_input = ranged_observed_actor("open", 0);
         open_input.target = ActorTargetArtifact::DynamicActor { state: "CounterState".to_string() };
-        let mut optional_input = ranged_observed_actor("optional");
-        optional_input.cardinality = CardinalityArtifact::Range { minimum: 0, maximum: 3 };
         for (inputs, handle) in [
             (vec![open_input], "asset.open"),
-            (vec![optional_input], "asset.optional"),
-            (vec![ranged_observed_actor("first"), ranged_observed_actor("second")], "asset.second"),
+            (vec![ranged_observed_actor("first", 0), ranged_observed_actor("second", 1)], "asset.second"),
         ] {
             let mut artifact = artifact_with_entry();
             artifact.argent.actors[0].entries[0].observes.push(observe("asset", inputs));
             assert_unsupported(artifact, "observed input", handle);
         }
 
-        let mut open_output = ranged_observed_actor("open");
+        let mut open_output = ranged_observed_actor("open", 0);
         open_output.target = ActorTargetArtifact::DynamicActor { state: "CounterState".to_string() };
         for (outputs, handle) in [
             (vec![open_output], "asset.open"),
-            (vec![ranged_observed_actor("first"), ranged_observed_actor("second")], "asset.second"),
+            (vec![ranged_observed_actor("first", 0), ranged_observed_actor("second", 1)], "asset.second"),
         ] {
             let mut artifact = artifact_with_entry();
             let mut observe = observe("asset", Vec::new());
@@ -298,11 +287,11 @@ mod tests {
         }
     }
 
-    fn ranged_observed_actor(name: &str) -> ObservedActorArtifact {
+    fn ranged_observed_actor(name: &str, minimum: i64) -> ObservedActorArtifact {
         ObservedActorArtifact {
             name: name.to_string(),
             target: static_actor_target(),
-            cardinality: CardinalityArtifact::Range { minimum: 1, maximum: 3 },
+            cardinality: CardinalityArtifact::Range { minimum, maximum: 3 },
         }
     }
 
