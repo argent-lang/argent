@@ -94,7 +94,8 @@ At the source level, this means:
 - `asset.outputs.proxy` is the observed output named `proxy`
 - `MinterProxy(next_proxy)` means the observed output must become `MinterProxy`
   with `next_proxy` as its state
-- all declared observed outputs must be covered by the observed `become` block
+- if present, a `require … outputs become` block must cover every declared
+  output in its group
 
 The source program should describe the relationship between the covenants, not
 the implementation details needed to enforce that relationship.

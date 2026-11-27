@@ -501,10 +501,16 @@ covenant batching. Delegates enforce a conservative minimum input count because
 the leader may coordinate additional actors. Every entry enforces its exact
 authorized output count and handle order.
 
-An `observes` clause currently describes the complete observed covenant input
-and output groups. A `spawns` clause describes an ordered genesis output group
-and verifies its derived covenant ID. Flexible clause cardinality is specified
-separately in [Entry clause ranges](entry-clause-ranges.md).
+An `observes` clause declares the complete input and output groups of an
+existing covenant and checks their counts. An optional
+`require <observe>.outputs become` block checks the actor and state of every
+output in its group when it runs.
+
+A `spawns` clause declares an ordered genesis output group. The entry verifies
+the derived covenant ID and must validate every output in the group in one
+unconditional `require <spawn>.outputs become` block.
+
+Flexible clause cardinality is specified in [Entry clause ranges](entry-clause-ranges.md).
 
 ### Output value policy
 

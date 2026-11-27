@@ -117,11 +117,18 @@ The following rules apply to each range:
 2. The generated script requires `minimum <= actual length <= maximum`.
 3. The generated script covers every item exactly once and in transaction
    order.
-4. Every item has the actor type that the declaration permits.
+4. Every input and every output in `emits` has an actor type permitted by its
+   declaration.
 5. Every input state read uses the required template check.
-6. Every output state and template is validated.
+6. Every output in `emits` is checked against its successor state and template.
 7. The upper bound is part of the actor template. State cannot change it.
 8. A bulk route state array has the same length as its output range.
+
+*Observed outputs.* A `require … outputs become` block checks the actor type
+and state of every declared output in its group. Observers typically include
+this block, but unlike output validation for `emits` and `spawns`, it can be
+omitted or run conditionally. The declarations still set the count bounds
+and positions.
 
 Input-reference ranges and authored output arrays stay on opposite sides of
 the state boundary:
